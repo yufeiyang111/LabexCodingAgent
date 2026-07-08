@@ -44,7 +44,7 @@ The backend initializes the standalone schema from `backend/src/main/resources/s
 ## Start Backend
 
 ```powershell
-cd D:\workfordasan\LabexAgent\backend
+cd D:\LabexAgent\backend
 mvn spring-boot:run
 ```
 
@@ -53,7 +53,7 @@ Backend API base path: `http://localhost:8080/api`
 ## Start Frontend
 
 ```powershell
-cd D:\workfordasan\LabexAgent\frontend
+cd D:\LabexAgent\frontend
 npm install
 npm run dev
 ```

@@ -35,7 +35,7 @@ jwt:
   prefix: "Bearer "
 
 labex-agent:
-  project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/workfordasan/LabexAgent/workspaces}
+  project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/LabexAgent/workspaces}
   lsp:
     commands:
       java: ${LABEX_LSP_JAVA_CMD:jdtls}
@@ -50,7 +50,7 @@ rag:
   mini-max-model: ${MINIMAX_MODEL:MiniMax-M2.7-highspeed}
   image-understanding-enabled: ${LABEX_AGENT_IMAGE_UNDERSTANDING:true}
   tavily-api-key: ${TAVILY_API_KEY:}
-  upload-path: ${LABEX_AGENT_UPLOAD_PATH:D:/workfordasan/LabexAgent/uploads}
+  upload-path: ${LABEX_AGENT_UPLOAD_PATH:D:/LabexAgent/uploads}
 
 logging:
   level:
