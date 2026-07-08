@@ -1,0 +1,313 @@
+@use './variables.scss' as *;
+
+// 全局样式重置与基础样式 - Biophilic 亲自然风格
+// 纸纤维质感、叶脉纹理、柔和光影
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: $font-size-base;
+  color: $color-text-primary;
+  background-color: $color-bg-page;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.6;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+// 滚动条 - 自然木质调
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c4d4bc;
+  border-radius: 3px;
+
+  &:hover {
+    background: #a8c0a0;
+  }
+}
+
+// 链接 - 自然下划线
+a {
+  color: $color-primary-dark;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color $transition-fast, color $transition-fast;
+
+  &:hover {
+    color: $color-primary;
+    border-bottom-color: $color-primary;
+  }
+}
+
+// 卡片 - 柔和阴影 + 微噪点质感
+.van-card,
+.el-card {
+  border-radius: $border-radius-lg !important;
+  box-shadow: $shadow-sm !important;
+  border: 1px solid $color-border-light !important;
+  transition: box-shadow $transition-base, transform $transition-base, border-color $transition-base !important;
+  background: $color-bg-card;
+  position: relative;
+
+  // 微噪点纸纤维质感
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.5'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  &:hover {
+    box-shadow: $shadow-md !important;
+    transform: translateY(-1px);
+    border-color: $color-border !important;
+  }
+}
+
+// 主按钮 - 自然触感
+.btn-primary {
+  background: linear-gradient(135deg, $color-primary 0%, $color-primary-dark 100%);
+  border: none;
+  border-radius: $border-radius-base;
+  padding: 10px 24px;
+  font-weight: 500;
+  font-size: $font-size-base;
+  color: #ffffff;
+  transition: all $transition-base;
+  letter-spacing: 0.02em;
+  box-shadow: $shadow-xs;
+
+  &:hover {
+    transform: translateY(-1px);
+    box-shadow: $shadow-sm;
+    filter: brightness(1.05);
+  }
+
+  &:active {
+    transform: translateY(1px);
+    box-shadow: none;
+    filter: brightness(0.95);
+  }
+}
+
+// 输入框 - 柔和聚焦
+.el-input__wrapper,
+.el-textarea__inner {
+  border-radius: $border-radius-base !important;
+  transition: all $transition-base;
+  box-shadow: 0 0 0 1px $color-border !important;
+  background: #ffffff;
+
+  &:hover {
+    box-shadow: 0 0 0 1px $color-primary-extra-light !important;
+  }
+
+  &.is-focus {
+    box-shadow: 0 0 0 2px rgba($color-primary, 0.3), $shadow-xs !important;
+  }
+}
+
+// 表格 - 清晰自然
+.el-table {
+  border-radius: $border-radius-lg !important;
+  overflow: hidden !important;
+  font-size: $font-size-base;
+  border: 1px solid $color-border-light !important;
+  background: #ffffff;
+
+  .el-table__header {
+    th {
+      background-color: $color-primary-lighter !important;
+      color: $color-text-secondary;
+      font-weight: 600;
+      font-size: $font-size-sm;
+      text-transform: none;
+      letter-spacing: 0;
+      padding: 12px 16px !important;
+      border-bottom: 1px solid $color-border-light !important;
+    }
+  }
+
+  .el-table__body {
+    td {
+      padding: 14px 16px !important;
+      color: $color-text-primary;
+      border-bottom: 1px solid $color-border-lighter !important;
+      font-size: $font-size-base;
+    }
+  }
+
+  .el-table__row {
+    transition: background-color $transition-fast;
+
+    &:hover > td {
+      background-color: $color-bg-hover !important;
+    }
+  }
+}
+
+// 弹窗 - 柔和光影
+.el-dialog {
+  border-radius: $border-radius-xl !important;
+  box-shadow: $shadow-xl !important;
+  border: 1px solid $color-border-light !important;
+  overflow: hidden;
+
+  .el-dialog__header {
+    margin-bottom: 0;
+    padding: 20px 24px;
+    border-bottom: 1px solid $color-border-lighter;
+    background: linear-gradient(180deg, $color-primary-lighter 0%, #ffffff 100%);
+  }
+
+  .el-dialog__body {
+    padding: 24px;
+  }
+
+  .el-dialog__footer {
+    padding: 16px 24px;
+    border-top: 1px solid $color-border-lighter;
+    background: $color-primary-lighter;
+  }
+}
+
+// 分页器 - 自然风格
+.el-pagination {
+  .el-pager li {
+    border-radius: $border-radius-sm !important;
+    background: #ffffff;
+    border: 1px solid $color-border-light;
+    margin: 0 2px;
+    min-width: 32px;
+    height: 32px;
+    line-height: 32px;
+    font-size: $font-size-base;
+    transition: all $transition-base;
+    box-shadow: none;
+  }
+
+  .el-pager li:hover {
+    border-color: $color-primary;
+    color: $color-primary;
+    transform: none;
+    box-shadow: none;
+    filter: brightness(1.02);
+  }
+
+  .el-pager li.is-active {
+    background-color: $color-primary !important;
+    color: #fff !important;
+    font-weight: 600;
+    border-color: $color-primary;
+    box-shadow: $shadow-xs;
+  }
+
+  .el-pager li.btn-quicknext,
+  .el-pager li.btn-quickprev {
+    color: $color-text-secondary;
+    box-shadow: none;
+  }
+}
+
+// 标签 - 叶片质感
+.el-tag {
+  border-radius: $border-radius-sm !important;
+  font-weight: 500;
+  font-size: $font-size-sm;
+  padding: 2px 10px;
+  border: 1px solid currentColor;
+  background: rgba($color-primary, 0.06);
+}
+
+// 页面容器
+.page-container {
+  padding: $spacing-lg;
+  min-height: calc(100vh - 60px);
+  background-color: $color-bg-page;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.text-right {
+  text-align: right;
+}
+
+.mt-sm { margin-top: $spacing-sm; }
+.mt-md { margin-top: $spacing-md; }
+.mt-lg { margin-top: $spacing-lg; }
+
+.mb-sm { margin-bottom: $spacing-sm; }
+.mb-md { margin-bottom: $spacing-md; }
+.mb-lg { margin-bottom: $spacing-lg; }
+
+.ml-sm { margin-left: $spacing-sm; }
+.ml-md { margin-left: $spacing-md; }
+.ml-lg { margin-left: $spacing-lg; }
+
+.mr-sm { margin-right: $spacing-sm; }
+.mr-md { margin-right: $spacing-md; }
+.mr-lg { margin-right: $spacing-lg; }
+
+.p-sm { padding: $spacing-sm; }
+.p-md { padding: $spacing-md; }
+.p-lg { padding: $spacing-lg; }
+
+.flex {
+  display: flex;
+}
+
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flex-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.flex-wrap {
+  flex-wrap: wrap;
+}
+
+// 叶脉纹理背景类（可选使用）
+.leaf-texture {
+  position: relative;
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    opacity: 0.02;
+    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 0 C30 30 60 30 60 60' stroke='%235a8f5c' fill='none' stroke-width='0.5'/%3E%3Cpath d='M0 30 C30 30 30 60 60 60' stroke='%235a8f5c' fill='none' stroke-width='0.5'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+  }
+}

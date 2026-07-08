@@ -1,0 +1,95 @@
+// 全局样式变量 - Biophilic 亲自然风格
+// 融合极简主义与自然元素：苔绿、叶脉、柔和光影
+
+// 主题色系 - 绿植色盘
+$color-primary: #5a8f5c;           // 苔绿 - 主色
+$color-primary-light: #e8f0e4;     // 嫩叶浅绿
+$color-primary-lighter: #f4f8f0;   // 晨露白绿
+$color-primary-dark: #3d6b3f;      // 深苔绿
+$color-primary-extra-light: #d4e4cf; // 薄荷绿
+
+// 自然辅助色
+$color-earth: #8b7355;             // 土褐
+$color-earth-light: #f0ebe4;       // 暖沙色
+$color-sky: #6b9ac4;               // 天光蓝
+$color-sky-light: #e8f0f8;         // 晴空浅蓝
+$color-warm: #c4a882;              // 暖阳金
+
+// 状态色 - 柔和自然
+$color-success: #6b9e6b;           // 叶绿
+$color-success-light: #e8f2e4;
+$color-warning: #c4956b;           // 秋叶橙
+$color-warning-light: #f8f0e8;
+$color-danger: #b87070;            // 浆果红
+$color-danger-light: #f8ecec;
+$color-info: #7a9eb8;              // 湖水蓝
+$color-info-light: #e8f0f4;
+
+// 文字颜色 - 高对比度自然色调
+$color-text-primary: #2c3e2c;      // 深林绿
+$color-text-regular: #2c3e2c;
+$color-text-secondary: #5a6b5a;    // 灰绿
+$color-text-placeholder: #8a9b8a;  // 雾绿
+$color-text-disabled: #b8c4b8;     // 淡雾
+
+// 边框颜色 - 叶脉般轻盈
+$color-border: #d4ddd0;            // 叶脉绿灰
+$color-border-light: #e4ebe0;      // 浅叶脉
+$color-border-lighter: #f0f4ec;    // 极浅绿
+$color-border-extra-light: #f8faf6;
+$color-border-focus: #5a8f5c;      // 苔绿聚焦
+
+// 背景颜色 - 晨光与露珠
+$color-bg: #fafcf8;                // 晨露白
+$color-bg-page: #f8faf6;           // 叶影白
+$color-bg-card: #ffffff;           // 纯白卡片
+$color-bg-hover: #f4f8f0;          // 光斑绿
+$color-bg-active: #ecf4e8;         // 叶影深
+
+// 阴影效果 - 柔和自然光影
+$shadow-xs: 0 1px 3px rgba(90, 143, 92, 0.06);
+$shadow-sm: 0 2px 8px rgba(90, 143, 92, 0.08);
+$shadow-md: 0 4px 12px rgba(90, 143, 92, 0.1), 0 2px 4px rgba(0, 0, 0, 0.04);
+$shadow-lg: 0 8px 24px rgba(90, 143, 92, 0.12), 0 4px 8px rgba(0, 0, 0, 0.04);
+$shadow-xl: 0 16px 40px rgba(90, 143, 92, 0.15), 0 8px 16px rgba(0, 0, 0, 0.06);
+$shadow-2xl: 0 24px 56px rgba(90, 143, 92, 0.18), 0 12px 24px rgba(0, 0, 0, 0.08);
+$shadow-primary: 0 8px 24px rgba(90, 143, 92, 0.25);
+
+// 圆角 - 有机柔和
+$border-radius-xs: 4px;
+$border-radius-sm: 6px;
+$border-radius-base: 8px;
+$border-radius-lg: 10px;
+$border-radius-xl: 14px;
+$border-radius-2xl: 18px;
+$border-radius-3xl: 24px;
+$border-radius-full: 9999px;
+
+// 间距 - 自然呼吸感
+$spacing-xs: 4px;
+$spacing-sm: 8px;
+$spacing-md: 16px;
+$spacing-lg: 24px;
+$spacing-xl: 32px;
+$spacing-xxl: 48px;
+
+// 字体 - 清晰自然
+$font-size-xs: 11px;
+$font-size-sm: 12px;
+$font-size-base: 14px;
+$font-size-lg: 15px;
+$font-size-xl: 17px;
+$font-size-xxl: 22px;
+$font-size-xxxl: 28px;
+
+// 过渡 - 如光线移动般自然
+$transition-base: all 0.18s ease;
+$transition-fast: all 0.12s ease;
+$transition-slow: all 0.22s ease;
+$transition-bounce: all 0.25s ease;
+
+// 动画时长
+$duration-fast: 100ms;
+$duration-base: 150ms;
+$duration-slow: 200ms;
+$duration-slower: 220ms;

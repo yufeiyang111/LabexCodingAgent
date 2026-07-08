@@ -1,0 +1,58 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: labex-agent-backend
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${LABEX_AGENT_DB_URL:jdbc:mysql://localhost:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${LABEX_AGENT_DB_USERNAME:root}
+    password: ${LABEX_AGENT_DB_PASSWORD:}
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:sql/schema.sql
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+mybatis-plus:
+  type-aliases-package: com.labex.entity
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+
+jwt:
+  secret: ${LABEX_AGENT_JWT_SECRET:labex-agent-local-dev-secret-key-change-me-please-64-bytes-minimum}
+  expiration: ${LABEX_AGENT_JWT_EXPIRATION:86400000}
+  prefix: "Bearer "
+
+labex-agent:
+  project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/workfordasan/LabexAgent/workspaces}
+  lsp:
+    commands:
+      java: ${LABEX_LSP_JAVA_CMD:jdtls}
+      typescript: ${LABEX_LSP_TS_CMD:typescript-language-server --stdio}
+      vue: ${LABEX_LSP_VUE_CMD:vue-language-server --stdio}
+      python: ${LABEX_LSP_PY_CMD:pyright-langserver --stdio}
+
+rag:
+  mini-max-api-key: ${MINIMAX_API_KEY:}
+  mini-max-base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
+  mini-max-api-host: ${MINIMAX_API_HOST:https://api.minimaxi.com}
+  mini-max-model: ${MINIMAX_MODEL:MiniMax-M2.7-highspeed}
+  image-understanding-enabled: ${LABEX_AGENT_IMAGE_UNDERSTANDING:true}
+  tavily-api-key: ${TAVILY_API_KEY:}
+  upload-path: ${LABEX_AGENT_UPLOAD_PATH:D:/workfordasan/LabexAgent/uploads}
+
+logging:
+  level:
+    com.labex: info
+    org.springframework.security: warn

@@ -1,0 +1,506 @@
+/* 侘寂风格设计系统
+ * 侘寂 (Wabi-Sabi) - 克制、留白与自然瑕疵
+ * 色彩低饱和，布局留白充足，接受不完美之美
+ */
+
+// 基础色彩
+:root {
+  --wabi-bg: #f8f6f3;
+  --wabi-surface: #ffffff;
+  --wabi-surface-warm: #faf9f7;
+  --wabi-border: #e8e4df;
+  --wabi-border-light: #f0ece8;
+
+  --wabi-text: #2c2c2c;
+  --wabi-text-secondary: #8a8580;
+  --wabi-text-muted: #b5b0ab;
+
+  // 自然色系
+  --wabi-green: #7a8b6f;
+  --wabi-green-light: #e8ede5;
+  --wabi-brown: #a0937d;
+  --wabi-brown-light: #f0ebe4;
+  --wabi-stone: #9a9590;
+  --wabi-stone-light: #ece9e5;
+
+  // 功能色
+  --wabi-accent: var(--wabi-green);
+  --wabi-accent-light: var(--wabi-green-light);
+  --wabi-danger: #c47c7c;
+  --wabi-danger-light: #f5e8e8;
+  --wabi-warning: #c4a97c;
+  --wabi-warning-light: #f5efe4;
+
+  // 动效
+  --wabi-transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --wabi-transition-fast: all 0.15s ease;
+
+  // 阴影 - 极轻或无
+  --wabi-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  --wabi-shadow-none: none;
+
+  // 字体
+  --wabi-font: 'Noto Serif SC', 'Source Han Serif CN', 'Georgia', serif;
+  --wabi-font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+
+  // 圆角 - 小而克制
+  --wabi-radius: 3px;
+  --wabi-radius-sm: 2px;
+}
+
+// 页面基础
+.wabi-page {
+  min-height: 100vh;
+  background: var(--wabi-bg);
+  color: var(--wabi-text);
+  font-family: var(--wabi-font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+// 页面头部
+.wabi-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 32px;
+  background: var(--wabi-surface);
+  border-bottom: 1px solid var(--wabi-border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+}
+
+.wabi-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--wabi-text);
+  margin: 0;
+  letter-spacing: 0.5px;
+}
+
+.wabi-subtitle {
+  font-size: 13px;
+  color: var(--wabi-text-secondary);
+  margin-top: 2px;
+}
+
+// 主体内容
+.wabi-body {
+  padding: 32px;
+  max-width: 1200px;
+  margin: 0 auto;
+  animation: wabi-fade-in 0.4s ease;
+}
+
+@keyframes wabi-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+// 卡片
+.wabi-card {
+  background: var(--wabi-surface);
+  border: 1px solid var(--wabi-border);
+  border-radius: var(--wabi-radius);
+  overflow: hidden;
+  transition: var(--wabi-transition);
+
+  &:hover {
+    box-shadow: var(--wabi-shadow);
+  }
+}
+
+.wabi-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--wabi-border);
+  background: linear-gradient(to bottom, var(--wabi-surface-warm), var(--wabi-surface));
+}
+
+.wabi-card-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--wabi-text);
+  letter-spacing: 0.3px;
+}
+
+.wabi-card-content {
+  padding: 24px;
+}
+
+// 按钮
+.wabi-btn {
+  border-radius: var(--wabi-radius);
+  letter-spacing: 0.5px;
+  transition: var(--wabi-transition);
+  font-weight: 400;
+}
+
+.wabi-btn-primary {
+  @extend .wabi-btn;
+  background: var(--wabi-accent);
+  border-color: var(--wabi-accent);
+
+  &:hover {
+    background: #6b7d60;
+    border-color: #6b7d60;
+  }
+}
+
+.wabi-btn-ghost {
+  @extend .wabi-btn;
+  background: transparent;
+  border-color: var(--wabi-border);
+  color: var(--wabi-text-secondary);
+
+  &:hover {
+    border-color: var(--wabi-accent);
+    color: var(--wabi-accent);
+  }
+}
+
+.wabi-btn-text {
+  @extend .wabi-btn;
+  background: transparent;
+  border: none;
+  color: var(--wabi-text-secondary);
+  padding: 4px 8px;
+
+  &:hover {
+    color: var(--wabi-accent);
+    background: var(--wabi-accent-light);
+  }
+}
+
+.wabi-btn-danger {
+  &:hover {
+    color: var(--wabi-danger);
+    background: var(--wabi-danger-light);
+  }
+}
+
+// 标签
+.wabi-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--wabi-border-light);
+  color: var(--wabi-text-secondary);
+  font-size: 12px;
+  border-radius: var(--wabi-radius-sm);
+  letter-spacing: 0.3px;
+  line-height: 1.6;
+}
+
+.wabi-tag-accent {
+  background: var(--wabi-accent-light);
+  color: var(--wabi-accent);
+}
+
+.wabi-tag-outline {
+  background: transparent;
+  border: 1px solid var(--wabi-border);
+}
+
+// 表格
+.wabi-table {
+  width: 100% !important;
+
+  :deep(.el-table__header th) {
+    background: var(--wabi-border-light);
+    color: var(--wabi-text-secondary);
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--wabi-border);
+  }
+
+  :deep(.el-table__body td) {
+    border-bottom: 1px solid var(--wabi-border);
+    transition: var(--wabi-transition);
+  }
+
+  :deep(.el-table__body tr:hover td) {
+    background: rgba(122, 139, 111, 0.04);
+  }
+
+  :deep(.el-table__empty-block) {
+    display: none;
+  }
+}
+
+// 分页
+.wabi-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 0 8px;
+}
+
+// 空状态
+.wabi-empty {
+  padding: 60px 0;
+  text-align: center;
+}
+
+.wabi-empty-icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  color: var(--wabi-border);
+
+  svg {
+    width: 100%;
+    height: 100%;
+  }
+}
+
+.wabi-empty-text {
+  color: var(--wabi-text-secondary);
+  font-size: 14px;
+  margin: 0;
+}
+
+// 提示文字
+.wabi-muted {
+  color: var(--wabi-text-secondary);
+  font-size: 12px;
+}
+
+.wabi-hint {
+  color: var(--wabi-text-muted);
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+// 弹窗
+.wabi-dialog {
+  :deep(.el-dialog) {
+    border-radius: var(--wabi-radius);
+    border: 1px solid var(--wabi-border);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  }
+
+  :deep(.el-dialog__header) {
+    border-bottom: 1px solid var(--wabi-border);
+    padding: 16px 24px;
+    margin: 0;
+  }
+
+  :deep(.el-dialog__title) {
+    font-weight: 500;
+    letter-spacing: 0.3px;
+  }
+
+  :deep(.el-dialog__body) {
+    padding: 24px;
+  }
+
+  :deep(.el-dialog__footer) {
+    border-top: 1px solid var(--wabi-border);
+    padding: 16px 24px;
+  }
+}
+
+// 表单
+.wabi-form {
+  :deep(.el-form-item__label) {
+    color: var(--wabi-text-secondary);
+    font-weight: 400;
+  }
+
+  :deep(.el-input__wrapper) {
+    border-radius: var(--wabi-radius);
+    box-shadow: 0 0 0 1px var(--wabi-border);
+    transition: var(--wabi-transition);
+
+    &:hover {
+      box-shadow: 0 0 0 1px var(--wabi-accent);
+    }
+
+    &.is-focus {
+      box-shadow: 0 0 0 1px var(--wabi-accent);
+    }
+  }
+
+  :deep(.el-textarea__inner) {
+    border-radius: var(--wabi-radius);
+    border-color: var(--wabi-border);
+    transition: var(--wabi-transition);
+
+    &:hover {
+      border-color: var(--wabi-accent);
+    }
+
+    &:focus {
+      border-color: var(--wabi-accent);
+    }
+  }
+
+  :deep(.el-select) {
+    width: 100%;
+  }
+
+  :deep(.el-input-number) {
+    width: 100%;
+  }
+}
+
+// 分隔线
+.wabi-divider {
+  height: 1px;
+  background: var(--wabi-border);
+  margin: 24px 0;
+}
+
+.wabi-divider-v {
+  width: 1px;
+  height: 14px;
+  background: var(--wabi-border);
+  display: inline-block;
+  vertical-align: middle;
+}
+
+// 提示框
+.wabi-alert {
+  padding: 12px 16px;
+  border-radius: var(--wabi-radius);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.wabi-alert-info {
+  background: var(--wabi-accent-light);
+  color: var(--wabi-accent);
+  border: 1px solid rgba(122, 139, 111, 0.2);
+}
+
+// 操作按钮组
+.wabi-action-group {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+// 侧边导航
+.wabi-side-nav {
+  width: 180px;
+  background: var(--wabi-surface);
+  border-right: 1px solid var(--wabi-border);
+  padding: 16px 0;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.wabi-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: var(--wabi-transition);
+  font-size: 14px;
+  color: var(--wabi-text-secondary);
+  border-right: 3px solid transparent;
+
+  &:hover {
+    background: var(--wabi-border-light);
+    color: var(--wabi-text);
+  }
+
+  &.active {
+    background: var(--wabi-accent-light);
+    color: var(--wabi-accent);
+    font-weight: 500;
+    border-right-color: var(--wabi-accent);
+  }
+}
+
+.wabi-nav-index {
+  font-size: 12px;
+  color: var(--wabi-text-muted);
+  min-width: 20px;
+  font-family: var(--wabi-font-mono);
+}
+
+.wabi-nav-item.active .wabi-nav-index {
+  color: var(--wabi-accent);
+}
+
+// 字段组
+.wabi-field-group {
+  margin-bottom: 24px;
+  animation: wabi-slide-up 0.3s ease;
+}
+
+@keyframes wabi-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.wabi-field-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.wabi-field-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--wabi-text);
+  letter-spacing: 0.3px;
+}
+
+// 响应式
+@media (max-width: 768px) {
+  .wabi-header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 16px 20px;
+  }
+
+  .wabi-body {
+    padding: 20px;
+  }
+
+  .wabi-card-header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .wabi-side-nav {
+    width: 120px;
+  }
+
+  .wabi-nav-item {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .wabi-action-group {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .wabi-divider-v {
+    display: none;
+  }
+}

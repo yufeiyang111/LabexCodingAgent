@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.npm-cache/
+
+# Build outputs
+dist/
+target/
+
+# Runtime data
+workspaces/
+uploads/
+logs/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
