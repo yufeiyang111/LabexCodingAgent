@@ -4,7 +4,29 @@ import com.labex.entity.StudentProject;
 
 public class LabexSystemPrompt {
     public static String buildSystemPrompt(StudentProject project, String toolDefinitions) {
-        return String.join("\n\n", LabexSystemPrompt.identity(), LabexSystemPrompt.environment((StudentProject)project), LabexSystemPrompt.securityPolicy(), LabexSystemPrompt.workflow(), LabexSystemPrompt.visibilityPolicyV2(), LabexSystemPrompt.toolPolicy((String)toolDefinitions), LabexSystemPrompt.completionPolicy());
+        return buildSystemPrompt(project, toolDefinitions, "en");
+    }
+
+    public static String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage) {
+        return String.join("\n\n", LabexSystemPrompt.visibleLanguagePolicy(visibleLanguage), LabexSystemPrompt.identity(), LabexSystemPrompt.environment((StudentProject)project), LabexSystemPrompt.securityPolicy(), LabexSystemPrompt.workflow(), LabexSystemPrompt.projectMemoryPolicy(), LabexSystemPrompt.visibilityPolicyV2(), LabexSystemPrompt.toolPolicy((String)toolDefinitions), LabexSystemPrompt.completionPolicy());
+    }
+
+    private static String visibleLanguagePolicy(String visibleLanguage) {
+        String displayName = switch (visibleLanguage == null ? "" : visibleLanguage.toLowerCase()) {
+            case "zh" -> "Simplified Chinese";
+            case "ja" -> "Japanese";
+            case "ko" -> "Korean";
+            default -> "English";
+        };
+        return """
+<visible_language>
+User visible language: %s
+
+All user-visible thinking, status updates, questions, option labels, tool summaries, error explanations, and final answers MUST use %s.
+This language rule overrides the English wording used elsewhere in this system prompt.
+Keep source code, file paths, commands, package names, API names, log excerpts, and raw error text in their original form. When raw text is in another language, explain it in %s if explanation is needed.
+</visible_language>
+""".formatted(displayName, displayName, displayName);
     }
 
     private static String identity() {
@@ -103,6 +125,37 @@ BAD plan items (cause loops):
 - Reading the same file multiple times in one task
 - Running the same command after it already succeeded
 </workflow>
+""";
+    }
+
+    private static String projectMemoryPolicy() {
+        return """
+<project_memory>
+## Project memory and init rules
+
+When the user asks to initialize project memory, refresh project rules, create LabexAgent.md, or runs `/init`, produce a model-facing project memory document rather than a generic README.
+
+The document should preserve durable information that helps future LLM sessions navigate, edit, and verify the project:
+- product purpose, stack, package managers, entrypoints, routes/APIs, schemas, runtime transports and verification commands
+- security invariants such as authentication flow, ownership checks, secret handling, path safety and server-side URL-fetching safety
+- generated/runtime directories to ignore, missing commands, restart requirements and repeated gotchas
+
+Do not preserve noisy facts:
+- one-off terminal output, local port conflicts, temporary paths, generated artifacts, dependency folders, caches or personal credentials
+
+Required sections for LabexAgent.md:
+1. Context Contract
+2. Required Reading Order
+3. Repository Index
+4. Build And Verification Index
+5. Prompt/Context Initialization Rules
+6. Security And Data Rules
+7. Change Workflow Rules
+8. Common Gotchas
+9. Generated Project Index
+
+Use actual commands from package/build files. Do not invent lint, test or format commands. Keep paths relative to the workspace root. Keep this document concise and durable: prefer indexes, invariants and routing facts over setup prose.
+</project_memory>
 """;
     }
 

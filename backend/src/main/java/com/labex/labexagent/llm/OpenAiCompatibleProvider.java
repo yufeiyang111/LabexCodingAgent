@@ -7,6 +7,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URISyntaxException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -40,7 +41,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                                               List<Map<String, Object>> tools, LlmConfig config) {
         try {
             String body = buildRequestBody(sysPrompt, msgs, tools, config, false);
-            String url = normalizeUrl(config.baseUrl()) + "/v1/chat/completions";
+            String url = buildApiUrl(config.baseUrl(), "/chat/completions");
             String response = httpPost(url, body, config.apiKey());
             return parseResponse(response);
         } catch (Exception e) {
@@ -56,7 +57,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         HttpURLConnection conn = null;
         try {
             String body = buildRequestBody(sysPrompt, msgs, tools, config, true);
-            String url = normalizeUrl(config.baseUrl()) + "/v1/chat/completions";
+            String url = buildApiUrl(config.baseUrl(), "/chat/completions");
 
             java.net.URL uri = URI.create(url).toURL();
             conn = (HttpURLConnection) uri.openConnection();
@@ -185,8 +186,6 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         body.put("max_tokens", config.maxTokens() != null ? config.maxTokens() : 8192);
         if (config.temperature() != null) body.put("temperature", config.temperature());
         if (stream) body.put("stream", true);
-        // 启用模型思考模式（DeepSeek/MiniMax 等模型支持 reasoning_content）
-        body.put("enable_thinking", true);
 
         if (tools != null && !tools.isEmpty()) {
             body.put("tools", tools);
@@ -333,10 +332,33 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         } catch (Exception e) { return ""; }
     }
 
-    private String normalizeUrl(String url) {
-        if (url == null) return "https://api.openai.com";
+    private String buildApiUrl(String baseUrl, String endpoint) {
+        String normalized = normalizeBaseUrl(baseUrl);
+        URI uri = URI.create(normalized);
+        String path = uri.getPath();
+        if ((path == null || path.isBlank() || "/".equals(path)) && "api.openai.com".equalsIgnoreCase(uri.getHost())) {
+            return normalized + "/v1" + endpoint;
+        }
+        return normalized + endpoint;
+    }
+
+    private String normalizeBaseUrl(String url) {
+        if (url == null || url.isBlank()) return "https://api.openai.com";
         url = url.replaceAll("/+$", "");
-        if (url.endsWith("/v1")) url = url.substring(0, url.length() - 3);
+        try {
+            URI uri = URI.create(url);
+            String path = uri.getPath();
+            if (path != null && (path.endsWith("/chat/completions") || path.endsWith("/responses") || path.endsWith("/models"))) {
+                int idx = path.lastIndexOf('/');
+                String parentPath = idx > 0 ? path.substring(0, idx) : "";
+                return new URI(uri.getScheme(), uri.getAuthority(), parentPath, null, null).toString().replaceAll("/+$", "");
+            }
+            if (path != null && path.endsWith("/compatible-mode")) {
+                return new URI(uri.getScheme(), uri.getAuthority(), path + "/v1", null, null).toString().replaceAll("/+$", "");
+            }
+        } catch (IllegalArgumentException | URISyntaxException ignored) {
+            // Let the later URL creation surface invalid custom endpoints.
+        }
         return url;
     }
 

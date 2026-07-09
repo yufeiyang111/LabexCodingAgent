@@ -4,8 +4,16 @@ server:
     context-path: /api
 
 spring:
+  config:
+    import:
+      - optional:file:${user.dir}/../.env[.properties]
+      - optional:file:${user.dir}/.env[.properties]
   application:
     name: labex-agent-backend
+  # 项目使用 JWT 鉴权，不需要 Spring Security 默认的内存用户（避免每次启动生成随机密码的噪音）
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: ${LABEX_AGENT_DB_URL:jdbc:mysql://localhost:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}

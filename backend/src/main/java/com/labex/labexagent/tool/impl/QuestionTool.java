@@ -15,10 +15,10 @@ implements AgentTool {
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("question")
-                .description("Ask one concise clarifying question when the task is blocked and the user must decide before the agent can continue.")
-                .stringProperty("question", "The exact question to show to the user.", true)
-                .stringProperty("summary", "Short label shown in the UI, such as 'Choose implementation scope'.", false)
-                .arrayProperty("options", "Optional answer choices. Leave empty for free-form text answers.", Map.of("type", "string"), false)
+                .description("Ask one concise clarifying question when the task is blocked and the user must decide before the agent can continue. The question, summary, and every option label must use the same visible language as the user's latest message.")
+                .stringProperty("question", "The exact question to show to the user. Use the same visible language as the user's latest message.", true)
+                .stringProperty("summary", "Short label shown in the UI. Use the same visible language as the user's latest message.", false)
+                .arrayProperty("options", "Optional answer choices. Every option label must use the same visible language as the user's latest message. Leave empty for free-form text answers.", Map.of("type", "string"), false)
                 .build();
     }
 

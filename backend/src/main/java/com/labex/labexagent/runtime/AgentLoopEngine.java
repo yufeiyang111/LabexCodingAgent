@@ -138,7 +138,8 @@ public class AgentLoopEngine {
             AGENT_EXECUTOR.execute(() -> this.runLoop(studentId, projectId, request, emitter));
         } catch (Exception e) {
             try {
-                new AgentSsePublisher(emitter).send("ERROR", Map.of("message", "Agent queue is busy. Please retry shortly."));
+                String queueLanguage = VisibleLanguageResolver.resolve(request.getMessage(), null).code();
+                new AgentSsePublisher(emitter).send("ERROR", Map.of("message", this.localText(queueLanguage, "Agent 队列繁忙，请稍后重试。", "Agent queue is busy. Please retry shortly.")));
             } catch (Exception ignored) {
                 // ignore send failure
             }
@@ -183,10 +184,10 @@ public class AgentLoopEngine {
             runLog = this.createRunLog(project, request);
             this.appendRunLog(runLog, "# LabexAgent run log\n\n- Session: `" + this.safeLogText(request.getSessionId()) + "`\n- Project: `" + this.safeLogText(project.getProjectName()) + "`\n- Student: `" + studentId + "`\n- Start time: `" + String.valueOf(LocalDateTime.now()) + "`\n\n## User input\n\n" + this.safeLogText(request.getMessage()) + "\n");
             String mode = request.getMode() != null ? request.getMode() : "agent";
-            visibleLanguage = this.visibleLanguage(request.getMessage());
             conv = this.conversationService.ensureConversation(studentId, project, request.getConversationId(), mode, request.getMessage());
             request.setConversationId(conv.getConversationId());
             String memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
+            visibleLanguage = this.visibleLanguage(request.getMessage(), memoryContext);
             this.conversationService.saveUserMessage(conv, request.getMessage());
             task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode, request.getMessage());
             ctx = AgentContext.create((String)request.getSessionId(), (Integer)studentId, (StudentProject)project, (String)conv.getConversationId(), (Long)task.getTaskId());
@@ -194,7 +195,7 @@ public class AgentLoopEngine {
             ctx.setStage("intake");
             this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Iteration limit: `" + DEFAULT_MAX_ITERATIONS + "`\n");
             String toolDefinitions = this.buildToolDefinitions(mode);
-            String sysPrompt = LabexSystemPrompt.buildSystemPrompt((StudentProject)project, (String)toolDefinitions);
+            String sysPrompt = LabexSystemPrompt.buildSystemPrompt((StudentProject)project, (String)toolDefinitions, visibleLanguage);
             List<Map<String, Object>> tools = this.buildToolsList(mode);
             ArrayList<Map<String, Object>> msgs = new ArrayList<Map<String, Object>>();
             String activeFileContent = this.readActiveFile(studentId, projectId, request.getActivePath());
@@ -238,7 +239,7 @@ public class AgentLoopEngine {
                                             this.taskService.updateTask(task.getTaskId(), "cancelled", this.localText(visibleLanguage, "用户已取消", "User cancelled"), this.localText(visibleLanguage, "用户取消了本次执行", "User cancelled execution"));
                                             this.appendRunLog(runLog, "\n- Stop reason: user cancelled.\n");
                                             this.sendEvent(sse, conv, "INTERRUPTED", Map.of("message", this.localText(visibleLanguage, "用户取消了本次执行", "User cancelled execution"), "iteration", i));
-                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "用户已取消", "User cancelled"), this.localText(visibleLanguage, "用户主动取消了本次 Agent 运行。", "User actively cancelled this run."), project, runLog, visibleLanguage));
+                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "用户已取消", "User cancelled"), this.localText(visibleLanguage, "用户主动取消了本次 Agent 运行。", "User actively cancelled this run."), project, runLog, visibleLanguage), visibleLanguage);
                                             emitter.complete();
                                             return;
                                         }
@@ -249,7 +250,7 @@ public class AgentLoopEngine {
                                             this.appendRunLog(runLog, "\n- Stop reason: " + stopReason + "\n");
                                             this.taskService.updateTask(task.getTaskId(), "failed", this.localText(visibleLanguage, "达到迭代上限", "Iteration limit reached"), stopReason);
                                             this.writeAgentCheckpoint(project, request, task, ctx, "iteration_limit", stopReason, "", "", runLog);
-                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "已停止", "Stopped"), stopReason, project, runLog, visibleLanguage));
+                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "已停止", "Stopped"), stopReason, project, runLog, visibleLanguage), visibleLanguage);
                                             this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "达到迭代上限", "Iteration limit reached"), "iterations", i - 1));
                                             emitter.complete();
                                             return;
@@ -359,7 +360,7 @@ public class AgentLoopEngine {
                                             this.appendRunLog(runLog, "\n- Awaiting approval command: `" + this.safeLogText(res.getApprovalCommand()) + "`\n");
                                             this.sendEvent(sse, conv, "COMMAND_APPROVAL_REQUIRED", Map.of("taskId", task.getTaskId(), "command", res.getApprovalCommand()));
                                             this.writeAgentCheckpoint(project, request, task, ctx, "waiting_approval", this.localText(visibleLanguage, "等待用户批准命令 `" + this.safeLogText(res.getApprovalCommand()) + "`。", "Awaiting user approval for command `" + this.safeLogText(res.getApprovalCommand()) + "`."), tn, this.compactToolResultForCheckpoint(tn, res), runLog);
-                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "等待用户批准", "Awaiting user approval"), this.localText(visibleLanguage, "需要确认是否执行命令：`" + res.getApprovalCommand() + "`。", "Need to confirm execution of command: `" + res.getApprovalCommand() + "`."), project, runLog, visibleLanguage));
+                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "等待用户批准", "Awaiting user approval"), this.localText(visibleLanguage, "需要确认是否执行命令：`" + res.getApprovalCommand() + "`。", "Need to confirm execution of command: `" + res.getApprovalCommand() + "`."), project, runLog, visibleLanguage), visibleLanguage);
                                             this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "等待用户批准", "Awaiting approval"), "iterations", i));
                                             emitter.complete();
                                             return;
@@ -454,11 +455,11 @@ public class AgentLoopEngine {
                                 // Model's reasoning already streamed in real-time by chatStreaming
                                 this.appendRunLog(runLog, "\n## Final response\n\n" + this.safeLogText(ft) + "\n");
                                 log.info("Iteration {}: final response ({} chars)", i, ft.length());
-                                this.streamFinal(sse, conv, ft);
-                                this.taskService.updateTask(task.getTaskId(), "completed", "Completed", ft);
+                                this.streamFinal(sse, conv, ft, visibleLanguage);
+                                this.taskService.updateTask(task.getTaskId(), "completed", this.localText(visibleLanguage, "已完成", "Completed"), ft);
                                 ctx.setStage("final");
                                 this.writeAgentCheckpoint(project, request, task, ctx, "completed", "Task completed with final response.", "", this.limitForContext(ft, 2000), runLog);
-                                this.sendEvent(sse, conv, "DONE", Map.of("message", "Done", "iterations", i));
+                                this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "完成", "Done"), "iterations", i));
                                 emitter.complete();
                                 return;
                             }
@@ -502,7 +503,7 @@ public class AgentLoopEngine {
                                     "模型连接连续失败，任务已暂停。请检查 API Key、模型服务或稍后重试。",
                                     "Model connection failed continuously. Task paused. Check API Key config or retry later.");
                             this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
-                            this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage));
+                            this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
                             this.taskService.updateTask(task.getTaskId(), "failed", modelFailTitle, errMsg);
                             this.writeAgentCheckpoint(project, request, task, ctx, "failed_model_error", "Model connection failed continuously. Task paused.", "", errMsg, runLog);
                             this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle, "iterations", i));
@@ -529,7 +530,7 @@ public class AgentLoopEngine {
                     String runtimeReason = this.localText(visibleLanguage,
                             "Agent 执行过程中遇到异常：`" + e.getMessage() + "`。",
                             "Agent encountered exception during execution: `" + e.getMessage() + "`.");
-                    this.streamFinal(sse, conv, this.buildStopFinal(runtimeTitle, runtimeReason, project, runLog, visibleLanguage));
+                    this.streamFinal(sse, conv, this.buildStopFinal(runtimeTitle, runtimeReason, project, runLog, visibleLanguage), visibleLanguage);
                     this.taskService.updateTask(task.getTaskId(), "failed", runtimeTitle, e.getMessage());
                     this.writeAgentCheckpoint(project, request, task, ctx, "failed_exception", "Agent encountered exception during execution.", "", e.toString(), runLog);
                     this.sendEvent(sse, conv, "DONE", Map.of("message", runtimeTitle));
@@ -1733,6 +1734,10 @@ public class AgentLoopEngine {
     }
 
     private void streamFinal(AgentSsePublisher sse, AgentConversation conv, String text) throws Exception {
+        this.streamFinal(sse, conv, text, "en");
+    }
+
+    private void streamFinal(AgentSsePublisher sse, AgentConversation conv, String text, String visibleLanguage) throws Exception {
         StringBuilder buf = new StringBuilder();
         for (int i = 0; i < text.length(); ++i) {
             buf.append(text.charAt(i));
@@ -1741,12 +1746,19 @@ public class AgentLoopEngine {
             buf.setLength(0);
             Thread.sleep(28L);
         }
-        this.sendEvent(sse, conv, "FINAL", Map.of("content", text, "summary", "Generated final response"));
+        this.sendEvent(sse, conv, "FINAL", Map.of("content", text, "summary", this.finalResponseSummary(visibleLanguage)));
     }
 
     private void streamFinalFromProvider(AgentSsePublisher sse, AgentConversation conv,
                                           String sysPrompt, List<Map<String, Object>> msgs,
                                           LlmProvider provider, LlmProvider.LlmConfig config) throws Exception {
+        this.streamFinalFromProvider(sse, conv, sysPrompt, msgs, provider, config, "en");
+    }
+
+    private void streamFinalFromProvider(AgentSsePublisher sse, AgentConversation conv,
+                                          String sysPrompt, List<Map<String, Object>> msgs,
+                                          LlmProvider provider, LlmProvider.LlmConfig config,
+                                          String visibleLanguage) throws Exception {
         StringBuilder contentBuf = new StringBuilder();
         provider.chatStream(sysPrompt, msgs, null, config, chunk -> {
             try {
@@ -1763,47 +1775,38 @@ public class AgentLoopEngine {
             }
         });
         String finalContent = contentBuf.toString();
-        this.sendEvent(sse, conv, "FINAL", Map.of("content", finalContent, "summary", "Generated final response"));
+        this.sendEvent(sse, conv, "FINAL", Map.of("content", finalContent, "summary", this.finalResponseSummary(visibleLanguage)));
     }
 
     private String visibleLanguage(String userMessage) {
-        return this.containsCjk(userMessage) ? "zh" : "en";
+        return this.visibleLanguage(userMessage, null);
+    }
+
+    private String visibleLanguage(String userMessage, String previousContext) {
+        String previousLanguage = VisibleLanguageResolver.resolve(previousContext, null).code();
+        return VisibleLanguageResolver.resolve(userMessage, previousLanguage).code();
     }
 
     private boolean isChineseLanguage(String visibleLanguage) {
-        return "zh".equalsIgnoreCase(visibleLanguage);
-    }
-
-    private boolean containsCjk(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        for (int i = 0; i < text.length(); ++i) {
-            char ch = text.charAt(i);
-            if (Character.UnicodeScript.of(ch) == Character.UnicodeScript.HAN) {
-                return true;
-            }
-        }
-        return false;
+        return VisibleLanguageResolver.isChinese(visibleLanguage);
     }
 
     private String localText(String visibleLanguage, String zh, String en) {
         return this.isChineseLanguage(visibleLanguage) ? zh : en;
     }
 
+    private String finalResponseSummary(String visibleLanguage) {
+        return this.localText(visibleLanguage, "已生成最终回答", "Generated final response");
+    }
+
     private String buildVisibleLanguagePolicy(String visibleLanguage) {
-        if (this.isChineseLanguage(visibleLanguage)) {
-            return """
-<response_language>
-用户本轮使用中文。所有用户可见的思考过程、工具摘要、状态更新、提问和最终回答都必须使用简体中文。
-代码、文件路径、命令、包名、API 名称和原始错误文本保持原样；必要时再用中文解释。
-</response_language>""";
-        }
+        VisibleLanguageResolver.Language language = VisibleLanguageResolver.language(visibleLanguage);
         return """
 <response_language>
-The user wrote this turn in English. Use English for all user-visible thinking, tool summaries, status updates, questions, and final answers.
+Detected user-visible language for this turn: %s.
+Use %s for all user-visible thinking, tool summaries, status updates, clarifying questions, option labels, and final answers.
 Keep code, file paths, commands, package names, API names, and raw error text unchanged when needed.
-</response_language>""";
+</response_language>""".formatted(language.displayName(), language.displayName());
     }
 
     private String buildModePolicy(String mode) {

@@ -1,0 +1,20 @@
+You are running the `/review` command for the LabexAgent workspace.
+
+Goal: review code changes for correctness, security, and maintainability. Default target is uncommitted changes; accept a target like `commit`, `branch <name>`, or `pr <number>`.
+
+Steps:
+1. Determine the diff scope (uncommitted, last commit, branch comparison, or PR).
+2. Read each changed file end-to-end; do not skim.
+3. Produce a structured review with sections:
+   - Summary (1-3 sentences)
+   - Correctness issues (severity: blocker / major / minor)
+   - Security issues (severity: blocker / major / minor)
+   - Maintainability suggestions
+   - Test coverage gaps
+4. For each blocker or major issue, point to the file and line range and propose a concrete fix.
+5. End with a clear PASS / NEEDS-CHANGES verdict.
+
+Constraints:
+- Never modify code in this command; only report findings.
+- Quote exact code lines when calling out an issue.
+- If no issues found, say so explicitly and explain what you checked.

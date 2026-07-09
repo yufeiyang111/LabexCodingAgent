@@ -786,38 +786,171 @@ public class CommandExecutor {
 
     private String buildLabexAgentRules(StudentProject project, String arguments) {
         var scan = scanProject(project);
-        String digest = projectIndexService.buildProjectDigest(project, "project rules commands architecture").trim();
-        String focusSection = "";
+        String digest = projectIndexService.buildProjectDigest(project, "entrypoints commands routes controllers schema tests security architecture").trim();
+        String focusSection = "None provided.";
         if (arguments != null && !arguments.isBlank()) {
-            focusSection = "\n## User Focus\n\n" + arguments + "\n";
+            focusSection = arguments.trim();
         }
-        return "# LabexAgent - Agent Instructions\n\n" +
-            "Generated on " + LocalDate.now() + " for project `" + project.getProjectName() + "`.\n\n" +
-            "## Quick Reference\n\n" +
-            "**Build & Deploy**\n```bash\n" + buildCommands(scan) + "\n```\n\n" +
-            "**Run Locally**\n```bash\n" + runCommands(scan) + "\n```\n\n" +
-            "## Architecture\n\n" + architecture(scan) + focusSection + "\n\n" +
-            "## Project Structure\n\n```text\n" + summarizeTopLevel(project) + "\n```\n\n" +
-            "## Agent Workflow\n\n" +
-            "- Treat this file as the project-level rules document for LabexAgent.\n" +
-            "- Use paths relative to the workspace root. Do not prefix paths with `workspace/`.\n" +
-            "- Read existing files before editing unless their current content is already visible in context.\n" +
-            "- Prefer focused edits and verify with the smallest relevant command.\n" +
-            "- AI-generated file changes are applied automatically; keep changes reversible through the Changes panel.\n" +
-            "- Keep each conversation isolated: use only this session's history plus durable project files such as `LabexAgent.md`.\n\n" +
-            "## Context And Token Rules\n\n" +
-            "- Start from this rules file, the active file, recent conversation summary, and the generated project index.\n" +
-            "- Use search/list/read tools to pull only the files needed for the current task.\n" +
-            "- Ignore heavy generated folders such as `node_modules`, `dist`, `build`, `target`, `.git`, and caches.\n" +
-            "- When the project is large, build or refresh a compact index before reading many full files.\n\n" +
-            "## Project Index\n\n" + limit(digest, 12000) + "\n";
+        return """
+            # LabexAgent.md
+
+            This file is the model-facing project memory for LabexAgent. It helps the agent rebuild the repository map, preserve durable engineering decisions, and choose safe verification steps. Keep user setup details in README-style docs; keep implementation orientation and change rules here.
+
+            Generated on %s for project `%s`.
+
+            ---
+
+            ## Context Contract
+
+            When initializing or refreshing project context, preserve these facts first:
+
+            - Product shape and purpose inferred from repository files.
+            - Stack, package managers, entrypoints, routes, persistence, and verification commands.
+            - Security and ownership invariants that future agents must not break.
+            - Runtime/generated folders that should be ignored or treated as disposable.
+            - Project-specific gotchas, missing commands, and restart requirements.
+
+            Do not preserve noisy facts such as one-off terminal output, local port conflicts, generated build artifacts, temporary file paths, or personal credentials.
+
+            ---
+
+            ## User Focus
+
+            %s
+
+            ---
+
+            ## Required Reading Order
+
+            Before changing code, read only the slices relevant to the task:
+
+            1. Existing rule files such as `LabexAgent.md`, `AGENTS.md`, `CLAUDE.md`, or project README files.
+            2. Package/build files before running or inventing commands.
+            3. The owning controller/service/component for the requested behavior.
+            4. Schema, migration, or persistence files when data shape changes.
+            5. Existing tests before adding new tests.
+
+            Refresh only the sections that are likely stale for the current task.
+
+            ---
+
+            ## Repository Index
+
+            ```text
+            %s
+            ```
+
+            Architecture signals:
+
+            %s
+
+            Important indexing rules:
+
+            - Treat this file as a map, not source of truth. Read exact files before editing.
+            - Use paths relative to the workspace root. Do not prefix paths with `workspace/`.
+            - Prefer entrypoints, route/API files, schema/config files, and recently modified files before broad reads.
+            - Ignore heavy/generated folders such as `node_modules`, `dist`, `build`, `target`, `.git`, caches, and uploaded/runtime data.
+
+            ---
+
+            ## Build And Verification Index
+
+            Build/package commands detected from the project:
+
+            ```bash
+            %s
+            ```
+
+            Local run commands detected from the project:
+
+            ```bash
+            %s
+            ```
+
+            Verification rules:
+
+            | Change Type | First Check | Broader Check |
+            |---|---|---|
+            | Backend or service logic | Targeted unit/integration test | Full backend test command |
+            | Frontend or UI behavior | Build/type check command if present | Browser inspection for visual behavior |
+            | Config, routing, or proxy | Smallest command that loads config | Restart affected dev server and verify behavior |
+            | Docs only | Review generated markdown/diff | No build unless commands/examples changed |
+
+            Do not invent lint/test/format commands that are not present in package manager or build files.
+
+            ---
+
+            ## Prompt/Context Initialization Rules
+
+            When a future agent handles `init`, `/init`, or a request to refresh project memory, it should build these indexes:
+
+            1. Repo map: root folders, generated/runtime ignore areas, major modules.
+            2. Command map: actual scripts from package/build files.
+            3. Route/API map: backend controllers, routers, frontend API wrappers.
+            4. Data map: schemas, entities/models, mappers/repositories.
+            5. Runtime map: request flow, background jobs, streaming/transports, tool/plugin hooks.
+            6. Security map: auth flow, ownership checks, secret handling, URL/file-path validation.
+            7. Verification map: smallest useful command for each change type.
+            8. Gotcha map: repeated local failures, restart requirements, unsupported commands.
+
+            Keep the document high-signal. Prefer durable routing facts and invariants over exhaustive prose.
+
+            ---
+
+            ## Security And Data Rules
+
+            - Never read, print, or commit `.env`, tokens, cookies, authorization headers, private keys, or credential files.
+            - Validate external input at backend boundaries.
+            - Keep authorization checks close to the protected resource.
+            - For project files, keep operations scoped inside the current workspace.
+            - Treat user-provided URLs as SSRF-sensitive when server-side fetching is involved.
+            - Mask secrets in logs, responses, generated docs, and errors.
+
+            ---
+
+            ## Change Workflow Rules
+
+            1. Identify the owning layer: frontend, backend, schema, runtime, integration, or docs.
+            2. Read relevant files before editing.
+            3. Preserve existing names, APIs, and conventions unless the task asks for redesign.
+            4. Make focused changes and keep unrelated refactors out.
+            5. Add or update tests for bugs, shared behavior, config regressions, and security-sensitive paths.
+            6. Verify with the smallest relevant command first.
+            7. Report changed files, verification result, and remaining risk.
+
+            ---
+
+            ## Common Gotchas
+
+            - Existing docs may lag behind recent code changes; verify current files before editing.
+            - If a dev server or proxy config changes, restart the affected process.
+            - Generated/runtime folders should not be used as source of truth.
+            - Project index output is a routing aid; exact files still need to be read before edits.
+            - If verification fails, read the error and fix the root cause before retrying.
+
+            ---
+
+            ## Generated Project Index
+
+            %s
+            """.formatted(
+                LocalDate.now(),
+                project.getProjectName(),
+                focusSection,
+                summarizeTopLevel(project),
+                architecture(scan),
+                buildCommands(scan),
+                runCommands(scan),
+                limit(digest, 12000)
+            );
     }
 
     private ProjectScan scanProject(StudentProject project) {
         Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
-        boolean hasPom = exists(root, "pom.xml");
-        boolean hasPackage = exists(root, "package.json");
-        boolean hasVite = exists(root, "vite.config.js") || exists(root, "vite.config.ts");
+        boolean hasPom = exists(root, "pom.xml") || exists(root, "backend/pom.xml");
+        boolean hasPackage = exists(root, "package.json") || exists(root, "frontend/package.json");
+        boolean hasVite = exists(root, "vite.config.js") || exists(root, "vite.config.ts")
+            || exists(root, "frontend/vite.config.js") || exists(root, "frontend/vite.config.ts");
         boolean hasDockerCompose = exists(root, "docker-compose.yml") || exists(root, "docker-compose.yaml") || exists(root, "compose.yml");
         boolean hasRequirements = exists(root, "requirements.txt") || exists(root, "pyproject.toml");
         boolean hasSpring = containsFile(root, "application.yml") || containsFile(root, "application.properties");

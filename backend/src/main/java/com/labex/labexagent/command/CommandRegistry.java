@@ -367,7 +367,8 @@ public class CommandRegistry {
                 return new String(is.readAllBytes(), StandardCharsets.UTF_8);
             }
         } catch (IOException e) {
-            log.warn("无法加载模板: {}", templateName, e);
+            // 模板缺失属于预期兜底路径（命令仍会注册，只是模板为空），不刷 stacktrace
+            log.warn("无法加载模板: {}（该命令将以空模板注册）", templateName);
             return "";
         }
     }

@@ -776,8 +776,26 @@
               </button>
             </div>
 
+            <!-- Template Selection View -->
+            <div v-if="mcTemplateSelecting" class="mc-body">
+              <div class="mc-template-grid">
+                <button v-for="tpl in mcTemplateOptions" :key="tpl.name" class="mc-template-card" @click="selectModelTemplate(tpl)">
+                  <span class="mc-template-icon" :style="{ background: tpl.accent }">{{ tpl.iconText }}</span>
+                  <span class="mc-template-main">
+                    <span class="mc-template-name">{{ tpl.name }}</span>
+                    <span class="mc-template-vendor">{{ tpl.vendor }}</span>
+                    <span class="mc-template-model">{{ tpl.modelName || '手动填写模型名称' }}</span>
+                  </span>
+                  <span v-if="tpl.modelsUrl" class="mc-template-source">官方列表</span>
+                </button>
+              </div>
+              <div class="mc-form-actions">
+                <button class="mc-btn mc-btn-outline" @click="mcTemplateSelecting = false">返回</button>
+              </div>
+            </div>
+
             <!-- Config List View -->
-            <div v-if="!mcEditing" class="mc-body">
+            <div v-else-if="!mcEditing" class="mc-body">
               <div class="mc-config-list">
                 <div v-if="modelConfigs.length === 0" class="mc-empty">
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -848,7 +866,21 @@
                   <input v-model="mcForm.modelName" class="mc-input" placeholder="deepseek-chat" />
                 </div>
                 <div class="mc-field">
-                  <label>API Key <span class="mc-required">*</span></label>
+                  <label>{{ mcCustomMode ? '模型列表 URL' : '官方模型列表' }}</label>
+                  <div class="mc-field-action-row">
+                    <input v-if="mcCustomMode" v-model="mcForm.modelsUrl" class="mc-input" placeholder="https://api.example.com/v1/models" />
+                    <div v-else class="mc-official-url">{{ mcForm.modelsUrl || '该模板暂未提供官方模型列表接口' }}</div>
+                    <button class="mc-btn mc-btn-outline mc-btn-nowrap" @click="fetchModelList" :disabled="mcModelsLoading || !mcForm.modelsUrl">
+                      {{ mcModelsLoading ? '获取中...' : '获取模型' }}
+                    </button>
+                  </div>
+                  <div class="mc-hint">{{ mcCustomMode ? '仅自定义配置需要填写模型列表 URL' : '从厂商官方模型列表接口读取可用模型；多数服务需要先填写 API Key' }}</div>
+                  <select v-if="mcFetchedModels.length > 0" v-model="mcForm.modelName" class="mc-select mc-model-select" @change="applyFetchedModelLimits">
+                    <option v-for="m in mcFetchedModels" :key="m.id" :value="m.id">{{ m.id }}{{ m.owner ? ' · ' + m.owner : '' }}</option>
+                  </select>
+                </div>
+                <div class="mc-field">
+                  <label>API Key / Token Plan Key <span class="mc-required">*</span></label>
                   <input v-model="mcForm.apiKey" class="mc-input" type="password" :placeholder="mcApiKeyHint ? '已设置 (' + mcApiKeyHint + ')，留空则保持不变' : 'sk-...'" autocomplete="new-password" />
                   <div v-if="mcApiKeyHint && !mcForm.apiKey" class="mc-hint mc-hint-ok">API Key 已设置，留空将保持原值不变</div>
                 </div>
@@ -870,18 +902,8 @@
                 </label>
               </div>
               <div class="mc-form-actions">
-                <button class="mc-btn mc-btn-outline" @click="mcEditing = false">取消</button>
+                <button class="mc-btn mc-btn-outline" @click="cancelModelConfigEdit">取消</button>
                 <button class="mc-btn mc-btn-primary" @click="saveConfig" :disabled="mcSaving">{{ mcSaving ? '保存中...' : (mcEditingId ? '更新' : '创建') }}</button>
-              </div>
-              <!-- Quick Presets -->
-              <div class="mc-presets" v-if="!mcEditingId">
-                <div class="mc-presets-label">快速填充</div>
-                <div class="mc-preset-list">
-                  <button v-for="p in mcPresets" :key="p.name" class="mc-preset-btn" @click="applyPreset(p)">
-                    <span class="mc-preset-name">{{ p.name }}</span>
-                    <span class="mc-preset-model">{{ p.modelName }}</span>
-                  </button>
-                </div>
               </div>
             </div>
           </div>
@@ -896,6 +918,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, modelConfigApi, agentExtensionApi } from '@/api'
+import { modelConfigPresets } from '@/constants/modelPresets'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
 import MonacoEditor from '@/components/MonacoEditor.vue'
 import ToolCallCard from '@/components/cloud/ToolCallCard.vue'
@@ -1104,20 +1127,41 @@ if (msgDensity.value !== 'comfortable') nextTick(() => setMsgDensity(msgDensity.
 
 // Model config dialog state
 const mcEditing = ref(false)
+const mcTemplateSelecting = ref(false)
 const mcEditingId = ref(null)
 const mcSaving = ref(false)
-const mcForm = ref({ configName: '', provider: 'openai_compatible', modelName: '', apiKey: '', baseUrl: '', maxTokens: 32768, temperature: 0.7, isDefault: false })
-const mcPresets = [
-  { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', modelName: 'deepseek-chat', provider: 'openai_compatible' },
-  { name: 'Qwen (通义千问)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode', modelName: 'qwen-plus', provider: 'openai_compatible' },
-  { name: 'Moonshot (月之暗面)', baseUrl: 'https://api.moonshot.cn/v1', modelName: 'moonshot-v1-8k', provider: 'openai_compatible' },
-  { name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', modelName: 'MiniMax-M2.7', provider: 'openai_compatible' },
-  { name: 'GLM (智谱)', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', modelName: 'glm-4-flash', provider: 'openai_compatible' },
-  { name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api', modelName: 'openai/gpt-4o-mini', provider: 'openai_compatible' },
-]
+const emptyModelConfigForm = () => ({
+  configName: '',
+  provider: 'openai_compatible',
+  modelName: '',
+  apiKey: '',
+  baseUrl: '',
+  modelsUrl: '',
+  maxTokens: 32768,
+  temperature: 0.7,
+  isDefault: false
+})
+const mcForm = ref(emptyModelConfigForm())
+const mcCustomTemplate = {
+  name: '自定义',
+  vendor: 'OpenAI Compatible',
+  iconText: '+',
+  accent: '#64748b',
+  baseUrl: '',
+  modelsUrl: '',
+  modelName: '',
+  maxTokens: 32768,
+  provider: 'openai_compatible',
+  note: '手动填写服务信息',
+  custom: true
+}
+const mcTemplateOptions = [mcCustomTemplate, ...modelConfigPresets]
 const mcTestResults = ref({})
 const mcTestingIds = ref({})
 const mcApiKeyHint = ref('')
+const mcModelsLoading = ref(false)
+const mcFetchedModels = ref([])
+const mcCustomMode = ref(false)
 
 // User-level Agent extensions
 const extensionLoading = ref(false)
@@ -1988,8 +2032,11 @@ async function loadModelConfigs() {
 function startCreateConfig() {
   mcEditingId.value = null
   mcApiKeyHint.value = ''
-  mcForm.value = { configName: '', provider: 'openai_compatible', modelName: '', apiKey: '', baseUrl: '', maxTokens: 32768, temperature: 0.7, isDefault: false }
-  mcEditing.value = true
+  mcForm.value = emptyModelConfigForm()
+  mcFetchedModels.value = []
+  mcCustomMode.value = false
+  mcEditing.value = false
+  mcTemplateSelecting.value = true
 }
 function editConfig(cfg) {
   mcEditingId.value = cfg.configId
@@ -2000,16 +2047,80 @@ function editConfig(cfg) {
     modelName: cfg.modelName || '',
     apiKey: '',
     baseUrl: cfg.baseUrl || '',
+    modelsUrl: '',
     maxTokens: cfg.maxTokens || 32768,
     temperature: cfg.temperature ?? 0.7,
     isDefault: cfg.isDefault === 1
   }
+  mcFetchedModels.value = []
+  mcCustomMode.value = true
+  mcTemplateSelecting.value = false
   mcEditing.value = true
 }
-function applyPreset(p) {
-  mcForm.value.provider = p.provider
-  mcForm.value.baseUrl = p.baseUrl
-  mcForm.value.modelName = p.modelName
+function selectModelTemplate(tpl) {
+  mcForm.value = {
+    ...emptyModelConfigForm(),
+    configName: tpl.custom ? '' : tpl.name,
+    provider: tpl.provider || 'openai_compatible',
+    baseUrl: tpl.baseUrl || '',
+    modelsUrl: tpl.modelsUrl || '',
+    modelName: tpl.modelName || '',
+    maxTokens: tpl.maxTokens || 32768,
+    temperature: tpl.temperature ?? 0.7
+  }
+  mcFetchedModels.value = []
+  mcCustomMode.value = !!tpl.custom
+  mcTemplateSelecting.value = false
+  mcEditing.value = true
+}
+function cancelModelConfigEdit() {
+  mcEditing.value = false
+  mcEditingId.value = null
+  mcApiKeyHint.value = ''
+  mcFetchedModels.value = []
+  mcCustomMode.value = false
+}
+function applyFetchedModelLimits() {
+  const selected = mcFetchedModels.value.find(m => m.id === mcForm.value.modelName)
+  if (selected?.maxTokens) {
+    mcForm.value.maxTokens = selected.maxTokens
+  }
+}
+async function fetchModelList() {
+  const f = mcForm.value
+  if (!f.modelsUrl.trim()) {
+    ElMessage.warning(mcCustomMode.value ? '请先填写模型列表 URL' : '该模板暂未配置官方模型列表 URL')
+    return
+  }
+  mcModelsLoading.value = true
+  try {
+    const r = await modelConfigApi.listModels({
+      baseUrl: f.baseUrl.trim(),
+      modelsUrl: f.modelsUrl.trim(),
+      apiKey: f.apiKey.trim()
+    })
+    const data = r.data || {}
+    if (!data.success) {
+      mcFetchedModels.value = []
+      ElMessage.warning(data.error || '模型列表获取失败')
+      return
+    }
+    mcFetchedModels.value = data.models || []
+    if (data.modelsUrl && !f.modelsUrl.trim()) {
+      mcForm.value.modelsUrl = data.modelsUrl
+    }
+    if (mcFetchedModels.value.length === 0) {
+      ElMessage.warning('模型列表为空')
+    } else {
+      applyFetchedModelLimits()
+      ElMessage.success(`已获取 ${mcFetchedModels.value.length} 个模型`)
+    }
+  } catch (e) {
+    mcFetchedModels.value = []
+    ElMessage.error('模型列表获取失败: ' + (e?.response?.data?.message || e?.message || '未知错误'))
+  } finally {
+    mcModelsLoading.value = false
+  }
 }
 async function saveConfig() {
   const f = mcForm.value
@@ -2954,7 +3065,52 @@ function startResize(e) {
 .ws-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ===== Dialogs ===== */
-.ws-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; z-index: 2000; }
+.ws-overlay {
+  --ai-bg: #ffffff;
+  --ai-bg-secondary: #f9fafb;
+  --ai-bg-tertiary: #f3f4f6;
+  --ai-bg-elevated: #ffffff;
+  --ai-border: #f0f0f0;
+  --ai-border-strong: #e5e7eb;
+  --ai-border-focus: #3b82f6;
+  --ai-text: #111827;
+  --ai-text-secondary: #374151;
+  --ai-text-muted: #6b7280;
+  --ai-text-faint: #9ca3af;
+  --ai-accent: #3b82f6;
+  --ai-accent-hover: #2563eb;
+  --ai-accent-bg: #eff6ff;
+  --ai-accent-border: #bfdbfe;
+  --ai-purple: #8b5cf6;
+  --ai-purple-text: #7c3aed;
+  --ai-purple-bg: #f5f3ff;
+  --ai-purple-border: #ede9fe;
+  --ai-purple-deep: #6d28d9;
+  --ai-green: #10b981;
+  --ai-red: #ef4444;
+  --ai-red-hover: #dc2626;
+  --ai-yellow: #f59e0b;
+  --ai-shadow-sm: 0 1px 4px rgba(0,0,0,0.06);
+  --ai-shadow-md: 0 4px 16px rgba(0,0,0,0.1);
+  --ai-shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+  --ai-code-bg: #1e1e2e;
+  --ai-code-text: #cdd6f4;
+  --ai-inline-code-bg: #f0f0f0;
+  --ai-inline-code-border: #e5e7eb;
+  --ai-inline-code-text: #e11d48;
+  --ai-font-size: 13px;
+  --ai-msg-gap: 16px;
+  --ai-radius: 8px;
+  --ai-radius-sm: 6px;
+
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
 .ws-dialog { background: #fff; border-radius: 14px; padding: 28px; width: 420px; box-shadow: 0 24px 60px rgba(0,0,0,0.15); }
 .ws-dialog h3 { font-size: 17px; font-weight: 600; color: #111827; margin: 0 0 20px; }
 .ws-dialog-input { width: 100%; padding: 10px 14px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 14px; outline: none; box-sizing: border-box; font-family: inherit; transition: border-color 0.2s, box-shadow 0.2s; }
@@ -2964,7 +3120,9 @@ function startResize(e) {
 .modal-leave-active { transition: all 0.2s ease; }
 .modal-enter-from { opacity: 0; }
 .modal-leave-to { opacity: 0; }
-.modal-enter-from .ws-dialog { transform: scale(0.95) translateY(8px); }
+.modal-enter-from .ws-dialog,
+.modal-enter-from .settings-dialog,
+.modal-enter-from .mc-dialog { transform: scale(0.95) translateY(8px); }
 .msg-enter-active { transition: all 0.3s ease; }
 .msg-leave-active { transition: all 0.2s ease; }
 .msg-enter-from { opacity: 0; transform: translateY(10px); }
@@ -4645,16 +4803,51 @@ function startResize(e) {
   overflow: hidden;
   border: 1px solid #e5e7eb;
 }
-[data-theme="dark"] .settings-dialog { background: #1a1b26; border-color: #2e3044; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
-[data-theme="dark"] .settings-header { border-bottom-color: #2e3044; }
-[data-theme="dark"] .settings-header h3 { color: #c0caf5; }
-[data-theme="dark"] .settings-label { color: #565f89; }
-[data-theme="dark"] .settings-theme-btn, [data-theme="dark"] .settings-opt-btn { background: #1f2033; border-color: #383a50; color: #787c99; }
-[data-theme="dark"] .settings-theme-btn:hover, [data-theme="dark"] .settings-opt-btn:hover { border-color: #7aa2f7; color: #a9b1d6; background: #1a1d3a; }
-[data-theme="dark"] .settings-theme-btn.active, [data-theme="dark"] .settings-opt-btn.active { border-color: #7aa2f7; background: #1a1d3a; color: #7aa2f7; box-shadow: 0 0 0 1px #7aa2f7; }
-[data-theme="dark"] .settings-action-btn { background: #1f2033; border-color: #383a50; color: #a9b1d6; }
-[data-theme="dark"] .settings-action-btn:hover { border-color: #7aa2f7; background: #1a1d3a; color: #7aa2f7; }
-[data-theme="dark"] .ws-overlay { background: rgba(0,0,0,0.6); }
+:global([data-theme="dark"]) .settings-dialog { background: #1a1b26; border-color: #2e3044; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+:global([data-theme="dark"]) .settings-header { border-bottom-color: #2e3044; }
+:global([data-theme="dark"]) .settings-header h3 { color: #c0caf5; }
+:global([data-theme="dark"]) .settings-label { color: #565f89; }
+:global([data-theme="dark"]) .settings-theme-btn, :global([data-theme="dark"]) .settings-opt-btn { background: #1f2033; border-color: #383a50; color: #787c99; }
+:global([data-theme="dark"]) .settings-theme-btn:hover, :global([data-theme="dark"]) .settings-opt-btn:hover { border-color: #7aa2f7; color: #a9b1d6; background: #1a1d3a; }
+:global([data-theme="dark"]) .settings-theme-btn.active, :global([data-theme="dark"]) .settings-opt-btn.active { border-color: #7aa2f7; background: #1a1d3a; color: #7aa2f7; box-shadow: 0 0 0 1px #7aa2f7; }
+:global([data-theme="dark"]) .settings-action-btn { background: #1f2033; border-color: #383a50; color: #a9b1d6; }
+:global([data-theme="dark"]) .settings-action-btn:hover { border-color: #7aa2f7; background: #1a1d3a; color: #7aa2f7; }
+:global([data-theme="dark"]) .ws-overlay {
+  --ai-bg: #1a1b26;
+  --ai-bg-secondary: #1f2033;
+  --ai-bg-tertiary: #282a3a;
+  --ai-bg-elevated: #24253a;
+  --ai-border: #2e3044;
+  --ai-border-strong: #383a50;
+  --ai-border-focus: #7aa2f7;
+  --ai-text: #c0caf5;
+  --ai-text-secondary: #a9b1d6;
+  --ai-text-muted: #787c99;
+  --ai-text-faint: #565f89;
+  --ai-accent: #7aa2f7;
+  --ai-accent-hover: #5d87e0;
+  --ai-accent-bg: #1a1d3a;
+  --ai-accent-border: #2e3a5e;
+  --ai-purple: #bb9af7;
+  --ai-purple-text: #c0a8f7;
+  --ai-purple-bg: #1f1d30;
+  --ai-purple-border: #2d2a45;
+  --ai-purple-deep: #bb9af7;
+  --ai-green: #9ece6a;
+  --ai-red: #f7768e;
+  --ai-red-hover: #e05f75;
+  --ai-yellow: #e0af68;
+  --ai-shadow-sm: 0 1px 4px rgba(0,0,0,0.2);
+  --ai-shadow-md: 0 4px 16px rgba(0,0,0,0.3);
+  --ai-shadow-lg: 0 8px 24px rgba(0,0,0,0.4);
+  --ai-code-bg: #13141c;
+  --ai-code-text: #c0caf5;
+  --ai-inline-code-bg: #24253a;
+  --ai-inline-code-border: #383a50;
+  --ai-inline-code-text: #ff9e64;
+
+  background: rgba(0,0,0,0.6);
+}
 .settings-header {
   display: flex;
   align-items: center;
@@ -4751,6 +4944,81 @@ function startResize(e) {
   padding: 16px 24px 20px;
 }
 
+/* Template Selection */
+.mc-template-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.mc-template-card {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--ai-border-strong);
+  border-radius: 8px;
+  background: var(--ai-bg);
+  color: var(--ai-text);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.mc-template-card:hover {
+  border-color: var(--ai-accent);
+  background: var(--ai-accent-bg);
+  box-shadow: var(--ai-shadow-sm);
+}
+.mc-template-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+.mc-template-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mc-template-name {
+  color: var(--ai-text);
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-template-vendor,
+.mc-template-model {
+  color: var(--ai-text-muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-template-model {
+  color: var(--ai-text-faint);
+  font-family: 'JetBrains Mono', monospace;
+}
+.mc-template-source {
+  align-self: flex-start;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--ai-accent-bg);
+  color: var(--ai-accent);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 /* Config List */
 .mc-config-list {
   display: flex;
@@ -4824,6 +5092,22 @@ function startResize(e) {
 .mc-field { display: flex; flex-direction: column; gap: 4px; }
 .mc-field label { font-size: 12px; font-weight: 600; color: var(--ai-text-secondary); }
 .mc-required { color: var(--ai-red); }
+.mc-field-action-row { display: flex; gap: 8px; align-items: center; }
+.mc-field-action-row .mc-input { flex: 1; min-width: 0; }
+.mc-official-url {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--ai-border-strong);
+  border-radius: 8px;
+  background: var(--ai-bg-secondary);
+  color: var(--ai-text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .mc-input, .mc-select {
   padding: 9px 12px; border: 1px solid var(--ai-border-strong);
   border-radius: 8px; font-size: 13px; outline: none;
@@ -4832,6 +5116,7 @@ function startResize(e) {
 }
 .mc-input:focus, .mc-select:focus { border-color: var(--ai-accent); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
 .mc-input::placeholder { color: var(--ai-text-faint); }
+.mc-model-select { margin-top: 6px; }
 .mc-hint { font-size: 11px; color: var(--ai-text-faint); margin-top: 2px; }
 .mc-hint-ok { color: var(--ai-green); }
 .mc-row { display: flex; gap: 12px; }
@@ -4856,6 +5141,7 @@ function startResize(e) {
 .mc-btn-primary:disabled { background: var(--ai-bg-tertiary); cursor: not-allowed; }
 .mc-btn-outline { background: var(--ai-bg); border: 1px solid var(--ai-border-strong); color: var(--ai-text-secondary); }
 .mc-btn-outline:hover { background: var(--ai-bg-secondary); }
+.mc-btn-nowrap { white-space: nowrap; padding-left: 12px; padding-right: 12px; }
 
 /* Presets */
 .mc-presets {
@@ -4877,6 +5163,7 @@ function startResize(e) {
 .mc-preset-btn:hover { border-color: var(--ai-accent); background: var(--ai-accent-bg); }
 .mc-preset-name { font-size: 12px; font-weight: 600; color: var(--ai-text-secondary); }
 .mc-preset-model { font-size: 10px; color: var(--ai-text-faint); margin-top: 1px; }
+.mc-preset-note { font-size: 10px; color: var(--ai-text-muted); margin-top: 2px; }
 
 /* Usage tab */
 .ai-usage { padding: 12px; overflow-y: auto; }

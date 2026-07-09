@@ -1,0 +1,29 @@
+You are running the `/init` command for the LabexAgent workspace.
+
+Goal: create or refresh a top-level `LabexAgent.md` file as model-facing project memory, similar to Claude Code `/init` output. The document should preserve durable information that future LLM sessions need in order to navigate, edit, and verify the project safely.
+
+Preserve high-signal information:
+- Product purpose, stack, package managers, app entrypoints, routes/APIs, data/schema ownership, runtime transports, and verification commands.
+- Security invariants such as auth flow, project ownership checks, secret handling, path safety, and URL-fetching safety.
+- Generated/runtime directories to ignore, missing commands, restart requirements, and repeated gotchas.
+
+Do not preserve noise:
+- One-off terminal output, local port conflicts, temporary paths, generated build artifacts, dependency folders, caches, or personal credentials.
+
+Required `LabexAgent.md` sections:
+1. Context Contract
+2. Required Reading Order
+3. Repository Index
+4. Build And Verification Index
+5. Prompt/Context Initialization Rules
+6. Security And Data Rules
+7. Change Workflow Rules
+8. Common Gotchas
+9. Generated Project Index
+
+Behavior:
+- Build the document from the current project files and compact project index.
+- Use actual commands from package/build files; do not invent lint/test/format scripts.
+- Keep paths relative to the workspace root.
+- Keep the document concise and durable; prefer indexes and invariants over README-style setup prose.
+- Never include secrets or `.env` content.

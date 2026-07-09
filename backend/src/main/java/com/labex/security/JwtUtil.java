@@ -8,6 +8,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.HashMap;
@@ -32,14 +34,29 @@ public class JwtUtil {
     private static final String CLAIM_USER_ID = "userId";
     private static final String CLAIM_USERNAME = "username";
     private static final String CLAIM_ROLE = "role";
+    private static final int HS512_MIN_KEY_BYTES = 64;
 
     private SecretKey key;
 
     @PostConstruct
     public void init() {
-        // 确保密钥长度足够（至少32字节用于HS256，建议更长）
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("jwt.secret must not be blank");
+        }
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
+        if (keyBytes.length < HS512_MIN_KEY_BYTES) {
+            log.warn("jwt.secret is {} bytes, shorter than the 64 bytes required by HS512; deriving a 512-bit local signing key. Configure a high-entropy LABEX_AGENT_JWT_SECRET with at least 64 bytes for production.", keyBytes.length);
+            keyBytes = sha512(keyBytes);
+        }
         this.key = Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    private byte[] sha512(byte[] input) {
+        try {
+            return MessageDigest.getInstance("SHA-512").digest(input);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-512 digest is not available", e);
+        }
     }
 
     /**

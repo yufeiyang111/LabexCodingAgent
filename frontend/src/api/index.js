@@ -157,6 +157,9 @@ export const modelConfigApi = {
   getProviders() {
     return request.get('/student/model-configs/providers')
   },
+  listModels(data) {
+    return request.post('/student/model-configs/model-list', data)
+  },
   testConnection(configId) {
     return request.post('/student/model-configs/' + configId + '/test')
   }
