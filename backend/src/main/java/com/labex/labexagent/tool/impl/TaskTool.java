@@ -1,19 +1,14 @@
 package com.labex.labexagent.tool.impl;
 
 import com.google.gson.JsonObject;
-import com.labex.entity.AgentModelConfig;
-import com.labex.labexagent.llm.LlmProvider;
-import com.labex.labexagent.llm.LlmProviderFactory;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.service.ProjectIndexService;
+import com.labex.labexagent.run.SubagentDispatchService;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
-import com.labex.service.AgentModelConfigService;
-import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 
@@ -21,15 +16,11 @@ import org.springframework.stereotype.Component;
 public class TaskTool
 implements AgentTool {
     private final ProjectIndexService projectIndexService;
-    private final AgentModelConfigService modelConfigService;
-    private final LlmProviderFactory providerFactory;
+    private final SubagentDispatchService dispatchService;
 
-    public TaskTool(ProjectIndexService projectIndexService,
-                    AgentModelConfigService modelConfigService,
-                    LlmProviderFactory providerFactory) {
+    public TaskTool(ProjectIndexService projectIndexService, SubagentDispatchService dispatchService) {
         this.projectIndexService = projectIndexService;
-        this.modelConfigService = modelConfigService;
-        this.providerFactory = providerFactory;
+        this.dispatchService = dispatchService;
     }
 
     public ToolDefinition definition() {
@@ -40,6 +31,7 @@ implements AgentTool {
                 .stringProperty("prompt", "full task for the subagent", false)
                 .stringProperty("subagent_type", "general, explore, or scout; default general", false)
                 .stringProperty("task_id", "optional previous task id to resume in the caller's context", false)
+                .stringProperty("background", "true to run without blocking the parent agent", false)
                 .build();
     }
 
@@ -63,60 +55,20 @@ implements AgentTool {
         }
 
         try {
-            AgentModelConfig modelConfig = modelConfigService.resolveForStudent(context.getStudentId(), null);
-            LlmProvider provider = providerFactory.resolveProvider(modelConfig);
-            LlmProvider.LlmConfig baseConfig = providerFactory.buildConfig(modelConfig);
-            LlmProvider.LlmConfig subConfig = new LlmProvider.LlmConfig(
-                    baseConfig.apiKey(),
-                    baseConfig.baseUrl(),
-                    baseConfig.modelName(),
-                    Math.min(baseConfig.maxTokens() == null ? 4096 : baseConfig.maxTokens(), 4096),
-                    baseConfig.temperature()
-            );
-
             String digest = projectIndexService.buildProjectDigest(context.getProject(), prompt);
-            String systemPrompt = buildSubagentPrompt(subagentType);
-            String userPrompt = """
-                    Parent session: %s
-                    Parent mode: %s
-                    Workspace root: %s
-
-                    Current parent plan:
-                    %s
-
-                    Subtask title:
-                    %s
-
-                    Subtask request:
-                    %s
-
-                    Project digest and related snippets:
-                    %s
-                    """.formatted(
-                    context.getSessionId(),
-                    context.getMode(),
-                    context.getWorkspaceRoot(),
-                    context.getPlanSummary().isBlank() ? "(none)" : context.getPlanSummary(),
-                    description,
-                    prompt,
-                    ToolSupport.limit(digest, 16000)
-            );
-
-            Map<String, Object> response = provider.chatWithTools(
-                    systemPrompt,
-                    List.of(Map.of("role", "user", "content", userPrompt)),
-                    List.of(),
-                    subConfig
-            );
-            String type = String.valueOf(response.getOrDefault("type", ""));
-            if ("error".equals(type)) {
-                return ToolResult.failed("Subtask failed: " + response.getOrDefault("message", "unknown error"));
+            String instructions = buildSubagentPrompt(subagentType) + "\n\nSubtask title: " + description
+                    + "\n\nSubtask request:\n" + prompt + "\n\nProject digest:\n" + ToolSupport.limit(digest, 16000);
+            boolean background = args.has("background") && Boolean.parseBoolean(args.get("background").getAsString());
+            var dispatch = dispatchService.dispatch(
+                    context.getSessionId(), context.getStudentId(), context.getProject(), context.getConversationId(), context.getTaskId(),
+                    subagentType, instructions, null, 4096, "[]", "[]", background);
+            if (background) {
+                return ToolResult.ok("<task id=\"" + dispatch.subagent().getSubagentId() + "\" state=\"running\" agent=\"" + subagentType + "\">" + escapeXml(description) + "</task>");
             }
-            String content = String.valueOf(response.getOrDefault("content", "")).trim();
-            if (content.isBlank()) {
-                return ToolResult.failed("Subtask returned no content.");
-            }
-            return ToolResult.ok(formatSubtaskOutput(subtaskId, subagentType, description, content));
+            dispatch.completion().join();
+            String content = dispatch.subagent().getSummary();
+            if (content == null || content.isBlank()) return ToolResult.failed("Subtask returned no content.");
+            return ToolResult.ok(formatSubtaskOutput(String.valueOf(dispatch.subagent().getSubagentId()), subagentType, description, content));
         } catch (Exception e) {
             return ToolResult.failed("Subtask failed: " + e.getMessage());
         }

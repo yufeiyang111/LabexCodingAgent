@@ -1,0 +1,24 @@
+package com.labex.labexagent.commandsecurity;
+
+/** Stable reason codes suitable for audit records and client-safe policy messages. */
+public enum CommandReasonCode {
+    SAFE_DIRECT_COMMAND,
+    MUTATING_COMMAND,
+    EMPTY_COMMAND,
+    PROMPT_INJECTION,
+    HARD_BLOCKED_COMMAND,
+    SHELL_OPERATOR,
+    REDIRECTION,
+    COMMAND_SUBSTITUTION,
+    VARIABLE_EXPANSION,
+    WINDOWS_VARIABLE_EXPANSION,
+    ENCODED_EXECUTION,
+    SHELL_COMMAND_STRING,
+    POWERSHELL_ENCODED_COMMAND,
+    POWERSHELL_COMMAND,
+    QUOTE_SPLIT_EXECUTABLE,
+    NETWORK_COMMAND,
+    NETWORK_URL,
+    UNKNOWN_CONTROL_CHARACTER,
+    UNSUPPORTED_SYNTAX
+}

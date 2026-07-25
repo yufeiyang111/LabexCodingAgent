@@ -8,9 +8,14 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
+import {
+  normalizeTerminalSize
+} from './terminalProtocol'
+
+export const INTERACTIVE_TERMINAL_DISABLED_MESSAGE = '交互式终端已按策略禁用，请使用受管终端。'
 
 // 终端主题 - VSCode Dark+ 配色
-const VSCODE_THEME = {
+export const VSCODE_DARK_THEME = {
   background: '#1e1e1e',
   foreground: '#d4d4d4',
   cursor: '#aeafad',
@@ -35,6 +40,31 @@ const VSCODE_THEME = {
   brightWhite: '#e5e5e5'
 }
 
+export const VSCODE_LIGHT_THEME = {
+  background: '#ffffff',
+  foreground: '#24292f',
+  cursor: '#0969da',
+  cursorAccent: '#ffffff',
+  selectionBackground: '#b6d7ff',
+  selectionForeground: '#24292f',
+  black: '#24292f',
+  red: '#cf222e',
+  green: '#1a7f37',
+  yellow: '#9a6700',
+  blue: '#0969da',
+  magenta: '#8250df',
+  cyan: '#1b7c83',
+  white: '#6e7781',
+  brightBlack: '#57606a',
+  brightRed: '#a40e26',
+  brightGreen: '#116329',
+  brightYellow: '#7d4e00',
+  brightBlue: '#0550ae',
+  brightMagenta: '#6639ba',
+  brightCyan: '#0a6b75',
+  brightWhite: '#24292f'
+}
+
 /**
  * 创建单个终端实例
  */
@@ -42,11 +72,13 @@ export function createTerminalInstance(options = {}) {
   const {
     fontSize = 14,
     fontFamily = "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace",
-    theme = VSCODE_THEME,
+    theme = VSCODE_DARK_THEME,
     cursorBlink = true,
     cursorStyle = 'block',
     scrollback = 10000,
-    tabStopWidth = 4
+    tabStopWidth = 4,
+    lineHeight = 1.12,
+    letterSpacing = 0
   } = options
 
   const terminal = new Terminal({
@@ -57,13 +89,17 @@ export function createTerminalInstance(options = {}) {
     cursorStyle,
     scrollback,
     tabStopWidth,
+    lineHeight,
+    letterSpacing,
     allowProposedApi: true,
     convertEol: true,
     disableStdin: false,
     drawBoldTextInBrightColors: true,
+    rightClickSelectsWord: true,
+    macOptionIsMeta: true,
+    altClickMovesCursor: true,
     minimumContrastRatio: 1,
-    screenReaderMode: false,
-    windowsMode: navigator.platform?.toLowerCase()?.includes('win') || false
+    screenReaderMode: false
   })
 
   const fitAddon = new FitAddon()
@@ -80,113 +116,42 @@ export function createTerminalInstance(options = {}) {
 /**
  * WebSocket 终端连接管理
  */
-export function useTerminalWebSocket() {
+export function useTerminalWebSocket(projectId) {
   const ws = ref(null)
   const sessionId = ref(null)
   const connected = ref(false)
   const reconnectAttempts = ref(0)
-  const MAX_RECONNECT = 5
   let reconnectTimer = null
 
-  function getWsUrl() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const token = localStorage.getItem('token') || ''
-    const params = token ? `?token=${encodeURIComponent(token)}` : ''
-    return `${protocol}//${window.location.host}/api/ws/terminal${params}`
-  }
-
   function connect(handlers = {}) {
-    const { onOutput, onSessionCreated, onExit, onError, onConnect, onDisconnect } = handlers
-
-    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
-      return
-    }
-
-    const url = getWsUrl()
-    const socket = new WebSocket(url)
-
-    socket.onopen = () => {
-      connected.value = true
-      reconnectAttempts.value = 0
-      console.log('[Terminal] WebSocket connected successfully')
-      onConnect?.()
-    }
-
-    socket.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        console.log('[Terminal] Received message:', msg.type)
-        switch (msg.type) {
-          case 'session':
-            sessionId.value = msg.sessionId
-            console.log('[Terminal] Session ID:', msg.sessionId)
-            break
-          case 'created':
-            sessionId.value = msg.sessionId
-            console.log('[Terminal] Terminal created, sessionId:', msg.sessionId)
-            onSessionCreated?.(msg.sessionId)
-            break
-          case 'output':
-            console.log('[Terminal] Output received, length:', msg.data?.length)
-            onOutput?.(msg.data)
-            break
-          case 'exit':
-            console.log('[Terminal] Process exited with code:', msg.code)
-            onExit?.(msg.code)
-            break
-          case 'error':
-            console.error('[Terminal] Error from server:', msg.message)
-            onError?.(msg.message)
-            break
-          case 'pong':
-            break
-        }
-      } catch (e) {
-        console.error('[Terminal] Parse error:', e)
-      }
-    }
-
-    socket.onclose = (event) => {
-      connected.value = false
-      ws.value = null
-      console.log('[Terminal] WebSocket disconnected, code:', event.code, 'reason:', event.reason)
-      onDisconnect?.()
-      // 自动重连（如果不是正常关闭）
-      if (event.code !== 1000 && reconnectAttempts.value < MAX_RECONNECT) {
-        reconnectAttempts.value++
-        console.log(`[Terminal] Reconnecting in ${reconnectAttempts.value}s...`)
-        reconnectTimer = setTimeout(() => connect(handlers), 1000 * reconnectAttempts.value)
-      }
-    }
-
-    socket.onerror = (err) => {
-      console.error('[Terminal] WebSocket error:', err)
-      onError?.('WebSocket connection error')
-    }
-
-    ws.value = socket
+    connected.value = false
+    reconnectAttempts.value = 0
+    onDisabled(handlers)
   }
 
-  function send(msg) {
-    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify(msg))
-    }
+  function onDisabled(handlers) {
+    handlers.onError?.(INTERACTIVE_TERMINAL_DISABLED_MESSAGE)
+    handlers.onDisconnect?.()
   }
 
-  function createTerminal(cwd) {
-    send({ type: 'create', cwd })
+  function send() {
+    // Interactive WebSocket terminal input is disabled by policy.
   }
 
-  function sendInput(data) {
-    send({ type: 'input', data })
+  function createTerminal() {
+    // Interactive WebSocket terminal creation is disabled by policy.
   }
 
-  function resize(cols, rows) {
-    send({ type: 'resize', cols, rows })
+  function sendInput() {
+    // Raw terminal input must not be sent to the disabled endpoint.
+  }
+
+  function resize() {
+    // Interactive WebSocket terminal resize is disabled by policy.
   }
 
   function closeTerminal() {
-    send({ type: 'close' })
+    // No interactive terminal session exists to close.
   }
 
   function disconnect() {
@@ -200,10 +165,6 @@ export function useTerminalWebSocket() {
     }
     connected.value = false
   }
-
-  onUnmounted(() => {
-    disconnect()
-  })
 
   return {
     ws,
@@ -228,6 +189,41 @@ export function useTerminalManager() {
   const activeTerminalId = ref(null)
   let terminalCounter = 0
 
+  function afterLayout(callback) {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(callback))
+      return
+    }
+    setTimeout(callback, 0)
+  }
+
+  function getTerminalSize(termData) {
+    return normalizeTerminalSize(termData.terminal.cols, termData.terminal.rows)
+  }
+
+  function fitTerminalData(termData, options = {}) {
+    const { notifyBackend = true, focus = false, afterFit } = options
+    try {
+      termData.fitAddon.fit()
+    } catch (e) {
+      console.debug('[Terminal] Fit failed:', e.message)
+    }
+
+    // The managed REST terminal does not expose a raw PTY resize endpoint.
+    // Keep fitting the local xterm viewport without attempting a disabled WebSocket resize.
+    void notifyBackend
+
+    if (focus) {
+      termData.terminal.focus()
+    }
+
+    afterFit?.()
+  }
+
+  function scheduleFitTerminalData(termData, options = {}) {
+    afterLayout(() => fitTerminalData(termData, options))
+  }
+
   function createTerminal(containerEl, options = {}) {
     terminalCounter++
     const id = `term-${terminalCounter}`
@@ -237,7 +233,9 @@ export function useTerminalManager() {
     const { terminal, fitAddon, searchAddon } = createTerminalInstance(options)
 
     // 创建 WebSocket 连接
-    const wsConn = useTerminalWebSocket()
+    const runManagedCommand = typeof options.runManagedCommand === 'function'
+      ? options.runManagedCommand
+      : null
 
     const termData = {
       id,
@@ -245,70 +243,57 @@ export function useTerminalManager() {
       terminal,
       fitAddon,
       searchAddon,
-      wsConn,
+      managedSessionId: options.managedSessionId || null,
       element: null,
+      inputBuffer: '',
+      commandPending: false,
       disposables: []
     }
 
-    // 连接 WebSocket
-    wsConn.connect({
-      onOutput: (data) => {
-        terminal.write(data)
-      },
-      onSessionCreated: (sid) => {
-        console.log(`[Terminal] Session ${sid} created for ${id}`)
-      },
-      onExit: (code) => {
-        terminal.write(`\r\n\x1b[90m[Process exited with code ${code}]\x1b[0m\r\n`)
-      },
-      onError: (msg) => {
-        console.error(`[Terminal] Error for ${id}:`, msg)
-        terminal.write(`\r\n\x1b[31m[Error: ${msg}]\x1b[0m\r\n`)
-      },
-      onConnect: () => {
-        console.log(`[Terminal] WebSocket connected for ${id}, creating terminal process...`)
-        // WebSocket 连接成功后，延迟创建终端进程
-        setTimeout(() => {
-          console.log(`[Terminal] Sending create command for ${id}`)
-          wsConn.createTerminal(options.cwd)
-        }, 100)
+    function writeInput(data) {
+      for (const character of data) {
+        if (character === '\r') {
+          const command = termData.inputBuffer.trim()
+          termData.inputBuffer = ''
+          terminal.write('\r\n')
+          if (!command || termData.commandPending) continue
+          if (!runManagedCommand || !termData.managedSessionId) {
+            terminal.write('[Managed terminal session is unavailable]\r\n')
+            continue
+          }
+          termData.commandPending = true
+          Promise.resolve(runManagedCommand(command, termData))
+            .catch(error => {
+              terminal.write(`\r\n[Error: ${error?.message || 'Command failed'}]\r\n`)
+            })
+            .finally(() => {
+              termData.commandPending = false
+            })
+          continue
+        }
+        if (character === '\u007f') {
+          if (termData.inputBuffer.length > 0) {
+            termData.inputBuffer = termData.inputBuffer.slice(0, -1)
+            terminal.write('\b \b')
+          }
+          continue
+        }
+        if (character >= ' ') {
+          termData.inputBuffer += character
+          terminal.write(character)
+        }
       }
-    })
+    }
 
-    // 终端输入 -> WebSocket
-    termData.disposables.push(
-      terminal.onData((data) => {
-        wsConn.sendInput(data)
-      })
-    )
+    termData.disposables.push(terminal.onData(writeInput))
+    termData.disposables.push(terminal.onBinary(writeInput))
 
-    // 终端二进制输入
-    termData.disposables.push(
-      terminal.onBinary((data) => {
-        wsConn.sendInput(data)
-      })
-    )
-
-    // 终端大小调整
-    termData.disposables.push(
-      terminal.onResize(({ cols, rows }) => {
-        wsConn.resize(cols, rows)
-      })
-    )
-
-    // 渲染到容器
     if (containerEl) {
       terminal.open(containerEl)
       termData.element = containerEl
 
-      // 延迟 fit 确保 DOM 已渲染
-      setTimeout(() => {
-        try {
-          fitAddon.fit()
-        } catch (e) {
-          console.debug('[Terminal] Initial fit failed:', e.message)
-        }
-      }, 100)
+      // 延迟到布局稳定后测量字符网格，避免 PTY 与 xterm 初始列宽不同步。
+      scheduleFitTerminalData(termData, { notifyBackend: false, focus: true })
     }
 
     terminals.value.push(termData)
@@ -337,8 +322,6 @@ export function useTerminalManager() {
 
     // 清理资源
     termData.disposables.forEach(d => d.dispose())
-    termData.wsConn.closeTerminal()
-    termData.wsConn.disconnect()
     termData.terminal.dispose()
 
     terminals.value.splice(idx, 1)
@@ -357,21 +340,21 @@ export function useTerminalManager() {
   function fitTerminal(id) {
     const termData = getTerminal(id)
     if (termData) {
-      try {
-        termData.fitAddon.fit()
-      } catch (e) {
-        console.debug('[Terminal] Fit failed:', e.message)
-      }
+      scheduleFitTerminalData(termData)
     }
   }
 
   function fitAllTerminals() {
     terminals.value.forEach(t => {
-      try {
-        t.fitAddon.fit()
-      } catch (e) {
-        console.debug('[Terminal] Fit failed:', e.message)
+      if (!t.element || t.element.classList.contains('visible')) {
+        scheduleFitTerminalData(t)
       }
+    })
+  }
+
+  function setTerminalTheme(theme) {
+    terminals.value.forEach(termData => {
+      termData.terminal.options.theme = theme
     })
   }
 
@@ -410,6 +393,7 @@ export function useTerminalManager() {
     removeTerminal,
     fitTerminal,
     fitAllTerminals,
+    setTerminalTheme,
     searchInTerminal,
     clearTerminal,
     writeToTerminal

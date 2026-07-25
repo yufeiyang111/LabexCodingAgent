@@ -2,70 +2,89 @@ package com.labex.labexagent.tool.impl;
 
 import com.google.gson.JsonObject;
 import com.labex.labexagent.runtime.AgentContext;
+import com.labex.labexagent.service.ProjectScanPolicy;
+import com.labex.labexagent.service.WorkspaceScanner;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
-import com.labex.service.StudentProjectService;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.util.stream.Collectors;
+import java.util.Comparator;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 @Component
-public class ListFilesTool
-implements AgentTool {
-    private final StudentProjectService studentProjectService;
+public class ListFilesTool implements AgentTool {
+    private static final int MAX_ENTRIES = 500;
+    private final WorkspaceScanner workspaceScanner;
 
-    public ListFilesTool(StudentProjectService studentProjectService) {
-        this.studentProjectService = studentProjectService;
+    public ListFilesTool(WorkspaceScanner workspaceScanner) {
+        this.workspaceScanner = workspaceScanner;
     }
 
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("list_files").description("\u9012\u5f52\u5217\u51fa\u76ee\u5f55\u6811\uff0c\u5ffd\u7565\u5e38\u89c1\u6784\u5efa/\u4f9d\u8d56\u76ee\u5f55").stringProperty("path", "\u76ee\u5f55\u8def\u5f84\uff08\u9ed8\u8ba4\u5f53\u524d\u9879\u76ee\u6839\u76ee\u5f55\uff09", false).intProperty("max_depth", "\u6700\u5927\u9012\u5f52\u6df1\u5ea6\uff08\u9ed8\u8ba43\uff09", false).build();
+        return ToolDefinition.builder().name("list_files").description("递归列出目录树，忽略常见构建/依赖/缓存目录。")
+                .stringProperty("path", "目录路径（默认当前项目根目录）", false)
+                .intProperty("max_depth", "最大递归深度（默认3）", false).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
+        String path = ToolSupport.normalizeRelativePath(args.has("path") ? args.get("path").getAsString() : ".");
+        int maxDepth = Math.min(10, Math.max(0, ToolSupport.intArg(args, "max_depth", 3)));
+        SecureWorkspacePath paths;
         Path target;
-        String path = ToolSupport.normalizeRelativePath((String)(args.has("path") ? args.get("path").getAsString() : "."));
-        int maxDepth = args.has("max_depth") ? args.get("max_depth").getAsInt() : 3;
-        Path root = context.getWorkspaceRoot();
-        Path path2 = target = path.isEmpty() || path.equals(".") ? root : root.resolve(path).normalize();
-        if (!target.startsWith(root)) {
+        try {
+            paths = ToolSupport.workspacePaths(context);
+            target = paths.resolveExisting(path.isEmpty() || path.equals(".") ? "." : path);
+        } catch (IllegalArgumentException e) {
             return ToolResult.failed("Unsafe path");
         }
-        if (!Files.exists(target, new LinkOption[0])) {
-            return ToolResult.failed((String)("Path does not exist: " + path));
+        if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) return ToolResult.failed("Path does not exist: " + path);
+        if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) return ToolResult.ok(target.getFileName().toString());
+        if (!Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) return ToolResult.failed("Path is not a directory: " + path);
+
+        AtomicInteger emitted = new AtomicInteger();
+        ProjectScanPolicy.ScanIgnoreRules ignoreRules = workspaceScanner.ignoreRules(paths);
+        String tree = buildTree(target, paths, ignoreRules, 0, maxDepth, emitted);
+        if (emitted.get() >= MAX_ENTRIES) {
+            tree += "\n\nListing truncated: entry limit reached (max_entries=" + MAX_ENTRIES + ").";
         }
-        if (Files.isRegularFile(target, new LinkOption[0])) {
-            return ToolResult.ok((String)target.getFileName().toString());
-        }
-        String tree = this.buildTree(target, root, 0, maxDepth);
-        return ToolResult.ok((String)tree);
+        return ToolResult.ok(tree);
     }
 
-    private String buildTree(Path dir, Path root, int depth, int maxDepth) {
-        if (depth >= maxDepth) {
-            return "";
-        }
-        try {
-            return Files.list(dir).filter(p -> {
-                String name = p.getFileName().toString();
-                return !name.startsWith(".") && !name.equals("node_modules") && !name.equals("target") && !name.equals("build") && !name.equals("dist");
-            }).sorted().map(p -> {
+    private String buildTree(Path directory, SecureWorkspacePath paths, ProjectScanPolicy.ScanIgnoreRules ignoreRules,
+                             int depth, int maxDepth, AtomicInteger emitted) {
+        if (depth >= maxDepth || emitted.get() >= MAX_ENTRIES) return "";
+        try (Stream<Path> entries = Files.list(directory)) {
+            StringBuilder tree = new StringBuilder();
+            var iterator = entries.filter(path -> isVisibleDirectoryEntry(paths, ignoreRules, path))
+                    .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                    .iterator();
+            while (iterator.hasNext() && emitted.get() < MAX_ENTRIES) {
+                Path entry = iterator.next();
                 String prefix = "  ".repeat(depth);
-                String name = p.getFileName().toString();
-                if (Files.isDirectory(p, new LinkOption[0])) {
-                    String children = this.buildTree(p, root, depth + 1, maxDepth);
-                    return prefix + "[D] " + name + "/\n" + children;
+                String name = entry.getFileName().toString();
+                emitted.incrementAndGet();
+                if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) {
+                    tree.append(prefix).append("[D] ").append(name).append("/\n");
+                    tree.append(buildTree(entry, paths, ignoreRules, depth + 1, maxDepth, emitted));
+                } else {
+                    tree.append(prefix).append("[F] ").append(name).append('\n');
                 }
-                return prefix + "[F] " + name;
-            }).collect(Collectors.joining("\n"));
-        }
-        catch (Exception e) {
+            }
+            return tree.toString();
+        } catch (Exception ignored) {
             return "";
         }
+    }
+
+    private boolean isVisibleDirectoryEntry(SecureWorkspacePath paths, ProjectScanPolicy.ScanIgnoreRules ignoreRules,
+                                            Path entry) {
+        if (!workspaceScanner.isSafeWorkspaceEntry(paths, entry)) return false;
+        return !ignoreRules.shouldSkipEntry(entry, Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS));
     }
 }
-

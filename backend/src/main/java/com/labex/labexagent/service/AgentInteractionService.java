@@ -1,22 +1,38 @@
 package com.labex.labexagent.service;
 
+import com.labex.entity.AgentRunInteraction;
+import com.labex.labexagent.run.AgentRunInteractionService;
+import com.labex.labexagent.run.AgentRunResumeScheduler;
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Objects;
+import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.function.BooleanSupplier;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AgentInteractionService {
     private static final long QUESTION_TIMEOUT_SECONDS = 600L;
-    private static final long POLL_MILLIS = 500L;
 
-    private final ConcurrentHashMap<String, PendingQuestion> pendingQuestions = new ConcurrentHashMap<>();
+    private final AgentRunInteractionService runInteractionService;
+    private final AgentRunResumeScheduler resumeScheduler;
+
+    public AgentInteractionService() {
+        this(null, null);
+    }
+
+    public AgentInteractionService(AgentRunInteractionService runInteractionService) {
+        this(runInteractionService, null);
+    }
+
+    @Autowired
+    public AgentInteractionService(AgentRunInteractionService runInteractionService,
+                                   @Lazy AgentRunResumeScheduler resumeScheduler) {
+        this.runInteractionService = runInteractionService;
+        this.resumeScheduler = resumeScheduler;
+    }
 
     public UserQuestionRequest beginQuestion(
             Integer projectId,
@@ -39,53 +55,69 @@ public class AgentInteractionService {
                 summary,
                 options == null ? List.of() : List.copyOf(options),
                 System.currentTimeMillis());
-        pendingQuestions.put(requestId, new PendingQuestion(request));
+        this.persistQuestion(request);
         return request;
     }
 
-    public UserQuestionResult awaitQuestion(String requestId, BooleanSupplier cancelled)
-            throws InterruptedException {
-        PendingQuestion pending = pendingQuestions.get(requestId);
-        if (pending == null) {
-            return UserQuestionResult.cancelled("Question request not found");
+    public UserQuestionResult reply(Integer projectId, Integer studentId, String requestId, String action, String answer) {
+        UserQuestionResult result = handleReply(action, answer);
+        if (runInteractionService == null) {
+            return UserQuestionResult.cancelled("Durable question storage is unavailable");
         }
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(QUESTION_TIMEOUT_SECONDS);
+        final AgentRunInteraction persisted;
         try {
-            while (System.nanoTime() < deadline) {
-                if (cancelled != null && cancelled.getAsBoolean()) {
-                    UserQuestionResult result = UserQuestionResult.cancelled("Agent run was cancelled");
-                    pending.future.complete(result);
-                    return result;
-                }
-                try {
-                    return pending.future.get(POLL_MILLIS, TimeUnit.MILLISECONDS);
-                } catch (TimeoutException ignored) {
-                    // Poll again so cancellation can interrupt a waiting question.
-                } catch (ExecutionException e) {
-                    String message = e.getCause() != null ? e.getCause().getMessage() : e.getMessage();
-                    return UserQuestionResult.cancelled(message);
-                }
-            }
-            UserQuestionResult result = UserQuestionResult.timedOut("Question timed out after 10 minutes");
-            pending.future.complete(result);
-            return result;
-        } finally {
-            pendingQuestions.remove(requestId);
+            persisted = runInteractionService.respond(
+                    studentId,
+                    projectId,
+                    requestId,
+                    interactionStatus(result),
+                    responsePayload(result, action));
+        } catch (IllegalArgumentException e) {
+            return UserQuestionResult.cancelled(e.getMessage());
         }
+        if (resumeScheduler != null) {
+            resumeScheduler.resumeIfWaiting(persisted);
+        }
+        return result;
     }
 
-    public UserQuestionResult reply(Integer projectId, Integer studentId, String requestId, String action, String answer) {
-        PendingQuestion pending = pendingQuestions.get(requestId);
-        if (pending == null) {
-            return UserQuestionResult.cancelled("Question request expired or not found");
+    private void persistQuestion(UserQuestionRequest request) {
+        if (runInteractionService == null) {
+            throw new IllegalStateException("Durable question storage is unavailable");
         }
-        UserQuestionRequest request = pending.request;
-        if (!Objects.equals(request.projectId(), projectId) || !Objects.equals(request.studentId(), studentId)) {
-            return UserQuestionResult.cancelled("Question request does not belong to this project or user");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("question", request.question());
+        payload.put("summary", request.summary());
+        payload.put("options", request.options());
+        runInteractionService.createWaiting(new AgentRunInteractionService.WaitingInteraction(
+                request.requestId(),
+                request.taskId(),
+                request.conversationId(),
+                request.sessionId(),
+                request.studentId(),
+                request.projectId(),
+                "question",
+                payload,
+                "question-" + request.requestId(),
+                LocalDateTime.now().plusSeconds(QUESTION_TIMEOUT_SECONDS)));
+    }
+
+    private String interactionStatus(UserQuestionResult result) {
+        if (result.answered()) {
+            return "answered";
         }
-        UserQuestionResult result = handleReply(action, answer);
-        pending.future.complete(result);
-        return result;
+        if (result.timedOut()) {
+            return "timed_out";
+        }
+        return "cancelled";
+    }
+
+    private Map<String, Object> responsePayload(UserQuestionResult result, String action) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("action", action == null ? "" : action);
+        payload.put("answer", result.answer());
+        payload.put("feedback", result.feedback());
+        return payload;
     }
 
     private UserQuestionResult handleReply(String action, String answer) {
@@ -134,15 +166,6 @@ public class AgentInteractionService {
 
         public static UserQuestionResult timedOut(String feedback) {
             return new UserQuestionResult(false, false, true, "", feedback == null ? "" : feedback);
-        }
-    }
-
-    private static class PendingQuestion {
-        private final UserQuestionRequest request;
-        private final CompletableFuture<UserQuestionResult> future = new CompletableFuture<>();
-
-        private PendingQuestion(UserQuestionRequest request) {
-            this.request = request;
         }
     }
 }

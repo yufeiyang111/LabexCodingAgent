@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.LocalDateTime;
 
 @TableName(value = "t_agent_model_config")
@@ -26,11 +28,53 @@ public class AgentModelConfig {
     @TableField(value = "api_key")
     private String apiKey;
 
+    @TableField(value = "api_key_encrypted")
+    private String apiKeyEncrypted;
+
+    @TableField(value = "api_key_key_version")
+    private String apiKeyKeyVersion;
+
+    @TableField(exist = false)
+    private String apiKeyMasked;
+
     @TableField(value = "base_url")
     private String baseUrl;
 
     @TableField(value = "max_tokens")
     private Integer maxTokens;
+
+    @TableField(value = "context_window_tokens")
+    private Integer contextWindowTokens;
+
+    @TableField(value = "prompt_cache_key_enabled")
+    private Integer promptCacheKeyEnabled;
+
+    @TableField(value = "reasoning_effort")
+    private String reasoningEffort;
+
+    @TableField(value = "image_input_enabled")
+    private Integer imageInputEnabled;
+
+    @TableField(value = "compaction_auto")
+    private Integer compactionAuto;
+
+    @TableField(value = "compaction_prune")
+    private Integer compactionPrune;
+
+    @TableField(value = "compaction_tail_turns")
+    private Integer compactionTailTurns;
+
+    @TableField(value = "compaction_preserve_recent_tokens")
+    private Integer compactionPreserveRecentTokens;
+
+    @TableField(value = "compaction_reserved_tokens")
+    private Integer compactionReservedTokens;
+
+    @TableField(value = "compaction_model_config_id")
+    private Integer compactionModelConfigId;
+
+    @TableField(value = "compaction_threshold_percent")
+    private Integer compactionThresholdPercent;
 
     @TableField(value = "temperature")
     private Double temperature;
@@ -62,14 +106,60 @@ public class AgentModelConfig {
     public String getModelName() { return modelName; }
     public void setModelName(String modelName) { this.modelName = modelName; }
 
+    @JsonIgnore
     public String getApiKey() { return apiKey; }
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+
+    @JsonIgnore
+    public String getApiKeyEncrypted() { return apiKeyEncrypted; }
+    public void setApiKeyEncrypted(String apiKeyEncrypted) { this.apiKeyEncrypted = apiKeyEncrypted; }
+
+    @JsonIgnore
+    public String getApiKeyKeyVersion() { return apiKeyKeyVersion; }
+    public void setApiKeyKeyVersion(String apiKeyKeyVersion) { this.apiKeyKeyVersion = apiKeyKeyVersion; }
+
+    @JsonProperty("apiKey")
+    public String getApiKeyMasked() { return apiKeyMasked; }
+    public void setApiKeyMasked(String apiKeyMasked) { this.apiKeyMasked = apiKeyMasked; }
 
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
 
     public Integer getMaxTokens() { return maxTokens; }
     public void setMaxTokens(Integer maxTokens) { this.maxTokens = maxTokens; }
+
+    public Integer getContextWindowTokens() { return contextWindowTokens; }
+    public void setContextWindowTokens(Integer contextWindowTokens) { this.contextWindowTokens = contextWindowTokens; }
+
+    public Integer getPromptCacheKeyEnabled() { return promptCacheKeyEnabled; }
+    public void setPromptCacheKeyEnabled(Integer promptCacheKeyEnabled) { this.promptCacheKeyEnabled = promptCacheKeyEnabled; }
+
+    public String getReasoningEffort() { return reasoningEffort; }
+    public void setReasoningEffort(String reasoningEffort) { this.reasoningEffort = reasoningEffort; }
+
+    public Integer getImageInputEnabled() { return imageInputEnabled; }
+    public void setImageInputEnabled(Integer imageInputEnabled) { this.imageInputEnabled = imageInputEnabled; }
+
+    public Integer getCompactionAuto() { return compactionAuto; }
+    public void setCompactionAuto(Integer compactionAuto) { this.compactionAuto = compactionAuto; }
+
+    public Integer getCompactionPrune() { return compactionPrune; }
+    public void setCompactionPrune(Integer compactionPrune) { this.compactionPrune = compactionPrune; }
+
+    public Integer getCompactionTailTurns() { return compactionTailTurns; }
+    public void setCompactionTailTurns(Integer compactionTailTurns) { this.compactionTailTurns = compactionTailTurns; }
+
+    public Integer getCompactionPreserveRecentTokens() { return compactionPreserveRecentTokens; }
+    public void setCompactionPreserveRecentTokens(Integer compactionPreserveRecentTokens) { this.compactionPreserveRecentTokens = compactionPreserveRecentTokens; }
+
+    public Integer getCompactionReservedTokens() { return compactionReservedTokens; }
+    public void setCompactionReservedTokens(Integer compactionReservedTokens) { this.compactionReservedTokens = compactionReservedTokens; }
+
+    public Integer getCompactionModelConfigId() { return compactionModelConfigId; }
+    public void setCompactionModelConfigId(Integer compactionModelConfigId) { this.compactionModelConfigId = compactionModelConfigId; }
+
+    public Integer getCompactionThresholdPercent() { return compactionThresholdPercent; }
+    public void setCompactionThresholdPercent(Integer compactionThresholdPercent) { this.compactionThresholdPercent = compactionThresholdPercent; }
 
     public Double getTemperature() { return temperature; }
     public void setTemperature(Double temperature) { this.temperature = temperature; }

@@ -1,11 +1,16 @@
 package com.labex.labexagent.service;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -14,14 +19,12 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 @Service
 public class ProjectCodeMapService {
+    private final IncrementalContextService incrementalContextService;
+    private final ProjectCodeMapMetadataCache metadataCache;
     private static final int MAX_FILES = 700;
-    private static final int MAX_BYTES = 260_000;
-    private static final Set<String> IGNORE_DIRS = Set.of(
-            ".git", "node_modules", "dist", "build", "target", "__pycache__", ".idea", ".vscode", ".gradle", ".mvn");
     private static final Set<String> CODE_EXTS = Set.of(
             "java", "js", "jsx", "ts", "tsx", "vue", "py", "go", "rs", "php", "rb");
 
@@ -37,11 +40,27 @@ public class ProjectCodeMapService {
     private static final Pattern PY_IMPORT = Pattern.compile("^\\s*(?:from\\s+([\\w.]+)\\s+import|import\\s+([\\w.]+))");
     private static final Pattern PY_SYMBOL = Pattern.compile("^\\s*(class|def|async\\s+def)\\s+(\\w+)\\s*\\(");
 
+    public ProjectCodeMapService() {
+        this(new IncrementalContextService(), new ProjectCodeMapMetadataCache());
+    }
+
+    @Autowired
+    public ProjectCodeMapService(IncrementalContextService incrementalContextService,
+                                 ProjectCodeMapMetadataCache metadataCache) {
+        this.incrementalContextService = incrementalContextService;
+        this.metadataCache = metadataCache;
+    }
+
     public String buildRepoMap(StudentProject project, String query, List<String> priorityPaths, int maxFiles) {
+        return buildRepoMap(project, query, priorityPaths, maxFiles, incrementalContextService.index(project));
+    }
+
+    public String buildRepoMap(StudentProject project, String query, List<String> priorityPaths, int maxFiles,
+                               IncrementalContextService.IndexSnapshot snapshot) {
         if (project == null || project.getWorkspacePath() == null) {
             return "Repo map unavailable: workspace path missing.";
         }
-        List<MappedFile> files = scan(project);
+        List<MappedFile> files = scan(project, snapshot);
         if (files.isEmpty()) {
             return "Repo map: no code files indexed.";
         }
@@ -87,31 +106,21 @@ public class ProjectCodeMapService {
         return limit(out.toString(), 24_000);
     }
 
-    private List<MappedFile> scan(StudentProject project) {
-        Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
-        List<MappedFile> result = new ArrayList<>();
-        try (Stream<Path> stream = Files.walk(root)) {
-            List<Path> paths = stream.filter(Files::isRegularFile).limit(3000).toList();
-            for (Path path : paths) {
-                if (result.size() >= MAX_FILES) break;
-                if (isIgnored(root, path) || !isCodeFile(path)) continue;
-                try {
-                    if (Files.size(path) > MAX_BYTES) continue;
-                    String content = Files.readString(path, StandardCharsets.UTF_8);
-                    if (content.indexOf('\0') >= 0) continue;
-                    result.add(mapFile(root, path, content));
-                } catch (Exception ignored) {
-                    // Indexing must never break the agent loop.
-                }
-            }
-        } catch (Exception ignored) {
-            // Return whatever was indexed.
+    private List<MappedFile> scan(StudentProject project, IncrementalContextService.IndexSnapshot snapshot) {
+        if (project == null || project.getWorkspacePath() == null || snapshot == null) {
+            return List.of();
         }
-        return result;
+        Path root = new SecureWorkspacePath(Path.of(project.getWorkspacePath())).workspaceRoot();
+        String workspaceKey = root.toAbsolutePath().normalize().toString();
+        List<IncrementalContextService.ContextDocument> documents = snapshot.documents().stream()
+                .filter(document -> isCodeFile(document.absolutePath()))
+                .limit(MAX_FILES)
+                .toList();
+        return metadataCache.resolve(workspaceKey, documents,
+                document -> mapFile(document.path(), document.absolutePath(), document.content()));
     }
 
-    private MappedFile mapFile(Path root, Path file, String content) {
-        String path = root.relativize(file).toString().replace('\\', '/');
+    private MappedFile mapFile(String path, Path file, String content) {
         String[] lines = content.split("\\R", -1);
         List<Symbol> symbols = new ArrayList<>();
         List<String> imports = new ArrayList<>();
@@ -204,13 +213,6 @@ public class ProjectCodeMapService {
         return out;
     }
 
-    private boolean isIgnored(Path root, Path path) {
-        Path relative = root.relativize(path);
-        for (Path part : relative) {
-            if (IGNORE_DIRS.contains(part.toString())) return true;
-        }
-        return false;
-    }
 
     private boolean isCodeFile(Path path) {
         return CODE_EXTS.contains(extension(path));

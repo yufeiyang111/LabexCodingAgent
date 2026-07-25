@@ -5,6 +5,7 @@ import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
+import com.labex.labexagent.worker.WorkerRunSpec;
 
 import java.util.List;
 
@@ -85,6 +86,7 @@ public class McpToolAdapter implements AgentTool {
         String argsJson = args != null ? args.toString() : "{}";
         McpClient.CallResult result = mcpManager.callTool(
             context.getStudentId(),
+            WorkerRunSpec.forWorkspace("mcp-" + context.getSessionId(), context.getWorkspaceRoot()),
             toolInfo.getServerKey(),
             toolInfo.getToolName(),
             argsJson

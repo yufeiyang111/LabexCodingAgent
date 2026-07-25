@@ -4,6 +4,8 @@ import com.labex.entity.AgentConversation;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.service.AgentConversationService;
 import com.labex.labexagent.service.ProjectIndexService;
+import com.labex.labexagent.workspace.ProjectWorkspace;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.rag.config.RagConfig;
 import com.labex.rag.llm.MiniMaxChat;
 import com.labex.rag.llm.OllamaChat;
@@ -14,9 +16,11 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.Map;
+import java.util.stream.Stream;
 
 /**
  * 命令执行器 - 工业级别的命令执行引擎
@@ -946,13 +950,14 @@ public class CommandExecutor {
     }
 
     private ProjectScan scanProject(StudentProject project) {
-        Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
-        boolean hasPom = exists(root, "pom.xml") || exists(root, "backend/pom.xml");
-        boolean hasPackage = exists(root, "package.json") || exists(root, "frontend/package.json");
-        boolean hasVite = exists(root, "vite.config.js") || exists(root, "vite.config.ts")
-            || exists(root, "frontend/vite.config.js") || exists(root, "frontend/vite.config.ts");
-        boolean hasDockerCompose = exists(root, "docker-compose.yml") || exists(root, "docker-compose.yaml") || exists(root, "compose.yml");
-        boolean hasRequirements = exists(root, "requirements.txt") || exists(root, "pyproject.toml");
+        SecureWorkspacePath workspace = ProjectWorkspace.paths(project);
+        Path root = workspace.workspaceRoot();
+        boolean hasPom = exists(workspace, "pom.xml") || exists(workspace, "backend/pom.xml");
+        boolean hasPackage = exists(workspace, "package.json") || exists(workspace, "frontend/package.json");
+        boolean hasVite = exists(workspace, "vite.config.js") || exists(workspace, "vite.config.ts")
+            || exists(workspace, "frontend/vite.config.js") || exists(workspace, "frontend/vite.config.ts");
+        boolean hasDockerCompose = exists(workspace, "docker-compose.yml") || exists(workspace, "docker-compose.yaml") || exists(workspace, "compose.yml");
+        boolean hasRequirements = exists(workspace, "requirements.txt") || exists(workspace, "pyproject.toml");
         boolean hasSpring = containsFile(root, "application.yml") || containsFile(root, "application.properties");
         boolean hasVue = containsTextFile(root, "package.json", "vue");
         boolean hasReact = containsTextFile(root, "package.json", "react");
@@ -960,22 +965,28 @@ public class CommandExecutor {
         return new ProjectScan(hasPom, hasPackage, hasVite, hasDockerCompose, hasRequirements, hasSpring, hasVue, hasReact, hasFlask);
     }
 
-    private boolean exists(Path root, String relative) {
-        return Files.exists(root.resolve(relative));
+    private boolean exists(SecureWorkspacePath workspace, String relative) {
+        try {
+            return Files.exists(workspace.resolveExisting(relative), LinkOption.NOFOLLOW_LINKS);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     private boolean containsFile(Path root, String fileName) {
-        try {
-            return Files.walk(root, 5).anyMatch(path -> Files.isRegularFile(path) && path.getFileName().toString().equalsIgnoreCase(fileName));
+        try (Stream<Path> stream = Files.walk(root, 5)) {
+            return stream.anyMatch(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                    && path.getFileName().toString().equalsIgnoreCase(fileName));
         } catch (Exception e) {
             return false;
         }
     }
 
     private boolean containsTextFile(Path root, String fileName, String needle) {
-        try {
-            var files = Files.walk(root, 5)
-                .filter(path -> Files.isRegularFile(path) && path.getFileName().toString().equalsIgnoreCase(fileName))
+        try (Stream<Path> stream = Files.walk(root, 5)) {
+            var files = stream
+                .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                        && path.getFileName().toString().equalsIgnoreCase(fileName))
                 .limit(4)
                 .toList();
             for (var file : files) {
@@ -1019,12 +1030,17 @@ public class CommandExecutor {
     }
 
     private String summarizeTopLevel(StudentProject project) {
-        Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
+        Path root = ProjectWorkspace.paths(project).workspaceRoot();
         StringBuilder builder = new StringBuilder();
         try (var stream = Files.list(root)) {
             stream.sorted().limit(80).forEach(path -> {
+                if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)
+                        && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                    return;
+                }
                 String name = path.getFileName().toString();
-                builder.append(Files.isDirectory(path) ? "[dir] " : "[file] ").append(name).append('\n');
+                builder.append(Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS) ? "[dir] " : "[file] ")
+                        .append(name).append('\n');
             });
         } catch (Exception e) {
             return "(unable to read project structure)";

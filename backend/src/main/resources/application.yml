@@ -4,6 +4,8 @@ server:
     context-path: /api
 
 spring:
+  profiles:
+    default: local
   config:
     import:
       - optional:file:${user.dir}/../.env[.properties]
@@ -44,12 +46,39 @@ jwt:
 
 labex-agent:
   project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/LabexAgent/workspaces}
+  interaction-timeout-poll-interval-ms: ${LABEX_AGENT_INTERACTION_TIMEOUT_POLL_INTERVAL_MS:30000}
+  retry-poll-interval-ms: ${LABEX_AGENT_RETRY_POLL_INTERVAL_MS:1000}
+  instance-id: ${LABEX_AGENT_INSTANCE_ID:}
+  execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
+  execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
+  worker:
+    wsl:
+      distribution: ${LABEX_AGENT_WSL_DISTRIBUTION:Debian}
+    docker:
+      image: ${LABEX_AGENT_WORKER_DOCKER_IMAGE:labex-agent-sandbox:smoke}
+  secret-store:
+    master-key: ${LABEX_AGENT_SECRET_STORE_MASTER_KEY:}
+  websocket:
+    allowed-origins: ${LABEX_AGENT_WEBSOCKET_ALLOWED_ORIGINS:http://localhost:3000,http://127.0.0.1:3000}
   lsp:
+    start-timeout-seconds: ${LABEX_LSP_START_TIMEOUT_SECONDS:12}
+    request-timeout-seconds: ${LABEX_LSP_REQUEST_TIMEOUT_SECONDS:6}
+    diagnostic-timeout-millis: ${LABEX_LSP_DIAGNOSTIC_TIMEOUT_MILLIS:1500}
+    failure-cooldown-seconds: ${LABEX_LSP_FAILURE_COOLDOWN_SECONDS:30}
     commands:
-      java: ${LABEX_LSP_JAVA_CMD:jdtls}
+      java: ${LABEX_LSP_JAVA_CMD:jdtls --jvm-arg=-Xms256m}
       typescript: ${LABEX_LSP_TS_CMD:typescript-language-server --stdio}
       vue: ${LABEX_LSP_VUE_CMD:vue-language-server --stdio}
       python: ${LABEX_LSP_PY_CMD:pyright-langserver --stdio}
+  web-search:
+    provider: ${LABEX_AGENT_WEB_SEARCH_PROVIDER:auto}
+    exa-enabled: ${LABEX_AGENT_WEB_SEARCH_EXA_ENABLED:true}
+    parallel-enabled: ${LABEX_AGENT_WEB_SEARCH_PARALLEL_ENABLED:false}
+    public-fallback-enabled: ${LABEX_AGENT_WEB_SEARCH_PUBLIC_FALLBACK_ENABLED:true}
+    exa-api-key: ${EXA_API_KEY:}
+    parallel-api-key: ${PARALLEL_API_KEY:}
+    request-timeout-seconds: ${LABEX_AGENT_WEB_SEARCH_TIMEOUT_SECONDS:25}
+    max-response-bytes: ${LABEX_AGENT_WEB_SEARCH_MAX_RESPONSE_BYTES:1048576}
 
 rag:
   mini-max-api-key: ${MINIMAX_API_KEY:}

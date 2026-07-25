@@ -4,8 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "vite build && node scripts/check-chunk-budget.mjs",
+    "preview": "vite preview",
+    "test": "node scripts/run-tests.mjs",
+    "check:chunks": "node scripts/check-chunk-budget.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -26,8 +28,11 @@
     "vue-router": "^4.3.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-vue": "^5.0.4",
     "sass": "^1.71.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
     "vite": "^5.1.6"
   }
 }

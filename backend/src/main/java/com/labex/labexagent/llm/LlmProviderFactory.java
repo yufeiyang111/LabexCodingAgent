@@ -1,6 +1,7 @@
 package com.labex.labexagent.llm;
 
 import com.labex.entity.AgentModelConfig;
+import com.labex.labexagent.secret.SecretStore;
 import com.labex.rag.config.RagConfig;
 import java.util.HashMap;
 import java.util.List;
@@ -11,9 +12,11 @@ import org.springframework.stereotype.Component;
 public class LlmProviderFactory {
     private final Map<String, LlmProvider> providers = new HashMap<>();
     private final RagConfig ragConfig;
+    private final SecretStore secretStore;
 
-    public LlmProviderFactory(List<LlmProvider> providerList, RagConfig ragConfig) {
+    public LlmProviderFactory(List<LlmProvider> providerList, RagConfig ragConfig, SecretStore secretStore) {
         this.ragConfig = ragConfig;
+        this.secretStore = secretStore;
         for (LlmProvider p : providerList) {
             providers.put(p.getProviderId(), p);
         }
@@ -37,14 +40,16 @@ public class LlmProviderFactory {
     }
 
     public LlmProvider.LlmConfig buildConfig(AgentModelConfig config) {
-        if (config != null && config.getApiKey() != null && !config.getApiKey().isBlank()) {
+        String configuredKey = resolveConfiguredApiKey(config);
+        if (config != null && !configuredKey.isBlank()) {
             return new LlmProvider.LlmConfig(
-                    config.getApiKey(),
+                    configuredKey,
                     config.getBaseUrl() != null ? config.getBaseUrl() : "https://api.openai.com",
                     config.getModelName() != null ? config.getModelName() : "gpt-4o-mini",
                     config.getMaxTokens() != null ? config.getMaxTokens() : 32768,
-                    config.getTemperature()
-            );
+                    config.getTemperature(), null, null, null,
+                    Integer.valueOf(1).equals(config.getPromptCacheKeyEnabled()), null
+            ).withReasoningEffort(ReasoningEffort.normalize(config.getReasoningEffort()));
         }
         String key = ragConfig.getMiniMaxApiKey();
         if (key == null || key.isBlank()) key = "";
@@ -56,14 +61,31 @@ public class LlmProviderFactory {
         );
     }
 
+    private String resolveConfiguredApiKey(AgentModelConfig config) {
+        if (config == null) {
+            return "";
+        }
+        if (config.getApiKeyEncrypted() != null && !config.getApiKeyEncrypted().isBlank()) {
+            try (SecretStore.SecretLease lease = secretStore.open(
+                    SecretStore.SecretScope.MODEL_API_KEY, config.getApiKeyEncrypted())) {
+                return lease.value();
+            }
+        }
+        return config.getApiKey() == null ? "" : config.getApiKey();
+    }
+
     public Map<String, Object> getProviderInfo() {
         Map<String, Object> info = new HashMap<>();
         for (var entry : providers.entrySet()) {
             Map<String, Object> p = new HashMap<>();
             p.put("id", entry.getValue().getProviderId());
             p.put("name", entry.getValue().getProviderName());
-            p.put("streaming", entry.getValue().supportsStreaming());
-            p.put("toolCalling", entry.getValue().supportsToolCalling());
+            ProviderCapabilities capabilities = entry.getValue().capabilities();
+            p.put("streaming", capabilities.streaming());
+            p.put("toolCalling", capabilities.toolCalling());
+            p.put("parallelToolCalls", capabilities.parallelToolCalls());
+            p.put("reasoning", capabilities.reasoning());
+            p.put("usage", capabilities.usage());
             info.put(entry.getKey(), p);
         }
         return info;

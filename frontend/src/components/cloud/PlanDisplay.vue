@@ -93,12 +93,12 @@ const progressRatio = computed(() => totalCount.value > 0 ? completedCount.value
 
 <style scoped>
 .plan-display {
-  margin: 8px 0;
-  border: 1px solid #dbeafe;
-  border-radius: 10px;
+  margin: 12px 0;
+  border: 1px solid var(--ai-border-strong);
+  border-radius: 12px;
   overflow: hidden;
-  background: linear-gradient(135deg, #eff6ff 0%, #f0f7ff 100%);
-  box-shadow: 0 1px 3px rgba(37,99,235,0.08);
+  background: var(--ai-bg-elevated);
+  box-shadow: var(--ai-shadow-sm);
 }
 .plan-header {
   display: flex;
@@ -112,54 +112,61 @@ const progressRatio = computed(() => totalCount.value > 0 ? completedCount.value
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  font-weight: 700;
-  color: #1e40af;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ai-text);
+}
+.plan-header-left svg {
+  stroke: var(--ai-purple-text) !important;
 }
 .plan-header-right {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.plan-count { font-size: 12px; color: #3b82f6; font-weight: 600; }
+.plan-count { font-size: 12px; color: var(--ai-text-muted); font-weight: 600; }
 .plan-body {
   padding: 0 12px 10px;
 }
 .plan-progress-bar {
-  height: 3px;
-  background: #e5e7eb;
+  height: 4px;
+  background: var(--ai-border);
   border-radius: 2px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
   overflow: hidden;
 }
 .plan-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #3b82f6, #2563eb);
+  background: var(--ai-purple-text);
   border-radius: 2px;
   transition: width 0.3s ease;
 }
 .plan-item {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 5px 0;
-  font-size: 12px;
-  color: #374151;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--ai-text-secondary);
   line-height: 1.5;
 }
 .plan-item.current {
-  background: #eff6ff;
+  background: var(--ai-purple-bg);
   margin: 0 -12px;
-  padding: 5px 12px;
-  border-radius: 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border-left: 3px solid var(--ai-purple-text);
 }
 .plan-item.completed .plan-text {
-  color: #9ca3af;
+  color: var(--ai-text-faint);
   text-decoration: line-through;
 }
 .plan-item.current .plan-text {
-  color: #1e40af;
+  color: var(--ai-purple-text);
   font-weight: 600;
+}
+.plan-item.current .plan-icon svg circle {
+  fill: var(--ai-purple-text) !important;
 }
 .plan-icon {
   flex-shrink: 0;

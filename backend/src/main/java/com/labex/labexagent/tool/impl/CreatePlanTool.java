@@ -76,7 +76,11 @@ implements AgentTool {
         if (index < 0 || index >= plan.size()) {
             return ToolResult.failed((String)("task_index \u8d85\u51fa\u8303\u56f4\uff0c\u6709\u6548\u8303\u56f4: 1-" + plan.size()));
         }
-        ((AgentContext.PlanItem)plan.get(index)).setCompleted(true);
+        AgentContext.PlanItem item = plan.get(index);
+        if (requiresVerification(item) && !context.hasTrustedVerification()) {
+            return ToolResult.failed("Verification task cannot be completed before a successful test, build, or manual file verification.");
+        }
+        item.setCompleted(true);
         int nextIndex = this.findNextTask(plan);
         context.setCurrentPlanIndex(nextIndex);
         StringBuilder summary = new StringBuilder();
@@ -104,6 +108,14 @@ implements AgentTool {
             return ToolResult.ok((String)("\u5df2\u66f4\u65b0\u4efb\u52a1 " + (index + 1) + "\n\n" + context.getPlanSummary()));
         }
         return ToolResult.ok((String)("\u5f53\u524d\u8ba1\u5212:\n" + context.getPlanSummary()));
+    }
+
+    private boolean requiresVerification(AgentContext.PlanItem item) {
+        String text = ((item.getTitle() == null ? "" : item.getTitle()) + " "
+                + (item.getDescription() == null ? "" : item.getDescription())).toLowerCase(java.util.Locale.ROOT);
+        return text.contains("verify") || text.contains("verification") || text.contains("test")
+                || text.contains("build") || text.contains("compile") || text.contains("lint")
+                || text.contains("\u9a8c\u8bc1") || text.contains("\u6d4b\u8bd5") || text.contains("\u6784\u5efa") || text.contains("\u7f16\u8bd1");
     }
 
     private int findNextTask(List<AgentContext.PlanItem> plan) {

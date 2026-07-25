@@ -3,6 +3,8 @@ package com.labex.labexagent.prompt;
 import com.labex.entity.StudentProject;
 
 public class LabexSystemPrompt {
+    private static final int MAX_PROJECT_STRUCTURE_CHARS = 12_000;
+
     public static String buildSystemPrompt(StudentProject project, String toolDefinitions) {
         return buildSystemPrompt(project, toolDefinitions, "en");
     }
@@ -34,8 +36,19 @@ Keep source code, file paths, commands, package names, API names, log excerpts, 
     }
 
     private static String environment(StudentProject project) {
-        String structure = project.getStructureJson() == null ? "{}" : project.getStructureJson();
-        return "<environment>\nworkspace_root: %s\nproject_name: %s\nproject_structure_json:\n%s\n</environment>\n\nUse paths relative to workspace_root. For example, use frontend/src/main.js instead of workspace/frontend/src/main.js.\nNever prefix paths with workspace/ and never create duplicate top-level project folders when matching folders already exist.\n".formatted(project.getWorkspacePath(), project.getProjectName(), structure);
+        String structure = compactProjectStructure(project == null ? null : project.getStructureJson());
+        String projectName = project == null || project.getProjectName() == null ? "workspace" : project.getProjectName();
+        return "<environment>\nworkspace_root: /workspace\nproject_name: %s\nproject_structure_summary:\n%s\n</environment>\n\nUse paths relative to workspace_root. For example, use frontend/src/main.js instead of workspace/frontend/src/main.js.\nNever prefix paths with workspace/ and never create duplicate top-level project folders when matching folders already exist.\n".formatted(projectName, structure);
+    }
+
+    private static String compactProjectStructure(String rawStructure) {
+        String structure = rawStructure == null || rawStructure.isBlank() ? "{}" : rawStructure;
+        if (structure.length() <= MAX_PROJECT_STRUCTURE_CHARS) {
+            return structure;
+        }
+        return "Stored project tree has " + structure.length()
+                + " characters and is omitted from the system prompt to keep the first response responsive. "
+                + "Use the repository map and targeted file tools to inspect paths on demand.";
     }
 
     private static String workflow() {

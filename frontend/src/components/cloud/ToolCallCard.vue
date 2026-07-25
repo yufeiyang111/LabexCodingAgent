@@ -109,6 +109,22 @@
           </div>
         </div>
 
+        <div v-if="isCommandApproval" class="tc-approval">
+          <div class="tc-approval-title">此命令需要一次性批准</div>
+          <div v-if="commandApproval.displayCommand" class="tc-approval-command">
+            <span>命令</span>
+            <code>{{ commandApproval.displayCommand }}</code>
+          </div>
+          <div class="tc-approval-meta">
+            <span v-if="commandApproval.riskLevel">风险：{{ commandApproval.riskLevel }}</span>
+            <span v-if="commandApproval.expiresTime">到期：{{ commandApproval.expiresTime }}</span>
+          </div>
+          <div class="tc-approval-actions">
+            <button type="button" class="tc-approval-btn primary" :disabled="commandSubmitting" @click.stop="emitCommandApproval('approve')">{{ commandSubmitting ? '提交中...' : '批准一次' }}</button>
+            <button type="button" class="tc-approval-btn danger" :disabled="commandSubmitting" @click.stop="emitCommandApproval('reject')">拒绝</button>
+          </div>
+        </div>
+
         <div v-if="isPermissionAsk" class="tc-approval">
           <div class="tc-approval-title">需要确认后才能继续执行</div>
           <textarea
@@ -137,11 +153,12 @@ const props = defineProps({
   call: { type: Object, required: true }
 })
 
-const emit = defineEmits(['permission', 'question'])
+const emit = defineEmits(['permission', 'question', 'command-approval'])
 
 const expanded = ref(props.call.status === 'error' || props.call.status === 'waiting_approval' || props.call.status === 'waiting_user')
 const answerDraft = ref('')
 const approvalFeedback = ref('')
+const commandSubmitting = ref(false)
 
 const toolMap = {
   read_file: '读取文件', edit_file: '编辑文件', write_file: '写入文件',
@@ -164,6 +181,8 @@ const statusColor = computed(() => {
   return '#10b981'
 })
 const isPermissionAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.permissionRequest)
+const isCommandApproval = computed(() => props.call.status === 'waiting_approval' && !!props.call.commandApproval)
+const commandApproval = computed(() => props.call.commandApproval || {})
 const isQuestionAsk = computed(() => props.call.status === 'waiting_user' && !!props.call.questionRequest)
 const questionRequest = computed(() => props.call.questionRequest || {})
 const questionOptions = computed(() => Array.isArray(questionRequest.value.options) ? questionRequest.value.options.filter(Boolean) : [])
@@ -203,6 +222,16 @@ function truncate(text, max) {
 
 function emitPermission(action) {
   emit('permission', { call: props.call, action, feedback: approvalFeedback.value.trim() })
+}
+
+async function emitCommandApproval(action) {
+  if (commandSubmitting.value) return
+  commandSubmitting.value = true
+  try {
+    await emit('command-approval', { call: props.call, action })
+  } finally {
+    commandSubmitting.value = false
+  }
 }
 
 function setQuestionAnswer(option) {
@@ -456,6 +485,29 @@ watch(() => props.call.questionRequest, (request) => {
   margin-bottom: 8px;
 }
 
+.tc-approval-command {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11px;
+  color: #92400e;
+  margin-bottom: 8px;
+}
+
+.tc-approval-command code {
+  flex: 1;
+  font-family: 'JetBrains Mono', monospace;
+  overflow-wrap: anywhere;
+}
+
+.tc-approval-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: #a16207;
+  margin-bottom: 8px;
+}
 .tc-approval-actions {
   display: flex;
   flex-wrap: wrap;

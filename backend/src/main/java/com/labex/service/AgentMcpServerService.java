@@ -7,6 +7,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.labex.entity.AgentMcpServer;
+import com.labex.labexagent.network.OutboundUrlPolicy;
+import com.labex.labexagent.secret.SecretStore;
 import com.labex.mapper.AgentMcpServerMapper;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -24,9 +26,18 @@ import org.springframework.stereotype.Service;
 public class AgentMcpServerService extends ServiceImpl<AgentMcpServerMapper, AgentMcpServer> {
     private static final Gson GSON = new Gson();
     private static final int MAX_TOOLS_JSON = 30000;
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(8))
-            .build();
+    private final OutboundUrlPolicy outboundUrlPolicy;
+    private final SecretStore secretStore;
+    private final HttpClient httpClient;
+
+    public AgentMcpServerService(OutboundUrlPolicy outboundUrlPolicy, SecretStore secretStore) {
+        this.outboundUrlPolicy = outboundUrlPolicy;
+        this.secretStore = secretStore;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(8))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+    }
 
     public List<AgentMcpServer> listByStudent(Integer studentId) {
         return this.list(new LambdaQueryWrapper<AgentMcpServer>()
@@ -140,10 +151,18 @@ public class AgentMcpServerService extends ServiceImpl<AgentMcpServerMapper, Age
                 .timeout(Duration.ofSeconds(30))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)));
-        if (server.getAuthHeader() != null && !server.getAuthHeader().isBlank()) {
-            request.header("Authorization", server.getAuthHeader());
+        String authHeader = resolveAuthHeader(server);
+        if (!authHeader.isBlank()) {
+            request.header("Authorization", authHeader);
         }
         HttpResponse<String> response = httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() >= 300 && response.statusCode() < 400) {
+            String location = response.headers().firstValue("Location").orElse("");
+            if (!location.isBlank()) {
+                outboundUrlPolicy.validateRedirect(endpoint, location);
+            }
+            throw new IllegalArgumentException("MCP endpoint redirects are not supported");
+        }
         return "http_status=" + response.statusCode() + "\n" + limit(response.body(), 60000);
     }
 
@@ -157,10 +176,9 @@ public class AgentMcpServerService extends ServiceImpl<AgentMcpServerMapper, Age
         String name = string(body, "serverName", creating ? "" : server.getServerName());
         String transport = string(body, "transport", "http");
         String endpoint = string(body, "endpoint", creating ? "" : server.getEndpoint());
-        String authHeader = string(body, "authHeader", server.getAuthHeader());
-        if (!creating && (authHeader == null || authHeader.isBlank())) {
-            authHeader = server.getAuthHeader();
-        }
+        String authHeader = string(body, "authHeader", "");
+        boolean authHeaderProvided = body != null && body.containsKey("authHeader")
+                && body.get("authHeader") != null && !String.valueOf(body.get("authHeader")).trim().isBlank();
         String toolsJson = string(body, "toolsJson", server.getToolsJson());
         Integer enabled = bool(body, "isEnabled", server.getIsEnabled() == null ? 1 : server.getIsEnabled());
 
@@ -176,7 +194,7 @@ public class AgentMcpServerService extends ServiceImpl<AgentMcpServerMapper, Age
         if (endpoint == null || endpoint.isBlank()) {
             throw new IllegalArgumentException("Endpoint is required");
         }
-        validateEndpoint(endpoint);
+        URI validatedEndpoint = validateEndpoint(endpoint);
         if (!"http".equalsIgnoreCase(transport)) {
             throw new IllegalArgumentException("Only HTTP transport is supported");
         }
@@ -187,47 +205,63 @@ public class AgentMcpServerService extends ServiceImpl<AgentMcpServerMapper, Age
         server.setServerKey(key);
         server.setServerName(limit(name.trim(), 120));
         server.setTransport("http");
-        server.setEndpoint(endpoint.trim());
-        server.setAuthHeader(authHeader == null || authHeader.isBlank() ? null : limit(authHeader.trim(), 600));
+        server.setEndpoint(validatedEndpoint.toString());
+        if (authHeaderProvided) {
+            storeAuthHeader(server, limit(authHeader.trim(), 600));
+        } else if (creating) {
+            storeAuthHeader(server, "");
+        }
         server.setToolsJson(toolsJson == null ? "" : toolsJson.trim());
         server.setIsEnabled(enabled);
         server.setUpdateTime(LocalDateTime.now());
     }
 
-    private URI validateEndpoint(String value) {
-        try {
-            URI uri = URI.create(value.trim());
-            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
-            if (!scheme.equals("https") && !scheme.equals("http")) {
-                throw new IllegalArgumentException("Endpoint must use http or https");
-            }
-            if (uri.getUserInfo() != null) {
-                throw new IllegalArgumentException("Endpoint must not contain user info");
-            }
-            String host = uri.getHost();
-            if (host == null || host.isBlank() || isBlockedHost(host)) {
-                throw new IllegalArgumentException("Endpoint host is not allowed");
-            }
-            return uri;
-        } catch (IllegalArgumentException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid endpoint");
-        }
+    URI validateEndpoint(String value) {
+        return outboundUrlPolicy.validate(value).uri();
     }
 
-    private boolean isBlockedHost(String host) {
-        String h = host.toLowerCase(Locale.ROOT);
-        if (h.equals("localhost") || h.endsWith(".localhost") || h.equals("0.0.0.0") || h.equals("::1")) {
-            return true;
+    public boolean hasStoredAuthHeader(AgentMcpServer server) {
+        return server != null && ((server.getAuthHeaderEncrypted() != null && !server.getAuthHeaderEncrypted().isBlank())
+                || (server.getAuthHeader() != null && !server.getAuthHeader().isBlank()));
+    }
+
+    public String resolveAuthHeader(AgentMcpServer server) {
+        if (server == null) {
+            return "";
         }
-        if (h.startsWith("127.") || h.startsWith("10.") || h.startsWith("192.168.") || h.startsWith("169.254.")) {
-            return true;
+        if (server.getAuthHeaderEncrypted() != null && !server.getAuthHeaderEncrypted().isBlank()) {
+            try (SecretStore.SecretLease lease = secretStore.open(
+                    SecretStore.SecretScope.MCP_AUTH_HEADER, server.getAuthHeaderEncrypted())) {
+                return lease.value();
+            }
         }
-        if (h.matches("^172\\.(1[6-9]|2[0-9]|3[0-1])\\..*")) {
-            return true;
+        return server.getAuthHeader() == null ? "" : server.getAuthHeader();
+    }
+
+    public int migrateLegacySecrets() {
+        int migrated = 0;
+        for (AgentMcpServer server : this.list()) {
+            if ((server.getAuthHeaderEncrypted() == null || server.getAuthHeaderEncrypted().isBlank())
+                    && server.getAuthHeader() != null && !server.getAuthHeader().isBlank()) {
+                storeAuthHeader(server, server.getAuthHeader());
+                server.setUpdateTime(LocalDateTime.now());
+                this.updateById(server);
+                migrated++;
+            }
         }
-        return h.equals("metadata.google.internal") || h.equals("169.254.169.254");
+        return migrated;
+    }
+
+    private void storeAuthHeader(AgentMcpServer server, String authHeader) {
+        server.setAuthHeader("");
+        server.setAuthHeaderEncrypted(null);
+        server.setAuthHeaderKeyVersion(null);
+        if (authHeader == null || authHeader.isBlank()) {
+            return;
+        }
+        SecretStore.StoredSecret stored = secretStore.store(SecretStore.SecretScope.MCP_AUTH_HEADER, authHeader);
+        server.setAuthHeaderEncrypted(stored.ciphertext());
+        server.setAuthHeaderKeyVersion(stored.keyVersion());
     }
 
     private JsonElement parseArguments(String argumentsJson) {

@@ -1,24 +1,41 @@
 package com.labex.labexagent.service;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
-import java.util.stream.Stream;
 
 @Service
 public class ProjectIndexService {
+    private final IncrementalContextService incrementalContextService;
     private static final int MAX_FILES = 900;
     private static final int MAX_FILE_SIZE = 300000;
-    private static final Set<String> IGNORE_DIRS = Set.of(".git", "node_modules", "dist", "build", "target", "__pycache__", ".idea", ".vscode", ".gradle", ".mvn");
     private static final Set<String> TEXT_EXTS = Set.of("java", "py", "js", "jsx", "ts", "tsx", "vue", "html", "css", "scss", "less", "json", "xml", "yml", "yaml", "md", "txt", "properties", "ini", "conf", "cfg", "toml", "sql", "sh", "bat", "cmd", "ps1", "gradle", "go", "rs", "php", "rb", "c", "h", "cpp", "hpp");
 
+    public ProjectIndexService() {
+        this(new IncrementalContextService());
+    }
+
+    @Autowired
+    public ProjectIndexService(IncrementalContextService incrementalContextService) {
+        this.incrementalContextService = incrementalContextService;
+    }
+
     public String buildProjectDigest(StudentProject project, String query) {
-        List<IndexedFile> files = scan(project);
-        Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
+        return buildProjectDigest(project, query, snapshot(project));
+    }
+
+    public String buildProjectDigest(StudentProject project, String query, IncrementalContextService.IndexSnapshot snapshot) {
+        List<IndexedFile> files = scan(snapshot);
+        Path root = workspacePaths(project).workspaceRoot();
         StringBuilder digest = new StringBuilder();
         digest.append("Project index (Labex project memory):\n");
         digest.append("\n## Entrypoints\n").append(listEntrypoints(files));
@@ -36,7 +53,7 @@ public class ProjectIndexService {
             digest.append('\n');
             count++;
         }
-        List<SearchHit> hits = searchFiles(project, query, 8);
+        List<SearchHit> hits = searchFiles(snapshot, query, 8);
         if (!hits.isEmpty()) {
             digest.append("\nPossible related snippets:\n");
             for (SearchHit hit : hits) {
@@ -47,8 +64,13 @@ public class ProjectIndexService {
     }
 
     public String buildAdaptiveProjectContext(StudentProject project, String query, Collection<String> priorityPaths) {
-        List<IndexedFile> files = scan(project);
-        Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
+        return buildAdaptiveProjectContext(project, query, priorityPaths, snapshot(project));
+    }
+
+    public String buildAdaptiveProjectContext(StudentProject project, String query, Collection<String> priorityPaths,
+                                              IncrementalContextService.IndexSnapshot snapshot) {
+        List<IndexedFile> files = scan(snapshot);
+        Path root = workspacePaths(project).workspaceRoot();
         StringBuilder context = new StringBuilder();
         context.append("Adaptive project context:\n");
         context.append("\n## Entrypoints\n").append(listEntrypoints(files));
@@ -57,7 +79,7 @@ public class ProjectIndexService {
         context.append("\n## Changed Or Remembered Files\n").append(listPriorityFiles(files, priorityPaths));
         context.append("\n## Symbol Map\n").append(symbolMap(files, 90));
 
-        List<SearchHit> hits = searchFiles(project, query, 12);
+        List<SearchHit> hits = searchFiles(snapshot, query, 12);
         if (!hits.isEmpty()) {
             context.append("\n## Task Related Hits\n");
             for (SearchHit hit : hits) {
@@ -158,55 +180,35 @@ public class ProjectIndexService {
         catch (Exception e) { return 0L; }
     }
 
+    public IncrementalContextService.IndexSnapshot snapshot(StudentProject project) {
+        return incrementalContextService.index(project);
+    }
+
     public List<SearchHit> searchFiles(StudentProject project, String query, int limit) {
-        List<SearchHit> hits = new ArrayList<>();
-        if (query == null || query.isBlank()) return hits;
-        String[] terms = query.toLowerCase(Locale.ROOT).split("\\s+");
-        List<IndexedFile> files = scan(project);
-        for (IndexedFile file : files) {
-            if (hits.size() >= limit) break;
-            String content = read(file.absolutePath());
-            if (content.isBlank()) continue;
-            String preview = preview(content, Arrays.asList(terms));
-            int score = 0;
-            for (String term : terms) {
-                if (file.path().toLowerCase(Locale.ROOT).contains(term)) score += 5;
-                if (content.toLowerCase(Locale.ROOT).contains(term)) score += 1;
-            }
-            if (score > 0) {
-                hits.add(new SearchHit(file.path(), preview, score));
-            }
-        }
-        hits.sort(Comparator.comparingInt(SearchHit::score).reversed());
-        return hits.subList(0, Math.min(hits.size(), limit));
+        return searchFiles(snapshot(project), query, limit);
     }
 
-    private List<IndexedFile> scan(StudentProject project) {
-        Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
-        List<IndexedFile> files = new ArrayList<>();
-        try (Stream<Path> stream = Files.walk(root)) {
-            List<Path> paths = stream.filter(p -> Files.isRegularFile(p)).limit(2700L).toList();
-            for (Path path : paths) {
-                if (files.size() >= MAX_FILES) break;
-                if (isIgnored(root, path) || !isTextFile(path)) continue;
-                try {
-                    if (Files.size(path) > MAX_FILE_SIZE) continue;
-                } catch (Exception e) { continue; }
-                String relative = root.relativize(path).toString().replace('\\', '/');
-                files.add(new IndexedFile(relative, path, path.toFile().length(), hints(path)));
-            }
-        } catch (Exception e) { /* ignore */ }
-        files.sort(Comparator.comparing(IndexedFile::path));
-        return files;
+    public List<SearchHit> searchFiles(IncrementalContextService.IndexSnapshot snapshot, String query, int limit) {
+        IncrementalContextService.RetrievalResult retrieval = incrementalContextService.retrieve(snapshot, query, List.of(), limit);
+        return retrieval.hits().stream()
+                .map(hit -> new SearchHit(hit.path(), hit.preview(), (int) Math.round(hit.score())))
+                .toList();
     }
 
-    private boolean isIgnored(Path root, Path path) {
-        Path relative = root.relativize(path);
-        for (Path part : relative) {
-            if (IGNORE_DIRS.contains(part.toString())) return true;
+    private List<IndexedFile> scan(IncrementalContextService.IndexSnapshot snapshot) {
+        if (snapshot == null) {
+            return new ArrayList<>();
         }
-        return false;
+        return snapshot.documents().stream()
+                .map(document -> new IndexedFile(document.path(), document.absolutePath(), document.size(),
+                        String.join(" | ", document.symbols().stream().limit(4).toList())))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
     }
+
+    private SecureWorkspacePath workspacePaths(StudentProject project) {
+        return new SecureWorkspacePath(Path.of(project.getWorkspacePath()));
+    }
+
 
     private boolean isTextFile(Path path) {
         String name = path.getFileName().toString();

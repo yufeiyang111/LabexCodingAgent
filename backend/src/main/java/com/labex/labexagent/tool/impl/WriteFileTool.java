@@ -12,11 +12,15 @@ import com.labex.service.StudentProjectService;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
-public class WriteFileTool
-implements AgentTool {
+public class WriteFileTool implements AgentTool {
+    private static final Logger log = LoggerFactory.getLogger(WriteFileTool.class);
+
     private final DiffService diffService;
     private final StudentProjectService studentProjectService;
 
@@ -26,30 +30,72 @@ implements AgentTool {
     }
 
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("write_file").description("\u521b\u5efa\u65b0\u6587\u4ef6\u6216\u5b8c\u5168\u8986\u76d6\u5df2\u6709\u6587\u4ef6\u7684\u5185\u5bb9\uff0c\u6587\u4ef6\u4f1a\u81ea\u52a8\u5199\u5165\u5e76\u8bb0\u5f55\u53d8\u66f4\u5386\u53f2\uff0c\u652f\u6301\u56de\u9000").stringProperty("file_path", "\u6587\u4ef6\u8def\u5f84", true).stringProperty("content", "\u6587\u4ef6\u5185\u5bb9", true).build();
+        return ToolDefinition.builder().name("write_file")
+                .description("\u521b\u5efa\u65b0\u6587\u4ef6\u6216\u5b8c\u5168\u8986\u76d6\u5df2\u6709\u6587\u4ef6\u7684\u5185\u5bb9\uff0c\u6587\u4ef6\u4f1a\u81ea\u52a8\u5199\u5165\u5e76\u8bb0\u5f55\u53d8\u66f4\u5386\u53f2\uff0c\u652f\u6301\u56de\u9000")
+                .stringProperty("file_path", "\u6587\u4ef6\u8def\u5f84", true)
+                .stringProperty("content", "\u6587\u4ef6\u5185\u5bb9", true)
+                .build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
-        String path = ToolSupport.stringArgMulti((JsonObject)args, "", (String[])new String[]{"file_path", "path", "filePath"});
-        String content = ToolSupport.stringArgMulti((JsonObject)args, "", (String[])new String[]{"content", "file_content", "fileContent"});
+        long totalStartedNanos = System.nanoTime();
+        String path = ToolSupport.stringArgMulti(args, "", "file_path", "path", "filePath");
+        String content = ToolSupport.stringArgMulti(args, "", "content", "file_content", "fileContent");
         if (path.isEmpty()) {
             return ToolResult.failed("file_path is required");
         }
-        Path root = context.getWorkspaceRoot();
-        String cleaned = ToolSupport.normalizeRelativePath((String)path);
+        try {
+            ToolSupport.requireEditableTextContent(content);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.failed(e.getMessage());
+        }
+        String cleaned = ToolSupport.normalizeRelativePath(path);
         if (cleaned.isEmpty()) {
             return ToolResult.failed("file_path is required");
         }
-        Path file = root.resolve(cleaned).normalize();
-        if (!file.startsWith(root)) {
+        log.info("WRITE_FILE_TOOL_START taskId={} projectId={} conversationId={} path={} contentChars={}",
+                context.getTaskId(), context.getProject().getProjectId(), context.getConversationId(), cleaned,
+                content.length());
+        Path file;
+        try {
+            file = ToolSupport.resolveForCreate(context, cleaned);
+        } catch (IllegalArgumentException e) {
             return ToolResult.failed("Unsafe file path");
         }
         String beforeContent = "";
-        if (Files.exists(file, new LinkOption[0])) {
-            beforeContent = Files.readString(file);
+        long readStartedNanos = System.nanoTime();
+        boolean fileExists = Files.exists(file, LinkOption.NOFOLLOW_LINKS);
+        if (fileExists) {
+            try {
+                beforeContent = ToolSupport.readEditableText(file);
+            } catch (IllegalArgumentException e) {
+                return ToolResult.failed(e.getMessage());
+            }
         }
-        PendingChange change = this.diffService.stageAndApply(context.getStudentId(), context.getProject(), context.getConversationId(), context.getTaskId(), cleaned, beforeContent, content);
-        return ToolResult.ok((String)("\u5df2\u81ea\u52a8\u5199\u5165\u6587\u4ef6: " + path + "\uff08\u53ef\u968f\u65f6\u56de\u9000\uff09")).withDiff(change.getDiff()).withPendingChangeId(change.getId());
+        long readElapsedMs = elapsedMs(readStartedNanos);
+        log.info("WRITE_FILE_TOOL_SOURCE_READY taskId={} path={} existed={} readMs={} beforeChars={}",
+                context.getTaskId(), cleaned, fileExists, readElapsedMs, beforeContent.length());
+        long applyStartedNanos = System.nanoTime();
+        try {
+            PendingChange change = this.diffService.stageAndApplyDeferred(context.getStudentId(), context.getProject(),
+                    context.getConversationId(), context.getTaskId(), cleaned, beforeContent, content,
+                    fileExists ? "modify" : "create");
+            long applyElapsedMs = elapsedMs(applyStartedNanos);
+            long totalElapsedMs = elapsedMs(totalStartedNanos);
+            log.info("WRITE_FILE_TOOL_COMPLETE taskId={} path={} changeId={} applyMs={} totalMs={}",
+                    context.getTaskId(), cleaned, change.getId(), applyElapsedMs, totalElapsedMs);
+            return ToolResult.ok("\u5df2\u81ea\52a8\u5199\u5165\u6587\u4ef6: " + path
+                            + "\uff08\u53ef\u968f\u65f6\u56de\u9000\uff09")
+                    .withDiff(change.getDiff()).withPendingChangeId(change.getId());
+        } catch (Exception failure) {
+            log.warn("WRITE_FILE_TOOL_FAILED taskId={} path={} applyMs={} totalMs={} errorType={} error={}",
+                    context.getTaskId(), cleaned, elapsedMs(applyStartedNanos), elapsedMs(totalStartedNanos),
+                    failure.getClass().getSimpleName(), failure.getMessage());
+            throw failure;
+        }
+    }
+
+    private static long elapsedMs(long startedNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
     }
 }
-

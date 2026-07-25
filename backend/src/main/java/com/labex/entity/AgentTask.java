@@ -28,6 +28,46 @@ public class AgentTask {
     private String currentStep;
     @TableField(value="summary")
     private String summary;
+    @TableField(value="run_version")
+    private Long runVersion;
+    @TableField(value="last_event_sequence")
+    private Long lastEventSequence;
+    @TableField(value="request_payload")
+    private String requestPayload;
+    @TableField(value="recovery_attempts")
+    private Integer recoveryAttempts;
+    @TableField(value="retry_attempts")
+    private Integer retryAttempts;
+    @TableField(value="next_retry_at")
+    private LocalDateTime nextRetryAt;
+    @TableField(value="execution_epoch")
+    private Long executionEpoch;
+    @TableField(value="execution_owner")
+    private String executionOwner;
+    @TableField(value="execution_lease_expires_at")
+    private LocalDateTime executionLeaseExpiresAt;
+    @TableField(value="execution_heartbeat_at")
+    private LocalDateTime executionHeartbeatAt;
+    @TableField(value="background_branch")
+    private String backgroundBranch;
+    @TableField(value="background_worktree")
+    private String backgroundWorktree;
+    @TableField(value="background_base_ref")
+    private String backgroundBaseRef;
+    @TableField(value="background_cleanup_status")
+    private String backgroundCleanupStatus;
+    @TableField(value="submitted_at")
+    private LocalDateTime submittedAt;
+    @TableField(value="started_at")
+    private LocalDateTime startedAt;
+    @TableField(value="active_segment_started_at")
+    private LocalDateTime activeSegmentStartedAt;
+    @TableField(value="finished_at")
+    private LocalDateTime finishedAt;
+    @TableField(value="elapsed_ms")
+    private Long elapsedMs;
+    @TableField(value="active_elapsed_ms")
+    private Long activeElapsedMs;
     @TableField(value="create_time")
     private LocalDateTime createTime;
     @TableField(value="update_time")
@@ -71,6 +111,86 @@ public class AgentTask {
 
     public String getSummary() {
         return this.summary;
+    }
+
+    public Long getRunVersion() {
+        return this.runVersion;
+    }
+
+    public Long getLastEventSequence() {
+        return this.lastEventSequence;
+    }
+
+    public String getRequestPayload() {
+        return this.requestPayload;
+    }
+
+    public Integer getRecoveryAttempts() {
+        return this.recoveryAttempts;
+    }
+
+    public Integer getRetryAttempts() {
+        return this.retryAttempts;
+    }
+
+    public LocalDateTime getNextRetryAt() {
+        return this.nextRetryAt;
+    }
+
+    public Long getExecutionEpoch() {
+        return this.executionEpoch;
+    }
+
+    public String getExecutionOwner() {
+        return this.executionOwner;
+    }
+
+    public LocalDateTime getExecutionLeaseExpiresAt() {
+        return this.executionLeaseExpiresAt;
+    }
+
+    public LocalDateTime getExecutionHeartbeatAt() {
+        return this.executionHeartbeatAt;
+    }
+
+    public String getBackgroundBranch() {
+        return this.backgroundBranch;
+    }
+
+    public String getBackgroundWorktree() {
+        return this.backgroundWorktree;
+    }
+
+    public String getBackgroundBaseRef() {
+        return this.backgroundBaseRef;
+    }
+
+    public String getBackgroundCleanupStatus() {
+        return this.backgroundCleanupStatus;
+    }
+
+    public LocalDateTime getSubmittedAt() {
+        return this.submittedAt;
+    }
+
+    public LocalDateTime getStartedAt() {
+        return this.startedAt;
+    }
+
+    public LocalDateTime getActiveSegmentStartedAt() {
+        return this.activeSegmentStartedAt;
+    }
+
+    public LocalDateTime getFinishedAt() {
+        return this.finishedAt;
+    }
+
+    public Long getElapsedMs() {
+        return this.elapsedMs;
+    }
+
+    public Long getActiveElapsedMs() {
+        return this.activeElapsedMs;
     }
 
     public LocalDateTime getCreateTime() {
@@ -119,6 +239,86 @@ public class AgentTask {
 
     public void setSummary(String summary) {
         this.summary = summary;
+    }
+
+    public void setRunVersion(Long runVersion) {
+        this.runVersion = runVersion;
+    }
+
+    public void setLastEventSequence(Long lastEventSequence) {
+        this.lastEventSequence = lastEventSequence;
+    }
+
+    public void setRequestPayload(String requestPayload) {
+        this.requestPayload = requestPayload;
+    }
+
+    public void setRecoveryAttempts(Integer recoveryAttempts) {
+        this.recoveryAttempts = recoveryAttempts;
+    }
+
+    public void setRetryAttempts(Integer retryAttempts) {
+        this.retryAttempts = retryAttempts;
+    }
+
+    public void setNextRetryAt(LocalDateTime nextRetryAt) {
+        this.nextRetryAt = nextRetryAt;
+    }
+
+    public void setExecutionEpoch(Long executionEpoch) {
+        this.executionEpoch = executionEpoch;
+    }
+
+    public void setExecutionOwner(String executionOwner) {
+        this.executionOwner = executionOwner;
+    }
+
+    public void setExecutionLeaseExpiresAt(LocalDateTime executionLeaseExpiresAt) {
+        this.executionLeaseExpiresAt = executionLeaseExpiresAt;
+    }
+
+    public void setExecutionHeartbeatAt(LocalDateTime executionHeartbeatAt) {
+        this.executionHeartbeatAt = executionHeartbeatAt;
+    }
+
+    public void setBackgroundBranch(String backgroundBranch) {
+        this.backgroundBranch = backgroundBranch;
+    }
+
+    public void setBackgroundWorktree(String backgroundWorktree) {
+        this.backgroundWorktree = backgroundWorktree;
+    }
+
+    public void setBackgroundBaseRef(String backgroundBaseRef) {
+        this.backgroundBaseRef = backgroundBaseRef;
+    }
+
+    public void setBackgroundCleanupStatus(String backgroundCleanupStatus) {
+        this.backgroundCleanupStatus = backgroundCleanupStatus;
+    }
+
+    public void setSubmittedAt(LocalDateTime submittedAt) {
+        this.submittedAt = submittedAt;
+    }
+
+    public void setStartedAt(LocalDateTime startedAt) {
+        this.startedAt = startedAt;
+    }
+
+    public void setActiveSegmentStartedAt(LocalDateTime activeSegmentStartedAt) {
+        this.activeSegmentStartedAt = activeSegmentStartedAt;
+    }
+
+    public void setFinishedAt(LocalDateTime finishedAt) {
+        this.finishedAt = finishedAt;
+    }
+
+    public void setElapsedMs(Long elapsedMs) {
+        this.elapsedMs = elapsedMs;
+    }
+
+    public void setActiveElapsedMs(Long activeElapsedMs) {
+        this.activeElapsedMs = activeElapsedMs;
     }
 
     public void setCreateTime(LocalDateTime createTime) {
@@ -238,4 +438,3 @@ public class AgentTask {
         return "AgentTask(taskId=" + this.getTaskId() + ", conversationId=" + this.getConversationId() + ", sessionId=" + this.getSessionId() + ", studentId=" + this.getStudentId() + ", projectId=" + this.getProjectId() + ", title=" + this.getTitle() + ", mode=" + this.getMode() + ", status=" + this.getStatus() + ", currentStep=" + this.getCurrentStep() + ", summary=" + this.getSummary() + ", createTime=" + String.valueOf(this.getCreateTime()) + ", updateTime=" + String.valueOf(this.getUpdateTime()) + ")";
     }
 }
-

@@ -6,110 +6,87 @@ import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
-import com.labex.rag.service.WebSearchService;
-import java.net.URI;
+import com.labex.labexagent.websearch.WebSearchException;
+import com.labex.labexagent.websearch.WebSearchProviderSelector;
+import com.labex.labexagent.websearch.WebSearchRequest;
+import com.labex.labexagent.websearch.WebSearchResponse;
 import java.util.Locale;
+import java.util.Set;
 import org.springframework.stereotype.Component;
 
 @Component
 public class WebSearchTool implements AgentTool {
-    private final WebSearchService webSearchService;
+    private static final int DEFAULT_RESULTS = 10;
+    private static final int MAX_RESULTS = 30;
+    private static final int MAX_CONTEXT_CHARACTERS = 1_000_000;
+    private static final Set<String> LIVECRAWL_VALUES = Set.of("fallback", "preferred");
+    private static final Set<String> TYPE_VALUES = Set.of("auto", "fast", "deep");
+    private final WebSearchProviderSelector providerSelector;
 
-    public WebSearchTool(WebSearchService webSearchService) {
-        this.webSearchService = webSearchService;
+    public WebSearchTool(WebSearchProviderSelector providerSelector) {
+        this.providerSelector = providerSelector;
     }
 
+    @Override
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("web_search")
-                .description("Search the web and read page excerpts for current or external information. Use exact names, versions, and dates in the query. Treat fetched page bodies as evidence; snippets are discovery clues.")
+                .description("Search the web for current external information and source URLs. Results are discovery evidence only; use web_fetch to read a selected URL.")
                 .stringProperty("query", "Search query", true)
-                .intProperty("max_results", "Maximum results to return, default 10", false)
-                .intProperty("fetch_pages", "How many result pages to read, default 5", false)
+                .intProperty("numResults", "Maximum results to return, default 10, maximum 30", false)
+                .stringProperty("livecrawl", "Exa crawl preference: fallback or preferred", false)
+                .stringProperty("type", "Exa search type: auto, fast, or deep", false)
+                .intProperty("contextMaxCharacters", "Maximum Exa context characters", false)
                 .build();
     }
 
+    @Override
     public ToolResult execute(AgentContext context, JsonObject args) {
-        String query = ToolSupport.stringArgMulti(args, "", "query", "q", "search");
+        String query = ToolSupport.stringArgMulti(args, "", "query", "q", "search").trim();
         if (query.isBlank()) {
             return ToolResult.failed("query is required");
         }
-        int maxResults = Math.min(30, Math.max(3, ToolSupport.intArg(args, "max_results", 10)));
-        int fetchPages = Math.min(maxResults, Math.max(0, ToolSupport.intArg(args, "fetch_pages", Math.min(6, maxResults))));
-        WebSearchService.SearchBundle bundle = webSearchService.search(query, maxResults, fetchPages);
-        StringBuilder out = new StringBuilder();
-        out.append("Web search query: ").append(query).append('\n');
-        if (!bundle.getKeywords().isEmpty()) {
-            out.append("Display keywords: ").append(String.join(", ", bundle.getKeywords())).append('\n');
-        }
-        if (!bundle.getExactPhrases().isEmpty()) {
-            out.append("Exact phrases that must be preserved: ").append(String.join(", ", bundle.getExactPhrases())).append('\n');
-        }
-        out.append("Important: only entries with page_body_fetched=true are verified web evidence. exact_entity_match=false means the result may discuss a nearby but different version/name.\n\n");
-
-        int index = 1;
-        for (WebSearchService.WebSearchResult result : bundle.getResults()) {
-            String content = result.getContent() == null ? "" : result.getContent();
-            out.append(index++).append(". ").append(result.getTitle()).append('\n');
-            out.append("url: ").append(result.getUrl()).append('\n');
-            out.append("host: ").append(host(result.getUrl())).append('\n');
-            out.append("engine: ").append(result.getEngine()).append('\n');
-            out.append("page_body_fetched: ").append(!content.isBlank()).append('\n');
-            out.append("exact_entity_match: ").append(result.isExactMatch()).append('\n');
-            out.append("evidence_level: ").append(evidenceLevel(result, !content.isBlank())).append('\n');
-            out.append("source_quality: ").append(sourceQuality(host(result.getUrl()), !content.isBlank())).append('\n');
-            if (result.getPublishedAt() != null && !result.getPublishedAt().isBlank()) {
-                out.append("published_or_updated: ").append(result.getPublishedAt()).append('\n');
-            }
-            if (result.getSnippet() != null && !result.getSnippet().isBlank()) {
-                out.append("snippet: ").append(ToolSupport.limit(result.getSnippet(), 700)).append('\n');
-            }
-            if (!content.isBlank()) {
-                out.append("page_excerpt: ").append(ToolSupport.limit(content, 2200)).append('\n');
-            }
-            out.append('\n');
-        }
-        return ToolResult.ok(out.toString());
-    }
-
-    private String host(String url) {
         try {
-            String host = URI.create(url == null ? "" : url).getHost();
-            return host == null ? "" : host.toLowerCase(Locale.ROOT);
-        } catch (Exception e) {
-            return "";
+            WebSearchRequest request = new WebSearchRequest(
+                    query,
+                    boundedResults(args),
+                    enumArg(args, "livecrawl", "fallback", LIVECRAWL_VALUES),
+                    enumArg(args, "type", "auto", TYPE_VALUES),
+                    optionalContextLimit(args));
+            WebSearchResponse response = providerSelector.search(request, context);
+            return ToolResult.ok("provider: " + response.provider().name().toLowerCase(Locale.ROOT)
+                    + "\n" + response.content());
+        } catch (IllegalArgumentException e) {
+            return ToolResult.failed(e.getMessage());
+        } catch (WebSearchException e) {
+            return ToolResult.failed("Web search failed: " + e.getMessage());
         }
     }
 
-    private String evidenceLevel(WebSearchService.WebSearchResult result, boolean contentFetched) {
-        if (result.isFallback()) {
-            return "fallback_search_page";
+    private int boundedResults(JsonObject args) {
+        int value = ToolSupport.intArg(args, "numResults", ToolSupport.intArg(args, "max_results", DEFAULT_RESULTS));
+        if (value < 1 || value > MAX_RESULTS) {
+            throw new IllegalArgumentException("numResults must be between 1 and " + MAX_RESULTS);
         }
-        if (contentFetched) {
-            return result.isExactMatch() ? "verified_exact_page_body" : "verified_page_body";
-        }
-        return result.isExactMatch() ? "search_snippet_exact" : "search_snippet_only";
+        return value;
     }
 
-    private String sourceQuality(String host, boolean contentFetched) {
-        if (host == null || host.isBlank()) {
-            return contentFetched ? "body_fetched" : "snippet_only";
+    private Integer optionalContextLimit(JsonObject args) {
+        if (args == null || !args.has("contextMaxCharacters") || args.get("contextMaxCharacters").isJsonNull()) {
+            return null;
         }
-        boolean primaryLike = host.endsWith(".gov")
-                || host.endsWith(".edu")
-                || host.contains("docs.")
-                || host.contains("developer.")
-                || host.contains("learn.microsoft.com")
-                || host.contains("openai.com")
-                || host.contains("anthropic.com")
-                || host.contains("cloud.google.com")
-                || host.contains("github.com");
-        if (primaryLike && contentFetched) {
-            return "primary_or_docs_verified";
+        int value = ToolSupport.intArg(args, "contextMaxCharacters", -1);
+        if (value < 1 || value > MAX_CONTEXT_CHARACTERS) {
+            throw new IllegalArgumentException("contextMaxCharacters must be between 1 and " + MAX_CONTEXT_CHARACTERS);
         }
-        if (primaryLike) {
-            return "primary_or_docs_snippet";
+        return value;
+    }
+
+    private String enumArg(JsonObject args, String name, String defaultValue, Set<String> supportedValues) {
+        String value = ToolSupport.stringArg(args, name, defaultValue).trim().toLowerCase(Locale.ROOT);
+        if (!supportedValues.contains(value)) {
+            throw new IllegalArgumentException(name + " must be one of " + String.join(", ", supportedValues));
         }
-        return contentFetched ? "secondary_verified" : "secondary_snippet";
+        return value;
     }
 }

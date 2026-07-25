@@ -105,7 +105,7 @@ public class AgentExtensionController {
         data.put("serverName", server.getServerName());
         data.put("transport", server.getTransport());
         data.put("endpoint", server.getEndpoint());
-        data.put("authConfigured", server.getAuthHeader() != null && !server.getAuthHeader().isBlank());
+        data.put("authConfigured", mcpServerService.hasStoredAuthHeader(server));
         data.put("toolsJson", server.getToolsJson());
         data.put("isEnabled", server.getIsEnabled());
         data.put("status", server.getStatus());

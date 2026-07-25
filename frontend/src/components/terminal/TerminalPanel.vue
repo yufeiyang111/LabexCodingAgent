@@ -48,6 +48,11 @@
             <el-icon><VideoPause /></el-icon>
           </button>
         </el-tooltip>
+        <el-tooltip :content="isDark ? '切换亮色主题' : '切换暗色主题'" placement="bottom">
+          <button class="action-btn" @click="toggleTheme">
+            <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
+          </button>
+        </el-tooltip>
       </div>
     </div>
 
@@ -73,14 +78,18 @@
       </button>
     </div>
 
+    <div class="terminal-policy-notice" role="status">
+      受管终端正在运行：命令会通过权限策略和 REST 会话执行。
+    </div>
+
     <!-- 终端容器 -->
     <div class="terminal-container" ref="terminalContainerRef">
       <div
-        v-for="term in terminals"
-        :key="term.id"
+        v-for="host in terminalHosts"
+        :key="host.id"
         class="terminal-instance"
-        :class="{ visible: term.id === activeTerminalId }"
-        :ref="el => setTermRef(term.id, el)"
+        :class="{ visible: host.terminalId === activeTerminalId }"
+        :ref="el => setTermRef(host.id, el)"
       />
       <!-- 空状态 -->
       <div v-if="terminals.length === 0" class="terminal-empty">
@@ -93,34 +102,22 @@
       </div>
     </div>
 
-    <!-- 状态栏 -->
-    <div class="terminal-statusbar">
-      <span class="status-item">
-        <el-icon><Connection /></el-icon>
-        {{ isConnected ? '已连接' : '未连接' }}
-      </span>
-      <span v-if="activeTerminal" class="status-item">
-        {{ activeTerminal.name }}
-      </span>
-      <span v-if="currentCwd" class="status-item cwd">
-        {{ currentCwd }}
-      </span>
-      <span class="status-spacer" />
-      <span class="status-item">
-        {{ terminals.length }} 个终端
-      </span>
-    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Plus, Close, Monitor, CopyDocument, Delete,
-  Search, ArrowUp, ArrowDown, Connection, VideoPause
+  Search, ArrowUp, ArrowDown, VideoPause, Sunny, Moon
 } from '@element-plus/icons-vue'
-import { useTerminalManager } from '@/composables/useTerminal'
+import {
+  useTerminalManager,
+  VSCODE_DARK_THEME,
+  VSCODE_LIGHT_THEME
+} from '@/composables/useTerminal'
+import { projectApi } from '@/api'
 
 const props = defineProps({
   projectId: { type: [String, Number], required: true },
@@ -128,7 +125,7 @@ const props = defineProps({
   isDark: { type: Boolean, default: true }
 })
 
-const emit = defineEmits(['terminal-created', 'terminal-closed'])
+const emit = defineEmits(['terminal-created', 'terminal-closed', 'toggle-theme'])
 
 const {
   terminals,
@@ -140,24 +137,24 @@ const {
   removeTerminal,
   fitTerminal,
   fitAllTerminals,
+  setTerminalTheme,
   searchInTerminal,
   clearTerminal
 } = useTerminalManager()
 
 const terminalContainerRef = ref(null)
 const termRefs = ref({})
+const terminalHosts = ref([])
 const showSearchBar = ref(false)
 const searchText = ref('')
-const isConnected = computed(() => {
-  const active = getActiveTerminal()
-  return active?.wsConn?.connected?.value || false
-})
-const activeTerminal = computed(() => getActiveTerminal())
-const currentCwd = ref(props.projectPath)
+const currentCwd = ref('')
+let terminalHostCounter = 0
 
 function setTermRef(id, el) {
   if (el) {
     termRefs.value[id] = el
+  } else {
+    delete termRefs.value[id]
   }
 }
 
@@ -174,35 +171,88 @@ function switchTerminal(id) {
 }
 
 function setActiveTerminalId(id) {
-  activeTerminalId.value = id
+  setActiveTerminal(id)
 }
 
-function createNewTerminal() {
-  const container = termRefs.value[`new-${Date.now()}`] || null
+function renderManagedOutput(termData, output) {
+  termData.terminal.reset()
+  termData.terminal.write(output || '')
+  termData.terminal.scrollToBottom()
+}
 
-  // 创建占位容器
-  const div = document.createElement('div')
-  div.className = 'terminal-instance visible'
-  if (terminalContainerRef.value) {
-    terminalContainerRef.value.appendChild(div)
+async function resolveManagedApproval(result, termData) {
+  let approved = false
+  try {
+    await ElMessageBox.confirm(
+      `The command requires approval:\n${result.displayCommand || ''}`,
+      'Command approval',
+      { confirmButtonText: 'Approve and run', cancelButtonText: 'Reject', type: 'warning' }
+    )
+    approved = true
+  } catch {
+    // A cancelled dialog is an explicit rejection, not an application error.
   }
 
-  const termData = createTerminal(div, {
-    cwd: currentCwd.value,
-    name: `Terminal ${terminals.value.length + 1}`
+  await projectApi.terminalDecideApproval(props.projectId, result.approvalId, approved ? 'approve' : 'reject')
+  if (!approved) {
+    termData.terminal.write('\r\n[Command rejected]\r\n')
+    return
+  }
+  const executed = await projectApi.terminalExecuteApproval(props.projectId, result.approvalId)
+  renderManagedOutput(termData, executed.data?.output)
+}
+
+async function runManagedCommand(command, termData) {
+  const response = await projectApi.terminalRunSession(props.projectId, termData.managedSessionId, command)
+  const result = response.data || {}
+  if (result.refused) {
+    termData.terminal.write(`\r\n[Command blocked: ${result.reasonCode || 'policy'}]\r\n`)
+    return
+  }
+  if (result.approvalRequired) {
+    await resolveManagedApproval(result, termData)
+    return
+  }
+  renderManagedOutput(termData, result.output)
+}
+
+async function createNewTerminal() {
+  let session
+  try {
+    const response = await projectApi.terminalCreateSession(props.projectId)
+    session = response.data
+  } catch (error) {
+    ElMessage.error(error?.message || 'Terminal session initialization failed')
+    return
+  }
+
+  const hostId = `terminal-host-${++terminalHostCounter}`
+  terminalHosts.value.push({ id: hostId, terminalId: null })
+  await nextTick()
+
+  const container = termRefs.value[hostId]
+  if (!container) {
+    terminalHosts.value = terminalHosts.value.filter(host => host.id !== hostId)
+    ElMessage.error('Terminal container initialization failed')
+    return
+  }
+
+  const termData = createTerminal(container, {
+    projectId: props.projectId,
+    managedSessionId: session.sessionId,
+    runManagedCommand,
+    name: session.name || `Terminal ${terminals.value.length + 1}`,
+    theme: props.isDark ? VSCODE_DARK_THEME : VSCODE_LIGHT_THEME
   })
 
-  // 存储引用
-  nextTick(() => {
-    termRefs.value[termData.id] = div
-    // 确保终端获得焦点
-    setTimeout(() => {
-      termData.terminal.focus()
-    }, 200)
-  })
+  const host = terminalHosts.value.find(item => item.id === hostId)
+  if (host) host.terminalId = termData.id
+  renderManagedOutput(termData, session.output)
+  await nextTick()
+  fitTerminal(termData.id)
+  termData.terminal.focus()
 
   emit('terminal-created', termData.id)
-  ElMessage.success('终端已创建')
 }
 
 function splitTerminal() {
@@ -210,14 +260,17 @@ function splitTerminal() {
   createNewTerminal()
 }
 
-function closeTerminal(id) {
+async function closeTerminal(id) {
+  const termData = getTerminal(id)
   removeTerminal(id)
-  // 移除 DOM 元素
-  const el = termRefs.value[id]
-  if (el && el.parentNode) {
-    el.parentNode.removeChild(el)
+  terminalHosts.value = terminalHosts.value.filter(host => host.terminalId !== id)
+  if (termData?.managedSessionId) {
+    try {
+      await projectApi.terminalDeleteSession(props.projectId, termData.managedSessionId)
+    } catch {
+      // The local xterm has already been disposed; backend cleanup can be retried on the next session.
+    }
   }
-  delete termRefs.value[id]
   emit('terminal-closed', id)
 }
 
@@ -227,16 +280,23 @@ function clearActiveTerminal() {
   }
 }
 
-function killActiveTerminal() {
+async function killActiveTerminal() {
   const active = getActiveTerminal()
-  if (active) {
-    active.wsConn.closeTerminal()
-    active.terminal.write('\r\n\x1b[90m[Terminated]\x1b[0m\r\n')
+  if (!active?.managedSessionId) return
+  try {
+    const response = await projectApi.terminalStopSession(props.projectId, active.managedSessionId)
+    renderManagedOutput(active, response.data?.session)
+  } catch (error) {
+    ElMessage.error(error?.message || 'Failed to stop terminal command')
   }
 }
 
 function toggleSearch() {
   showSearchBar.value = !showSearchBar.value
+}
+
+function toggleTheme() {
+  emit('toggle-theme')
 }
 
 function searchNext() {
@@ -276,6 +336,10 @@ onUnmounted(() => {
   }
 })
 
+watch(() => props.isDark, isDark => {
+  setTerminalTheme(isDark ? VSCODE_DARK_THEME : VSCODE_LIGHT_THEME)
+}, { immediate: true })
+
 // 暴露方法给父组件
 defineExpose({
   createNewTerminal,
@@ -291,12 +355,32 @@ defineExpose({
 
 <style scoped>
 .terminal-panel {
+  --terminal-bg: #1e1e1e;
+  --terminal-toolbar-bg: #252526;
+  --terminal-border: #3c3c3c;
+  --terminal-text: #d4d4d4;
+  --terminal-muted: #969696;
+  --terminal-hover: #3c3c3c;
+  --terminal-active: #1e1e1e;
+  --terminal-scrollbar: #5a5a5a;
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--terminal-bg);
+  color: var(--terminal-text);
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+.terminal-panel:not(.terminal-dark) {
+  --terminal-bg: #ffffff;
+  --terminal-toolbar-bg: #f6f8fa;
+  --terminal-border: #d0d7de;
+  --terminal-text: #24292f;
+  --terminal-muted: #57606a;
+  --terminal-hover: #eaeef2;
+  --terminal-active: #ffffff;
+  --terminal-scrollbar: #8c959f;
 }
 
 .terminal-toolbar {
@@ -304,8 +388,8 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   height: 35px;
-  background: #252526;
-  border-bottom: 1px solid #3c3c3c;
+  background: var(--terminal-toolbar-bg);
+  border-bottom: 1px solid var(--terminal-border);
   padding: 0 8px;
   flex-shrink: 0;
 }
@@ -323,7 +407,7 @@ defineExpose({
 }
 
 .terminal-tabs::-webkit-scrollbar-thumb {
-  background: #5a5a5a;
+  background: var(--terminal-scrollbar);
   border-radius: 2px;
 }
 
@@ -334,7 +418,7 @@ defineExpose({
   padding: 4px 12px;
   background: transparent;
   border: none;
-  color: #969696;
+  color: var(--terminal-muted);
   cursor: pointer;
   font-size: 12px;
   white-space: nowrap;
@@ -344,13 +428,13 @@ defineExpose({
 }
 
 .terminal-tab:hover {
-  background: #2d2d2d;
-  color: #cccccc;
+  background: var(--terminal-hover);
+  color: var(--terminal-text);
 }
 
 .terminal-tab.active {
-  background: #1e1e1e;
-  color: #ffffff;
+  background: var(--terminal-active);
+  color: var(--terminal-text);
 }
 
 .terminal-tab.active::after {
@@ -389,7 +473,7 @@ defineExpose({
 }
 
 .tab-close:hover {
-  background: #5a5a5a;
+  background: var(--terminal-scrollbar);
   opacity: 1 !important;
 }
 
@@ -407,15 +491,15 @@ defineExpose({
   height: 28px;
   background: transparent;
   border: none;
-  color: #969696;
+  color: var(--terminal-muted);
   cursor: pointer;
   border-radius: 4px;
   transition: all 0.15s;
 }
 
 .action-btn:hover {
-  background: #3c3c3c;
-  color: #cccccc;
+  background: var(--terminal-hover);
+  color: var(--terminal-text);
 }
 
 .action-btn.danger:hover {
@@ -428,8 +512,8 @@ defineExpose({
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  background: #252526;
-  border-bottom: 1px solid #3c3c3c;
+  background: var(--terminal-toolbar-bg);
+  border-bottom: 1px solid var(--terminal-border);
 }
 
 .search-btn {
@@ -440,18 +524,27 @@ defineExpose({
   height: 24px;
   background: transparent;
   border: none;
-  color: #969696;
+  color: var(--terminal-muted);
   cursor: pointer;
   border-radius: 3px;
 }
 
 .search-btn:hover {
-  background: #3c3c3c;
-  color: #cccccc;
+  background: var(--terminal-hover);
+  color: var(--terminal-text);
+}
+
+.terminal-policy-notice {
+  padding: 6px 10px;
+  background: #3d3215;
+  color: #f5d06f;
+  border-bottom: 1px solid #725c23;
+  font-size: 12px;
 }
 
 .terminal-container {
   flex: 1;
+  min-height: 0;
   position: relative;
   overflow: hidden;
 }
@@ -483,12 +576,12 @@ defineExpose({
 }
 
 .terminal-instance :deep(.xterm-viewport::-webkit-scrollbar-thumb) {
-  background: #5a5a5a;
+  background: var(--terminal-scrollbar);
   border-radius: 4px;
 }
 
 .terminal-instance :deep(.xterm-viewport::-webkit-scrollbar-thumb:hover) {
-  background: #7a7a7a;
+  background: var(--terminal-muted);
 }
 
 .terminal-empty {
@@ -502,51 +595,13 @@ defineExpose({
 
 .empty-icon {
   font-size: 48px;
-  color: #3c3c3c;
+  color: var(--terminal-border);
   font-family: monospace;
 }
 
 .empty-text {
-  color: #666;
+  color: var(--terminal-muted);
   font-size: 14px;
 }
 
-.terminal-statusbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 22px;
-  background: #007acc;
-  color: #ffffff;
-  padding: 0 8px;
-  font-size: 11px;
-  flex-shrink: 0;
-}
-
-.status-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.status-item.cwd {
-  opacity: 0.8;
-  max-width: 300px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.status-spacer {
-  flex: 1;
-}
-
-/* 暗色主题覆盖 */
-.terminal-dark .terminal-toolbar {
-  background: #1e1e1e;
-}
-
-.terminal-dark .terminal-search {
-  background: #1e1e1e;
-}
 </style>

@@ -2,9 +2,15 @@ package com.labex.labexagent.terminal;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.labex.labexagent.worker.SandboxWorker;
+import com.labex.labexagent.worker.WorkerRunSpec;
 import com.labex.security.JwtUtil;
+import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.HashMap;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
@@ -17,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * WebSocket 终端处理器
  * 协议:
  *   客户端 -> 服务端:
+ *     {"type":"create","cwd":"...","cols":120,"rows":30}
  *     {"type":"input","data":"ls -la\n"}
  *     {"type":"resize","cols":120,"rows":30}
  *     {"type":"ping"}
@@ -31,118 +38,92 @@ import java.util.concurrent.ConcurrentHashMap;
 public class TerminalWebSocketHandler extends TextWebSocketHandler {
 
     private static final Gson gson = new Gson();
+    static final String DISABLED_POLICY_CODE = "TERMINAL_WEBSOCKET_DISABLED";
+    static final String DISABLED_POLICY_MESSAGE = "Interactive terminal WebSocket is disabled by policy. Use the managed terminal instead.";
 
-    @Autowired
-    private JwtUtil jwtUtil;
+    private final JwtUtil jwtUtil;
+    private final TerminalWorkspaceResolver workspaceResolver;
+    private final SandboxWorker sandboxWorker;
 
-    // sessionId -> TerminalSession
-    private final Map<String, TerminalSession> sessions = new ConcurrentHashMap<>();
-    // WebSocketSession -> sessionId
-    private final Map<WebSocketSession, String> sessionMapping = new ConcurrentHashMap<>();
-    // sessionId -> WebSocketSession
-    private final Map<String, WebSocketSession> wsMapping = new ConcurrentHashMap<>();
+    // sessionId -> sandbox-owned terminal
+    private final Map<String, SandboxWorker.InteractiveTerminal> sessions = new ConcurrentHashMap<>();
+    // WebSocketSession -> authenticated project-bound terminal connection
+    private final Map<WebSocketSession, TerminalConnection> connections = new ConcurrentHashMap<>();
+
+    public TerminalWebSocketHandler(
+            JwtUtil jwtUtil, TerminalWorkspaceResolver workspaceResolver, SandboxWorker sandboxWorker) {
+        this.jwtUtil = jwtUtil;
+        this.workspaceResolver = workspaceResolver;
+        this.sandboxWorker = sandboxWorker;
+    }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession wsSession) throws Exception {
-        // 验证 token（从 URL 参数获取）
-        String query = wsSession.getUri() != null ? wsSession.getUri().getQuery() : null;
-        String token = null;
-        if (query != null) {
-            for (String param : query.split("&")) {
-                if (param.startsWith("token=")) {
-                    token = param.substring(6);
-                    break;
-                }
-            }
-        }
-
-        // 验证 token 有效性
-        if (token == null || token.isEmpty() || !jwtUtil.validateToken(token)) {
-            log.warn("Terminal WebSocket connection rejected: invalid or missing token");
-            JsonObject error = new JsonObject();
-            error.addProperty("type", "error");
-            error.addProperty("message", "Authentication required");
-            sendMessage(wsSession, error.toString());
-            wsSession.close(CloseStatus.NOT_ACCEPTABLE);
-            return;
-        }
-
-        String username = jwtUtil.getUsernameFromToken(token);
-        String sessionId = java.util.UUID.randomUUID().toString().substring(0, 8);
-        sessionMapping.put(wsSession, sessionId);
-        log.info("Terminal WebSocket connected: sessionId={}, user={}", sessionId, username);
-
-        // 发送会话 ID
-        JsonObject msg = new JsonObject();
-        msg.addProperty("type", "session");
-        msg.addProperty("sessionId", sessionId);
-        sendMessage(wsSession, msg.toString());
+        rejectByPolicy(wsSession);
     }
 
     @Override
     protected void handleTextMessage(WebSocketSession wsSession, TextMessage message) throws Exception {
-        String payload = message.getPayload();
-        JsonObject msg;
-
-        try {
-            msg = gson.fromJson(payload, JsonObject.class);
-        } catch (Exception e) {
-            sendError(wsSession, "Invalid JSON: " + e.getMessage());
-            return;
-        }
-
-        String type = msg.has("type") ? msg.get("type").getAsString() : "";
-        String sessionId = sessionMapping.get(wsSession);
-
-        switch (type) {
-            case "create" -> handleCreate(wsSession, sessionId, msg);
-            case "input" -> handleInput(sessionId, msg);
-            case "resize" -> handleResize(sessionId, msg);
-            case "ping" -> handlePong(wsSession);
-            case "close" -> handleClose(sessionId);
-            default -> sendError(wsSession, "Unknown message type: " + type);
-        }
+        // This guard intentionally precedes parsing, authorization, workspace resolution,
+        // terminal creation, and input forwarding so raw input cannot reach a worker.
+        rejectByPolicy(wsSession);
     }
 
     /**
      * 创建新的终端会话
      */
-    private void handleCreate(WebSocketSession wsSession, String sessionId, JsonObject msg) {
+    private void handleCreate(WebSocketSession wsSession, TerminalConnection connection, JsonObject msg) {
+        String sessionId = connection.sessionId();
         // 如果已有会话，先关闭
-        TerminalSession existing = sessions.get(sessionId);
+        SandboxWorker.InteractiveTerminal existing = sessions.remove(sessionId);
         if (existing != null) {
-            existing.destroy();
+            existing.terminate();
         }
 
-        String cwd = msg.has("cwd") ? msg.get("cwd").getAsString() : null;
-        log.info("Creating terminal session {} with cwd: {}", sessionId, cwd);
+        String cwd = msg.has("cwd") ? msg.get("cwd").getAsString() : "";
+        Path workingDirectory;
+        try {
+            workingDirectory = workspaceResolver.resolveWorkingDirectory(connection.workspace(), cwd);
+        } catch (IllegalArgumentException e) {
+            sendError(wsSession, e.getMessage());
+            return;
+        }
+        int cols = getInt(msg, "cols", 120);
+        int rows = getInt(msg, "rows", 30);
+        log.info("Creating terminal session {} for project {} with relative cwd: {}, cols: {}, rows: {}",
+                sessionId, connection.workspace().projectId(), cwd, cols, rows);
 
-        TerminalSession terminal = new TerminalSession(sessionId, cwd);
-        terminal.setOutputCallback(data -> {
-            JsonObject output = new JsonObject();
-            output.addProperty("type", "output");
-            output.addProperty("data", data);
-            try {
-                sendMessage(wsSession, output.toString());
-            } catch (Exception e) {
-                log.debug("Failed to send output for session {}: {}", sessionId, e.getMessage());
-            }
-        });
-        terminal.setCloseCallback(exitCode -> {
-            JsonObject exit = new JsonObject();
-            exit.addProperty("type", "exit");
-            exit.addProperty("code", exitCode);
-            try {
-                sendMessage(wsSession, exit.toString());
-            } catch (Exception e) {
-                log.debug("Failed to send exit for session {}: {}", sessionId, e.getMessage());
-            }
-        });
+        SandboxWorker.TerminalSpec terminalSpec = new SandboxWorker.TerminalSpec(
+                sessionId,
+                workingDirectory,
+                cols,
+                rows,
+                data -> {
+                    JsonObject output = new JsonObject();
+                    output.addProperty("type", "output");
+                    output.addProperty("data", data);
+                    try {
+                        sendMessage(wsSession, output.toString());
+                    } catch (Exception e) {
+                        log.debug("Failed to send output for session {}: {}", sessionId, e.getMessage());
+                    }
+                },
+                exitCode -> {
+                    JsonObject exit = new JsonObject();
+                    exit.addProperty("type", "exit");
+                    exit.addProperty("code", exitCode);
+                    try {
+                        sendMessage(wsSession, exit.toString());
+                    } catch (Exception e) {
+                        log.debug("Failed to send exit for session {}: {}", sessionId, e.getMessage());
+                    }
+                });
 
         try {
-            terminal.start();
+            SandboxWorker.InteractiveTerminal terminal = sandboxWorker.openTerminal(
+                    WorkerRunSpec.forWorkspace("terminal-" + sessionId, connection.workspace().workspaceRoot()),
+                    terminalSpec);
             sessions.put(sessionId, terminal);
-            wsMapping.put(sessionId, wsSession);
 
             JsonObject created = new JsonObject();
             created.addProperty("type", "created");
@@ -150,7 +131,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
             sendMessage(wsSession, created.toString());
 
             log.info("Terminal session {} created successfully", sessionId);
-        } catch (IOException e) {
+        } catch (IOException | IllegalArgumentException e) {
             log.error("Failed to create terminal session {}: {}", sessionId, e.getMessage(), e);
             sendError(wsSession, "Failed to create terminal: " + e.getMessage());
         }
@@ -161,7 +142,7 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
      */
     private void handleInput(String sessionId, JsonObject msg) {
         if (sessionId == null) return;
-        TerminalSession terminal = sessions.get(sessionId);
+        SandboxWorker.InteractiveTerminal terminal = sessions.get(sessionId);
         if (terminal == null) {
             return;
         }
@@ -174,10 +155,10 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
      */
     private void handleResize(String sessionId, JsonObject msg) {
         if (sessionId == null) return;
-        TerminalSession terminal = sessions.get(sessionId);
+        SandboxWorker.InteractiveTerminal terminal = sessions.get(sessionId);
         if (terminal == null) return;
-        int cols = msg.has("cols") ? msg.get("cols").getAsInt() : 120;
-        int rows = msg.has("rows") ? msg.get("rows").getAsInt() : 30;
+        int cols = getInt(msg, "cols", 120);
+        int rows = getInt(msg, "rows", 30);
         terminal.resize(cols, rows);
     }
 
@@ -197,33 +178,31 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
      */
     private void handleClose(String sessionId) {
         if (sessionId == null) return;
-        TerminalSession terminal = sessions.remove(sessionId);
+        SandboxWorker.InteractiveTerminal terminal = sessions.remove(sessionId);
         if (terminal != null) {
-            terminal.destroy();
+            terminal.terminate();
             log.info("Terminal session {} closed by client", sessionId);
         }
-        wsMapping.remove(sessionId);
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession wsSession, CloseStatus status) {
-        String sessionId = sessionMapping.remove(wsSession);
-        if (sessionId != null) {
-            TerminalSession terminal = sessions.remove(sessionId);
+        TerminalConnection connection = connections.remove(wsSession);
+        if (connection != null) {
+            SandboxWorker.InteractiveTerminal terminal = sessions.remove(connection.sessionId());
             if (terminal != null) {
-                terminal.destroy();
-                log.info("Terminal session {} destroyed (WebSocket closed)", sessionId);
+                terminal.terminate();
+                log.info("Terminal session {} destroyed (WebSocket closed)", connection.sessionId());
             }
-            wsMapping.remove(sessionId);
         }
     }
 
     @Override
     public void handleTransportError(WebSocketSession wsSession, Throwable exception) {
         log.error("Terminal WebSocket transport error: {}", exception.getMessage());
-        String sessionId = sessionMapping.get(wsSession);
-        if (sessionId != null) {
-            handleClose(sessionId);
+        TerminalConnection connection = connections.get(wsSession);
+        if (connection != null) {
+            handleClose(connection.sessionId());
         }
     }
 
@@ -240,5 +219,69 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
         try {
             sendMessage(wsSession, error.toString());
         } catch (Exception ignored) {}
+    }
+
+    private void rejectByPolicy(WebSocketSession wsSession) {
+        if (!wsSession.isOpen()) {
+            return;
+        }
+        JsonObject error = new JsonObject();
+        error.addProperty("type", "error");
+        error.addProperty("code", DISABLED_POLICY_CODE);
+        error.addProperty("message", DISABLED_POLICY_MESSAGE);
+        try {
+            sendMessage(wsSession, error.toString());
+            wsSession.close(CloseStatus.POLICY_VIOLATION);
+        } catch (IOException ignored) {
+            // Connection is already closed.
+        }
+    }
+
+    private void rejectConnection(WebSocketSession wsSession, String message) {
+        sendError(wsSession, message);
+        try {
+            wsSession.close(CloseStatus.NOT_ACCEPTABLE);
+        } catch (IOException ignored) {
+            // Connection is already closed.
+        }
+    }
+
+    private Map<String, String> queryParameters(URI uri) {
+        Map<String, String> parameters = new HashMap<>();
+        if (uri == null || uri.getRawQuery() == null || uri.getRawQuery().isBlank()) {
+            return parameters;
+        }
+        for (String pair : uri.getRawQuery().split("&")) {
+            int separator = pair.indexOf('=');
+            String key = separator < 0 ? pair : pair.substring(0, separator);
+            String value = separator < 0 ? "" : pair.substring(separator + 1);
+            parameters.put(
+                    URLDecoder.decode(key, StandardCharsets.UTF_8),
+                    URLDecoder.decode(value, StandardCharsets.UTF_8));
+        }
+        return parameters;
+    }
+
+    private Integer parsePositiveInteger(String value) {
+        try {
+            int parsed = Integer.parseInt(value);
+            return parsed > 0 ? parsed : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private int getInt(JsonObject msg, String property, int fallback) {
+        if (!msg.has(property) || msg.get(property).isJsonNull()) {
+            return fallback;
+        }
+        try {
+            return msg.get(property).getAsInt();
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private record TerminalConnection(String sessionId, TerminalWorkspaceResolver.TerminalWorkspace workspace) {
     }
 }

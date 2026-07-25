@@ -17,9 +17,12 @@
     <Transition name="ftn-slide">
       <div v-if="expanded" class="ftn-children">
         <div v-if="loading" class="ftn-loading"><span class="ftn-spinner"></span><span>加载中...</span></div>
-        <TransitionGroup v-else name="ftn-list" tag="div">
-          <FileTreeNode v-for="child in children" :key="child.path" :node="child" :depth="depth + 1" :selected-path="selectedPath" :load-children="loadChildren" :show-actions="showActions" @select="(p) => emit('select', p)" @newItem="(p, t) => emit('newItem', p, t)" @rename="(p, n) => emit('rename', p, n)" @delete="(p) => emit('delete', p)"/>
-        </TransitionGroup>
+        <template v-else>
+          <TransitionGroup name="ftn-list" tag="div">
+            <FileTreeNode v-for="child in children" :key="child.path" :node="child" :depth="depth + 1" :selected-path="selectedPath" :load-children="loadChildren" :show-actions="showActions" :refresh-key="refreshKey" @select="(p) => emit('select', p)" @newItem="(p, t) => emit('newItem', p, t)" @rename="(p, n) => emit('rename', p, n)" @delete="(p) => emit('delete', p)"/>
+          </TransitionGroup>
+          <button v-if="nextOffset !== null" class="ftn-load-more" type="button" @click.stop="loadMore">????</button>
+        </template>
       </div>
     </Transition>
     <div v-if="node.type === 'file'" class="ftn-row file" :class="{ selected: node.path === selectedPath }" @click.stop="emit('select', node.path)" @contextmenu.prevent="openContextMenu($event, node)" tabindex="-1">
@@ -53,11 +56,13 @@
 </template>
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-const props = defineProps({ node: { type: Object, required: true }, depth: { type: Number, default: 0 }, selectedPath: { type: String, default: '' }, loadChildren: { type: Function, default: null }, showActions: { type: Boolean, default: false } })
+const props = defineProps({ node: { type: Object, required: true }, depth: { type: Number, default: 0 }, selectedPath: { type: String, default: '' }, loadChildren: { type: Function, default: null }, showActions: { type: Boolean, default: false }, refreshKey: { type: [Number, String], default: 0 } })
 const emit = defineEmits(['select', 'newItem', 'rename', 'delete'])
 const expanded = ref(false)
 const children = ref([])
 const loading = ref(false)
+const loaded = ref(false)
+const nextOffset = ref(null)
 const isDirSelected = computed(() => {
   if (!props.selectedPath) return false
   const sel = props.selectedPath.trim()
@@ -68,13 +73,57 @@ const isDirSelected = computed(() => {
 })
 const contextMenu = ref({ visible: false, x: 0, y: 0, node: null })
 
-// Reactively clear cached children when tree is rebuilt
-watch(() => props.node, () => {
-  children.value = []
-  expanded.value = false
-}, { deep: false })
+watch(() => props.node.path, (newPath, oldPath) => {
+  if (newPath !== oldPath) {
+    children.value = []
+    loaded.value = false
+    nextOffset.value = null
+    expanded.value = false
+  }
+})
 
-async function toggle() { expanded.value = !expanded.value; if (expanded.value && props.loadChildren && children.value.length === 0) { loading.value = true; try { const result = await props.loadChildren(props.node.path); children.value = result || [] } finally { loading.value = false } } }
+watch(() => props.refreshKey, () => {
+  if (props.node.type !== 'directory') return
+  if (expanded.value) {
+    reloadChildren()
+  } else {
+    children.value = []
+    loaded.value = false
+    nextOffset.value = null
+  }
+})
+
+async function loadPage(offset = 0, append = false) {
+  if (!props.loadChildren || props.node.type !== 'directory' || loading.value) return
+  loading.value = true
+  try {
+    const result = await props.loadChildren(props.node.path, offset)
+    const page = Array.isArray(result) ? { entries: result, nextOffset: null } : (result || {})
+    children.value = append ? [...children.value, ...(page.entries || [])] : (page.entries || [])
+    nextOffset.value = page.nextOffset ?? null
+    loaded.value = true
+  } finally {
+    loading.value = false
+  }
+}
+
+async function reloadChildren() {
+  nextOffset.value = null
+  loaded.value = false
+  await loadPage(0)
+}
+
+async function loadMore() {
+  if (nextOffset.value === null) return
+  await loadPage(nextOffset.value, true)
+}
+
+async function toggle() {
+  expanded.value = !expanded.value
+  if (expanded.value && !loaded.value) {
+    await reloadChildren()
+  }
+}
 function openContextMenu(e, node) {
   contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, node }
 }
@@ -98,6 +147,8 @@ onBeforeUnmount(() => { document.removeEventListener('click', closeContextMenu) 
 .ftn-count { font-size: 10px; color: #9ca3af; background: #f3f4f6; padding: 1px 6px; border-radius: 8px; flex-shrink: 0; }
 .ftn-children { padding-left: 16px; border-left: 1px solid #e5e7eb; margin-left: 7px; }
 .ftn-loading { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: #9ca3af; font-size: 12px; }
+.ftn-load-more { width: calc(100% - 8px); margin: 5px 4px; padding: 5px 8px; border: 1px solid #dbe1f0; border-radius: 5px; background: #fff; color: #4f46e5; font: inherit; font-size: 12px; cursor: pointer; }
+.ftn-load-more:hover { background: #eef2ff; border-color: #c7d2fe; }
 .ftn-spinner { width: 14px; height: 14px; border: 2px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: ftn-spin 0.6s linear infinite; }
 @keyframes ftn-spin { to { transform: rotate(360deg); } }
 .ftn-action-btn { display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border: none; background: transparent; color: #9ca3af; cursor: pointer; border-radius: 4px; padding: 0; flex-shrink: 0; }
@@ -121,4 +172,26 @@ onBeforeUnmount(() => { document.removeEventListener('click', closeContextMenu) 
 .ftn-menu-enter-active { transition: all 0.12s ease; }
 .ftn-menu-leave-active { transition: all 0.08s ease; }
 .ftn-menu-enter-from, .ftn-menu-leave-to { opacity: 0; transform: scale(0.95); }
+
+:global([data-theme="dark"]) .ftn-row { color: #a9b1d6; }
+:global([data-theme="dark"]) .ftn-name { color: #c0caf5; }
+:global([data-theme="dark"]) .ftn-arrow { color: #a9b1d6; }
+:global([data-theme="dark"]) .ftn-folder-icon svg,
+:global([data-theme="dark"]) .ftn-file-icon svg { stroke: #a9b1d6 !important; }
+:global([data-theme="dark"]) .ftn-row:hover { background: #282a3a; }
+:global([data-theme="dark"]) .ftn-row.selected,
+:global([data-theme="dark"]) .ftn-row.dir.selected { background: #1a1d3a; border-color: #2e3a5e; }
+:global([data-theme="dark"]) .ftn-row.selected .ftn-name { color: #7aa2f7; }
+:global([data-theme="dark"]) .ftn-count { background: #282a3a; color: #787c99; }
+:global([data-theme="dark"]) .ftn-children { border-left-color: #383a50; }
+:global([data-theme="dark"]) .ftn-loading { color: #a9b1d6; }
+:global([data-theme="dark"]) .ftn-load-more { background: #1f2033; border-color: #383a50; color: #7aa2f7; }
+:global([data-theme="dark"]) .ftn-load-more:hover { background: #282a3a; }
+:global([data-theme="dark"]) .ftn-action-btn:hover { background: #383a50; color: #c0caf5; }
+:global([data-theme="dark"]) .ftn-context-menu { background: #1f2033; border-color: #383a50; box-shadow: 0 4px 16px rgba(0,0,0,0.35); }
+:global([data-theme="dark"]) .ftn-menu-item { color: #a9b1d6; }
+:global([data-theme="dark"]) .ftn-menu-item:hover { background: #282a3a; }
+:global([data-theme="dark"]) .ftn-menu-danger { color: #f7768e; }
+:global([data-theme="dark"]) .ftn-menu-danger:hover { background: #4a2430; }
+:global([data-theme="dark"]) .ftn-menu-divider { background: #383a50; }
 </style>

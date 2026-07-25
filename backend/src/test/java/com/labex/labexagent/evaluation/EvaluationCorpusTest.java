@@ -1,0 +1,2 @@
+package com.labex.labexagent.evaluation;import static org.junit.jupiter.api.Assertions.*;import org.junit.jupiter.api.Test;
+class EvaluationCorpusTest {@Test void loadsThirtyVersionedDeterministicCases(){var cases=EvaluationCorpus.loadV1();assertEquals(30,cases.size());assertEquals(30,cases.stream().map(EvaluationCorpus.Case::id).distinct().count());assertTrue(EvaluationCorpus.validates(cases.get(0),"FINAL response"));assertFalse(EvaluationCorpus.validates(cases.get(0),"tool result"));}}

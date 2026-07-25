@@ -6,17 +6,24 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.google.gson.Gson;
 import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentMessage;
+import com.labex.entity.AgentModelConfig;
 import com.labex.entity.StudentProject;
 import com.labex.mapper.AgentConversationMapper;
 import com.labex.mapper.AgentMessageMapper;
+import com.labex.labexagent.runtime.CancellationToken;
+import com.labex.labexagent.runtime.CompactionAgent;
 import com.labex.rag.config.RagConfig;
+import com.labex.service.AgentModelConfigService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -28,21 +35,44 @@ public class AgentConversationService {
     private static final int COMPACT_TRIGGER_CHARS = 16000;
     private static final int COMPACT_SOURCE_EVENTS = 120;
     private static final int COMPACT_TAIL_EVENTS = 18;
-    private static final Set<String> MEMORY_SKIP_TYPES = Set.of("SESSION", "THINK", "TOOL_CALL");
-    private static final Set<String> MEMORY_IMPORTANT_TYPES = Set.of("USER", "FINAL", "OBSERVE", "ERROR", "INTERRUPTED", "COMMAND_APPROVAL_REQUIRED", "USER_QUESTION");
+    private static final Set<String> MEMORY_SKIP_TYPES = Set.of("SESSION", "THINK", "TOOL_CALL",
+            "COMPACTION_STARTED", "COMPACTION_COMPLETED", "COMPACTION_FAILED", "CONTEXT_PRUNED");
+    private static final Set<String> MEMORY_IMPORTANT_TYPES = Set.of("USER", "FINAL", "OBSERVE", "ERROR", "INTERRUPTED",
+            "COMMAND_APPROVAL_REQUIRED", "USER_QUESTION", "COMPACTION_SUMMARY");
+    private static final Pattern API_KEY = Pattern.compile("(?i)\\bsk-[a-z0-9_-]{10,}\\b");
+    private static final Pattern BEARER = Pattern.compile("(?i)\\bbearer\\s+[a-z0-9._~-]{10,}");
+    private static final Pattern NAMED_SECRET = Pattern.compile(
+            "(?i)\\b(api[_ -]?key|authorization|token|password|secret)\\s*[:=]\\s*([^\\s,;\\]}]+)");
     private final AgentConversationMapper conversationMapper;
     private final AgentMessageMapper messageMapper;
     private final RagConfig ragConfig;
+    private final CompactionAgent compactionAgent;
+    private final AgentModelConfigService modelConfigService;
 
     public AgentConversationService(AgentConversationMapper conversationMapper, AgentMessageMapper messageMapper, RagConfig ragConfig) {
+        this(conversationMapper, messageMapper, ragConfig, null, null);
+    }
+
+    @Autowired
+    public AgentConversationService(AgentConversationMapper conversationMapper, AgentMessageMapper messageMapper,
+                                    RagConfig ragConfig, CompactionAgent compactionAgent,
+                                    AgentModelConfigService modelConfigService) {
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
         this.ragConfig = ragConfig;
+        this.compactionAgent = compactionAgent;
+        this.modelConfigService = modelConfigService;
     }
 
     public AgentConversation ensureConversation(Integer studentId, StudentProject project, String conversationId, String mode, String firstMessage) {
+        return ensureConversation(studentId, project, conversationId, mode, firstMessage, null);
+    }
+
+    public AgentConversation ensureConversation(Integer studentId, StudentProject project, String conversationId, String mode,
+                                                String firstMessage, AgentModelConfig modelConfig) {
         AgentConversation existing;
         if (conversationId != null && !conversationId.isBlank() && (existing = this.getOwnedConversation(studentId, project.getProjectId(), conversationId)) != null) {
+            applyModelMetadata(existing, modelConfig);
             return existing;
         }
         AgentConversation conversation = new AgentConversation();
@@ -51,14 +81,41 @@ public class AgentConversationService {
         conversation.setProjectId(project.getProjectId());
         conversation.setTitle(this.buildTitle(firstMessage));
         conversation.setMode(mode);
-        conversation.setProvider(this.ragConfig.getLlmProvider());
-        conversation.setModel("ollama".equalsIgnoreCase(this.ragConfig.getLlmProvider()) ? this.ragConfig.getOllamaModel() : this.ragConfig.getMiniMaxModel());
+        conversation.setProvider(modelConfig == null
+                ? this.ragConfig.getLlmProvider()
+                : normalizeProvider(modelConfig.getProvider()));
+        conversation.setModel(modelConfig == null
+                ? ("ollama".equalsIgnoreCase(this.ragConfig.getLlmProvider()) ? this.ragConfig.getOllamaModel() : this.ragConfig.getMiniMaxModel())
+                : normalizeModel(modelConfig.getModelName()));
         conversation.setSummary("");
         conversation.setStatus(Integer.valueOf(1));
         conversation.setCreateTime(LocalDateTime.now());
         conversation.setUpdateTime(LocalDateTime.now());
         this.conversationMapper.insert(conversation);
         return conversation;
+    }
+
+    private void applyModelMetadata(AgentConversation conversation, AgentModelConfig modelConfig) {
+        if (conversation == null || modelConfig == null) {
+            return;
+        }
+        String provider = normalizeProvider(modelConfig.getProvider());
+        String model = normalizeModel(modelConfig.getModelName());
+        if (provider.equals(conversation.getProvider()) && model.equals(conversation.getModel())) {
+            return;
+        }
+        conversation.setProvider(provider);
+        conversation.setModel(model);
+        conversation.setUpdateTime(LocalDateTime.now());
+        this.conversationMapper.updateById(conversation);
+    }
+
+    private String normalizeProvider(String provider) {
+        return provider == null || provider.isBlank() ? "openai_compatible" : provider;
+    }
+
+    private String normalizeModel(String model) {
+        return model == null ? "" : model;
     }
 
     public AgentConversation getOwnedConversation(Integer studentId, Integer projectId, String conversationId) {
@@ -75,6 +132,42 @@ public class AgentConversationService {
             throw new IllegalArgumentException("Conversation not found");
         }
         return this.messageMapper.selectList(new LambdaQueryWrapper<AgentMessage>().eq(AgentMessage::getConversationId, conversationId).eq(AgentMessage::getStudentId, studentId).eq(AgentMessage::getProjectId, projectId).orderByAsc(AgentMessage::getMessageId));
+    }
+
+    public MessagePage messagePage(Integer studentId, Integer projectId, String conversationId,
+                                   Long beforeMessageId, int turnLimit) {
+        AgentConversation conversation = this.getOwnedConversation(studentId, projectId, conversationId);
+        if (conversation == null) {
+            throw new IllegalArgumentException("Conversation not found");
+        }
+        int safeTurnLimit = Math.min(50, Math.max(1, turnLimit));
+        LambdaQueryWrapper<AgentMessage> turnsQuery = new LambdaQueryWrapper<AgentMessage>()
+                .eq(AgentMessage::getConversationId, conversationId)
+                .eq(AgentMessage::getStudentId, studentId)
+                .eq(AgentMessage::getProjectId, projectId)
+                .eq(AgentMessage::getEventType, "USER");
+        if (beforeMessageId != null && beforeMessageId > 0) {
+            turnsQuery.lt(AgentMessage::getMessageId, beforeMessageId);
+        }
+        List<AgentMessage> newestFirstTurns = this.messageMapper.selectList(turnsQuery
+                .orderByDesc(AgentMessage::getMessageId)
+                .last("LIMIT " + (safeTurnLimit + 1)));
+        if (newestFirstTurns.isEmpty()) {
+            return new MessagePage(List.of(), false, null);
+        }
+        boolean hasMore = newestFirstTurns.size() > safeTurnLimit;
+        List<AgentMessage> selectedTurns = newestFirstTurns.subList(0, Math.min(safeTurnLimit, newestFirstTurns.size()));
+        long firstMessageId = selectedTurns.get(selectedTurns.size() - 1).getMessageId();
+        LambdaQueryWrapper<AgentMessage> eventsQuery = new LambdaQueryWrapper<AgentMessage>()
+                .eq(AgentMessage::getConversationId, conversationId)
+                .eq(AgentMessage::getStudentId, studentId)
+                .eq(AgentMessage::getProjectId, projectId)
+                .ge(AgentMessage::getMessageId, firstMessageId);
+        if (beforeMessageId != null && beforeMessageId > 0) {
+            eventsQuery.lt(AgentMessage::getMessageId, beforeMessageId);
+        }
+        List<AgentMessage> events = this.messageMapper.selectList(eventsQuery.orderByAsc(AgentMessage::getMessageId));
+        return new MessagePage(events, hasMore, hasMore ? firstMessageId : null);
     }
 
     public void delete(Integer studentId, Integer projectId, String conversationId) {
@@ -97,8 +190,23 @@ public class AgentConversationService {
         this.autoCompactIfNeeded(conversation);
     }
 
+    public void saveCompactionSummary(AgentConversation conversation, String checkpoint, Map<String, Object> metadata) {
+        if (conversation == null || checkpoint == null || checkpoint.isBlank()) {
+            return;
+        }
+        String safeCheckpoint = redactSecrets(checkpoint);
+        LinkedHashMap<String, Object> safeMetadata = new LinkedHashMap<>(metadata == null ? Map.of() : metadata);
+        safeMetadata.put("content", safeCheckpoint);
+        this.saveMessage(conversation, "COMPACTION_SUMMARY", "event", safeCheckpoint, safeMetadata);
+        this.persistSummary(conversation, safeCheckpoint);
+        conversation.setCompactedAt(LocalDateTime.now());
+        this.conversationMapper.update(null, new LambdaUpdateWrapper<AgentConversation>()
+                .eq(AgentConversation::getConversationId, conversation.getConversationId())
+                .set(AgentConversation::getCompactedAt, conversation.getCompactedAt())
+                .set(AgentConversation::getUpdateTime, LocalDateTime.now()));
+    }
+
     public String buildMemoryContext(Integer studentId, Integer projectId, String conversationId) {
-        String summary;
         if (conversationId == null || conversationId.isBlank()) {
             return "";
         }
@@ -106,35 +214,150 @@ public class AgentConversationService {
         if (conversation == null) {
             return "";
         }
-        List<AgentMessage> recent = this.messageMapper.selectList(new LambdaQueryWrapper<AgentMessage>().eq(AgentMessage::getConversationId, conversationId).eq(AgentMessage::getStudentId, studentId).eq(AgentMessage::getProjectId, projectId).orderByDesc(AgentMessage::getMessageId).last("LIMIT 24"));
+        AgentMessage latestCompaction = latestCompactionSummary(studentId, projectId, conversationId);
+        List<AgentMessage> recent = recentMemoryEvents(studentId, projectId, conversationId,
+                latestCompaction == null ? null : latestCompaction.getMessageId());
         StringBuilder builder = new StringBuilder();
-        String string = summary = conversation.getSummary() == null ? "" : conversation.getSummary();
-        if (!summary.isBlank()) {
-            builder.append("\u5386\u53f2\u6458\u8981:\n").append(conversation.getSummary()).append("\n\n");
+        if (latestCompaction != null && latestCompaction.getContent() != null && !latestCompaction.getContent().isBlank()) {
+            builder.append("\u5386\u53f2\u538b\u7f29\u6458\u8981:\n").append(latestCompaction.getContent()).append("\n\n");
+        } else {
+            String summary = conversation.getSummary() == null ? "" : conversation.getSummary();
+            if (!summary.isBlank()) {
+                builder.append("\u5386\u53f2\u6458\u8981:\n").append(summary).append("\n\n");
+            }
         }
         builder.append("\u6700\u8fd1\u5173\u952e\u4e8b\u4ef6:\n");
         for (int i = recent.size() - 1; i >= 0; --i) {
-            AgentMessage message = (AgentMessage)recent.get(i);
+            AgentMessage message = recent.get(i);
             if (MEMORY_SKIP_TYPES.contains(message.getEventType())) continue;
-            builder.append('[').append(message.getEventType()).append("] ").append(this.limit(message.getContent(), this.memoryItemLimit(message.getEventType()))).append('\n');
+            builder.append('[').append(message.getEventType()).append("] ")
+                    .append(this.limit(message.getContent(), this.memoryItemLimit(message.getEventType())))
+                    .append('\n');
         }
-        return this.limit(builder.toString(), 12000);
+        return this.limit(builder.toString(), MEMORY_CONTEXT_LIMIT);
+    }
+
+    private AgentMessage latestCompactionSummary(Integer studentId, Integer projectId, String conversationId) {
+        List<AgentMessage> summaries = this.messageMapper.selectList(new LambdaQueryWrapper<AgentMessage>()
+                .eq(AgentMessage::getConversationId, conversationId)
+                .eq(AgentMessage::getStudentId, studentId)
+                .eq(AgentMessage::getProjectId, projectId)
+                .eq(AgentMessage::getEventType, "COMPACTION_SUMMARY")
+                .orderByDesc(AgentMessage::getMessageId)
+                .last("LIMIT 1"));
+        return summaries == null || summaries.isEmpty() ? null : summaries.get(0);
+    }
+
+    private List<AgentMessage> recentMemoryEvents(Integer studentId, Integer projectId, String conversationId,
+                                                    Long afterMessageId) {
+        LambdaQueryWrapper<AgentMessage> query = new LambdaQueryWrapper<AgentMessage>()
+                .eq(AgentMessage::getConversationId, conversationId)
+                .eq(AgentMessage::getStudentId, studentId)
+                .eq(AgentMessage::getProjectId, projectId);
+        if (afterMessageId != null) {
+            query.gt(AgentMessage::getMessageId, afterMessageId);
+        }
+        return this.messageMapper.selectList(query.orderByDesc(AgentMessage::getMessageId)
+                .last("LIMIT " + RECENT_EVENT_LIMIT));
     }
 
     public String compactConversation(Integer studentId, Integer projectId, String conversationId) {
+        return compactConversation(studentId, projectId, conversationId, null).summary();
+    }
+
+    public ManualCompactionResult compactConversation(Integer studentId, Integer projectId, String conversationId,
+                                                       Integer modelConfigId) {
         AgentConversation conversation = this.getOwnedConversation(studentId, projectId, conversationId);
         if (conversation == null) {
             throw new IllegalArgumentException("Conversation not found");
         }
-        List<AgentMessage> recent = this.messageMapper.selectList(new LambdaQueryWrapper<AgentMessage>().eq(AgentMessage::getConversationId, conversationId).eq(AgentMessage::getStudentId, studentId).eq(AgentMessage::getProjectId, projectId).orderByDesc(AgentMessage::getMessageId).last("LIMIT 80"));
+        List<AgentMessage> recent = this.messageMapper.selectList(new LambdaQueryWrapper<AgentMessage>()
+                .eq(AgentMessage::getConversationId, conversationId)
+                .eq(AgentMessage::getStudentId, studentId)
+                .eq(AgentMessage::getProjectId, projectId)
+                .orderByDesc(AgentMessage::getMessageId)
+                .last("LIMIT " + COMPACT_SOURCE_EVENTS));
+        AgentModelConfig activeConfig = modelConfigService == null ? null
+                : modelConfigService.resolveForStudent(studentId, modelConfigId);
+        if (modelConfigId != null && modelConfigId > 0 && (activeConfig == null
+                || !modelConfigId.equals(activeConfig.getConfigId())
+                || !Integer.valueOf(1).equals(activeConfig.getStatus()))) {
+            throw new IllegalArgumentException("Compaction model config not found or disabled");
+        }
+        this.saveEvent(conversation, "COMPACTION_STARTED", Map.of("strategy", "manual", "modelConfigId",
+                modelConfigId == null ? 0 : modelConfigId));
+        CompactionAgent.Result modelResult = compactionAgent == null
+                ? CompactionAgent.Result.failure("Compaction agent is unavailable")
+                : compactionAgent.compact(studentId, activeConfig, runtimeMessagesForCompaction(recent),
+                        latestUserRequest(recent), null, CancellationToken.none());
+        if (modelResult.success()) {
+            this.saveCompactionSummary(conversation, modelResult.checkpoint(), Map.of(
+                    "strategy", "manual_model",
+                    "modelConfigId", modelResult.modelConfigId() == null ? 0 : modelResult.modelConfigId(),
+                    "dedicatedModel", modelResult.dedicatedModelSelected()));
+            this.saveEvent(conversation, "COMPACTION_COMPLETED", Map.of("strategy", "manual_model"));
+            return new ManualCompactionResult(modelResult.checkpoint(), "manual_model", false);
+        }
+        this.saveEvent(conversation, "COMPACTION_FAILED", Map.of("strategy", "manual_model",
+                "reason", modelResult.reason()));
+        String fallback = deterministicManualSummary(conversation, recent);
+        String checkpoint = "<conversation-checkpoint version=\"3\" source=\"manual-deterministic\">\n"
+                + fallback + "\n</conversation-checkpoint>";
+        this.saveCompactionSummary(conversation, checkpoint, Map.of("strategy", "manual_deterministic_fallback",
+                "reason", modelResult.reason()));
+        this.saveEvent(conversation, "COMPACTION_COMPLETED", Map.of("strategy", "manual_deterministic_fallback"));
+        return new ManualCompactionResult(checkpoint, "manual_deterministic_fallback", true);
+    }
+
+    private String deterministicManualSummary(AgentConversation conversation, List<AgentMessage> recent) {
         String summary = this.rebuildCompactedSummary(conversation, recent, "Manual compacted context");
-        this.persistSummary(conversation, summary);
+        this.persistSummary(conversation, redactSecrets(summary));
         conversation.setCompactedAt(LocalDateTime.now());
         this.conversationMapper.update(null, new LambdaUpdateWrapper<AgentConversation>()
                 .eq(AgentConversation::getConversationId, conversation.getConversationId())
                 .set(AgentConversation::getCompactedAt, conversation.getCompactedAt())
                 .set(AgentConversation::getUpdateTime, LocalDateTime.now()));
         return summary;
+    }
+
+    private List<Map<String, Object>> runtimeMessagesForCompaction(List<AgentMessage> newestFirst) {
+        if (newestFirst == null || newestFirst.isEmpty()) {
+            return List.of();
+        }
+        List<AgentMessage> chronological = new ArrayList<>(newestFirst);
+        Collections.reverse(chronological);
+        List<Map<String, Object>> messages = new ArrayList<>();
+        for (AgentMessage message : chronological) {
+            if (message == null || MEMORY_SKIP_TYPES.contains(message.getEventType())) {
+                continue;
+            }
+            String content = message.getContent() == null ? "" : message.getContent();
+            if (content.isBlank()) {
+                continue;
+            }
+            String role = "FINAL".equals(message.getEventType()) ? "assistant" : "user";
+            String projected = "USER".equals(message.getEventType()) || "FINAL".equals(message.getEventType())
+                    ? content : "[" + message.getEventType() + "] " + content;
+            messages.add(Map.of("role", role, "content", redactSecrets(this.limit(projected, 6_000))));
+        }
+        return messages;
+    }
+
+    private String latestUserRequest(List<AgentMessage> newestFirst) {
+        if (newestFirst != null) {
+            for (AgentMessage message : newestFirst) {
+                if ("USER".equals(message.getEventType()) && message.getContent() != null && !message.getContent().isBlank()) {
+                    return redactSecrets(message.getContent());
+                }
+            }
+        }
+        return "Manually compact this conversation while retaining durable facts and pending work.";
+    }
+
+    public record MessagePage(List<AgentMessage> events, boolean hasMore, Long nextBeforeMessageId) {
+    }
+
+    public record ManualCompactionResult(String summary, String strategy, boolean deterministicFallback) {
     }
 
     public AgentConversation forkConversation(Integer studentId, Integer projectId, String conversationId, Long messageId) {
@@ -271,7 +494,9 @@ public class AgentConversationService {
     }
 
     private boolean isAutoCompacted(String summary) {
-        return summary != null && (summary.startsWith("Auto compacted context:") || summary.startsWith("Manual compacted context:"));
+        return summary != null && (summary.startsWith("Auto compacted context:")
+                || summary.startsWith("Manual compacted context:")
+                || summary.contains("<conversation-checkpoint version=\"3\""));
     }
 
     private String extractContent(Object data) {
@@ -306,6 +531,7 @@ public class AgentConversationService {
             case "FINAL" -> 700;
             case "OBSERVE" -> 420;
             case "ERROR", "INTERRUPTED", "COMMAND_APPROVAL_REQUIRED", "USER_QUESTION" -> 600;
+            case "COMPACTION_SUMMARY" -> 6_500;
             default -> 300;
         };
     }
@@ -318,6 +544,13 @@ public class AgentConversationService {
             case "ERROR", "INTERRUPTED", "COMMAND_APPROVAL_REQUIRED" -> 420;
             default -> 180;
         };
+    }
+
+    private static String redactSecrets(String text) {
+        String safe = text == null ? "" : text;
+        safe = API_KEY.matcher(safe).replaceAll("[REDACTED]");
+        safe = BEARER.matcher(safe).replaceAll("Bearer [REDACTED]");
+        return NAMED_SECRET.matcher(safe).replaceAll("$1=[REDACTED]");
     }
 
     private String normalizeForMemory(String text) {

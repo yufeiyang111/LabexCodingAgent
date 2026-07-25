@@ -6,6 +6,7 @@ import com.labex.entity.StudentProject;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
+import com.labex.labexagent.workspace.ProjectWorkspace;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -232,8 +233,7 @@ public class AgentWorkspaceMemoryService {
     }
 
     private Path memoryPath(StudentProject project) {
-        return Path.of(project.getWorkspacePath()).toAbsolutePath().normalize()
-                .resolve(".labex").resolve("agent-memory.json");
+        return ProjectWorkspace.paths(project).resolveForCreate(".labex/agent-memory.json");
     }
 
     private boolean isWriteTool(String tool) {

@@ -4,15 +4,26 @@ import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.labex.controller.student.ProjectCommandSafety;
 import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.diff.DiffService;
+import com.labex.labexagent.commandsecurity.CommandApprovalService;
+import com.labex.labexagent.commandsecurity.CommandClassification;
+import com.labex.labexagent.commandsecurity.CommandClassifier;
+import com.labex.labexagent.commandsecurity.CommandDecision;
+import com.labex.labexagent.commandsecurity.CommandRedactor;
+import com.labex.labexagent.commandsecurity.CommandRequest;
+import com.labex.labexagent.commandsecurity.TestCommandResolver;
 import com.labex.labexagent.diff.GitSnapshotService;
 import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.prompt.LabexSystemPrompt;
+import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.AgentRunLeaseHeartbeatService;
+import com.labex.labexagent.workspace.WorkspaceLeaseService;
+import com.labex.labexagent.run.BackgroundRunWorkspaceResolver;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.runtime.AgentContextManager;
@@ -30,8 +41,13 @@ import com.labex.labexagent.service.TokenTracker;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolRegistry;
 import com.labex.labexagent.tool.ToolResult;
+import com.labex.labexagent.workspace.ProjectWorkspace;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.labexagent.llm.ProviderCapabilities;
+import com.labex.labexagent.llm.ProviderEventType;
+import com.labex.labexagent.llm.PromptCacheKeyFactory;
 import com.labex.rag.config.RagConfig;
 import com.labex.rag.llm.MiniMaxChat;
 import com.labex.rag.llm.OllamaChat;
@@ -42,11 +58,12 @@ import com.labex.service.StudentProjectService;
 import com.labex.entity.AgentModelConfig;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.FileAttribute;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -56,15 +73,21 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Future;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -83,6 +106,15 @@ public class AgentLoopEngine {
             new ArrayBlockingQueue<>(128),
             new AgentThreadFactory(),
             new ThreadPoolExecutor.AbortPolicy());
+    private static final ThreadPoolExecutor PROVIDER_STREAM_EXECUTOR = new ThreadPoolExecutor(
+            0,
+            16,
+            30L,
+            TimeUnit.SECONDS,
+            new SynchronousQueue<>(),
+            new ProviderStreamThreadFactory(),
+            new ThreadPoolExecutor.AbortPolicy());
+    private static final long PROVIDER_FIRST_EVENT_TIMEOUT_MS = 45_000L;
     private final StudentProjectService studentProjectService;
     private final ToolRegistry toolRegistry;
     private final AgentContextManager contextManager;
@@ -104,8 +136,30 @@ public class AgentLoopEngine {
     private final AgentPostEditHookService postEditHookService;
     private final AgentMetricsService metricsService;
     private final AgentInteractionService interactionService;
+    private final AgentRunLifecycleService runLifecycleService;
+    private final CommandApprovalService commandApprovalService;
+    private final ContextUsageEstimator contextUsageEstimator;
+    private final ContextUsageRegistry contextUsageRegistry;
+    private final CompactionAgent compactionAgent;
+    private final CommandClassifier commandClassifier;
+    private AgentRunExecutionLeaseService executionLeaseService;
+    private AgentRunLeaseHeartbeatService leaseHeartbeatService;
+    private WorkspaceLeaseService workspaceLeaseService;
 
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService) {
+        this(s, t, c, cr, mm, oc, r, cs, ts, pf, mcs, tt, skillService, mcpServerService,
+                permissionService, gitSnapshotService, diffService, contextOrchestrator,
+                postEditHookService, metricsService, interactionService, null, null, null, null, null);
+    }
+
+    public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService, AgentRunLifecycleService runLifecycleService) {
+        this(s, t, c, cr, mm, oc, r, cs, ts, pf, mcs, tt, skillService, mcpServerService,
+                permissionService, gitSnapshotService, diffService, contextOrchestrator,
+                postEditHookService, metricsService, interactionService, runLifecycleService, null, null, null, null);
+    }
+
+    @Autowired
+    public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService, AgentRunLifecycleService runLifecycleService, CommandApprovalService commandApprovalService, ContextUsageEstimator contextUsageEstimator, ContextUsageRegistry contextUsageRegistry, CompactionAgent compactionAgent) {
         this.studentProjectService = s;
         this.toolRegistry = t;
         this.contextManager = c;
@@ -127,25 +181,156 @@ public class AgentLoopEngine {
         this.postEditHookService = postEditHookService;
         this.metricsService = metricsService;
         this.interactionService = interactionService;
+        this.runLifecycleService = runLifecycleService;
+        this.commandApprovalService = commandApprovalService;
+        this.contextUsageEstimator = contextUsageEstimator;
+        this.contextUsageRegistry = contextUsageRegistry;
+        this.compactionAgent = compactionAgent;
+        this.commandClassifier = new CommandClassifier();
+    }
+
+    @Autowired
+    void setExecutionLeaseServices(AgentRunExecutionLeaseService executionLeaseService,
+                                   AgentRunLeaseHeartbeatService leaseHeartbeatService) {
+        this.executionLeaseService = executionLeaseService;
+        this.leaseHeartbeatService = leaseHeartbeatService;
+    }
+
+    @Autowired(required = false)
+    void setWorkspaceLeaseService(WorkspaceLeaseService workspaceLeaseService) {
+        this.workspaceLeaseService = workspaceLeaseService;
     }
 
     public SseEmitter start(Integer studentId, Integer projectId, AgentStreamRequest request) {
+        return this.enqueue(studentId, projectId, request, false);
+    }
+
+    public SseEmitter resume(Integer studentId, Integer projectId, AgentStreamRequest request, Long taskId) {
+        return this.resume(studentId, projectId, request, taskId, false);
+    }
+
+    /**
+     * Enqueues a durable continuation. Recovery callers request strict queue handoff so a rejected
+     * executor submission can be persisted as a terminal recovery failure instead of being hidden in SSE.
+     */
+    public SseEmitter resume(Integer studentId, Integer projectId, AgentStreamRequest request, Long taskId,
+                             boolean failWhenQueueRejected) {
+        if (request == null || taskId == null) {
+            throw new IllegalArgumentException("A continuation request and task ID are required");
+        }
+        request.setResumeTaskId(taskId);
+        return this.enqueue(studentId, projectId, request, failWhenQueueRejected);
+    }
+
+    private SseEmitter enqueue(Integer studentId, Integer projectId, AgentStreamRequest request,
+                               boolean failWhenQueueRejected) {
         SseEmitter emitter = new SseEmitter(Long.valueOf(0L));
-        String sid = request.getSessionId() != null && !request.getSessionId().isBlank() ? request.getSessionId() : UUID.randomUUID().toString();
+        request.setSubmittedAt(LocalDateTime.now());
+        String sid = request.getSessionId() != null && !request.getSessionId().isBlank()
+                ? request.getSessionId() : UUID.randomUUID().toString();
         request.setSessionId(sid);
-        this.cancellationRegistry.reset(sid);
         try {
             AGENT_EXECUTOR.execute(() -> this.runLoop(studentId, projectId, request, emitter));
-        } catch (Exception e) {
+        } catch (RuntimeException queueFailure) {
+            if (failWhenQueueRejected) {
+                throw new IllegalStateException("Unable to enqueue agent continuation", queueFailure);
+            }
             try {
                 String queueLanguage = VisibleLanguageResolver.resolve(request.getMessage(), null).code();
-                new AgentSsePublisher(emitter).send("ERROR", Map.of("message", this.localText(queueLanguage, "Agent 队列繁忙，请稍后重试。", "Agent queue is busy. Please retry shortly.")));
+                new AgentSsePublisher(emitter).send("ERROR", Map.of("message", this.localText(queueLanguage,
+                        "Agent \u961f\u5217\u7e41\u5fd9\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002", "Agent queue is busy. Please retry shortly.")));
             } catch (Exception ignored) {
-                // ignore send failure
+                // Ignore a best-effort SSE error notification failure.
             }
             emitter.complete();
         }
         return emitter;
+    }
+
+    public java.util.Optional<ContextUsageSnapshot> getContextUsage(String conversationId) {
+        return contextUsageRegistry == null ? java.util.Optional.empty() : contextUsageRegistry.find(conversationId);
+    }
+
+
+    /**
+     * Builds a no-provider, no-persistence estimate for the next request in an existing conversation.
+     * A drafted message and active file make the adaptive project context more representative; neither is saved.
+     */
+    public ContextUsageSnapshot previewNextRequest(Integer studentId, Integer projectId, String conversationId,
+                                                   Integer requestedModelConfigId, String activePath,
+                                                   String requestedMode, String draftedUserMessage) {
+        if (contextUsageEstimator == null) {
+            throw new IllegalStateException("Context preview is unavailable");
+        }
+        StudentProject project = this.studentProjectService.getOwnedProject(studentId, projectId);
+        if (project == null) {
+            throw new IllegalArgumentException("Project not found");
+        }
+        AgentConversation conversation = this.conversationService.getOwnedConversation(studentId, projectId, conversationId);
+        if (conversation == null) {
+            throw new IllegalArgumentException("Conversation not found");
+        }
+        AgentModelConfig modelConfig = this.modelConfigService.resolveForStudent(studentId, requestedModelConfigId);
+        if (modelConfig == null || (requestedModelConfigId != null && requestedModelConfigId > 0
+                && (!requestedModelConfigId.equals(modelConfig.getConfigId())
+                || !Integer.valueOf(1).equals(modelConfig.getStatus())))) {
+            throw new IllegalArgumentException("Preview model config not found or disabled");
+        }
+
+        String mode = this.normalizePreviewMode(requestedMode);
+        String draft = draftedUserMessage == null ? "" : draftedUserMessage.trim();
+        boolean draftedMessageIncluded = !draft.isBlank();
+        String memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conversationId);
+        String visibleLanguage = this.visibleLanguage(draft, memoryContext);
+        AgentContext previewContext = AgentContext.create("context-preview-" + conversationId,
+                studentId, project, conversationId, null);
+        previewContext.setModelConfigId(modelConfig.getConfigId());
+        previewContext.setMode(mode);
+        previewContext.setStage("intake");
+
+        String toolDefinitions = this.buildToolDefinitions(mode);
+        String systemPrompt = LabexSystemPrompt.buildSystemPrompt(project, toolDefinitions, visibleLanguage);
+        List<Map<String, Object>> tools = this.buildToolsList(mode);
+        String activeFileContent = this.readActiveFile(studentId, projectId, activePath);
+        String projectRules = this.readProjectRules(studentId, projectId);
+        String projectIndex = this.readProjectIndex(studentId, projectId);
+        AgentContextOrchestrator.ContextBundle contextBundle = this.contextOrchestrator.buildInitialBundle(
+                project, activePath, activeFileContent, toolDefinitions, draft, projectIndex, false, previewContext);
+        String recentRunLog = this.readLatestRunLog(project, null);
+        String checkpoint = this.readAgentCheckpoint(project);
+        String globalSkills = this.skillService.buildPromptContext(studentId);
+        String mcpContext = this.mcpServerService.buildPromptContext(studentId);
+        String modePolicy = this.buildModePolicy(mode);
+        String languagePolicy = this.buildVisibleLanguagePolicy(visibleLanguage);
+        String initialContextMessage = modePolicy + "\n\n" + languagePolicy + "\n\n"
+                + this.buildContextMessage(projectRules, memoryContext, contextBundle.content(), recentRunLog,
+                checkpoint, globalSkills, mcpContext);
+        ContextUsageEstimator.PromptContext promptContext = ContextUsageEstimator.PromptContext.of(
+                projectRules, memoryContext, contextBundle.content(), recentRunLog, checkpoint, globalSkills,
+                mcpContext, modePolicy, languagePolicy, initialContextMessage);
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "user", "content", initialContextMessage));
+        if (draftedMessageIncluded) {
+            messages.add(Map.of("role", "user", "content", draft));
+        }
+        Map<String, Object> previewMetadata = new LinkedHashMap<>();
+        previewMetadata.put("estimateBasis", "CURRENT_SESSION_STATE");
+        previewMetadata.put("nextUserMessageIncluded", draftedMessageIncluded);
+        previewMetadata.put("activePath", activePath == null ? "" : activePath);
+        previewMetadata.put("agentMode", mode);
+        previewMetadata.put("modelConfigId", modelConfig.getConfigId());
+        previewMetadata.put("adaptiveContextDependsOnDraft", true);
+        return this.contextUsageEstimator.estimateNextRequest(conversationId,
+                "context-preview-" + conversationId, modelConfig.getProvider(), modelConfig.getModelName(),
+                modelConfig.getContextWindowTokens(), systemPrompt, tools, promptContext, messages, previewMetadata);
+    }
+
+    private String normalizePreviewMode(String requestedMode) {
+        if ("plan".equals(requestedMode) || "explore".equals(requestedMode)
+                || "build".equals(requestedMode) || "agent".equals(requestedMode)) {
+            return requestedMode;
+        }
+        return "build";
     }
 
     private static class AgentThreadFactory implements ThreadFactory {
@@ -153,6 +338,16 @@ public class AgentLoopEngine {
 
         public synchronized Thread newThread(Runnable runnable) {
             Thread thread = new Thread(runnable, "labex-agent-" + index++);
+            thread.setDaemon(true);
+            return thread;
+        }
+    }
+
+    private static class ProviderStreamThreadFactory implements ThreadFactory {
+        private int index = 1;
+
+        public synchronized Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "labex-provider-stream-" + index++);
             thread.setDaemon(true);
             return thread;
         }
@@ -173,8 +368,18 @@ public class AgentLoopEngine {
         LlmProvider llmProvider = null;
         LlmProvider.LlmConfig llmConfig = null;
         String visibleLanguage = "en";
+        AgentCancellationRegistry.ActiveRun activeCancellation = null;
+        AgentRunExecutionLeaseService.ExecutionLease executionLease = null;
+        CancellationToken cancellationToken = CancellationToken.none();
         try {
             AgentModelConfig modelConfig = this.modelConfigService.resolveForStudent(studentId, request.getModelConfigId());
+            if (modelConfig == null) {
+                throw new IllegalStateException("No user model configuration is selected. Create and select a model configuration before starting the Agent.");
+            }
+            if (!this.modelConfigService.hasStoredApiKey(modelConfig)) {
+                throw new IllegalStateException("Selected model configuration has no API key.");
+            }
+            ContextWindowPolicy contextWindowPolicy = ContextWindowPolicy.from(modelConfig).orElse(null);
             llmProvider = this.providerFactory.resolveProvider(modelConfig);
             llmConfig = this.providerFactory.buildConfig(modelConfig);
             project = this.studentProjectService.getOwnedProject(studentId, projectId);
@@ -183,20 +388,87 @@ public class AgentLoopEngine {
             }
             runLog = this.createRunLog(project, request);
             this.appendRunLog(runLog, "# LabexAgent run log\n\n- Session: `" + this.safeLogText(request.getSessionId()) + "`\n- Project: `" + this.safeLogText(project.getProjectName()) + "`\n- Student: `" + studentId + "`\n- Start time: `" + String.valueOf(LocalDateTime.now()) + "`\n\n## User input\n\n" + this.safeLogText(request.getMessage()) + "\n");
-            String mode = request.getMode() != null ? request.getMode() : "agent";
-            conv = this.conversationService.ensureConversation(studentId, project, request.getConversationId(), mode, request.getMessage());
-            request.setConversationId(conv.getConversationId());
-            String memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
-            visibleLanguage = this.visibleLanguage(request.getMessage(), memoryContext);
-            this.conversationService.saveUserMessage(conv, request.getMessage());
-            task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode, request.getMessage());
+            boolean resumedRun = request.getResumeTaskId() != null;
+            String mode;
+            String memoryContext;
+            if (resumedRun) {
+                task = this.taskService.getOwnedTask(studentId, projectId, request.getResumeTaskId());
+                if (task == null) {
+                    throw new IllegalArgumentException("Suspended agent task not found");
+                }
+                conv = this.conversationService.getOwnedConversation(studentId, projectId, task.getConversationId());
+                if (conv == null) {
+                    throw new IllegalArgumentException("Suspended agent conversation not found");
+                }
+                mode = task.getMode() == null || task.getMode().isBlank() ? "agent" : task.getMode();
+                request.setConversationId(conv.getConversationId());
+                request.setSessionId(task.getSessionId());
+                memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
+                visibleLanguage = this.visibleLanguage(request.getMessage(), memoryContext);
+            } else {
+                mode = request.getMode() != null ? request.getMode() : "agent";
+                conv = this.conversationService.ensureConversation(studentId, project, request.getConversationId(), mode,
+                        request.getMessage(), modelConfig);
+                request.setConversationId(conv.getConversationId());
+                memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
+                visibleLanguage = this.visibleLanguage(request.getMessage(), memoryContext);
+                this.conversationService.saveUserMessage(conv, request.getMessage());
+                task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode, request.getMessage(), request.isBackgroundRun(), request.getSubmittedAt());
+            }
+            if (this.executionLeaseService != null) {
+                executionLease = this.executionLeaseService.acquire(task.getTaskId());
+                if (executionLease == null) {
+                    throw new IllegalStateException("Agent run is already owned by another active worker");
+                }
+            }
+            this.taskService.startTiming(task.getTaskId());
+            if (this.runLifecycleService != null) {
+                sse.bindRun(this.runLifecycleService, task.getTaskId());
+            }
+            this.sendEvent(sse, conv, "SESSION", Map.of(
+                    "sessionId", request.getSessionId(),
+                    "conversationId", conv.getConversationId(),
+                    "taskId", task.getTaskId(),
+                    "iterationLimit", "none",
+                    "logPath", this.workspaceRelativeLogPath(project, runLog)));
+            this.sendThought(sse, conv, 0,
+                    resumedRun
+                            ? this.localText(visibleLanguage, "恢复任务", "Resuming task")
+                            : this.localText(visibleLanguage, "准备工作区", "Preparing workspace"),
+                    this.localText(visibleLanguage,
+                            resumedRun ? "正在从已保存的对话和用户回复恢复任务。" : "正在准备项目上下文和可用工具。",
+                            resumedRun ? "Restoring the task from its saved conversation and user response." : "Preparing project context and available tools."),
+                    task.getTaskId());
+            if (resumedRun && "recovering".equalsIgnoreCase(task.getStatus())) {
+                this.taskService.updateTask(task.getTaskId(), "running", "Recovered execution", "Execution resumed after lease takeover");
+            }
+            if (!resumedRun) {
+                this.taskService.updateTask(
+                        task.getTaskId(),
+                        "preparing",
+                        this.localText(visibleLanguage, "准备工作区", "Preparing workspace"),
+                        this.localText(visibleLanguage, "运行已创建，正在准备上下文。", "Run created and preparing context."));
+            }
+            activeCancellation = this.cancellationRegistry.register(
+                    request.getSessionId(), studentId, projectId, task.getTaskId());
+            cancellationToken = activeCancellation;
+            if (executionLease != null && this.leaseHeartbeatService != null) {
+                this.leaseHeartbeatService.track(executionLease, request.getSessionId());
+            }
             ctx = AgentContext.create((String)request.getSessionId(), (Integer)studentId, (StudentProject)project, (String)conv.getConversationId(), (Long)task.getTaskId());
+            this.applyBackgroundWorkspace(ctx, project, task);
+            ctx.setCancellationToken(cancellationToken);
+            ctx.setModelConfigId(modelConfig.getConfigId());
             ctx.setMode(mode);
             ctx.setStage("intake");
             this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Iteration limit: `" + DEFAULT_MAX_ITERATIONS + "`\n");
+            long contextBuildStartedAt = System.nanoTime();
             String toolDefinitions = this.buildToolDefinitions(mode);
             String sysPrompt = LabexSystemPrompt.buildSystemPrompt((StudentProject)project, (String)toolDefinitions, visibleLanguage);
             List<Map<String, Object>> tools = this.buildToolsList(mode);
+            llmConfig = llmConfig.withPromptCacheKey(PromptCacheKeyFactory.forStablePrefix(
+                    studentId, modelConfig.getConfigId(), llmConfig.baseUrl(), llmConfig.modelName(),
+                    sysPrompt, GSON.toJson(tools)));
             ArrayList<Map<String, Object>> msgs = new ArrayList<Map<String, Object>>();
             String activeFileContent = this.readActiveFile(studentId, projectId, request.getActivePath());
             String projectRules = this.readProjectRules(studentId, projectId);
@@ -207,13 +479,21 @@ public class AgentLoopEngine {
             String checkpoint = this.readAgentCheckpoint(project);
             String globalSkills = this.skillService.buildPromptContext(studentId);
             String mcpContext = this.mcpServerService.buildPromptContext(studentId);
-            msgs.add(Map.of("role", "user", "content", this.buildModePolicy(mode) + "\n\n" + this.buildVisibleLanguagePolicy(visibleLanguage) + "\n\n" + this.buildContextMessage(projectRules, memoryContext, sessionContext, recentRunLog, checkpoint, globalSkills, mcpContext)));
+            String modePolicy = this.buildModePolicy(mode);
+            String languagePolicy = this.buildVisibleLanguagePolicy(visibleLanguage);
+            String initialContextMessage = modePolicy + "\n\n" + languagePolicy + "\n\n" + this.buildContextMessage(projectRules, memoryContext, sessionContext, recentRunLog, checkpoint, globalSkills, mcpContext);
+            ContextUsageEstimator.PromptContext contextPrompt = ContextUsageEstimator.PromptContext.of(
+                    projectRules, memoryContext, sessionContext, recentRunLog, checkpoint, globalSkills,
+                    mcpContext, modePolicy, languagePolicy, initialContextMessage);
+            msgs.add(Map.of("role", "user", "content", initialContextMessage));
             msgs.add(Map.of("role", "user", "content", request.getMessage()));
-            this.sendEvent(sse, conv, "SESSION", Map.of("sessionId", request.getSessionId(), "conversationId", conv.getConversationId(), "taskId", task.getTaskId(), "iterationLimit", "none", "logPath", this.workspaceRelativeLogPath(project, runLog)));
+            log.info("AGENT_CONTEXT_READY taskId={} buildMs={} systemPromptChars={} contextChars={} userChars={} toolCount={} toolSchemaChars={} estimatedContextTokens={}",
+                    task.getTaskId(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - contextBuildStartedAt),
+                    sysPrompt.length(), initialContextMessage.length(), request.getMessage() == null ? 0 : request.getMessage().length(),
+                    tools.size(), GSON.toJson(tools).length(), contextBundle.stats().get("estimatedTokens"));
             this.sendEvent(sse, conv, "CONTEXT_STATS", contextBundle.stats());
             this.appendRunLog(runLog, "\n## Context orchestration\n\n```json\n" + GSON.toJson(contextBundle.stats()) + "\n```\n");
             this.writeAgentCheckpoint(project, request, task, ctx, "running", "Session started, preparing first model call.", "", "", runLog);
-            int recoverableModelErrors = 0;
             int i = 1;
             int maxIterations = DEFAULT_MAX_ITERATIONS;
             java.util.List<String> recentToolCalls = new java.util.ArrayList<>();
@@ -235,12 +515,8 @@ public class AgentLoopEngine {
                                     block20: {
                                         String planJson;
                                         this.appendRunLog(runLog, "\n## Iteration " + i + "\n");
-                                        if (this.cancellationRegistry.isCancelled(request.getSessionId())) {
-                                            this.taskService.updateTask(task.getTaskId(), "cancelled", this.localText(visibleLanguage, "用户已取消", "User cancelled"), this.localText(visibleLanguage, "用户取消了本次执行", "User cancelled execution"));
-                                            this.appendRunLog(runLog, "\n- Stop reason: user cancelled.\n");
-                                            this.sendEvent(sse, conv, "INTERRUPTED", Map.of("message", this.localText(visibleLanguage, "用户取消了本次执行", "User cancelled execution"), "iteration", i));
-                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "用户已取消", "User cancelled"), this.localText(visibleLanguage, "用户主动取消了本次 Agent 运行。", "User actively cancelled this run."), project, runLog, visibleLanguage), visibleLanguage);
-                                            emitter.complete();
+                                        if (cancellationToken.isCancellationRequested()) {
+                                            this.completeCancelledRun(sse, conv, task, project, runLog, i, visibleLanguage, emitter);
                                             return;
                                         }
                                         if (i > maxIterations) {
@@ -256,10 +532,18 @@ public class AgentLoopEngine {
                                             return;
                                         }
                                         this.taskService.updateTask(task.getTaskId(), "running", this.localText(visibleLanguage, "思考中", "Thinking"), null);
-                                        // 发送前检查上下文窗口，必要时裁剪旧工具结果
-                                        this.trimMessagesIfNeeded(msgs, sysPrompt);
-                                        lr = this.chatStreaming(sse, conv, sysPrompt, msgs, tools, llmProvider, llmConfig, i, task.getTaskId(), visibleLanguage);
+                                        // Apply the OpenCode-style soft budget before sending the next provider request.
+                                        ContextManagementResult contextManagement = this.manageContextBeforeModel(
+                                                msgs, sysPrompt, tools, contextWindowPolicy, request.getMessage(), ctx,
+                                                sse, conv, modelConfig, studentId, cancellationToken);
+                                        this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
+                                                sysPrompt, tools, contextPrompt, msgs, contextManagement.strategy());
+                                        lr = this.chatStreaming(sse, conv, sysPrompt, msgs, tools, llmProvider, llmConfig, i, task.getTaskId(), visibleLanguage, cancellationToken);
                                         type = (String)lr.get("type");
+                                        if (cancellationToken.isCancellationRequested() || "cancelled".equals(type)) {
+                                            this.completeCancelledRun(sse, conv, task, project, runLog, i, visibleLanguage, emitter);
+                                            return;
+                                        }
                                         this.appendRunLog(runLog, "\n- Model response type: `" + this.safeLogText(type) + "`\n");
                                         log.info("Iteration {}, type: {}", i, type);
 
@@ -317,12 +601,13 @@ public class AgentLoopEngine {
                                         String modelThinkingRaw = lr.get("thinking") != null ? lr.get("thinking").toString() : "";
                                         String modelThinking = this.cleanModelOutput(modelThinkingRaw);
                                         JsonObject ta = this.parseArgs(as);
-                                        this.appendRunLog(runLog, "\n### Tool call\n\n- Tool: `" + this.safeLogText(tn) + "`\n- Args:\n\n```json\n" + GSON.toJson((JsonElement)ta) + "\n```\n");
+                                        JsonObject publicArgs = this.publicToolArguments(tn, ta);
+                                        this.appendRunLog(runLog, "\n### Tool call\n\n- Tool: `" + this.safeLogText(tn) + "`\n- Args:\n\n```json\n" + GSON.toJson((JsonElement)publicArgs) + "\n```\n");
                                         // Send local thinking only if model didn't provide reasoning (streaming already sent it)
                                         if (modelThinking.isBlank()) {
-                                            this.sendThought(sse, conv, i, this.visibleActionSummary(tn, ta, visibleLanguage), this.buildToolThought(tn, ta, false, visibleLanguage), task.getTaskId());
+                                            this.sendThought(sse, conv, i, this.visibleActionSummary(tn, publicArgs, visibleLanguage), this.buildToolThought(tn, publicArgs, false, visibleLanguage), task.getTaskId());
                                         }
-                                        this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", tn, "arguments", ta, "summary", this.visibleActionSummary(tn, ta, visibleLanguage), "content", this.visibleActionDetail(tn, ta, visibleLanguage), "taskId", task.getTaskId()));
+                                        this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", tn, "arguments", publicArgs, "summary", this.visibleActionSummary(tn, publicArgs, visibleLanguage), "content", this.visibleActionDetail(tn, publicArgs, visibleLanguage), "taskId", task.getTaskId()));
                                         String toolSignature = tn + ":" + this.toolTarget(this.safeTool(tn), ta);
                                         recentToolCalls.add(toolSignature);
                                         if (recentToolCalls.size() > 5) recentToolCalls.remove(0);
@@ -347,7 +632,17 @@ public class AgentLoopEngine {
                                             sameToolCount = 0;
                                             lastToolSignature = toolSignature;
                                         }
-                                        ToolResult res = this.execTool(tn, ta, ctx, sse, conv, visibleLanguage);
+                                        String toolCallId = this.nativeToolCallId(lr);
+                                        if (toolCallId == null) {
+                                            this.stopForMissingToolCallIdentity(sse, conv, task, project, request, ctx,
+                                                    runLog, i, tn, visibleLanguage, emitter);
+                                            return;
+                                        }
+                                        ToolResult res = this.execTool(tn, ta, ctx, sse, conv, visibleLanguage, toolCallId, runLog);
+                                        if (res.isApprovalRequired()) {
+                                            this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, tn, res, visibleLanguage, emitter);
+                                            return;
+                                        }
                                         this.appendToolResult(runLog, res);
                                         this.writeAgentCheckpoint(project, request, task, ctx, res.isSuccess() ? "tool_success" : "tool_failed", "Tool `" + this.safeLogText(tn) + "` returned.", tn, this.compactToolResultForCheckpoint(tn, res), runLog);
                                         this.sendObserve(sse, conv, i, tn, res, task.getTaskId());
@@ -355,13 +650,22 @@ public class AgentLoopEngine {
                                             this.sendEvent(sse, conv, "PLAN_UPDATE", Map.of("plan", ctx.getPlan(), "summary", ctx.getPlanSummary(), "planJson", planJson));
                                         }
                                         this.sendThought(sse, conv, i, this.localText(visibleLanguage, "检查结果", "Check result"), this.buildResultThought(tn, ta, res, visibleLanguage), task.getTaskId());
-                                        if (res.isApprovalRequired()) {
-                                            this.taskService.updateTask(task.getTaskId(), "waiting_approval", this.localText(visibleLanguage, "等待用户批准", "Awaiting approval"), res.getApprovalCommand());
-                                            this.appendRunLog(runLog, "\n- Awaiting approval command: `" + this.safeLogText(res.getApprovalCommand()) + "`\n");
-                                            this.sendEvent(sse, conv, "COMMAND_APPROVAL_REQUIRED", Map.of("taskId", task.getTaskId(), "command", res.getApprovalCommand()));
-                                            this.writeAgentCheckpoint(project, request, task, ctx, "waiting_approval", this.localText(visibleLanguage, "等待用户批准命令 `" + this.safeLogText(res.getApprovalCommand()) + "`。", "Awaiting user approval for command `" + this.safeLogText(res.getApprovalCommand()) + "`."), tn, this.compactToolResultForCheckpoint(tn, res), runLog);
-                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "等待用户批准", "Awaiting user approval"), this.localText(visibleLanguage, "需要确认是否执行命令：`" + res.getApprovalCommand() + "`。", "Need to confirm execution of command: `" + res.getApprovalCommand() + "`."), project, runLog, visibleLanguage), visibleLanguage);
-                                            this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "等待用户批准", "Awaiting approval"), "iterations", i));
+                                        if (res.isInteractionRequired()) {
+                                            boolean waitingForPermission = "permission".equals(res.getInteractionType());
+                                            String waitingState = waitingForPermission ? "waiting_approval" : "waiting_user";
+                                            String waitingTitle = waitingForPermission
+                                                    ? this.localText(visibleLanguage, "??????", "Awaiting approval")
+                                                    : this.localText(visibleLanguage, "??????", "Awaiting user input");
+                                            String waitingDetail = waitingForPermission
+                                                    ? this.localText(visibleLanguage, "??????????????", "User approval is required before execution can continue.")
+                                                    : this.localText(visibleLanguage, "????????????????", "User input is required before execution can continue.");
+                                            this.taskService.updateTask(task.getTaskId(), waitingState, waitingTitle, waitingDetail);
+                                            this.appendRunLog(runLog, "\n- Durable user interaction pending: type=`" + this.safeLogText(res.getInteractionType())
+                                                    + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
+                                            this.writeAgentCheckpoint(project, request, task, ctx, waitingState, waitingDetail, tn,
+                                                    this.compactToolResultForCheckpoint(tn, res), runLog);
+                                            this.streamFinal(sse, conv, this.buildStopFinal(waitingTitle, waitingDetail, project, runLog, visibleLanguage), visibleLanguage);
+                                            this.sendEvent(sse, conv, "DONE", Map.of("message", waitingTitle, "iterations", i));
                                             emitter.complete();
                                             return;
                                         }
@@ -382,13 +686,19 @@ public class AgentLoopEngine {
                                     String invArgs = ToolCallExtractor.extractToolArgs((String)content, (String)invTool);
                                     log.info("Iteration {}: extracted tool={} args={}", new Object[]{i, invTool, invArgs});
                                     JsonObject parsedArgs = this.parseArgs(invArgs);
-                                    this.appendRunLog(runLog, "\n### Recovered tool call from text\n\n- Tool: `" + this.safeLogText(invTool) + "`\n- Args:\n\n```json\n" + GSON.toJson((JsonElement)parsedArgs) + "\n```\n");
+                                    JsonObject publicArgs = this.publicToolArguments(invTool, parsedArgs);
+                                    this.appendRunLog(runLog, "\n### Recovered tool call from text\n\n- Tool: `" + this.safeLogText(invTool) + "`\n- Args:\n\n```json\n" + GSON.toJson((JsonElement)publicArgs) + "\n```\n");
                                     // Send local thinking only if streaming didn't already cover it
                                     if (modelThinkingFromLr == null || modelThinkingFromLr.isBlank()) {
-                                        this.sendThought(sse, conv, i, this.visibleActionSummary(invTool, parsedArgs, visibleLanguage), this.buildToolThought(invTool, parsedArgs, true, visibleLanguage), task.getTaskId());
+                                        this.sendThought(sse, conv, i, this.visibleActionSummary(invTool, publicArgs, visibleLanguage), this.buildToolThought(invTool, publicArgs, true, visibleLanguage), task.getTaskId());
                                     }
-                                    this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", invTool, "arguments", parsedArgs, "summary", this.visibleActionSummary(invTool, parsedArgs, visibleLanguage), "content", this.visibleActionDetail(invTool, parsedArgs, visibleLanguage), "taskId", task.getTaskId()));
-                                    ToolResult res = this.execTool(invTool, parsedArgs, ctx, sse, conv, visibleLanguage);
+                                    this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", invTool, "arguments", publicArgs, "summary", this.visibleActionSummary(invTool, publicArgs, visibleLanguage), "content", this.visibleActionDetail(invTool, publicArgs, visibleLanguage), "taskId", task.getTaskId()));
+                                    String recoveredToolCallId = this.recoveredToolCallId(ctx, i, invTool, parsedArgs);
+                                    ToolResult res = this.execTool(invTool, parsedArgs, ctx, sse, conv, visibleLanguage, recoveredToolCallId, runLog);
+                                    if (res.isApprovalRequired()) {
+                                        this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, invTool, res, visibleLanguage, emitter);
+                                        return;
+                                    }
                                     this.appendToolResult(runLog, res);
                                     this.writeAgentCheckpoint(project, request, task, ctx, res.isSuccess() ? "tool_success" : "tool_failed", "Recovered and executed tool `" + this.safeLogText(invTool) + "`.", invTool, this.compactToolResultForCheckpoint(invTool, res), runLog);
                                     this.sendObserve(sse, conv, i, invTool, res, task.getTaskId());
@@ -441,11 +751,10 @@ public class AgentLoopEngine {
                             executed = true;
                             break block19;
                         } else {
-                            boolean noSubstance;
                             boolean tooShort = ft.length() < 80;
                             boolean noStructure = !ft.contains("##") && !ft.contains("**") && !ft.contains("- ");
-                            boolean bl = noSubstance = !containsFinalSubstance(ft);
-                            if (tooShort && noSubstance || noStructure && noSubstance) {
+                            boolean noSubstance = !containsFinalSubstance(ft);
+                            if (shouldRejectFinalReply(request.getMessage(), ft)) {
                                 this.appendRunLog(runLog, "\n- Reply quality insufficient (length=" + ft.length() + ", noStructure=" + noStructure + ", noSubstance=" + noSubstance + "), rejecting as final.\n");
                                 msgs.add(Map.of("role", "assistant", "content", ft));
                                 msgs.add(Map.of("role", "user", "content", "Reply too short to be final. Output complete structured summary:\n## Summary\n**Completed**\n- What was modified\n**Verification**\n- How it was verified\n**Suggestions**\n- Next steps"));
@@ -455,7 +764,7 @@ public class AgentLoopEngine {
                                 // Model's reasoning already streamed in real-time by chatStreaming
                                 this.appendRunLog(runLog, "\n## Final response\n\n" + this.safeLogText(ft) + "\n");
                                 log.info("Iteration {}: final response ({} chars)", i, ft.length());
-                                this.streamFinal(sse, conv, ft, visibleLanguage);
+                                this.sendEvent(sse, conv, "FINAL", Map.of("content", ft, "summary", this.finalResponseSummary(visibleLanguage)));
                                 this.taskService.updateTask(task.getTaskId(), "completed", this.localText(visibleLanguage, "已完成", "Completed"), ft);
                                 ctx.setStage("final");
                                 this.writeAgentCheckpoint(project, request, task, ctx, "completed", "Task completed with final response.", "", this.limitForContext(ft, 2000), runLog);
@@ -469,35 +778,88 @@ public class AgentLoopEngine {
                         String errMsg = (String)lr.get("message");
                         log.warn("Iteration {} API error: {}", i, errMsg);
                         this.appendRunLog(runLog, "\n### Model error\n\n" + this.safeLogText(errMsg) + "\n");
-                        // 上下文溢出检测：如果错误是上下文过长，用 LLM 压缩后重试
+                        // 上下文溢出检测：如果错误是上下文过长，生成结构化 checkpoint 后重试
                         if (this.isContextOverflowError(errMsg)) {
                             log.warn("Context overflow at iteration {}, running compaction", i);
                             this.appendRunLog(runLog, "\n### Context overflow, running compaction\n");
-                            // 尝试用 LLM 生成摘要压缩，失败则降级为激进裁剪
+                            int tokensBeforeCompaction = this.estimateMessagesTokens(msgs, sysPrompt);
+                            String overflowStrategy = "CHECKPOINT_COMPACTION";
                             try {
-                                this.compactWithLlmSummary(msgs, sysPrompt, "", null);
+                                int keepRecentTurns = contextWindowPolicy == null
+                                        ? ConversationCheckpointCompactor.DEFAULT_KEEP_RECENT_TURNS
+                                        : contextWindowPolicy.tailTurns();
+                                ContextManagementResult compaction = this.compactContextWithFallback(msgs, sysPrompt, tools,
+                                        request.getMessage(), ctx, sse, conv, modelConfig, studentId, cancellationToken,
+                                        keepRecentTurns, tokensBeforeCompaction, "provider_overflow");
+                                overflowStrategy = compaction.strategy();
+                                if (!compaction.changed()) {
+                                    this.aggressiveTrimMessages(msgs, sysPrompt);
+                                }
                             } catch (Exception compactErr) {
-                                log.warn("LLM compaction failed, falling back to aggressive trim: {}", compactErr.getMessage());
+                                log.warn("Checkpoint compaction failed, falling back to aggressive trim: {}", compactErr.getMessage());
                                 this.aggressiveTrimMessages(msgs, sysPrompt);
                             }
-                            // 追加 continue 指令，让模型继续工作（参考 OpenCode auto-continue）
+                            int tokensAfterCompaction = this.estimateMessagesTokens(msgs, sysPrompt);
+                            this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
+                                    sysPrompt, tools, contextPrompt, msgs, overflowStrategy);
+                            if (!hasContextCompactionProgress(tokensBeforeCompaction, tokensAfterCompaction)) {
+                                String modelFailTitle = this.localText(visibleLanguage, "???????", "Context window exceeded");
+                                String modelFailReason = this.localText(visibleLanguage,
+                                        "??????????????????????????????????????????????????????????",
+                                        "The request exceeds the model context window and the remaining conversation cannot be reduced further. Repeated requests were stopped; use a model with a larger context window or start a new conversation.");
+                                this.appendRunLog(runLog, "\n### Context overflow could not be reduced\n\n- estimated_tokens_before: " + tokensBeforeCompaction + "\n- estimated_tokens_after: " + tokensAfterCompaction + "\n");
+                                this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
+                                this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
+                                this.taskService.updateTask(task.getTaskId(), "failed", modelFailTitle, errMsg);
+                                this.writeAgentCheckpoint(project, request, task, ctx, "failed_context_overflow", modelFailReason, "", errMsg, runLog);
+                                this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle, "iterations", i));
+                                emitter.complete();
+                                return;
+                            }
                             msgs.add(Map.of("role", "user", "content",
                                 "Context was compressed to fit the model window. Continue from where you left off. " +
                                 "If you need to re-read files, use read_file or grep."));
                             executed = true;
                             break block19;
                         }
-                        if (this.isRecoverableModelError(errMsg) && recoverableModelErrors < 10) {
-                            long delay = Math.min(15000L, 1000L * (1L << Math.min(++recoverableModelErrors, 4)));
-                            String guidance = this.buildRecoverableErrorGuidance(errMsg, recoverableModelErrors, delay);
-                            this.appendRunLog(runLog, "\n- Recoverable error, retry " + recoverableModelErrors + ", waiting " + delay + "ms\n- Guidance: " + this.safeLogText(guidance) + "\n");
-                            this.writeAgentCheckpoint(project, request, task, ctx, "recoverable_model_error", "Recoverable model connection error, retry " + recoverableModelErrors + ".", "", errMsg, runLog);
-                            this.sendThought(sse, conv, i, this.localText(visibleLanguage, "网络重试", "Network retry"), guidance, task.getTaskId());
-                            Thread.sleep(delay);
-                            msgs.add(Map.of("role", "user", "content", guidance));
-                            executed = true;
-                            break block19;
-                        } else {
+                        if (this.isModelTimeoutError(errMsg)) {
+                            String modelFailTitle = this.localText(visibleLanguage, "??????", "Model response timed out");
+                            String modelFailReason = this.localText(visibleLanguage,
+                                    "?????????????????????????????????????????????",
+                                    "The model service did not return an initial response in time, so this run was stopped. Check the provider, proxy, or try another model.");
+                            this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
+                            this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
+                            this.taskService.updateTask(task.getTaskId(), "failed", modelFailTitle, errMsg);
+                            this.writeAgentCheckpoint(project, request, task, ctx, "failed_model_timeout", modelFailReason, "", errMsg, runLog);
+                            this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle, "iterations", i));
+                            emitter.complete();
+                            return;
+                        }
+                        if (this.isRecoverableModelError(errMsg)) {
+                            int nextAttempt = (task.getRetryAttempts() == null ? 0 : task.getRetryAttempts()) + 1;
+                            long delay = Math.min(4000L, 1000L * (1L << Math.min(nextAttempt, 2)));
+                            AgentTaskService.ModelRetrySchedule retry = this.taskService.scheduleModelRetry(
+                                    task.getTaskId(), 2, delay, this.limitForThought(errMsg, 240));
+                            if (retry != null) {
+                                String guidance = this.buildRecoverableErrorGuidance(
+                                        errMsg, retry.attempt(), retry.delayMs());
+                                this.appendRunLog(runLog, "\n- Recoverable error, retry " + retry.attempt()
+                                        + ", scheduled for " + retry.nextRetryAt()
+                                        + "\n- Guidance: " + this.safeLogText(guidance) + "\n");
+                                this.writeAgentCheckpoint(project, request, task, ctx, "retrying",
+                                        "Recoverable model connection error; retry " + retry.attempt() + " is scheduled.",
+                                        "", errMsg, runLog);
+                                this.sendThought(sse, conv, i,
+                                        this.localText(visibleLanguage, "Network retry", "Network retry"), guidance,
+                                        task.getTaskId());
+                                this.sendEvent(sse, conv, "RETRY_SCHEDULED", Map.of(
+                                        "attempt", retry.attempt(), "delayMs", retry.delayMs(),
+                                        "nextRetryAt", retry.nextRetryAt().toString(), "iteration", i));
+                                emitter.complete();
+                                return;
+                            }
+                        }
+                        {
                             String modelFailTitle = this.localText(visibleLanguage, "模型 API 调用失败", "Model API failed");
                             String modelFailReason = this.localText(visibleLanguage,
                                     "模型连接连续失败，任务已暂停。请检查 API Key、模型服务或稍后重试。",
@@ -523,7 +885,11 @@ public class AgentLoopEngine {
             log.error("Agent loop error", (Throwable)e);
             try {
                 this.appendRunLog(runLog, "\n## Runtime exception\n\n```text\n" + this.safeLogText(e.toString()) + "\n```\n");
-                if (e instanceof InterruptedException) {
+                if (task == null) {
+                    this.reportStartupFailure(sse, visibleLanguage, e);
+                } else if (cancellationToken.isCancellationRequested() && project != null) {
+                    this.completeCancelledRun(sse, conv, task, project, runLog, 0, visibleLanguage, emitter);
+                } else if (e instanceof InterruptedException) {
                     this.sendEvent(sse, conv, "INTERRUPTED", Map.of("message", this.localText(visibleLanguage, "已中断", "Interrupted")));
                 } else {
                     String runtimeTitle = this.localText(visibleLanguage, "运行时异常", "Runtime exception");
@@ -540,7 +906,69 @@ public class AgentLoopEngine {
             }
             emitter.complete();
             return;
+        } finally {
+            try {
+                if (task != null) {
+                    this.taskService.finishTimingIfTerminal(task.getTaskId());
+                }
+            } catch (Exception timingFailure) {
+                log.error("Unable to finalize agent task timing for taskId={}", task == null ? null : task.getTaskId(), timingFailure);
+            } finally {
+                if (task != null) {
+                    this.diffService.awaitDeferredSnapshots(task.getTaskId(), "agent_terminal_cleanup");
+                }
+                if (executionLease != null && this.leaseHeartbeatService != null) {
+                    this.leaseHeartbeatService.untrack(executionLease);
+                }
+                if (executionLease != null && this.executionLeaseService != null) {
+                    this.executionLeaseService.release(executionLease);
+                }
+                if (task != null && this.workspaceLeaseService != null) {
+                    int released = this.workspaceLeaseService.releaseAllOwnedBy("task:" + task.getTaskId());
+                    if (released > 0) {
+                        log.warn("Released {} leaked workspace lease(s) during terminal cleanup for taskId={}",
+                                released, task.getTaskId());
+                    }
+                }
+                this.cancellationRegistry.complete(activeCancellation);
+            }
         }
+    }
+
+    void reportStartupFailure(AgentSsePublisher sse, String visibleLanguage, Exception failure) {
+        String title = this.localText(visibleLanguage, "Agent 启动失败", "Agent startup failed");
+        String detail = failure == null || failure.getMessage() == null || failure.getMessage().isBlank()
+                ? this.localText(visibleLanguage, "未提供错误详情", "No error details were provided")
+                : failure.getMessage();
+        try {
+            sse.send("ERROR", Map.of("message", title + ": " + detail));
+        } catch (Exception sendFailure) {
+            log.warn("Unable to send agent startup error event: {}", sendFailure.getMessage());
+        }
+        try {
+            sse.send("DONE", Map.of("message", title));
+        } catch (Exception sendFailure) {
+            log.warn("Unable to send agent startup completion event: {}", sendFailure.getMessage());
+        }
+    }
+
+    private void completeCancelledRun(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
+                                      StudentProject project, Path runLog, int iteration,
+                                      String visibleLanguage, SseEmitter emitter) throws Exception {
+        String step = this.localText(visibleLanguage, "用户已取消", "User cancelled");
+        String reason = this.localText(visibleLanguage, "用户取消了本次执行", "User cancelled execution");
+        if (!this.taskService.finalizeCancellation(task.getTaskId(), step, reason)) {
+            log.warn("Cancellation finalization was skipped because task {} changed state concurrently", task.getTaskId());
+        }
+        this.appendRunLog(runLog, "\n- Stop reason: user cancelled.\n");
+        this.sendEvent(sse, conv, "INTERRUPTED", Map.of("message", reason, "iteration", iteration));
+        this.streamFinal(sse, conv, this.buildStopFinal(
+                step,
+                this.localText(visibleLanguage, "用户主动取消了本次 Agent 运行。", "User actively cancelled this run."),
+                project,
+                runLog,
+                visibleLanguage), visibleLanguage);
+        emitter.complete();
     }
 
     private JsonObject parseArgs(String s) {
@@ -555,7 +983,8 @@ public class AgentLoopEngine {
         }
     }
 
-    private ToolResult execTool(String name, JsonObject args, AgentContext ctx, AgentSsePublisher sse, AgentConversation conv, String visibleLanguage) {
+    private ToolResult execTool(String name, JsonObject args, AgentContext ctx, AgentSsePublisher sse,
+                                AgentConversation conv, String visibleLanguage, String toolCallId, Path runLog) {
         // 工具权限检查：plan/explore 模式下不允许使用编辑类工具
         if (!this.toolRegistry.isToolAllowed(ctx.getMode(), name)) {
             return ToolResult.failed(this.localText(visibleLanguage,
@@ -569,7 +998,19 @@ public class AgentLoopEngine {
         if ("question".equals(this.safeTool(name))) {
             return this.askUserQuestion(args, ctx, sse, conv, visibleLanguage);
         }
-        boolean explicitlyApproved = false;
+        if (this.isCommandPolicyTool(name)) {
+            CommandClassification classification = this.commandClassification(name, args, ctx);
+            if (classification != null) {
+                int timeout = this.commandTimeout(name, args);
+                if (classification.decision() == CommandDecision.BLOCK) {
+                    return ToolResult.failed("command blocked by restricted command policy: "
+                            + classification.reasonCode().name().toLowerCase(Locale.ROOT));
+                }
+                if (classification.requiresApproval()) {
+                    return this.createCommandApproval(ctx, classification, timeout, toolCallId);
+                }
+            }
+        }
         try {
             String mode = ctx.getMode();
             List<PermissionRule> defaultRules = DefaultPermissionRuleset.getRulesForAgent(mode);
@@ -587,7 +1028,7 @@ public class AgentLoopEngine {
                     return ToolResult.failed(denyMsg);
                 case ASK:
                     PermissionRule askRule = eval.getMatchedRule();
-                    PermissionService.PermissionApprovalResult approvalResult = this.requestToolApproval(
+                    PermissionApprovalRequest approval = this.requestToolApproval(
                             ctx,
                             sse,
                             conv,
@@ -597,86 +1038,103 @@ public class AgentLoopEngine {
                             askRule != null ? askRule.getPermission() : "*",
                             askRule != null ? askRule.getPattern() : "*"
                     );
-                    if (!approvalResult.isGranted()) {
-                        String feedback = approvalResult.getFeedback();
-                        String rejectMessage = feedback == null || feedback.isBlank()
-                                ? this.localText(visibleLanguage, "用户拒绝了本次操作。", "Permission rejected by user.")
-                                : this.localText(visibleLanguage, "用户拒绝了本次操作：" + feedback, "Permission rejected by user: " + feedback);
-                        return ToolResult.failed(rejectMessage);
-                    }
-                    explicitlyApproved = true;
-                    break;
+                    return ToolResult.interactionRequired(
+                            this.localText(visibleLanguage, "?????????", "Waiting for user approval."),
+                            approval.getRequestId(),
+                            "permission");
                 case ALLOW:
-                    PermissionRule allowRule = eval.getMatchedRule();
-                    if (this.isShellTool(name)
-                            && allowRule != null
-                            && allowRule.getPermission() != null
-                            && allowRule.getPermission().equals(name)
-                            && allowRule.getPattern() != null
-                            && !"*".equals(allowRule.getPattern())) {
-                        explicitlyApproved = true;
-                    }
                     break;
-            }
-            if (this.isShellTool(name)) {
-                ProjectCommandSafety.SafetyCheck safety = ProjectCommandSafety.check(inputStr, explicitlyApproved);
-                if (!safety.allowed()) {
-                    if (!safety.approvalRequired()) {
-                        return ToolResult.failed(safety.message());
-                    }
-                    PermissionService.PermissionApprovalResult approvalResult = this.requestToolApproval(
-                            ctx,
-                            sse,
-                            conv,
-                            name,
-                            inputStr,
-                            safety.message(),
-                            name,
-                            safety.matchedRule() == null || safety.matchedRule().isBlank() ? "*" : safety.matchedRule() + "*"
-                    );
-                    if (!approvalResult.isGranted()) {
-                        String feedback = approvalResult.getFeedback();
-                        return ToolResult.failed(feedback == null || feedback.isBlank()
-                                ? this.localText(visibleLanguage, "用户拒绝了本次操作。", "Permission rejected by user.")
-                                : this.localText(visibleLanguage, "用户拒绝了本次操作：" + feedback, "Permission rejected by user: " + feedback));
-                    }
-                    explicitlyApproved = true;
-                }
-                if (explicitlyApproved) {
-                    args.addProperty("allow_dangerous", true);
-                }
             }
         } catch (Exception e) {
             log.warn("Permission check failed: {}", e.getMessage());
             return ToolResult.failed(this.localText(visibleLanguage, "权限检查失败：" + e.getMessage(), "Permission check failed: " + e.getMessage()));
         }
+        long totalStartedNanos = System.nanoTime();
+        long delegateElapsedMs = 0L;
+        long beforeSnapshotElapsedMs = 0L;
+        long afterSnapshotElapsedMs = 0L;
+        long snapshotDiffElapsedMs = 0L;
+        long postEditElapsedMs = 0L;
+        long contextElapsedMs = 0L;
+        long metricsElapsedMs = 0L;
+        String phase = "tool_delegate";
+        this.appendToolExecutionStart(runLog, ctx, name, toolCallId, args);
+        log.info("AGENT_TOOL_EXEC_START taskId={} projectId={} conversationId={} tool={} toolCallId={} argsChars={}",
+                ctx.getTaskId(), ctx.getProject().getProjectId(), ctx.getConversationId(), name, toolCallId,
+                args == null ? 0 : args.toString().length());
         try {
-            long startedAt = System.currentTimeMillis();
+            this.diffService.awaitDeferredSnapshots(ctx.getTaskId(), "before_tool:" + this.safeTool(name));
             GitSnapshotService.Snapshot beforeSnapshot = null;
             boolean snapshotCommand = this.shouldSnapshotCommandTool(name);
             if (snapshotCommand) {
+                phase = "snapshot_before_command";
+                long snapshotStartedNanos = System.nanoTime();
                 beforeSnapshot = this.gitSnapshotService.capture(ctx.getProject(), "before " + name + " task " + ctx.getTaskId());
+                beforeSnapshotElapsedMs = elapsedMs(snapshotStartedNanos);
             }
+
+            phase = "tool_delegate";
+            long delegateStartedNanos = System.nanoTime();
             ToolResult result = t.execute(ctx, args);
-            if (snapshotCommand && result.isSuccess() && !result.isApprovalRequired()) {
-                GitSnapshotService.Snapshot afterSnapshot = this.gitSnapshotService.capture(ctx.getProject(), "after " + name + " task " + ctx.getTaskId());
-                List<PendingChange> changes = this.diffService.recordSnapshotDiff(ctx.getStudentId(), ctx.getProject(), ctx.getConversationId(), ctx.getTaskId(), name, beforeSnapshot, afterSnapshot);
+            delegateElapsedMs = elapsedMs(delegateStartedNanos);
+            if (result.isSuccess() && result.getPendingChangeId() != null && !result.getPendingChangeId().isBlank()) {
+                this.diffService.scheduleDeferredSnapshot(result.getPendingChangeId());
+            }
+
+            if (shouldRecordSnapshotDiff(snapshotCommand, result)) {
+                phase = "snapshot_after_command";
+                long snapshotStartedNanos = System.nanoTime();
+                GitSnapshotService.Snapshot afterSnapshot = this.gitSnapshotService.capture(ctx.getProject(),
+                        "after " + name + " task " + ctx.getTaskId());
+                afterSnapshotElapsedMs = elapsedMs(snapshotStartedNanos);
+
+                phase = "record_snapshot_diff";
+                long diffStartedNanos = System.nanoTime();
+                List<PendingChange> changes = this.diffService.recordSnapshotDiff(ctx.getStudentId(), ctx.getProject(),
+                        ctx.getConversationId(), ctx.getTaskId(), name, beforeSnapshot, afterSnapshot);
+                snapshotDiffElapsedMs = elapsedMs(diffStartedNanos);
                 if (!changes.isEmpty()) {
                     this.attachSnapshotChanges(result, changes);
                 }
             }
+
+            phase = "post_edit_hook";
+            long postEditStartedNanos = System.nanoTime();
             AgentPostEditHookService.HookReport hookReport = this.postEditHookService.afterTool(ctx, name, args, result);
+            postEditElapsedMs = elapsedMs(postEditStartedNanos);
             if (hookReport.content() != null && !hookReport.content().isBlank()) {
                 result.setContent((result.getContent() == null ? "" : result.getContent()) + hookReport.content());
             }
+
+            phase = "context_orchestration";
+            long contextStartedNanos = System.nanoTime();
             this.contextOrchestrator.afterTool(ctx, name, args, result);
-            this.metricsService.recordTool(ctx, name, args, result, System.currentTimeMillis() - startedAt, hookReport);
+            contextElapsedMs = elapsedMs(contextStartedNanos);
+
+            phase = "metrics_persistence";
+            long metricsStartedNanos = System.nanoTime();
+            this.metricsService.recordTool(ctx, name, args, result, elapsedMs(totalStartedNanos), hookReport);
+            metricsElapsedMs = elapsedMs(metricsStartedNanos);
+            long totalElapsedMs = elapsedMs(totalStartedNanos);
+            log.info("AGENT_TOOL_EXEC_COMPLETE taskId={} projectId={} tool={} toolCallId={} success={} totalMs={} delegateMs={} beforeSnapshotMs={} afterSnapshotMs={} snapshotDiffMs={} postEditMs={} contextMs={} metricsMs={} pendingChangeId={}",
+                    ctx.getTaskId(), ctx.getProject().getProjectId(), name, toolCallId, result.isSuccess(), totalElapsedMs,
+                    delegateElapsedMs, beforeSnapshotElapsedMs, afterSnapshotElapsedMs, snapshotDiffElapsedMs,
+                    postEditElapsedMs, contextElapsedMs, metricsElapsedMs, result.getPendingChangeId());
+            this.appendToolExecutionComplete(runLog, name, toolCallId, result, totalElapsedMs, delegateElapsedMs,
+                    beforeSnapshotElapsedMs, afterSnapshotElapsedMs, snapshotDiffElapsedMs, postEditElapsedMs,
+                    contextElapsedMs, metricsElapsedMs);
             return result;
         }
         catch (Exception e) {
+            long totalElapsedMs = elapsedMs(totalStartedNanos);
+            log.warn("AGENT_TOOL_EXEC_FAILED taskId={} projectId={} tool={} toolCallId={} phase={} totalMs={} delegateMs={} beforeSnapshotMs={} afterSnapshotMs={} snapshotDiffMs={} postEditMs={} contextMs={} metricsMs={} errorType={} error={}",
+                    ctx.getTaskId(), ctx.getProject().getProjectId(), name, toolCallId, phase, totalElapsedMs,
+                    delegateElapsedMs, beforeSnapshotElapsedMs, afterSnapshotElapsedMs, snapshotDiffElapsedMs,
+                    postEditElapsedMs, contextElapsedMs, metricsElapsedMs, e.getClass().getSimpleName(), e.getMessage());
             ToolResult failed = ToolResult.failed((String)e.getMessage());
+            this.appendToolExecutionFailed(runLog, name, toolCallId, phase, totalElapsedMs, e);
             this.contextOrchestrator.afterTool(ctx, name, args, failed);
-            this.metricsService.recordTool(ctx, name, args, failed, 0, AgentPostEditHookService.HookReport.empty());
+            this.metricsService.recordTool(ctx, name, args, failed, totalElapsedMs, AgentPostEditHookService.HookReport.empty());
             return failed;
         }
     }
@@ -684,24 +1142,24 @@ public class AgentLoopEngine {
     private ToolResult askUserQuestion(JsonObject args, AgentContext ctx, AgentSsePublisher sse, AgentConversation conv, String visibleLanguage) {
         String question = ToolSupport.stringArg(args, "question", "").trim();
         if (question.isBlank()) {
-            return ToolResult.failed(this.localText(visibleLanguage, "question 参数不能为空", "question is required"));
+            return ToolResult.failed(this.localText(visibleLanguage, "question ??????", "question is required"));
         }
         String summary = ToolSupport.stringArg(args, "summary", "").trim();
         if (summary.isBlank()) {
-            summary = this.localText(visibleLanguage, "等待用户输入", "Waiting for user input");
+            summary = this.localText(visibleLanguage, "??????", "Waiting for user input");
         }
-        List<String> options = this.questionOptions(args);
-        AgentInteractionService.UserQuestionRequest request = this.interactionService.beginQuestion(
-                ctx.getProject().getProjectId(),
-                ctx.getStudentId(),
-                ctx.getSessionId(),
-                ctx.getTaskId(),
-                ctx.getConversationId(),
-                question,
-                summary,
-                options
-        );
         try {
+            List<String> options = this.questionOptions(args);
+            AgentInteractionService.UserQuestionRequest request = this.interactionService.beginQuestion(
+                    ctx.getProject().getProjectId(),
+                    ctx.getStudentId(),
+                    ctx.getSessionId(),
+                    ctx.getTaskId(),
+                    ctx.getConversationId(),
+                    question,
+                    summary,
+                    options
+            );
             this.taskService.updateTask(ctx.getTaskId(), "waiting_user", summary, question);
             LinkedHashMap<String, Object> data = new LinkedHashMap<>();
             data.put("requestId", request.requestId());
@@ -714,29 +1172,12 @@ public class AgentLoopEngine {
             data.put("options", request.options());
             data.put("createdAt", request.createdAt());
             this.sendEvent(sse, conv, "USER_QUESTION", data);
-
-            AgentInteractionService.UserQuestionResult result = this.interactionService.awaitQuestion(
+            return ToolResult.interactionRequired(
+                    this.localText(visibleLanguage, "?????????", "Waiting for user input."),
                     request.requestId(),
-                    () -> this.cancellationRegistry.isCancelled(ctx.getSessionId())
-            );
-            if (result.answered()) {
-                this.taskService.updateTask(ctx.getTaskId(), "running", this.localText(visibleLanguage, "已收到用户输入", "Received user input"), null);
-                return ToolResult.ok(this.localText(visibleLanguage,
-                        "用户已回答问题。\n问题：" + question + "\n回答：" + result.answer(),
-                        "User answered the question.\nQuestion: " + question + "\nAnswer: " + result.answer()));
-            }
-            String feedback = result.feedback() == null || result.feedback().isBlank()
-                    ? this.localText(visibleLanguage, "用户没有回答该问题。", "User did not answer the question.")
-                    : result.feedback();
-            if (result.timedOut()) {
-                return ToolResult.failed(this.localText(visibleLanguage, "问题等待超时。" + feedback, "Question timed out. " + feedback));
-            }
-            return ToolResult.failed(feedback);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return ToolResult.failed(this.localText(visibleLanguage, "等待用户回答时被中断。", "Interrupted while waiting for user answer."));
+                    "question");
         } catch (Exception e) {
-            return ToolResult.failed(this.localText(visibleLanguage, "用户提问失败：" + e.getMessage(), "User question failed: " + e.getMessage()));
+            return ToolResult.failed(this.localText(visibleLanguage, "???????" + e.getMessage(), "User question failed: " + e.getMessage()));
         }
     }
 
@@ -785,9 +1226,12 @@ public class AgentLoopEngine {
         return options;
     }
 
-    private PermissionService.PermissionApprovalResult requestToolApproval(AgentContext ctx, AgentSsePublisher sse, AgentConversation conv, String toolName, String input, String summary, String permission, String pattern) throws Exception {
+    private PermissionApprovalRequest requestToolApproval(AgentContext ctx, AgentSsePublisher sse, AgentConversation conv, String toolName, String input, String summary, String permission, String pattern) throws Exception {
         PermissionApprovalRequest approval = permissionService.beginApproval(
                 ctx.getProject().getProjectId(),
+                ctx.getStudentId(),
+                ctx.getTaskId(),
+                ctx.getConversationId(),
                 ctx.getSessionId(),
                 toolName,
                 input,
@@ -795,8 +1239,15 @@ public class AgentLoopEngine {
                 permission,
                 pattern
         );
+        this.taskService.updateTask(
+                ctx.getTaskId(),
+                "waiting_approval",
+                "Awaiting approval",
+                summary);
         LinkedHashMap<String, Object> data = new LinkedHashMap<>();
         data.put("requestId", approval.getRequestId());
+        data.put("taskId", ctx.getTaskId());
+        data.put("projectId", ctx.getProject().getProjectId());
         data.put("sessionId", approval.getSessionId());
         data.put("toolName", approval.getToolName());
         data.put("input", approval.getInput());
@@ -805,7 +1256,144 @@ public class AgentLoopEngine {
         data.put("matchedRulePattern", approval.getMatchedRulePattern());
         data.put("createdAt", approval.getCreatedAt());
         this.sendEvent(sse, conv, "PERMISSION_ASK", data);
-        return permissionService.awaitApproval(approval.getRequestId());
+        return approval;
+    }
+
+    static String commandApprovalIdempotencyKey(AgentContext context, String toolCallId) {
+        return "command-approval:v1:" + context.getTaskId() + ":" + context.getSessionId()
+                + ":agent_shell:" + toolCallId;
+    }
+
+    static String recoveredToolCallIdentity(Long taskId, int iteration, String toolName, String canonicalArguments) {
+        return "recovered:v1:" + taskId + ":" + iteration + ":" + toolName + ":"
+                + sha256Static(canonicalArguments == null ? "{}" : canonicalArguments);
+    }
+
+    private String nativeToolCallId(Map<String, Object> toolCallResult) {
+        Object value = toolCallResult.get("toolCallId");
+        if (value == null) {
+            return null;
+        }
+        String toolCallId = value.toString().trim();
+        return toolCallId.isEmpty() ? null : toolCallId;
+    }
+
+    private String recoveredToolCallId(AgentContext context, int iteration, String toolName, JsonObject arguments) {
+        String canonicalArguments = arguments == null ? "{}" : GSON.toJson(arguments);
+        return recoveredToolCallIdentity(context.getTaskId(), iteration, toolName, canonicalArguments);
+    }
+
+    private static String sha256Static(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private String sha256(String value) {
+        return sha256Static(value);
+    }
+
+    private void stopForMissingToolCallIdentity(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
+                                                StudentProject project, AgentStreamRequest request, AgentContext ctx,
+                                                Path runLog, int iteration, String toolName, String visibleLanguage,
+                                                SseEmitter emitter) throws Exception {
+        String summary = this.localText(visibleLanguage, "工具调用标识不可用", "Tool call identity unavailable");
+        String detail = this.localText(visibleLanguage,
+                "服务提供方未返回可用于一次性审批绑定的工具调用标识，因此本次执行已安全停止。",
+                "The provider did not return a tool-call identity suitable for one-time approval binding, so execution stopped safely.");
+        this.taskService.updateTask(task.getTaskId(), "failed", summary, detail);
+        this.appendRunLog(runLog, "\n- " + detail + " Tool=`" + this.safeLogText(toolName) + "`\n");
+        this.writeAgentCheckpoint(project, request, task, ctx, "tool_call_identity_missing", detail, toolName, "", runLog);
+        this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
+        this.sendEvent(sse, conv, "DONE", Map.of("message", summary, "iterations", iteration));
+        emitter.complete();
+    }
+
+    private ToolResult createCommandApproval(AgentContext ctx, CommandClassification classification,
+                                             int timeout, String toolCallId) {
+        if (this.commandApprovalService == null || toolCallId == null || toolCallId.isBlank()) {
+            return ToolResult.failed("command approval service is unavailable");
+        }
+        String invocationId = "agent-command:v1:" + ctx.getTaskId() + ":" + toolCallId;
+        String idempotencyKey = this.commandApprovalIdempotencyKey(ctx, toolCallId);
+        java.time.LocalDateTime expiresTime = LocalDateTime.now().plusMinutes(10);
+        try {
+            com.labex.entity.CommandApproval approval = this.commandApprovalService.createOrGet(
+                    new CommandApprovalService.CreateRequest(
+                            UUID.randomUUID().toString(),
+                            idempotencyKey,
+                            ctx.getStudentId(),
+                            ctx.getProject().getProjectId(),
+                            ctx.getTaskId(),
+                            ctx.getConversationId(),
+                            ctx.getSessionId(),
+                            "agent_shell",
+                            invocationId,
+                            toolCallId,
+                            classification.normalizedCommand().digest(),
+                            classification.normalizedCommand().canonicalCommand(),
+                            classification.normalizedCommand().displayCommand(),
+                            classification.normalizedCommand().canonicalWorkingDirectory(),
+                            "direct",
+                            "timeout=" + timeout + ";longRunning=false",
+                            classification.decision().name(),
+                            classification.policyVersion(),
+                            expiresTime));
+            return ToolResult.commandApprovalRequired(
+                    "command requires a server-owned one-time approval",
+                    approval.getApprovalId(),
+                    approval.getDisplayCommand(),
+                    classification.riskClass().name(),
+                    classification.reasonCode().name(),
+                    approval.getExpiresTime().toString());
+        } catch (Exception exception) {
+            log.warn("Unable to create command approval for task {}: {}", ctx.getTaskId(), exception.getMessage());
+            return ToolResult.failed("command approval is unavailable");
+        }
+    }
+
+    private CommandClassification commandClassification(String toolName, JsonObject args, AgentContext context) {
+        String command;
+        if ("run_tests".equals(toolName)) {
+            command = TestCommandResolver.canonicalCommand(context.getWorkspaceRoot());
+        } else {
+            command = this.permissionInput(toolName, args);
+        }
+        if (command.isBlank()) {
+            return null;
+        }
+        int timeout = this.commandTimeout(toolName, args);
+        return this.commandClassifier.classify(new CommandRequest(
+                command, "direct", ".", timeout, false, false, "agent-worker"));
+    }
+
+    private int commandTimeout(String toolName, JsonObject args) {
+        int defaultTimeout = "run_tests".equals(toolName) ? 120 : 60;
+        try {
+            int requested = args != null && args.has("timeout_seconds")
+                    ? args.get("timeout_seconds").getAsInt() : defaultTimeout;
+            return Math.min(600, Math.max(1, requested));
+        } catch (RuntimeException exception) {
+            return defaultTimeout;
+        }
+    }
+
+    private boolean isCommandPolicyTool(String name) {
+        return this.isShellTool(name) || "run_tests".equals(name);
+    }
+
+    private int shellTimeout(JsonObject args) {
+        try {
+            int requested = args != null && args.has("timeout_seconds")
+                    ? args.get("timeout_seconds").getAsInt() : 60;
+            return Math.min(600, Math.max(1, requested));
+        } catch (RuntimeException exception) {
+            return 60;
+        }
     }
 
     private boolean isShellTool(String name) {
@@ -814,6 +1402,10 @@ public class AgentLoopEngine {
 
     private boolean shouldSnapshotCommandTool(String name) {
         return this.isShellTool(name);
+    }
+
+    static boolean shouldRecordSnapshotDiff(boolean snapshotCommand, ToolResult result) {
+        return snapshotCommand && result != null && !result.isApprovalRequired();
     }
 
     private void attachSnapshotChanges(ToolResult result, List<PendingChange> changes) {
@@ -856,6 +1448,51 @@ public class AgentLoopEngine {
             }
         }
         return "";
+    }
+
+    private void stopForCommandApproval(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
+                                        StudentProject project, AgentStreamRequest request, AgentContext ctx,
+                                        Path runLog, int iteration, String toolName, ToolResult result,
+                                        String visibleLanguage, SseEmitter emitter) throws Exception {
+        String displayCommand = result.getApprovalDisplayCommand() == null ? "<redacted>"
+                : result.getApprovalDisplayCommand();
+        String summary = this.localText(visibleLanguage, "等待一次性命令批准", "Awaiting one-time command approval");
+        String detail = this.localText(visibleLanguage,
+                "命令已安全保存，批准后只会执行一次；命令结果会作为上下文恢复当前 Agent 任务。",
+                "The command is stored safely and will execute at most once after approval; its result will resume the current Agent task as durable context.");
+        this.taskService.updateTask(task.getTaskId(), "waiting_approval", summary, detail);
+        String publicDisplay = CommandRedactor.redact(displayCommand);
+        this.appendRunLog(runLog, "\n- Awaiting command approval: approvalId=`"
+                + this.safeLogText(result.getApprovalId()) + "`, display=`"
+                + this.safeLogText(publicDisplay) + "`\n");
+        LinkedHashMap<String, Object> event = new LinkedHashMap<>();
+        event.put("approvalId", result.getApprovalId());
+        event.put("taskId", task.getTaskId());
+        event.put("sessionId", ctx.getSessionId());
+        event.put("tool", toolName);
+        event.put("displayCommand", publicDisplay);
+        event.put("riskLevel", result.getApprovalRiskLevel());
+        event.put("reasonCode", result.getApprovalReasonCode());
+        event.put("expiresTime", result.getApprovalExpiresTime());
+        event.put("resumeAgentLoop", true);
+        this.sendEvent(sse, conv, "COMMAND_APPROVAL_REQUIRED", event);
+        this.writeAgentCheckpoint(project, request, task, ctx, "waiting_approval", detail, toolName,
+                "approvalId=" + result.getApprovalId() + "; displayCommand=" + publicDisplay, runLog);
+        this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
+        this.sendEvent(sse, conv, "DONE", Map.of("message", summary, "iterations", iteration));
+        emitter.complete();
+    }
+
+    private JsonObject publicToolArguments(String toolName, JsonObject arguments) {
+        if (!this.isCommandPolicyTool(toolName)) {
+            return arguments;
+        }
+        JsonObject publicArguments = new JsonObject();
+        publicArguments.addProperty("command", "<redacted; approval required for mutating commands>");
+        if (arguments != null && arguments.has("timeout_seconds")) {
+            publicArguments.add("timeout_seconds", arguments.get("timeout_seconds"));
+        }
+        return publicArguments;
     }
 
     private void sendObserve(AgentSsePublisher sse, AgentConversation conv, int i, String tn, ToolResult r, Long tid) throws Exception {
@@ -903,12 +1540,27 @@ public class AgentLoopEngine {
         return ((String)s).trim();
     }
 
-    private boolean isRecoverableModelError(String message) {
+    private boolean isModelTimeoutError(String message) {
         if (message == null) {
             return false;
         }
         String lower = message.toLowerCase(Locale.ROOT);
-        return lower.contains("timed out") || lower.contains("timeout") || lower.contains("temporarily unavailable") || lower.contains("connection reset") || lower.contains("handshake") || lower.contains("remote host terminated") || lower.contains("connection aborted") || lower.contains("connection closed") || lower.contains("ssl") || lower.contains("tls") || lower.contains("eof") || lower.contains("503") || lower.contains("502") || lower.contains("504") || lower.contains("rate limit") || lower.contains("too many requests");
+        return lower.contains("read timed out")
+                || lower.contains("response timed out")
+                || lower.contains("model service timed out")
+                || lower.contains("????????")
+                || lower.contains("??????");
+    }
+
+    private boolean isRecoverableModelError(String message) {
+        if (message == null || isModelTimeoutError(message)) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        if (lower.contains("http 429") || lower.contains("rate limit") || lower.contains("too many requests")) {
+            return false;
+        }
+        return lower.contains("temporarily unavailable") || lower.contains("connection reset") || lower.contains("handshake") || lower.contains("remote host terminated") || lower.contains("connection aborted") || lower.contains("connection closed") || lower.contains("ssl") || lower.contains("tls") || lower.contains("eof") || lower.contains("503") || lower.contains("502") || lower.contains("504");
     }
 
     // Stream-based LLM call — sends thinking in real-time via SSE
@@ -916,49 +1568,82 @@ public class AgentLoopEngine {
                                                String sysPrompt, List<Map<String, Object>> msgs,
                                                List<Map<String, Object>> tools, LlmProvider provider,
                                                LlmProvider.LlmConfig config,
-                                               int iteration, Long taskId, String visibleLanguage) throws Exception {
+                                               int iteration, Long taskId, String visibleLanguage,
+                                               CancellationToken cancellationToken) throws Exception {
+        ProviderCapabilities capabilities = provider.capabilities();
+        if (!capabilities.streaming()) {
+            return Map.of("type", "error", "message", "Selected provider does not support streaming", "content", "");
+        }
+        if (tools != null && !tools.isEmpty() && !capabilities.toolCalling()) {
+            return Map.of("type", "error", "message", "Selected provider does not support tool calling", "content", "");
+        }
         StringBuilder contentBuf = new StringBuilder();
         StringBuilder thinkingBuf = new StringBuilder();
-        String[] toolName = {null};
-        StringBuilder[] toolArgs = {new StringBuilder()};
+        Map<Integer, LlmProvider.StreamChunk> toolCalls = new LinkedHashMap<>();
         String[] errorMsg = {null};
+        boolean[] cancelled = {false};
         boolean[] thinkingStarted = {false};
+        AtomicReference<Map<String, Object>> usageRef = new AtomicReference<>();
         String thinkMsgId = "think-" + iteration + "-" + UUID.randomUUID().toString();
 
-        provider.chatStream(sysPrompt, msgs, tools, config, chunk -> {
+        Future<?> streamFuture = PROVIDER_STREAM_EXECUTOR.submit(() -> provider.chatStream(sysPrompt, msgs, tools, config, cancellationToken, chunk -> {
             try {
-                if ("thinking_delta".equals(chunk.type())) {
-                    if (!thinkingStarted[0]) {
-                        LinkedHashMap<String, Object> start = new LinkedHashMap<>();
-                        start.put("messageId", thinkMsgId);
-                        start.put("iteration", iteration);
-                        start.put("summary", this.localText(visibleLanguage, "分析问题", "Analyzing problem"));
-                        start.put("taskId", taskId);
-                        sse.send("THINK_START", start);
-                        thinkingStarted[0] = true;
+                switch (chunk.eventType()) {
+                    case CANCELLED -> cancelled[0] = true;
+                    case THINKING_DELTA -> {
+                        if (!thinkingStarted[0]) {
+                            LinkedHashMap<String, Object> start = new LinkedHashMap<>();
+                            start.put("messageId", thinkMsgId);
+                            start.put("iteration", iteration);
+                            start.put("summary", this.localText(visibleLanguage, "????", "Analyzing problem"));
+                            start.put("taskId", taskId);
+                            sse.send("THINK_START", start);
+                            thinkingStarted[0] = true;
+                        }
+                        String delta = chunk.content() != null ? chunk.content() : "";
+                        thinkingBuf.append(delta);
+                        if (!delta.isEmpty()) {
+                            sse.sendTransient("THINK_DELTA", Map.of(
+                                    "messageId", thinkMsgId,
+                                    "delta", delta,
+                                    "taskId", taskId));
+                        }
                     }
-                    thinkingBuf.append(chunk.content());
-                    String deltaChunk = chunk.content() != null ? chunk.content() : "";
-                    // Send deltas in sentence-sized chunks for smoother display
-                    for (String delta : this.chunkThought(deltaChunk)) {
-                        sse.send("THINK_DELTA", Map.of("messageId", thinkMsgId, "delta", delta));
-                        Thread.sleep(28L);
+                    case TEXT_DELTA -> {
+                        String delta = chunk.content() != null ? chunk.content() : "";
+                        contentBuf.append(delta);
+                        if (!delta.isEmpty()) {
+                            sse.sendTransient("FINAL_DELTA", Map.of("delta", delta, "taskId", taskId));
+                        }
                     }
-                } else if ("text_delta".equals(chunk.type())) {
-                    contentBuf.append(chunk.content());
-                } else if ("tool_args_delta".equals(chunk.type())) {
-                    toolName[0] = chunk.toolName();
-                    toolArgs[0].append(chunk.toolArgs() != null ? chunk.toolArgs() : "");
-                } else if ("error".equals(chunk.type())) {
-                    errorMsg[0] = chunk.content();
-                } else if ("tool_call".equals(chunk.type())) {
-                    toolName[0] = chunk.toolName();
-                    if (chunk.toolArgs() != null) toolArgs[0] = new StringBuilder(chunk.toolArgs());
+                    case TOOL_ARGUMENTS_DELTA, TOOL_CALL -> {
+                        int callIndex = chunk.toolCallIndex() == null ? 0 : chunk.toolCallIndex();
+                        toolCalls.put(callIndex, chunk);
+                        if (chunk.usage() != null) usageRef.set(chunk.usage());
+                    }
+                    case ERROR -> errorMsg[0] = chunk.content();
+                    case USAGE, DONE -> {
+                        if (chunk.usage() != null) usageRef.set(chunk.usage());
+                    }
+                    case UNKNOWN -> log.debug("Ignoring unknown provider event type={}", chunk.type());
                 }
             } catch (Exception e) {
                 log.warn("chatStream callback error: {}", e.getMessage());
             }
-        });
+        }));
+        try {
+            streamFuture.get(PROVIDER_FIRST_EVENT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            this.requestProviderCancellation(cancellationToken);
+            streamFuture.cancel(true);
+            errorMsg[0] = this.localText(visibleLanguage,
+                    "模型服务响应超时，已自动停止本次请求。请检查模型服务、网络或换一个模型后重试。",
+                    "Model service timed out, so this request was stopped. Check the provider, network, or try another model.");
+        } catch (Exception e) {
+            this.requestProviderCancellation(cancellationToken);
+            streamFuture.cancel(true);
+            errorMsg[0] = e.getCause() == null ? e.getMessage() : e.getCause().getMessage();
+        }
 
         // After stream completes, finalize THINK event if thinking was streaming
         if (thinkingStarted[0]) {
@@ -972,26 +1657,56 @@ public class AgentLoopEngine {
             this.sendEvent(sse, conv, "THINK", done);
         }
 
-        if (errorMsg[0] != null) {
-            return Map.of("type", "error", "message", errorMsg[0], "content", contentBuf.toString(),
-                    "thinking", thinkingBuf.toString());
+        if (cancelled[0] || (cancellationToken != null && cancellationToken.isCancellationRequested())) {
+            return withUsage(Map.of("type", "cancelled", "content", contentBuf.toString(),
+                    "thinking", thinkingBuf.toString()), usageRef.get());
         }
 
-        if (toolName[0] != null) {
-            return Map.of("type", "tool_call", "tool", toolName[0],
-                    "arguments", toolArgs[0].toString(),
-                    "thinking", thinkingBuf.toString(),
-                    "content", contentBuf.toString());
+        if (errorMsg[0] != null) {
+            return withUsage(Map.of("type", "error", "message", errorMsg[0], "content", contentBuf.toString(),
+                    "thinking", thinkingBuf.toString()), usageRef.get());
+        }
+
+        if (toolCalls.size() > 1) {
+            log.warn("Provider returned {} concurrent tool calls; executing the first call serially and allowing the next model turn to reconsider deferred calls.",
+                    toolCalls.size());
+        }
+        if (!toolCalls.isEmpty()) {
+            LlmProvider.StreamChunk toolCall = toolCalls.values().iterator().next();
+            LinkedHashMap<String, Object> toolCallResult = new LinkedHashMap<>();
+            toolCallResult.put("type", "tool_call");
+            toolCallResult.put("tool", toolCall.toolName());
+            toolCallResult.put("arguments", toolCall.toolArgs() == null ? "" : toolCall.toolArgs());
+            toolCallResult.put("toolCallId", toolCall.toolCallId());
+            toolCallResult.put("toolCallIndex", toolCall.toolCallIndex());
+            toolCallResult.put("thinking", thinkingBuf.toString());
+            toolCallResult.put("content", contentBuf.toString());
+            return withUsage(toolCallResult, usageRef.get());
         }
 
         String fullContent = contentBuf.toString();
         if (!fullContent.isBlank()) {
-            return Map.of("type", "text", "content", fullContent,
-                    "thinking", thinkingBuf.toString());
+            return withUsage(Map.of("type", "text", "content", fullContent,
+                    "thinking", thinkingBuf.toString()), usageRef.get());
         }
 
-        return Map.of("type", "text", "content", thinkingBuf.toString(),
-                "thinking", thinkingBuf.toString());
+        return withUsage(Map.of("type", "text", "content", thinkingBuf.toString(),
+                "thinking", thinkingBuf.toString()), usageRef.get());
+    }
+
+    private void requestProviderCancellation(CancellationToken cancellationToken) {
+        if (cancellationToken instanceof AgentCancellationRegistry.ActiveRun activeRun) {
+            activeRun.requestCancellation();
+        }
+    }
+
+    private Map<String, Object> withUsage(Map<String, Object> result, Map<String, Object> usage) {
+        if (usage == null || usage.isEmpty()) {
+            return result;
+        }
+        Map<String, Object> out = new LinkedHashMap<>(result);
+        out.put("usage", usage);
+        return out;
     }
 
     private String extractThinking(String c) {
@@ -1021,7 +1736,34 @@ public class AgentLoopEngine {
         return false;
     }
 
-    private boolean containsFinalSubstance(String text) {
+    static boolean shouldRejectFinalReply(String userRequest, String finalText) {
+        if (explicitlyRequestsShortReply(userRequest)) {
+            return false;
+        }
+        if (finalText == null || finalText.isBlank()) {
+            return true;
+        }
+        boolean tooShort = finalText.length() < 80;
+        boolean noStructure = !finalText.contains("##") && !finalText.contains("**") && !finalText.contains("- ");
+        boolean noSubstance = !containsFinalSubstance(finalText);
+        return (tooShort && noSubstance) || (noStructure && noSubstance);
+    }
+
+    private static boolean explicitlyRequestsShortReply(String userRequest) {
+        if (userRequest == null || userRequest.isBlank()) {
+            return false;
+        }
+        String lower = userRequest.toLowerCase(Locale.ROOT);
+        return List.of(
+                "\u53ea\u56de\u590d", "\u4ec5\u56de\u590d", "\u53ea\u56de\u7b54", "\u4ec5\u56de\u7b54",
+                "\u7b80\u77ed\u56de\u590d", "\u4e00\u53e5\u8bdd\u56de\u590d",
+                "reply only", "respond only", "answer only",
+                "only reply", "only respond", "only answer", "one-word", "one word")
+                .stream()
+                .anyMatch(lower::contains);
+    }
+
+    private static boolean containsFinalSubstance(String text) {
         if (text == null || text.isBlank()) {
             return false;
         }
@@ -1063,10 +1805,6 @@ public class AgentLoopEngine {
     // ==================== 上下文窗口管理（参考 OpenCode 的 compaction 机制） ====================
 
     /** 模型上下文窗口上限（token），超出时触发压缩 */
-    private static final int CONTEXT_TOKEN_LIMIT = 28000;
-    /** Pruning 阈值：旧工具结果累计超过此值后开始清理 */
-    private static final int PRUNE_THRESHOLD_TOKENS = 16000;
-    /** 保留最近 N 轮对话不裁剪（tail_turns 保护） */
     private static final int KEEP_RECENT_TURNS = 3;
     /** 旧工具结果裁剪后的最大字符数 */
     private static final int PRUNED_TOOL_RESULT_MAX = 300;
@@ -1085,6 +1823,10 @@ public class AgentLoopEngine {
     }
 
     /** 估算文本的 token 数 */
+    static boolean hasContextCompactionProgress(int tokensBeforeCompaction, int tokensAfterCompaction) {
+        return tokensAfterCompaction < tokensBeforeCompaction;
+    }
+
     private int estimateTokens(String text) {
         if (text == null || text.isEmpty()) return 0;
         return Math.max(1, text.length() / 3);
@@ -1098,6 +1840,24 @@ public class AgentLoopEngine {
             if (content instanceof String s) total += estimateTokens(s);
         }
         return total;
+    }
+
+    private void publishContextStatus(AgentSsePublisher sse, AgentConversation conversation,
+                                      AgentStreamRequest request, LlmProvider provider,
+                                      LlmProvider.LlmConfig config, AgentModelConfig modelConfig,
+                                      String systemPrompt, List<Map<String, Object>> tools,
+                                      ContextUsageEstimator.PromptContext promptContext,
+                                      List<Map<String, Object>> messages, String trimState) {
+        if (contextUsageEstimator == null || contextUsageRegistry == null || conversation == null) return;
+        ContextUsageSnapshot snapshot = contextUsageEstimator.estimate(
+                conversation.getConversationId(), request.getSessionId(), provider.getProviderId(), config.modelName(),
+                modelConfig.getContextWindowTokens(), systemPrompt, tools, promptContext, messages, trimState);
+        contextUsageRegistry.save(snapshot);
+        try {
+            this.sendEvent(sse, conversation, "CONTEXT_STATUS", snapshot.toPayload());
+        } catch (Exception e) {
+            log.debug("Unable to publish context status: {}", e.getMessage());
+        }
     }
 
     private Map<String, Object> tokenUsagePayload(Map<String, Object> usageMap, int iteration, int totalTokens, String conversationId) {
@@ -1127,113 +1887,190 @@ public class AgentLoopEngine {
         }
     }
 
-    /**
-     * 预防性压缩（发送前调用）
-     * 策略：Pruning — 只清理旧工具结果，保护最近对话
-     */
-    private void trimMessagesIfNeeded(List<Map<String, Object>> msgs, String sysPrompt) {
-        int totalTokens = estimateMessagesTokens(msgs, sysPrompt);
-        if (totalTokens <= CONTEXT_TOKEN_LIMIT) return;
+    private ContextManagementResult manageContextBeforeModel(List<Map<String, Object>> msgs,
+                                                             String sysPrompt,
+                                                             List<Map<String, Object>> tools,
+                                                             ContextWindowPolicy policy,
+                                                             String userRequest,
+                                                             AgentContext context,
+                                                             AgentSsePublisher sse,
+                                                             AgentConversation conversation,
+                                                             AgentModelConfig activeModelConfig,
+                                                             Integer studentId,
+                                                             CancellationToken cancellationToken) throws Exception {
+        if (policy == null || !policy.autoCompactionEnabled()) {
+            return ContextManagementResult.none();
+        }
+        int estimatedTokens = estimateMessagesTokens(msgs, sysPrompt) + estimateTokens(GSON.toJson(tools));
+        TurnAwareContextPruner pruner = new TurnAwareContextPruner(this::estimateTokens);
+        ContextWindowSupervisor.Decision decision = new ContextWindowSupervisor().decide(
+                policy, estimatedTokens,
+                policy.pruningEnabled() && pruner.hasPrunableHistoricalToolResult(
+                        msgs, policy.tailTurns(), policy.preserveRecentTokens()));
+        if (decision.action() == ContextWindowSupervisor.Action.NONE) {
+            return ContextManagementResult.none();
+        }
+        if (decision.action() == ContextWindowSupervisor.Action.PRUNE) {
+            TurnAwareContextPruner.Result prune = pruner.prune(msgs, policy.tailTurns(), policy.preserveRecentTokens());
+            int afterPrune = estimateMessagesTokens(msgs, sysPrompt) + estimateTokens(GSON.toJson(tools));
+            if (prune.changed()) {
+                this.sendEvent(sse, conversation, "CONTEXT_PRUNED", contextEvent("tool_result_prune", estimatedTokens,
+                        afterPrune, Map.of("prunedToolResults", prune.prunedToolResults(),
+                                "retainedTurns", prune.retainedTurns())));
+            }
+            if (afterPrune <= policy.softLimitTokens()) {
+                log.info("Context preflight pruned {} historical tool results; estimatedTokens {} -> {}, softLimit={}",
+                        prune.prunedToolResults(), estimatedTokens, afterPrune, policy.softLimitTokens());
+                return prune.changed() ? new ContextManagementResult(true, "TOOL_RESULT_PRUNE")
+                        : ContextManagementResult.none();
+            }
+        }
+        return this.compactContextWithFallback(msgs, sysPrompt, tools, userRequest, context, sse, conversation,
+                activeModelConfig, studentId, cancellationToken, policy.tailTurns(), estimatedTokens, "proactive");
+    }
 
-        log.info("Context approaching limit: {} tokens (limit {}), pruning old tool results", totalTokens, CONTEXT_TOKEN_LIMIT);
+    private ContextManagementResult compactContextWithFallback(List<Map<String, Object>> msgs,
+                                                                String sysPrompt,
+                                                                List<Map<String, Object>> tools,
+                                                                String userRequest,
+                                                                AgentContext context,
+                                                                AgentSsePublisher sse,
+                                                                AgentConversation conversation,
+                                                                AgentModelConfig activeModelConfig,
+                                                                Integer studentId,
+                                                                CancellationToken cancellationToken,
+                                                                int keepRecentTurns,
+                                                                int tokensBefore,
+                                                                String trigger) throws Exception {
+        this.sendEvent(sse, conversation, "COMPACTION_STARTED", contextEvent(trigger, tokensBefore, tokensBefore,
+                Map.of("keepRecentTurns", Math.max(1, keepRecentTurns))));
+        CompactionAgent.Result modelResult = this.compactionAgent == null
+                ? CompactionAgent.Result.failure("Compaction agent is unavailable")
+                : this.compactionAgent.compact(studentId, activeModelConfig, msgs, userRequest, context, cancellationToken);
+        if (modelResult.success()) {
+            ConversationCheckpointCompactor.Result replacement = new ConversationCheckpointCompactor()
+                    .compactWithCheckpoint(msgs, modelResult.checkpoint(), keepRecentTurns);
+            if (replacement.changed()) {
+                int afterTokens = estimateMessagesTokens(msgs, sysPrompt) + estimateTokens(GSON.toJson(tools));
+                this.sendCompactionSummary(sse, conversation, replacement.checkpoint(), contextEvent("model", tokensBefore,
+                        afterTokens, compactionModelDetails(modelResult)));
+                this.sendEvent(sse, conversation, "COMPACTION_COMPLETED", contextEvent("model", tokensBefore,
+                        afterTokens, Map.of("dedicatedModel", modelResult.dedicatedModelSelected())));
+                return new ContextManagementResult(true, "MODEL_CHECKPOINT");
+            }
+            modelResult = CompactionAgent.Result.failure("Model checkpoint did not reduce historical context");
+        }
+        this.sendEvent(sse, conversation, "COMPACTION_FAILED", contextEvent("model", tokensBefore, tokensBefore,
+                Map.of("reason", modelResult.reason())));
+        ConversationCheckpointCompactor.Result deterministic = this.compactConversationCheckpointResult(msgs, userRequest, context);
+        if (deterministic.changed()) {
+            int afterTokens = estimateMessagesTokens(msgs, sysPrompt) + estimateTokens(GSON.toJson(tools));
+            this.sendCompactionSummary(sse, conversation, deterministic.checkpoint(), contextEvent("deterministic_fallback",
+                    tokensBefore, afterTokens, Map.of("reason", modelResult.reason())));
+            this.sendEvent(sse, conversation, "COMPACTION_COMPLETED", contextEvent("deterministic_fallback",
+                    tokensBefore, afterTokens, Map.of()));
+            return new ContextManagementResult(true, "DETERMINISTIC_CHECKPOINT");
+        }
+        return ContextManagementResult.none();
+    }
 
-        // tail_turns 保护：保留最近 KEEP_RECENT_TURNS 轮（每轮 = assistant + user = 2 条）
+    private Map<String, Object> compactionModelDetails(CompactionAgent.Result result) {
+        LinkedHashMap<String, Object> details = new LinkedHashMap<>();
+        details.put("modelConfigId", result.modelConfigId());
+        details.put("modelName", result.modelName());
+        details.put("dedicatedModel", result.dedicatedModelSelected());
+        return details;
+    }
+
+    private Map<String, Object> contextEvent(String strategy, int beforeTokens, int afterTokens,
+                                             Map<String, Object> details) {
+        LinkedHashMap<String, Object> event = new LinkedHashMap<>();
+        event.put("strategy", strategy);
+        event.put("tokensBefore", beforeTokens);
+        event.put("tokensAfter", afterTokens);
+        if (details != null) {
+            event.putAll(details);
+        }
+        return event;
+    }
+
+    private void sendCompactionSummary(AgentSsePublisher sse, AgentConversation conversation,
+                                       String checkpoint, Map<String, Object> data) throws Exception {
+        LinkedHashMap<String, Object> payload = new LinkedHashMap<>(data == null ? Map.of() : data);
+        payload.put("content", checkpoint);
+        sse.send("COMPACTION_SUMMARY", payload);
+        if (conversation != null) {
+            this.conversationService.saveCompactionSummary(conversation, checkpoint, payload);
+        }
+    }
+
+    private record ContextManagementResult(boolean changed, String strategy) {
+        private static ContextManagementResult none() {
+            return new ContextManagementResult(false, "NONE");
+        }
+    }
+
+    private boolean trimMessagesIfNeeded(List<Map<String, Object>> msgs, String sysPrompt, OptionalInt inputTokenBudget) {
+        if (inputTokenBudget.isEmpty()) {
+            return false;
+        }
+
+        int budget = inputTokenBudget.getAsInt();
+        int originalTotalTokens = estimateMessagesTokens(msgs, sysPrompt);
+        int totalTokens = originalTotalTokens;
+        if (totalTokens <= budget) {
+            return false;
+        }
+
+        log.info("Context estimatedTokens={} exceeds resolvedInputBudget={}, pruning old tool results", totalTokens, budget);
+
+        // Preserve the newest turns and only prune older tool results.
         int protectCount = Math.min(msgs.size(), KEEP_RECENT_TURNS * 2);
         int protectFrom = msgs.size() - protectCount;
-
-        // 从后往前遍历，累计工具结果 token，超过阈值后裁剪
-        int accumulatedTokens = 0;
-        for (int idx = protectFrom - 1; idx >= 1; idx--) {
+        for (int idx = protectFrom - 1; idx >= 1 && totalTokens > budget; idx--) {
             Map<String, Object> msg = msgs.get(idx);
             Object content = msg.get("content");
-            if (!(content instanceof String s)) continue;
+            if (!(content instanceof String s) || !s.startsWith("[Tool ") || !s.contains("result]")) {
+                continue;
+            }
 
-            int tokens = estimateTokens(s);
-            accumulatedTokens += tokens;
-
-            if (accumulatedTokens > PRUNE_THRESHOLD_TOKENS && s.startsWith("[Tool ") && s.contains("result]")) {
-                // 裁剪为摘要
-                String trimmed = s.substring(0, Math.min(s.length(), PRUNED_TOOL_RESULT_MAX))
+            String trimmed = s.substring(0, Math.min(s.length(), PRUNED_TOOL_RESULT_MAX))
                     + "\n[... pruned to save context, use read_file/grep to re-read if needed ...]";
-                msgs.set(idx, Map.of("role", "user", "content", trimmed));
+            int originalTokens = estimateTokens(s);
+            int trimmedTokens = estimateTokens(trimmed);
+            if (trimmedTokens >= originalTokens) {
+                continue;
             }
+
+            msgs.set(idx, Map.of("role", "user", "content", trimmed));
+            totalTokens -= originalTokens - trimmedTokens;
         }
 
-        int newTokens = estimateMessagesTokens(msgs, sysPrompt);
-        log.info("After pruning: {} tokens (saved {})", newTokens, totalTokens - newTokens);
+        int estimatedTokensAfterPruning = estimateMessagesTokens(msgs, sysPrompt);
+        log.info("After pruning: estimatedTokens={} (estimatedTokensSaved={})",
+                estimatedTokensAfterPruning, originalTotalTokens - estimatedTokensAfterPruning);
+        if (estimatedTokensAfterPruning > budget) {
+            log.warn("Context pruning left estimatedTokens={} above resolvedInputBudget={}; no additional non-tail tool result can be reduced. Continuing with provider call so existing overflow recovery can handle it.",
+                    estimatedTokensAfterPruning, budget);
+        }
+        return estimatedTokensAfterPruning < originalTotalTokens;
     }
 
     /**
-     * 上下文压缩（参考 OpenCode compactAfterOverflow）
-     * 1. 分离 old（要压缩的）和 recent（要保留的）
-     * 2. 对 old 生成结构化文本摘要
-     * 3. 用摘要替换 old，保留 recent
+     * Replaces older turns with a bounded continuation checkpoint without making another provider call.
      */
-    private void compactWithLlmSummary(List<Map<String, Object>> msgs, String sysPrompt,
-                                        String llmProvider, Object llmConfig) {
-        if (msgs.size() <= 5) return;
+    private boolean compactConversationCheckpoint(List<Map<String, Object>> msgs, String userRequest, AgentContext context) {
+        return compactConversationCheckpointResult(msgs, userRequest, context).changed();
+    }
 
-        // 分离：保留最近 KEEP_RECENT_TURNS 轮
-        int protectCount = Math.min(msgs.size(), KEEP_RECENT_TURNS * 2);
-        int protectFrom = msgs.size() - protectCount;
-
-        // 收集旧消息的关键信息
-        int toolCount = 0;
-        int errorCount = 0;
-        List<String> toolNames = new ArrayList<>();
-        List<String> keyFindings = new ArrayList<>();
-
-        for (int idx = 0; idx < protectFrom; idx++) {
-            Object content = msgs.get(idx).get("content");
-            if (!(content instanceof String s)) continue;
-
-            if (s.startsWith("[Tool ") && s.contains("result]")) {
-                toolCount++;
-                // 提取工具名
-                int nameStart = s.indexOf("[Tool ") + 6;
-                int nameEnd = s.indexOf(" result]", nameStart);
-                if (nameEnd > nameStart) toolNames.add(s.substring(nameStart, nameEnd));
-            }
-            if (s.contains("error") || s.contains("Error") || s.contains("failed")) {
-                errorCount++;
-            }
-            // 提取关键发现（搜索结果、文件内容等）
-            if (s.length() > 100 && keyFindings.size() < 5) {
-                String preview = s.substring(0, Math.min(s.length(), 150)).replace('\n', ' ');
-                keyFindings.add(preview);
-            }
-        }
-
-        // 构建结构化摘要（参考 OpenCode 的 compaction prompt 模板）
-        StringBuilder summary = new StringBuilder();
-        summary.append("<conversation-checkpoint>\n");
-        summary.append("## Compressed conversation summary\n\n");
-        summary.append("- Tools used: ").append(toolCount).append(" calls (").append(String.join(", ", toolNames.stream().distinct().toList()).isEmpty() ? "none" : String.join(", ", toolNames.stream().distinct().limit(8).toList())).append(")\n");
-        summary.append("- Errors encountered: ").append(errorCount).append("\n");
-        if (!keyFindings.isEmpty()) {
-            summary.append("- Key findings:\n");
-            for (String f : keyFindings) {
-                summary.append("  - ").append(f).append("\n");
-            }
-        }
-        summary.append("- Status: conversation compressed to fit model context window\n");
-        summary.append("- Instruction: Use read_file/grep to re-read files if needed\n");
-        summary.append("</conversation-checkpoint>\n");
-
-        // 重建消息列表：摘要 + 最近对话
-        List<Map<String, Object>> compacted = new ArrayList<>();
-        compacted.add(Map.of("role", "user", "content", summary.toString()));
-        for (int idx = protectFrom; idx < msgs.size(); idx++) {
-            compacted.add(msgs.get(idx));
-        }
-
-        msgs.clear();
-        msgs.addAll(compacted);
-        log.info("Compacted {} old messages into summary, kept {} recent messages", protectFrom, msgs.size() - 1);
+    private ConversationCheckpointCompactor.Result compactConversationCheckpointResult(List<Map<String, Object>> msgs,
+                                                                                         String userRequest,
+                                                                                         AgentContext context) {
+        return new ConversationCheckpointCompactor().compactWithResult(msgs, userRequest, context);
     }
 
     /**
-     * 溢出后激进裁剪（LLM 摘要失败时的降级方案）
+     * 溢出后激进裁剪（结构化 checkpoint 无法继续缩小时的降级方案）
      */
     private void aggressiveTrimMessages(List<Map<String, Object>> msgs, String sysPrompt) {
         if (msgs.size() <= 5) return;
@@ -1639,12 +2476,13 @@ public class AgentLoopEngine {
 
     private Path createRunLog(StudentProject project, AgentStreamRequest request) {
         try {
-            Path dir = Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize().resolve(".labex").resolve("agent-logs");
-            Files.createDirectories(dir, new FileAttribute[0]);
             String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
             String session = request.getSessionId() == null ? UUID.randomUUID().toString() : request.getSessionId();
             String safeSession = session.replaceAll("[^a-zA-Z0-9._-]", "_");
-            return dir.resolve(stamp + "-" + safeSession + ".md");
+            Path log = ProjectWorkspace.paths(project)
+                    .resolveForCreate(".labex/agent-logs/" + stamp + "-" + safeSession + ".md");
+            Files.createDirectories(log.getParent());
+            return log;
         }
         catch (Exception e) {
             log.warn("Unable to create agent run log: {}", e.getMessage());
@@ -1664,12 +2502,55 @@ public class AgentLoopEngine {
         }
     }
 
+    private static long elapsedMs(long startedNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+    }
+
+    private void appendToolExecutionStart(Path path, AgentContext context, String toolName, String toolCallId,
+                                          JsonObject args) {
+        this.appendRunLog(path, "\n#### Tool execution telemetry\n"
+                + "- Tool: `" + this.safeLogText(toolName) + "`\n"
+                + "- Tool call ID: `" + this.safeLogText(toolCallId) + "`\n"
+                + "- Started at: `" + LocalDateTime.now() + "`\n"
+                + "- Task: `" + context.getTaskId() + "`\n"
+                + "- Arguments chars: `" + (args == null ? 0 : args.toString().length()) + "`\n"
+                + "- Current phase: `tool_delegate`\n");
+    }
+
+    private void appendToolExecutionComplete(Path path, String toolName, String toolCallId, ToolResult result,
+                                             long totalMs, long delegateMs, long beforeSnapshotMs,
+                                             long afterSnapshotMs, long snapshotDiffMs, long postEditMs,
+                                             long contextMs, long metricsMs) {
+        this.appendRunLog(path, "- Completed at: `" + LocalDateTime.now() + "`\n"
+                + "- Status: `" + (result.isSuccess() ? "success" : "failed") + "`\n"
+                + "- Timing ms: total=`" + totalMs + "`, delegate=`" + delegateMs
+                + "`, snapshotBefore=`" + beforeSnapshotMs + "`, snapshotAfter=`" + afterSnapshotMs
+                + "`, snapshotDiff=`" + snapshotDiffMs + "`, postEdit=`" + postEditMs
+                + "`, context=`" + contextMs + "`, metrics=`" + metricsMs + "`\n");
+    }
+
+    private void appendToolExecutionFailed(Path path, String toolName, String toolCallId, String phase,
+                                           long totalMs, Exception failure) {
+        this.appendRunLog(path, "- Failed at: `" + LocalDateTime.now() + "`\n"
+                + "- Failure phase: `" + this.safeLogText(phase) + "`\n"
+                + "- Total elapsed ms: `" + totalMs + "`\n"
+                + "- Error type: `" + this.safeLogText(failure.getClass().getSimpleName()) + "`\n"
+                + "- Error: `" + this.safeLogText(failure.getMessage()) + "`\n");
+    }
+
     private void appendToolResult(Path path, ToolResult result) {
         if (result == null) {
             this.appendRunLog(path, "\n### Tool result\n\n- Status: no result\n");
             return;
         }
-        this.appendRunLog(path, "\n### Tool result\n\n- Status: `" + (result.isSuccess() ? "success" : "failed") + "`\n" + (String)(result.isApprovalRequired() ? "- Approval required: `" + this.safeLogText(result.getApprovalCommand()) + "`\n" : "") + (String)(result.getPendingChangeId() != null ? "- Change record: `" + this.safeLogText(result.getPendingChangeId()) + "`\n" : "") + "\n```text\n" + this.safeLogText(this.limitForContext(result.getContent(), 6000)) + "\n```\n");
+        String approvalDetail = result.isApprovalRequired()
+                ? "- Approval required: `" + this.safeLogText(CommandRedactor.redact(
+                        result.getApprovalDisplayCommand() == null ? "<redacted>" : result.getApprovalDisplayCommand())) + "`\n"
+                : "";
+        this.appendRunLog(path, "\n### Tool result\n\n- Status: `" + (result.isSuccess() ? "success" : "failed")
+                + "`\n" + approvalDetail
+                + (result.getPendingChangeId() != null ? "- Change record: `" + this.safeLogText(result.getPendingChangeId()) + "`\n" : "")
+                + "\n```text\n" + this.safeLogText(this.limitForContext(result.getContent(), 6000)) + "\n```\n");
     }
 
     private String workspaceRelativeLogPath(StudentProject project, Path logPath) {
@@ -1677,7 +2558,12 @@ public class AgentLoopEngine {
             return "";
         }
         try {
-            return Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize().relativize(logPath.toAbsolutePath().normalize()).toString().replace("\\", "/");
+            Path root = ProjectWorkspace.paths(project).workspaceRoot();
+            Path normalizedLog = logPath.toAbsolutePath().normalize();
+            if (!normalizedLog.startsWith(root)) {
+                return "";
+            }
+            return root.relativize(normalizedLog).toString().replace("\\", "/");
         }
         catch (Exception e) {
             return logPath.toString();
@@ -1738,15 +2624,10 @@ public class AgentLoopEngine {
     }
 
     private void streamFinal(AgentSsePublisher sse, AgentConversation conv, String text, String visibleLanguage) throws Exception {
-        StringBuilder buf = new StringBuilder();
-        for (int i = 0; i < text.length(); ++i) {
-            buf.append(text.charAt(i));
-            if (i % 8 != 0 && i != text.length() - 1) continue;
-            sse.send("FINAL_DELTA", Map.of("delta", buf.toString()));
-            buf.setLength(0);
-            Thread.sleep(28L);
+        if (text != null && !text.isEmpty()) {
+            sse.sendTransient("FINAL_DELTA", Map.of("delta", text));
         }
-        this.sendEvent(sse, conv, "FINAL", Map.of("content", text, "summary", this.finalResponseSummary(visibleLanguage)));
+        this.sendEvent(sse, conv, "FINAL", Map.of("content", text == null ? "" : text, "summary", this.finalResponseSummary(visibleLanguage)));
     }
 
     private void streamFinalFromProvider(AgentSsePublisher sse, AgentConversation conv,
@@ -1764,9 +2645,9 @@ public class AgentLoopEngine {
             try {
                 if ("text_delta".equals(chunk.type())) {
                     contentBuf.append(chunk.content());
-                    sse.send("FINAL_DELTA", Map.of("delta", chunk.content()));
+                    sse.sendTransient("FINAL_DELTA", Map.of("delta", chunk.content()));
                 } else if ("thinking_delta".equals(chunk.type())) {
-                    sse.send("THINK_DELTA", Map.of("messageId", "final-think", "delta", chunk.content()));
+                    sse.sendTransient("THINK_DELTA", Map.of("messageId", "final-think", "delta", chunk.content()));
                 } else if ("error".equals(chunk.type())) {
                     sse.send("ERROR", Map.of("message", chunk.content()));
                 }
@@ -1809,6 +2690,13 @@ Keep code, file paths, commands, package names, API names, and raw error text un
 </response_language>""".formatted(language.displayName(), language.displayName());
     }
 
+
+    private void applyBackgroundWorkspace(AgentContext context, StudentProject project, AgentTask task) {
+        if (task == null || task.getBackgroundWorktree() == null || task.getBackgroundWorktree().isBlank()) return;
+        context.setWorkspaceRoot(BackgroundRunWorkspaceResolver.resolve(
+                ProjectWorkspace.paths(project).workspaceRoot(), task.getBackgroundWorktree()));
+    }
+
     private String buildModePolicy(String mode) {
         if ("plan".equals(mode)) {
             return """
@@ -1843,15 +2731,15 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
             builder.append(this.limitForContext(mcpContext, 12000)).append("\n");
         }
         if (memoryContext != null && !memoryContext.isBlank()) {
-            builder.append("<conversation_memory isolated=\"true\">\n").append(memoryContext).append("\n</conversation_memory>\n\n");
+            builder.append("<conversation_memory isolated=\"true\">\n").append(this.limitForContext(memoryContext, 16000)).append("\n</conversation_memory>\n\n");
         }
         if (recentRunLog != null && !recentRunLog.isBlank()) {
-            builder.append("<latest_agent_run_log purpose=\"resume_previous_work\">\n").append(recentRunLog).append("\n</latest_agent_run_log>\n\n");
+            builder.append("<latest_agent_run_log purpose=\"resume_previous_work\">\n").append(this.limitForContext(recentRunLog, 12000)).append("\n</latest_agent_run_log>\n\n");
         }
         if (checkpoint != null && !checkpoint.isBlank()) {
-            builder.append("<agent_checkpoint purpose=\"resume_after_disconnect_or_failure\">\n").append(checkpoint).append("\n</agent_checkpoint>\n\n");
+            builder.append("<agent_checkpoint purpose=\"resume_after_disconnect_or_failure\">\n").append(this.limitForContext(checkpoint, 12000)).append("\n</agent_checkpoint>\n\n");
         }
-        builder.append("<session_context>\n").append(sessionContext).append("\n</session_context>");
+        builder.append("<session_context>\n").append(this.limitForContext(sessionContext, 60000)).append("\n</session_context>");
         return builder.toString();
     }
 
@@ -1878,8 +2766,8 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
             return "";
         }
         try {
-            Path path = Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize().resolve(".labex").resolve("agent-checkpoint.md");
-            if (!Files.isRegularFile(path, new LinkOption[0])) {
+            Path path = ProjectWorkspace.paths(project).resolveForCreate(".labex/agent-checkpoint.md");
+            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
                 return "";
             }
             return this.limitForContext(Files.readString(path, StandardCharsets.UTF_8), 8000);
@@ -1895,9 +2783,8 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
             return;
         }
         try {
-            Path dir = Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize().resolve(".labex");
-            Files.createDirectories(dir, new FileAttribute[0]);
-            Path checkpoint = dir.resolve("agent-checkpoint.md");
+            Path checkpoint = ProjectWorkspace.paths(project).resolveForCreate(".labex/agent-checkpoint.md");
+            Files.createDirectories(checkpoint.getParent());
             String logRef = this.workspaceRelativeLogPath(project, runLog);
             String plan = ctx == null ? "" : ctx.getPlanSummary();
             String stage = ctx == null ? "intake" : ctx.getStage();
@@ -1914,7 +2801,15 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
             return "Tool returned no result.";
         }
         String content = result.getContent() == null ? "" : result.getContent();
-        return "success=" + result.isSuccess() + (String)(result.getPendingChangeId() == null ? "" : "\npendingChangeId=" + result.getPendingChangeId()) + (String)(result.isApprovalRequired() ? "\napprovalCommand=" + result.getApprovalCommand() : "") + "\n" + this.contextManager.compactCheckpointResult(this.safeTool(toolName), content, result.isSuccess());
+        String approval = result.isApprovalRequired()
+                ? "\napprovalId=" + (result.getApprovalId() == null ? "" : result.getApprovalId())
+                + "\ndisplayCommand=" + CommandRedactor.redact(
+                        result.getApprovalDisplayCommand() == null ? "<redacted>" : result.getApprovalDisplayCommand())
+                : "";
+        return "success=" + result.isSuccess()
+                + (result.getPendingChangeId() == null ? "" : "\npendingChangeId=" + result.getPendingChangeId())
+                + approval + "\n"
+                + this.contextManager.compactCheckpointResult(this.safeTool(toolName), content, result.isSuccess());
     }
 
     /*
@@ -1927,14 +2822,18 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
             return "";
         }
         try {
-            Path dir = Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize().resolve(".labex").resolve("agent-logs");
-            if (!Files.isDirectory(dir, new LinkOption[0])) {
+            SecureWorkspacePath workspace = ProjectWorkspace.paths(project);
+            Path dir = workspace.resolveForCreate(".labex/agent-logs/placeholder.md").getParent();
+            if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) {
                 return "";
             }
             try (Stream<Path> stream = Files.list(dir);){
-                Optional<Path> latest = stream.filter(path -> !path.equals(currentRunLog)).filter(path -> path.getFileName().toString().endsWith(".md")).max(Comparator.comparingLong(path -> {
+                Optional<Path> latest = stream.filter(path -> !path.equals(currentRunLog))
+                        .filter(path -> path.getFileName().toString().endsWith(".md"))
+                        .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                        .max(Comparator.comparingLong(path -> {
                     try {
-                        return Files.getLastModifiedTime(path, new LinkOption[0]).toMillis();
+                        return Files.getLastModifiedTime(path, LinkOption.NOFOLLOW_LINKS).toMillis();
                     }
                     catch (IOException e) {
                         return 0L;

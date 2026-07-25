@@ -28,8 +28,8 @@ export const projectApi = {
   agentConversations(projectId) {
     return request.get('/student/projects/' + projectId + '/agent/conversations')
   },
-  agentMessages(projectId, conversationId) {
-    return request.get('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/messages')
+  agentMessages(projectId, conversationId, params = {}) {
+    return request.get('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/messages', { params })
   },
   agentDeleteConversation(projectId, conversationId) {
     return request.delete('/student/projects/' + projectId + '/agent/conversations/' + conversationId)
@@ -37,14 +37,20 @@ export const projectApi = {
   agentForkConversation(projectId, conversationId, messageId) {
     return request.post('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/fork', { messageId: messageId || null })
   },
-  agentCompactConversation(projectId, conversationId) {
-    return request.post('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/compact')
+  agentCompactConversation(projectId, conversationId, payload = {}) {
+    return request.post('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/compact', payload)
   },
   agentConversationMemory(projectId, conversationId) {
     return request.get('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/memory')
   },
   agentApprovePermission(projectId, data) {
     return request.post('/student/projects/' + projectId + '/agent/permission/approve', data)
+  },
+  agentDecideCommandApproval(projectId, approvalId, data) {
+    return request.post('/student/projects/' + projectId + '/agent/command-approvals/' + encodeURIComponent(approvalId) + '/decision', data)
+  },
+  agentExecuteCommandApproval(projectId, approvalId) {
+    return request.post('/student/projects/' + projectId + '/agent/command-approvals/' + encodeURIComponent(approvalId) + '/execute')
   },
   agentReplyQuestion(projectId, data) {
     return request.post('/student/projects/' + projectId + '/agent/question/reply', data)
@@ -55,6 +61,15 @@ export const projectApi = {
   agentTokenSummary(projectId) {
     return request.get('/student/projects/' + projectId + '/agent/tokens/student/summary')
   },
+  agentContextStatus(projectId, conversationId) {
+    return request.get('/student/projects/' + projectId + '/agent/conversations/' + encodeURIComponent(conversationId) + '/context-status')
+  },
+  agentNextContextPreview(projectId, conversationId, payload = {}) {
+    return request.post('/student/projects/' + projectId + '/agent/conversations/' + encodeURIComponent(conversationId) + '/context-preview', payload)
+  },
+  agentTasks(projectId) {
+    return request.get('/student/projects/' + projectId + '/agent/tasks')
+  },
   terminalRun(projectId, command, timeoutSeconds) {
     return request.post('/student/projects/' + projectId + '/terminal/run', { command, timeoutSeconds: timeoutSeconds || 60 })
   },
@@ -63,6 +78,15 @@ export const projectApi = {
   },
   terminalRunSession(projectId, sessionId, command, timeoutSeconds) {
     return request.post('/student/projects/' + projectId + '/terminal/sessions/' + sessionId + '/run', { command, timeoutSeconds: timeoutSeconds || 60 })
+  },
+  terminalDecideApproval(projectId, approvalId, action) {
+    return request.post('/student/projects/' + projectId + '/terminal/approvals/' + encodeURIComponent(approvalId) + '/decision', {
+      action,
+      decisionIdempotencyKey: crypto.randomUUID()
+    })
+  },
+  terminalExecuteApproval(projectId, approvalId) {
+    return request.post('/student/projects/' + projectId + '/terminal/approvals/' + encodeURIComponent(approvalId) + '/execute')
   },
   terminalGetSession(projectId, sessionId) {
     return request.get('/student/projects/' + projectId + '/terminal/sessions/' + sessionId)
@@ -108,6 +132,11 @@ export const projectApi = {
   },
   getTree(id, path) {
     return request.get('/student/projects/' + id + '/tree', { params: { path: path || '' } })
+  },
+  getTreePage(id, path, offset = 0, limit = 100) {
+    return request.get('/student/projects/' + id + '/tree/page', {
+      params: { path: path || '', offset, limit }
+    })
   },
   readFile(id, path) {
     return request.get('/student/projects/' + id + '/files', { params: { path } })

@@ -20,6 +20,9 @@ import java.util.Set;
 
 @Service
 public class AgentPostEditHookService {
+    private static final int MAX_DIAGNOSTIC_FILES = 3;
+    private static final int MAX_DIAGNOSTIC_LINES_PER_FILE = 8;
+
     private final LspSessionManager lspSessionManager;
 
     public AgentPostEditHookService(LspSessionManager lspSessionManager) {
@@ -39,29 +42,54 @@ public class AgentPostEditHookService {
         out.append("\n\n[Post-edit hooks]\n");
         int totalErrors = 0;
         int totalWarnings = 0;
+        int checked = 0;
+        int skipped = 0;
+        int unavailable = 0;
         List<String> suggestions = new ArrayList<>();
 
         for (String relative : changedFiles) {
+            suggestedCommand(context.getWorkspaceRoot(), relative).ifPresent(suggestions::add);
+            if (checked >= MAX_DIAGNOSTIC_FILES) {
+                skipped++;
+                continue;
+            }
             try {
                 Path file = ToolSupport.resolve(context, relative);
                 if (!Files.isRegularFile(file) || !isDiagnosable(file)) {
+                    skipped++;
                     continue;
                 }
+                checked++;
                 DiagnosticSummary summary = diagnose(context.getWorkspaceRoot(), file);
+                if (!summary.available()) {
+                    unavailable++;
+                    out.append("- ").append(relative).append(": ")
+                            .append(summary.source()).append(" unavailable (")
+                            .append(summary.message()).append(")\n");
+                    continue;
+                }
                 totalErrors += summary.errors();
                 totalWarnings += summary.warnings();
                 out.append("- ").append(relative).append(": ")
                         .append(summary.source()).append(" diagnostics ")
                         .append(summary.errors()).append(" error(s), ")
                         .append(summary.warnings()).append(" warning(s)\n");
-                for (String line : summary.lines().stream().limit(8).toList()) {
+                for (String line : summary.lines().stream().limit(MAX_DIAGNOSTIC_LINES_PER_FILE).toList()) {
                     out.append("  - ").append(line).append('\n');
                 }
             } catch (Exception e) {
-                out.append("- ").append(relative).append(": hook failed (").append(e.getMessage()).append(")\n");
+                unavailable++;
+                out.append("- ").append(relative).append(": diagnostics unavailable (")
+                        .append(message(e)).append(")\n");
             }
-            suggestedCommand(context.getWorkspaceRoot(), relative).ifPresent(suggestions::add);
         }
+        out.append("- diagnostics: checked ").append(checked)
+                .append(", skipped ").append(skipped)
+                .append(", unavailable ").append(unavailable);
+        if (changedFiles.size() > MAX_DIAGNOSTIC_FILES) {
+            out.append(", capped at ").append(MAX_DIAGNOSTIC_FILES);
+        }
+        out.append('\n');
 
         List<String> uniqueSuggestions = new ArrayList<>(new LinkedHashSet<>(suggestions));
         if (!uniqueSuggestions.isEmpty()) {
@@ -89,15 +117,9 @@ public class AgentPostEditHookService {
                 int line = diagnostic.getRange() == null ? 1 : diagnostic.getRange().getStart().getLine() + 1;
                 lines.add("[LSP " + severity + "] line " + line + ": " + diagnostic.getMessage());
             }
-            return new DiagnosticSummary("lsp:" + lsp.languageId(), errors, warnings, lines);
+            return DiagnosticSummary.available("lsp:" + lsp.languageId(), errors, warnings, lines);
         }
-        return new DiagnosticSummary(
-                "lsp-unavailable",
-                1,
-                0,
-                List.of("[LSP UNAVAILABLE] " + lsp.message()
-                        + ". Run scripts/setup-lsp.ps1, then restart backend.")
-        );
+        return DiagnosticSummary.unavailable("lsp", lsp.message());
     }
 
     private List<String> changedFiles(String toolName, JsonObject args) {
@@ -147,7 +169,22 @@ public class AgentPostEditHookService {
                 .anyMatch(name::endsWith);
     }
 
-    private record DiagnosticSummary(String source, int errors, int warnings, List<String> lines) {}
+    private String message(Exception error) {
+        if (error.getMessage() == null || error.getMessage().isBlank()) {
+            return error.getClass().getSimpleName();
+        }
+        return error.getMessage();
+    }
+
+    private record DiagnosticSummary(boolean available, String source, String message, int errors, int warnings, List<String> lines) {
+        static DiagnosticSummary available(String source, int errors, int warnings, List<String> lines) {
+            return new DiagnosticSummary(true, source, "", errors, warnings, lines);
+        }
+
+        static DiagnosticSummary unavailable(String source, String message) {
+            return new DiagnosticSummary(false, source, message == null || message.isBlank() ? "LSP did not respond" : message, 0, 0, List.of());
+        }
+    }
 
     public record HookReport(List<String> changedFiles,
                              int errorCount,

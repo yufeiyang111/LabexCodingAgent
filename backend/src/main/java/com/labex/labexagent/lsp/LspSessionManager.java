@@ -1,5 +1,8 @@
 package com.labex.labexagent.lsp;
 
+import com.labex.labexagent.execution.ProcessExecutionRequest;
+import com.labex.labexagent.worker.SandboxWorker;
+import com.labex.labexagent.worker.WorkerRunSpec;
 import org.eclipse.lsp4j.Diagnostic;
 import org.eclipse.lsp4j.DefinitionParams;
 import org.eclipse.lsp4j.DidChangeTextDocumentParams;
@@ -34,15 +37,18 @@ import org.eclipse.lsp4j.services.LanguageClient;
 import org.eclipse.lsp4j.services.LanguageServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -57,11 +63,27 @@ import java.util.stream.Collectors;
 @Service
 public class LspSessionManager {
     private static final Logger log = LoggerFactory.getLogger(LspSessionManager.class);
-    private static final int START_TIMEOUT_SECONDS = 12;
-    private static final int REQUEST_TIMEOUT_SECONDS = 6;
+    private static final int DEFAULT_START_TIMEOUT_SECONDS = 12;
+    private static final int DEFAULT_REQUEST_TIMEOUT_SECONDS = 6;
+    private static final int DEFAULT_DIAGNOSTIC_TIMEOUT_MILLIS = 1_500;
+    private static final int DEFAULT_FAILURE_COOLDOWN_SECONDS = 30;
 
+    private final SandboxWorker sandboxWorker;
     private final Map<String, ManagedSession> sessions = new ConcurrentHashMap<>();
-    private final Map<String, String> failedStarts = new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<ManagedSession>> startingSessions = new ConcurrentHashMap<>();
+    private final Map<String, FailedStart> failedStarts = new ConcurrentHashMap<>();
+
+    @Value("${labex-agent.lsp.start-timeout-seconds:" + DEFAULT_START_TIMEOUT_SECONDS + "}")
+    private int startTimeoutSeconds;
+
+    @Value("${labex-agent.lsp.request-timeout-seconds:" + DEFAULT_REQUEST_TIMEOUT_SECONDS + "}")
+    private int requestTimeoutSeconds;
+
+    @Value("${labex-agent.lsp.diagnostic-timeout-millis:" + DEFAULT_DIAGNOSTIC_TIMEOUT_MILLIS + "}")
+    private long diagnosticTimeoutMillis;
+
+    @Value("${labex-agent.lsp.failure-cooldown-seconds:" + DEFAULT_FAILURE_COOLDOWN_SECONDS + "}")
+    private long failureCooldownSeconds;
 
     @Value("${labex-agent.lsp.commands.java:jdtls}")
     private String javaCommand;
@@ -75,6 +97,10 @@ public class LspSessionManager {
     @Value("${labex-agent.lsp.commands.python:pyright-langserver --stdio}")
     private String pythonCommand;
 
+    public LspSessionManager(SandboxWorker sandboxWorker) {
+        this.sandboxWorker = sandboxWorker;
+    }
+
     public Optional<String> status(Path workspaceRoot, Path file) {
         LanguageSpec spec = specFor(file);
         if (spec == null) {
@@ -85,9 +111,9 @@ public class LspSessionManager {
         if (session != null && session.isAlive()) {
             return Optional.of("running " + spec.languageId() + " via `" + String.join(" ", spec.command()) + "`");
         }
-        String failed = failedStarts.get(key);
-        if (failed != null) {
-            return Optional.of("unavailable " + spec.languageId() + ": " + failed);
+        FailedStart failed = failedStarts.get(key);
+        if (failed != null && !failed.canRetry(System.currentTimeMillis())) {
+            return Optional.of("unavailable " + spec.languageId() + ": " + failed.message());
         }
         return Optional.of("available command candidate: `" + String.join(" ", spec.command()) + "`; session starts on first LSP request");
     }
@@ -99,9 +125,9 @@ public class LspSessionManager {
         }
         try {
             ManagedSession session = getOrStart(workspaceRoot, spec);
-            String uri = file.toUri().toString();
+            String uri = session.workspaceUri(file);
             session.openDocument(file, spec.languageId());
-            List<Diagnostic> diagnostics = session.awaitDiagnostics(uri, 1500);
+            List<Diagnostic> diagnostics = session.awaitDiagnostics(uri, diagnosticTimeoutMillis);
             return LspDiagnosticsResult.ok(spec.languageId(), diagnostics);
         } catch (Exception e) {
             return LspDiagnosticsResult.unavailable("real LSP unavailable for " + spec.languageId() + ": " + e.getMessage());
@@ -116,8 +142,8 @@ public class LspSessionManager {
         try {
             ManagedSession session = getOrStart(workspaceRoot, spec);
             session.openDocument(file, spec.languageId());
-            DocumentSymbolParams params = new DocumentSymbolParams(new TextDocumentIdentifier(file.toUri().toString()));
-            var raw = session.server().getTextDocumentService().documentSymbol(params).get(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            DocumentSymbolParams params = new DocumentSymbolParams(session.identifier(file));
+            var raw = session.server().getTextDocumentService().documentSymbol(params).get(requestTimeoutSeconds, TimeUnit.SECONDS);
             List<String> lines = new ArrayList<>();
             for (var either : raw) {
                 if (either.isLeft()) {
@@ -142,17 +168,17 @@ public class LspSessionManager {
         try {
             ManagedSession session = getOrStart(workspaceRoot, spec);
             session.openDocument(file, spec.languageId());
-            var params = new DefinitionParams(identifier(file), position(zeroBasedLine, zeroBasedCharacter));
-            var raw = session.server().getTextDocumentService().definition(params).get(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            var params = new DefinitionParams(session.identifier(file), position(zeroBasedLine, zeroBasedCharacter));
+            var raw = session.server().getTextDocumentService().definition(params).get(requestTimeoutSeconds, TimeUnit.SECONDS);
             List<String> locations = new ArrayList<>();
             if (raw != null) {
                 if (raw.isLeft()) {
                     for (Location location : raw.getLeft()) {
-                        locations.add(formatLocation(workspaceRoot, location));
+                        locations.add(formatLocation(session, location));
                     }
                 } else {
                     for (LocationLink link : raw.getRight()) {
-                        locations.add(formatLocationLink(workspaceRoot, link));
+                        locations.add(formatLocationLink(session, link));
                     }
                 }
             }
@@ -170,12 +196,12 @@ public class LspSessionManager {
         try {
             ManagedSession session = getOrStart(workspaceRoot, spec);
             session.openDocument(file, spec.languageId());
-            var params = new ReferenceParams(identifier(file), position(zeroBasedLine, zeroBasedCharacter), new ReferenceContext(includeDeclaration));
-            var raw = session.server().getTextDocumentService().references(params).get(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            var params = new ReferenceParams(session.identifier(file), position(zeroBasedLine, zeroBasedCharacter), new ReferenceContext(includeDeclaration));
+            var raw = session.server().getTextDocumentService().references(params).get(requestTimeoutSeconds, TimeUnit.SECONDS);
             List<String> locations = new ArrayList<>();
             if (raw != null) {
                 for (Location location : raw) {
-                    locations.add(formatLocation(workspaceRoot, location));
+                    locations.add(formatLocation(session, location));
                 }
             }
             return LspLocationsResult.ok(spec.languageId(), locations);
@@ -192,8 +218,8 @@ public class LspSessionManager {
         try {
             ManagedSession session = getOrStart(workspaceRoot, spec);
             session.openDocument(file, spec.languageId());
-            var params = new HoverParams(identifier(file), position(zeroBasedLine, zeroBasedCharacter));
-            Hover hover = session.server().getTextDocumentService().hover(params).get(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            var params = new HoverParams(session.identifier(file), position(zeroBasedLine, zeroBasedCharacter));
+            Hover hover = session.server().getTextDocumentService().hover(params).get(requestTimeoutSeconds, TimeUnit.SECONDS);
             return LspHoverResult.ok(spec.languageId(), hoverText(hover));
         } catch (Exception e) {
             return LspHoverResult.unavailable("real LSP hover unavailable for " + spec.languageId() + ": " + e.getMessage());
@@ -202,47 +228,123 @@ public class LspSessionManager {
 
     private ManagedSession getOrStart(Path workspaceRoot, LanguageSpec spec) throws Exception {
         Path root = workspaceRoot.toAbsolutePath().normalize();
-        String key = key(root, spec.languageId());
-        ManagedSession existing = sessions.get(key);
+        String sessionKey = key(root, spec.languageId());
+        ManagedSession existing = sessions.get(sessionKey);
         if (existing != null && existing.isAlive()) {
             return existing;
         }
-        String failed = failedStarts.get(key);
+        removeDeadSession(sessionKey, existing);
+
+        FailedStart failed = failedStarts.get(sessionKey);
+        long now = System.currentTimeMillis();
+        if (failed != null && !failed.canRetry(now)) {
+            throw new IllegalStateException(failed.message());
+        }
         if (failed != null) {
-            throw new IllegalStateException(failed);
+            failedStarts.remove(sessionKey, failed);
         }
+
+        CompletableFuture<ManagedSession> created = new CompletableFuture<>();
+        CompletableFuture<ManagedSession> inFlight = startingSessions.putIfAbsent(sessionKey, created);
+        if (inFlight == null) {
+            try {
+                ManagedSession session = start(root, spec);
+                sessions.put(sessionKey, session);
+                failedStarts.remove(sessionKey);
+                created.complete(session);
+                return session;
+            } catch (Exception e) {
+                FailedStart failedStart = new FailedStart(message(e), now + TimeUnit.SECONDS.toMillis(failureCooldownSeconds));
+                failedStarts.put(sessionKey, failedStart);
+                created.completeExceptionally(e);
+                throw e;
+            } finally {
+                startingSessions.remove(sessionKey, created);
+            }
+        }
+
         try {
-            ManagedSession created = start(root, spec);
-            sessions.put(key, created);
-            return created;
-        } catch (Exception e) {
-            failedStarts.put(key, e.getMessage());
-            throw e;
+            return inFlight.get(startTimeoutSeconds, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw asException(e.getCause());
+        } catch (java.util.concurrent.TimeoutException e) {
+            throw new IllegalStateException("timed out waiting for LSP startup", e);
         }
+    }
+
+    private void removeDeadSession(String sessionKey, ManagedSession session) {
+        if (session != null && sessions.remove(sessionKey, session)) {
+            session.close();
+        }
+    }
+
+    private Exception asException(Throwable cause) {
+        if (cause instanceof Exception exception) {
+            return exception;
+        }
+        return new IllegalStateException(message(cause), cause);
+    }
+
+    private String message(Throwable error) {
+        if (error == null || error.getMessage() == null || error.getMessage().isBlank()) {
+            return error == null ? "LSP startup failed" : error.getClass().getSimpleName();
+        }
+        return error.getMessage();
+    }
+
+    @PreDestroy
+    public void destroy() {
+        shutdown();
+    }
+
+    void shutdown() {
+        sessions.values().forEach(ManagedSession::close);
+        sessions.clear();
+        startingSessions.values().forEach(future -> future.cancel(true));
+        startingSessions.clear();
+        failedStarts.clear();
     }
 
     private ManagedSession start(Path root, LanguageSpec spec) throws Exception {
         List<String> configuredCommand = commandForRoot(root, spec);
-        List<String> command = processCommand(configuredCommand);
+        List<String> command = sandboxWorker.usesLinuxShell() ? configuredCommand : processCommand(configuredCommand);
         if (command.isEmpty()) {
             throw new IllegalStateException("language server command is empty");
         }
-        Process process = new ProcessBuilder(command)
-                .directory(root.toFile())
-                .start();
-        LspClient client = new LspClient();
-        InputStream in = process.getInputStream();
-        OutputStream out = process.getOutputStream();
-        Launcher<LanguageServer> launcher = LSPLauncher.createClientLauncher(client, in, out);
-        Future<?> listening = launcher.startListening();
-        LanguageServer server = launcher.getRemoteProxy();
+        WorkerRunSpec run = lspRun(root);
+        SandboxWorker.WorkerProcess process = startWorkerProcess(run, command);
+        try {
+            LspClient client = new LspClient();
+            InputStream in = process.standardOutput();
+            OutputStream out = process.standardInput();
+            Launcher<LanguageServer> launcher = LSPLauncher.createClientLauncher(client, in, out);
+            Future<?> listening = launcher.startListening();
+            LanguageServer server = launcher.getRemoteProxy();
 
-        InitializeParams init = new InitializeParams();
-        init.setProcessId((int) ProcessHandle.current().pid());
-        init.setRootUri(root.toUri().toString());
-        server.initialize(init).get(START_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        server.initialized(new InitializedParams());
-        return new ManagedSession(spec.languageId(), configuredCommand, process, server, client, listening);
+            InitializeParams init = new InitializeParams();
+            init.setProcessId((int) Math.min(Integer.MAX_VALUE, process.processId()));
+            init.setRootUri(workspaceUri(run, root));
+            server.initialize(init).get(startTimeoutSeconds, TimeUnit.SECONDS);
+            server.initialized(new InitializedParams());
+            return new ManagedSession(spec.languageId(), configuredCommand, process, sandboxWorker, run, server, client, listening);
+        } catch (Exception e) {
+            process.terminate();
+            throw e;
+        }
+    }
+
+    SandboxWorker.WorkerProcess startWorkerProcess(WorkerRunSpec run, List<String> command) throws IOException {
+        return sandboxWorker.startProcess(run, new ProcessExecutionRequest(
+                command, run.workspaceRoot(), Duration.ofHours(4), 1));
+    }
+
+    String workspaceUri(WorkerRunSpec run, Path path) {
+        return sandboxWorker.workspaceUri(run, path);
+    }
+
+    private WorkerRunSpec lspRun(Path root) {
+        return WorkerRunSpec.forWorkspace(
+                "lsp-" + Integer.toUnsignedString(root.toString().hashCode(), 16), root);
     }
 
     private List<String> commandForRoot(Path root, LanguageSpec spec) throws Exception {
@@ -355,40 +457,36 @@ public class LspSessionManager {
         }
     }
 
-    private TextDocumentIdentifier identifier(Path file) {
-        return new TextDocumentIdentifier(file.toUri().toString());
-    }
-
     private Position position(int zeroBasedLine, int zeroBasedCharacter) {
         return new Position(Math.max(0, zeroBasedLine), Math.max(0, zeroBasedCharacter));
     }
 
-    private String formatLocation(Path root, Location location) {
+    private String formatLocation(ManagedSession session, Location location) {
         if (location == null) {
             return "";
         }
-        return formatUriRange(root, location.getUri(), location.getRange());
+        return formatUriRange(session, location.getUri(), location.getRange());
     }
 
-    private String formatLocationLink(Path root, LocationLink link) {
+    private String formatLocationLink(ManagedSession session, LocationLink link) {
         if (link == null) {
             return "";
         }
         Range range = link.getTargetSelectionRange() == null ? link.getTargetRange() : link.getTargetSelectionRange();
-        return formatUriRange(root, link.getTargetUri(), range);
+        return formatUriRange(session, link.getTargetUri(), range);
     }
 
-    private String formatUriRange(Path root, String uri, Range range) {
-        String path = readablePath(root, uri);
+    private String formatUriRange(ManagedSession session, String uri, Range range) {
+        String path = readablePath(session, uri);
         int line = range == null || range.getStart() == null ? 1 : range.getStart().getLine() + 1;
         int character = range == null || range.getStart() == null ? 1 : range.getStart().getCharacter() + 1;
         return path + ":" + line + ":" + character;
     }
 
-    private String readablePath(Path root, String uri) {
+    private String readablePath(ManagedSession session, String uri) {
         try {
-            Path path = Path.of(URI.create(uri)).toAbsolutePath().normalize();
-            Path normalizedRoot = root.toAbsolutePath().normalize();
+            Path path = session.hostPath(uri);
+            Path normalizedRoot = session.workspaceRoot();
             if (path.startsWith(normalizedRoot)) {
                 return normalizedRoot.relativize(path).toString().replace('\\', '/');
             }
@@ -429,6 +527,12 @@ public class LspSessionManager {
     }
 
     private record LanguageSpec(String languageId, List<String> command) {}
+
+    private record FailedStart(String message, long retryAfterMillis) {
+        boolean canRetry(long nowMillis) {
+            return nowMillis >= retryAfterMillis;
+        }
+    }
 
     public record LspDiagnosticsResult(boolean available, String languageId, String message, List<Diagnostic> diagnostics) {
         static LspDiagnosticsResult ok(String languageId, List<Diagnostic> diagnostics) {
@@ -473,16 +577,28 @@ public class LspSessionManager {
     private static class ManagedSession {
         private final String languageId;
         private final List<String> command;
-        private final Process process;
+        private final SandboxWorker.WorkerProcess process;
+        private final SandboxWorker worker;
+        private final WorkerRunSpec run;
         private final LanguageServer server;
         private final LspClient client;
         private final Future<?> listening;
         private final Map<String, Integer> versions = new ConcurrentHashMap<>();
 
-        ManagedSession(String languageId, List<String> command, Process process, LanguageServer server, LspClient client, Future<?> listening) {
+        ManagedSession(
+                String languageId,
+                List<String> command,
+                SandboxWorker.WorkerProcess process,
+                SandboxWorker worker,
+                WorkerRunSpec run,
+                LanguageServer server,
+                LspClient client,
+                Future<?> listening) {
             this.languageId = languageId;
             this.command = command;
             this.process = process;
+            this.worker = worker;
+            this.run = run;
             this.server = server;
             this.client = client;
             this.listening = listening;
@@ -496,8 +612,29 @@ public class LspSessionManager {
             return server;
         }
 
+        void close() {
+            listening.cancel(true);
+            process.terminate();
+        }
+
+        String workspaceUri(Path file) {
+            return worker.workspaceUri(run, file);
+        }
+
+        TextDocumentIdentifier identifier(Path file) {
+            return new TextDocumentIdentifier(workspaceUri(file));
+        }
+
+        Path workspaceRoot() {
+            return run.workspaceRoot();
+        }
+
+        Path hostPath(String workerUri) {
+            return worker.hostPath(run, workerUri);
+        }
+
         void openDocument(Path file, String languageId) throws Exception {
-            String uri = file.toUri().toString();
+            String uri = workspaceUri(file);
             String content = Files.readString(file, StandardCharsets.UTF_8);
             Integer currentVersion = versions.get(uri);
             if (currentVersion == null) {

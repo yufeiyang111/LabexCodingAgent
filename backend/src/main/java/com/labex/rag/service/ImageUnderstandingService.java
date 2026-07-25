@@ -1,5 +1,6 @@
 package com.labex.rag.service;
 
+import com.labex.labexagent.network.OutboundUrlPolicy;
 import com.labex.rag.config.RagConfig;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +12,10 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,6 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Slf4j
 @Service
@@ -31,10 +37,17 @@ public class ImageUnderstandingService {
     private static final long MAX_IMAGE_BYTES = 20L * 1024L * 1024L;
 
     private final RagConfig ragConfig;
+    private final OutboundUrlPolicy outboundUrlPolicy;
     private final RestTemplate restTemplate;
 
     public ImageUnderstandingService(RagConfig ragConfig) {
+        this(ragConfig, new OutboundUrlPolicy());
+    }
+
+    @Autowired
+    public ImageUnderstandingService(RagConfig ragConfig, OutboundUrlPolicy outboundUrlPolicy) {
         this.ragConfig = ragConfig;
+        this.outboundUrlPolicy = outboundUrlPolicy;
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(10000);
         factory.setReadTimeout(120000);
@@ -136,19 +149,10 @@ public class ImageUnderstandingService {
             validateDataUrl(source);
             return source;
         }
-        if (source.startsWith("http://") || source.startsWith("https://")) {
-            ResponseEntity<byte[]> response = restTemplate.getForEntity(URI.create(source), byte[].class);
-            byte[] data = response.getBody();
-            if (data == null || data.length == 0) {
-                throw new IllegalArgumentException("无法下载图片或图片为空。");
-            }
-            if (data.length > MAX_IMAGE_BYTES) {
-                throw new IllegalArgumentException("图片超过 20MB。");
-            }
-            String contentType = response.getHeaders().getContentType() == null
-                    ? inferMimeType(source, null)
-                    : response.getHeaders().getContentType().toString();
-            return toDataUrl(contentType, data);
+        String lowerSource = source.toLowerCase(Locale.ROOT);
+        if (lowerSource.startsWith("http://") || lowerSource.startsWith("https://")) {
+            DownloadedImage downloaded = downloadImage(source);
+            return toDataUrl(downloaded.contentType(), downloaded.data());
         }
 
         Path path = Path.of(source).normalize();
@@ -162,6 +166,60 @@ public class ImageUnderstandingService {
         byte[] data = Files.readAllBytes(path);
         String contentType = inferMimeType(source, Files.probeContentType(path));
         return toDataUrl(contentType, data);
+    }
+
+    private DownloadedImage downloadImage(String source) throws IOException {
+        URI destination = outboundUrlPolicy.validate(source).uri();
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) destination.toURL().openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(120000);
+            connection.setInstanceFollowRedirects(false);
+
+            int status = connection.getResponseCode();
+            if (status >= 300 && status < 400) {
+                outboundUrlPolicy.validateRedirect(destination, connection.getHeaderField("Location"));
+                throw new IllegalArgumentException("图片下载不支持重定向。");
+            }
+            if (status < 200 || status >= 300) {
+                throw new IllegalArgumentException("图片下载失败，HTTP 状态：" + status);
+            }
+            long contentLength = connection.getContentLengthLong();
+            if (contentLength > MAX_IMAGE_BYTES) {
+                throw new IllegalArgumentException("图片超过 20MB。");
+            }
+            byte[] data;
+            try (InputStream input = connection.getInputStream()) {
+                data = readImage(input);
+            }
+            if (data.length == 0) {
+                throw new IllegalArgumentException("无法下载图片或图片为空。");
+            }
+            String contentType = connection.getContentType();
+            return new DownloadedImage(contentType == null ? inferMimeType(source, null) : contentType, data);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private byte[] readImage(InputStream input) throws IOException {
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            long total = 0;
+            while ((read = input.read(buffer)) != -1) {
+                total += read;
+                if (total > MAX_IMAGE_BYTES) {
+                    throw new IllegalArgumentException("图片超过 20MB。");
+                }
+                output.write(buffer, 0, read);
+            }
+            return output.toByteArray();
+        }
     }
 
     private void validateDataUrl(String dataUrl) {
@@ -273,6 +331,9 @@ public class ImageUnderstandingService {
             return value == null ? "" : value;
         }
         return value.substring(0, maxLength) + "...";
+    }
+
+    private record DownloadedImage(String contentType, byte[] data) {
     }
 
     @Getter

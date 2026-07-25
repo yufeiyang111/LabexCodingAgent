@@ -9,10 +9,13 @@ import com.labex.rag.config.RagConfig;
 import com.labex.rag.llm.LLMChat;
 import com.labex.rag.llm.MiniMaxChat;
 import com.labex.rag.llm.OllamaChat;
+import com.labex.labexagent.service.ProjectScanPolicy;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.service.StudentProjectService;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileAttribute;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -33,6 +37,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -54,6 +59,7 @@ implements StudentProjectService {
     private static final int MAX_FILES = 5000;
     private static final long MAX_TOTAL_SIZE = 314572800L;
     private static final long MAX_EDIT_FILE_SIZE = 0x200000L;
+    private static final int MAX_FILE_PREVIEW_BYTES = 512 * 1024;
     private static final Gson GSON = new Gson();
     @Value(value="${labex-agent.project-base-path:./student_projects}")
     private String projectBasePath;
@@ -88,7 +94,9 @@ implements StudentProjectService {
             Files.createDirectories(archivePath.getParent(), new FileAttribute[0]);
             Files.createDirectories(workspacePath, new FileAttribute[0]);
             file.transferTo(archivePath);
-            ExtractStats stats = this.unzipSecurely(archivePath, workspacePath);
+            this.unzipSecurely(archivePath, workspacePath);
+            this.initializeAgentIgnoreFile(workspacePath);
+            ExtractStats stats = this.countProjectFiles(workspacePath);
             Map structure = this.buildTree(workspacePath, workspacePath, 0);
             StudentProject project = new StudentProject();
             project.setStudentId(studentId);
@@ -128,6 +136,7 @@ implements StudentProjectService {
         try {
             Files.createDirectories(workspacePath, new FileAttribute[0]);
             this.writeStarterTemplate(workspacePath, safeProjectName, safeTemplate);
+            this.initializeAgentIgnoreFile(workspacePath);
             ExtractStats stats = this.countProjectFiles(workspacePath);
             StudentProject project = new StudentProject();
             project.setStudentId(studentId);
@@ -159,12 +168,13 @@ implements StudentProjectService {
         Path filePath = this.resolveProjectFile(project, relativePath);
         try {
             byte[] bytes;
-            if (!Files.isRegularFile(filePath, new LinkOption[0])) {
+            if (!Files.isRegularFile(filePath, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("Please select a file");
             }
             long size = Files.size(filePath);
-            if (size > 0x200000L) {
-                throw new IllegalArgumentException("File is too large to edit online");
+            if (size > ProjectScanPolicy.MAX_AGENT_READ_FILE_BYTES) {
+                throw new IllegalArgumentException("File exceeds max_agent_read_file_bytes="
+                        + ProjectScanPolicy.MAX_AGENT_READ_FILE_BYTES);
             }
             for (byte b : bytes = Files.readAllBytes(filePath)) {
                 if (b != 0) continue;
@@ -177,6 +187,51 @@ implements StudentProjectService {
         }
     }
 
+    public Map<String, Object> readProjectFileForEditor(Integer studentId, Integer projectId, String relativePath) {
+        StudentProject project = this.requireOwnedProject(studentId, projectId);
+        Path filePath = this.resolveProjectFile(project, relativePath);
+        try {
+            if (!Files.isRegularFile(filePath, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("Please select a file");
+            }
+            long size = Files.size(filePath);
+            int previewLength = (int) Math.min(size, MAX_FILE_PREVIEW_BYTES);
+            byte[] bytes = this.readFilePrefix(filePath, previewLength);
+            for (byte b : bytes) {
+                if (b == 0) {
+                    throw new IllegalArgumentException(this.buildUnsupportedFileMessage(relativePath));
+                }
+            }
+            boolean truncated = size > bytes.length;
+            Map<String, Object> result = new HashMap<>();
+            result.put("path", relativePath);
+            result.put("content", new String(bytes, StandardCharsets.UTF_8));
+            result.put("readOnly", truncated);
+            result.put("truncated", truncated);
+            result.put("totalSize", size);
+            return result;
+        }
+        catch (IOException e) {
+            throw new RuntimeException("Failed to read project file: " + e.getMessage(), e);
+        }
+    }
+
+    private byte[] readFilePrefix(Path filePath, int maxBytes) throws IOException {
+        try (InputStream input = Files.newInputStream(filePath); ByteArrayOutputStream output = new ByteArrayOutputStream(maxBytes)) {
+            byte[] buffer = new byte[8192];
+            int remaining = maxBytes;
+            while (remaining > 0) {
+                int read = input.read(buffer, 0, Math.min(buffer.length, remaining));
+                if (read < 0) {
+                    break;
+                }
+                output.write(buffer, 0, read);
+                remaining -= read;
+            }
+            return output.toByteArray();
+        }
+    }
+
     public StudentProject saveProjectFile(Integer studentId, Integer projectId, String relativePath, String content) {
         StudentProject project = this.requireOwnedProject(studentId, projectId);
         Path filePath = this.resolveProjectFile(project, relativePath);
@@ -186,7 +241,7 @@ implements StudentProjectService {
             throw new IllegalArgumentException("File is too large to save online");
         }
         try {
-            if (!Files.isRegularFile(filePath, new LinkOption[0])) {
+            if (!Files.isRegularFile(filePath, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("Please select an existing file");
             }
             Files.write(filePath, bytes, new OpenOption[0]);
@@ -209,12 +264,12 @@ implements StudentProjectService {
             throw new IllegalArgumentException("type must be file or directory");
         }
         try {
-            if (!Files.isDirectory(parent, new LinkOption[0])) {
+            if (!Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("Parent path is not a directory");
             }
             Path target = parent.resolve(safeName).normalize();
             this.ensureInsideWorkspace(project, target);
-            if (Files.exists(target, new LinkOption[0])) {
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("A file or folder with this name already exists");
             }
             if ("directory".equals(normalizedType)) {
@@ -239,10 +294,10 @@ implements StudentProjectService {
             if (target.equals(root)) {
                 throw new IllegalArgumentException("Cannot delete project root");
             }
-            if (!Files.exists(target, new LinkOption[0])) {
+            if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("File or folder does not exist");
             }
-            if (Files.isDirectory(target, new LinkOption[0])) {
+            if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
                 FileUtils.deleteDirectory((File)target.toFile());
             } else {
                 Files.delete(target);
@@ -265,12 +320,12 @@ implements StudentProjectService {
             if (source.equals(root)) {
                 throw new IllegalArgumentException("Cannot rename project root");
             }
-            if (!Files.exists(source, new LinkOption[0])) {
+            if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("File or folder does not exist");
             }
             Path target = source.getParent().resolve(safeName).normalize();
             this.ensureInsideWorkspace(project, target);
-            if (Files.exists(target, new LinkOption[0])) {
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("A file or folder with this name already exists");
             }
             Files.move(source, target, new CopyOption[0]);
@@ -307,16 +362,23 @@ implements StudentProjectService {
 
     public List<Map<String, Object>> listProjectTree(Integer studentId, Integer projectId, String path) {
         StudentProject project = this.requireOwnedProject(studentId, projectId);
-        Path workspacePath = Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize();
+        SecureWorkspacePath paths = this.workspacePaths(project);
+        Path workspacePath = paths.workspaceRoot();
         Path targetPath = path == null || path.isEmpty() || path.equals("/") ? workspacePath : this.resolveProjectFile(project, path);
         ArrayList<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
+        try {
+            this.initializeAgentIgnoreFile(workspacePath);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to initialize Agent ignore file", e);
+        }
         try (Stream<Path> stream = Files.list(targetPath);){
-            List<Path> paths = stream.sorted(Comparator.comparing(p -> !this.isSafeDirectory(p))).toList();
-            for (Path child : paths) {
+            List<Path> children = stream.filter(child -> this.isBrowsableWorkspaceEntry(paths, child))
+                    .sorted(Comparator.comparing(p -> !this.isSafeBrowsableDirectory(paths, p))).toList();
+            for (Path child : children) {
                 HashMap<String, Object> node = new HashMap<String, Object>();
                 node.put("name", child.getFileName().toString());
                 node.put("path", workspacePath.relativize(child).toString().replace('\\', '/'));
-                boolean isDir = this.isSafeDirectory(child);
+                boolean isDir = this.isSafeBrowsableDirectory(paths, child);
                 node.put("type", isDir ? "directory" : "file");
                 if (isDir) {
                     node.put("children", new ArrayList());
@@ -332,18 +394,77 @@ implements StudentProjectService {
             }
         }
         catch (IOException e) {
-            log.warn("Failed to list project tree at {}: {}", path, e.getMessage());
+            log.warn("Failed to list project tree for project {} at {}: {}", projectId, path, e.getMessage());
+            throw new IllegalStateException("Failed to list project tree", e);
         }
         return result;
     }
 
+    public StudentProjectService.ProjectTreePage listProjectTreePage(Integer studentId, Integer projectId, String path,
+                                                                       int offset, int limit) {
+        StudentProject project = this.requireOwnedProject(studentId, projectId);
+        SecureWorkspacePath paths = this.workspacePaths(project);
+        Path workspacePath = paths.workspaceRoot();
+        Path targetPath = path == null || path.isEmpty() || path.equals("/")
+                ? workspacePath : this.resolveProjectFile(project, path);
+        int safeOffset = Math.max(0, offset);
+        int safeLimit = Math.min(200, Math.max(1, limit));
+        try {
+            this.initializeAgentIgnoreFile(workspacePath);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to initialize Agent ignore file", e);
+        }
+        try (Stream<Path> stream = Files.list(targetPath)) {
+            List<Path> candidates = stream.filter(child -> this.isBrowsableWorkspaceEntry(paths, child))
+                    .skip(safeOffset)
+                    .limit((long) safeLimit + 1)
+                    .collect(Collectors.toCollection(ArrayList::new));
+            boolean hasMore = candidates.size() > safeLimit;
+            if (hasMore) {
+                candidates = new ArrayList<>(candidates.subList(0, safeLimit));
+            }
+            candidates.sort(Comparator.comparing((Path child) -> !this.isSafeBrowsableDirectory(paths, child))
+                    .thenComparing(child -> child.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
+            List<Map<String, Object>> entries = new ArrayList<>();
+            for (Path child : candidates) {
+                entries.add(this.projectTreeNode(paths, workspacePath, child));
+            }
+            return new StudentProjectService.ProjectTreePage(entries, hasMore ? safeOffset + safeLimit : null);
+        } catch (IOException e) {
+            log.warn("Failed to list project tree page for project {} at {}: {}", projectId, path, e.getMessage());
+            throw new IllegalStateException("Failed to list project tree", e);
+        }
+    }
+
+    private Map<String, Object> projectTreeNode(SecureWorkspacePath paths, Path workspacePath, Path child) {
+        HashMap<String, Object> node = new HashMap<>();
+        node.put("name", child.getFileName().toString());
+        node.put("path", workspacePath.relativize(child).toString().replace('\\', '/'));
+        boolean isDir = this.isSafeBrowsableDirectory(paths, child);
+        node.put("type", isDir ? "directory" : "file");
+        if (isDir) {
+            node.put("children", new ArrayList<>());
+        } else {
+            try {
+                node.put("size", Files.size(child));
+            } catch (IOException e) {
+                node.put("size", 0L);
+            }
+        }
+        return node;
+    }
+
     public void exportProject(Integer studentId, Integer projectId, OutputStream outputStream) {
         StudentProject project = this.requireOwnedProject(studentId, projectId);
-        Path workspacePath = Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize();
+        SecureWorkspacePath paths = this.workspacePaths(project);
+        Path workspacePath = paths.workspaceRoot();
         try (ZipOutputStream zos = new ZipOutputStream(outputStream);){
             Files.walkFileTree(workspacePath, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    if (!isSafeWorkspaceEntry(paths, file) || attrs.isSymbolicLink() || attrs.isOther()) {
+                        return FileVisitResult.CONTINUE;
+                    }
                     String relative = workspacePath.relativize(file).toString().replace('\\', '/');
                     ZipEntry entry = new ZipEntry(relative);
                     zos.putNextEntry(entry);
@@ -353,6 +474,9 @@ implements StudentProjectService {
                 }
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                    if (!isSafeWorkspaceEntry(paths, dir) || attrs.isSymbolicLink() || attrs.isOther()) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
                     String relative = workspacePath.relativize(dir).toString().replace('\\', '/');
                     if (!relative.isEmpty()) {
                         ZipEntry entry = new ZipEntry(relative + "/");
@@ -370,7 +494,7 @@ implements StudentProjectService {
 
     public void deleteOwnedProject(Integer studentId, Integer projectId) {
         StudentProject project = this.requireOwnedProject(studentId, projectId);
-        Path root = Path.of(project.getWorkspacePath()).getParent().toAbsolutePath().normalize();
+        Path root = this.workspaceRoot(project).getParent();
         this.cleanup(root);
         this.removeById(project.getProjectId());
     }
@@ -414,6 +538,18 @@ implements StudentProjectService {
             }
         }
         return stats;
+    }
+
+    private void initializeAgentIgnoreFile(Path workspacePath) throws IOException {
+        Path ignoreFile = workspacePath.resolve(ProjectScanPolicy.AGENT_IGNORE_FILE);
+        if (Files.exists(ignoreFile, LinkOption.NOFOLLOW_LINKS)) {
+            if (!Files.isRegularFile(ignoreFile, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("Agent ignore path is not a regular file");
+            }
+            return;
+        }
+        Files.writeString(ignoreFile, ProjectScanPolicy.defaultIgnoreFileContent(), StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE_NEW);
     }
 
     private void writeStarterTemplate(Path workspacePath, String projectName, String template) throws IOException {
@@ -493,27 +629,39 @@ implements StudentProjectService {
     }
 
     private Path resolveProjectPath(StudentProject project, String relativePath, boolean allowRoot) {
-        Path root = this.workspaceRoot(project);
+        SecureWorkspacePath paths = this.workspacePaths(project);
         if (relativePath == null || relativePath.isBlank()) {
             if (allowRoot) {
-                return root;
+                return paths.workspaceRoot();
             }
             throw new IllegalArgumentException("File path is required");
         }
-        Path resolved = root.resolve(relativePath).normalize();
-        this.ensureInsideWorkspace(project, resolved);
-        return resolved;
+        return paths.resolveExisting(relativePath);
     }
 
     private Path workspaceRoot(StudentProject project) {
-        return Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize();
+        return this.workspacePaths(project).workspaceRoot();
     }
 
     private void ensureInsideWorkspace(StudentProject project, Path path) {
-        Path root = this.workspaceRoot(project);
-        if (!path.toAbsolutePath().normalize().startsWith(root)) {
+        SecureWorkspacePath paths = this.workspacePaths(project);
+        Path normalized = path.toAbsolutePath().normalize();
+        if (!normalized.startsWith(paths.workspaceRoot())) {
             throw new IllegalArgumentException("Unsafe project file path");
         }
+        String relativePath = paths.workspaceRoot().relativize(normalized).toString();
+        try {
+            paths.resolveForCreate(relativePath.isBlank() ? "." : relativePath);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unsafe project file path", e);
+        }
+    }
+
+    private SecureWorkspacePath workspacePaths(StudentProject project) {
+        if (project == null || project.getWorkspacePath() == null || project.getWorkspacePath().isBlank()) {
+            throw new IllegalArgumentException("Project workspace is unavailable");
+        }
+        return new SecureWorkspacePath(Path.of(project.getWorkspacePath()));
     }
 
     private String validateItemName(String name) {
@@ -531,7 +679,7 @@ implements StudentProjectService {
     }
 
     private void refreshProjectMetadataInternal(StudentProject project) throws IOException {
-        Path workspacePath = Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize();
+        Path workspacePath = this.workspaceRoot(project);
         ExtractStats stats = this.countProjectFiles(workspacePath);
         project.setStructureJson(GSON.toJson(this.buildTree(workspacePath, workspacePath, 0)));
         project.setFileCount(Integer.valueOf(stats.fileCount));
@@ -540,10 +688,22 @@ implements StudentProjectService {
     }
 
     private ExtractStats countProjectFiles(Path workspacePath) throws IOException {
+        SecureWorkspacePath paths = new SecureWorkspacePath(workspacePath);
         ExtractStats stats = new ExtractStats();
         Files.walkFileTree(workspacePath, new SimpleFileVisitor<Path>() {
                 @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    if (!isSafeWorkspaceEntry(paths, dir) || attrs.isSymbolicLink() || attrs.isOther()) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    if (!isSafeWorkspaceEntry(paths, file) || attrs.isSymbolicLink() || attrs.isOther()) {
+                        return FileVisitResult.CONTINUE;
+                    }
                     stats.fileCount++;
                     stats.totalSize += attrs.size();
                     return FileVisitResult.CONTINUE;
@@ -614,12 +774,21 @@ implements StudentProjectService {
     }
 
     private Map<String, Object> buildTree(Path root, Path current, int depth) throws IOException {
+        SecureWorkspacePath paths = new SecureWorkspacePath(root);
+        return this.buildTree(paths, ProjectScanPolicy.loadIgnoreRules(paths), paths.workspaceRoot(), current.toAbsolutePath().normalize(), depth);
+    }
+
+    private Map<String, Object> buildTree(SecureWorkspacePath paths, ProjectScanPolicy.ScanIgnoreRules ignoreRules,
+                                           Path root, Path current, int depth) throws IOException {
+        if (!this.isSafeWorkspaceEntry(paths, current)) {
+            throw new IOException("Unsafe workspace path");
+        }
         HashMap<String, Object> node = new HashMap<String, Object>();
         node.put("name", current.equals(root) ? root.getFileName().toString() : current.getFileName().toString());
         node.put("path", root.relativize(current).toString().replace('\\', '/'));
         try {
-            node.put("type", Files.isDirectory(current, new LinkOption[0]) ? "directory" : "file");
-            if (!Files.isDirectory(current, new LinkOption[0])) {
+            node.put("type", Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS) ? "directory" : "file");
+            if (!Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS)) {
                 node.put("size", Files.size(current));
                 return node;
             }
@@ -633,10 +802,12 @@ implements StudentProjectService {
         ArrayList<Map> children = new ArrayList<Map>();
         if (depth < 6) {
             try (Stream<Path> stream = Files.list(current);){
-                List<Path> paths = stream.sorted((a, b) -> Boolean.compare(!this.isSafeDirectory(a), !this.isSafeDirectory(b))).limit(200L).toList();
-                for (Path child : paths) {
+                List<Path> childrenPaths = stream.filter(child -> this.isVisibleAgentStructureEntry(paths, ignoreRules, child))
+                        .sorted((a, b) -> Boolean.compare(!this.isSafeAgentStructureDirectory(paths, ignoreRules, a), !this.isSafeAgentStructureDirectory(paths, ignoreRules, b)))
+                        .limit(200L).toList();
+                for (Path child : childrenPaths) {
                     try {
-                        children.add(this.buildTree(root, child, depth + 1));
+                        children.add(this.buildTree(paths, ignoreRules, root, child, depth + 1));
                     }
                     catch (IOException e) {
                         log.debug("Skipping unreadable child {}: {}", child, e.getMessage());
@@ -651,8 +822,41 @@ implements StudentProjectService {
         return node;
     }
 
-    private boolean isSafeDirectory(Path path) {
-        return Files.isDirectory(path, new LinkOption[0]);
+    private boolean isBrowsableWorkspaceEntry(SecureWorkspacePath paths, Path entry) {
+        return this.isSafeWorkspaceEntry(paths, entry);
+    }
+
+    private boolean isSafeBrowsableDirectory(SecureWorkspacePath paths, Path path) {
+        return this.isBrowsableWorkspaceEntry(paths, path)
+                && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS);
+    }
+
+    private boolean isVisibleAgentStructureEntry(SecureWorkspacePath paths, ProjectScanPolicy.ScanIgnoreRules ignoreRules,
+                                                 Path entry) {
+        if (!this.isSafeWorkspaceEntry(paths, entry)) {
+            return false;
+        }
+        return !ignoreRules.shouldSkipEntry(entry, Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS));
+    }
+
+    private boolean isSafeAgentStructureDirectory(SecureWorkspacePath paths, ProjectScanPolicy.ScanIgnoreRules ignoreRules,
+                                                  Path path) {
+        return this.isVisibleAgentStructureEntry(paths, ignoreRules, path)
+                && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS);
+    }
+
+    private boolean isSafeWorkspaceEntry(SecureWorkspacePath paths, Path entry) {
+        try {
+            Path normalized = entry.toAbsolutePath().normalize();
+            if (!normalized.startsWith(paths.workspaceRoot())) {
+                return false;
+            }
+            String relativePath = paths.workspaceRoot().relativize(normalized).toString();
+            paths.resolveExisting(relativePath.isBlank() ? "." : relativePath);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     private void cleanup(Path path) {

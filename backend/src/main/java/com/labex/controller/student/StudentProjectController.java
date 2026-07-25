@@ -3,8 +3,15 @@ package com.labex.controller.student;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.labex.common.Result;
-import com.labex.controller.student.ProjectCommandSafety;
+import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.commandsecurity.CommandApprovalService;
+import com.labex.labexagent.commandsecurity.CommandClassification;
+import com.labex.labexagent.commandsecurity.CommandClassifier;
+import com.labex.labexagent.commandsecurity.CommandDecision;
+import com.labex.labexagent.commandsecurity.CommandRequest;
+import com.labex.labexagent.workspace.ProjectWorkspace;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.service.ProjectTerminalService;
 import com.labex.service.StudentProjectService;
 import jakarta.servlet.http.HttpServletResponse;
@@ -14,9 +21,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.nio.file.attribute.FileAttribute;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,10 +44,19 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping(value={"/student/projects"})
 public class StudentProjectController {
     private static final Logger log = LoggerFactory.getLogger(StudentProjectController.class);
+    private static final String TERMINAL_SOURCE = "terminal_rest";
+    private static final String TERMINAL_CONVERSATION = "terminal";
+    private static final long TERMINAL_TASK_ID = 0L;
+    private static final String TERMINAL_SHELL = "direct";
+    private static final String TERMINAL_PROFILE = "managed-terminal";
+    private static final int APPROVAL_TTL_MINUTES = 10;
     @Autowired
     private StudentProjectService studentProjectService;
     @Autowired
     private ProjectTerminalService projectTerminalService;
+    @Autowired
+    private CommandApprovalService commandApprovalService;
+    private final CommandClassifier commandClassifier = new CommandClassifier();
 
     @GetMapping
     public Result<List<StudentProject>> list(Authentication auth) {
@@ -50,15 +67,14 @@ public class StudentProjectController {
 
     @GetMapping(value={"/{projectId}"})
     public Result<StudentProject> detail(@PathVariable Integer projectId, Authentication auth) {
-        StudentProject project = this.studentProjectService.refreshProjectMetadata(this.getStudentId(auth), projectId);
+        StudentProject project = this.studentProjectService.getOwnedProject(this.getStudentId(auth), projectId);
         return project != null ? Result.success(project) : Result.error("Project not found");
     }
 
     @GetMapping(value={"/{projectId}/files"})
     public Result<Map<String, Object>> readFile(@PathVariable Integer projectId, @RequestParam String path, Authentication auth) {
         try {
-            String content = this.studentProjectService.readProjectFile(this.getStudentId(auth), projectId, path);
-            return Result.success(Map.of("path", path, "content", content));
+            return Result.success(this.studentProjectService.readProjectFileForEditor(this.getStudentId(auth), projectId, path));
         }
         catch (Exception e) {
             return Result.error((String)e.getMessage());
@@ -163,27 +179,20 @@ public class StudentProjectController {
     @PostMapping(value={"/{projectId}/terminal/run"})
     public Result<Map<String, Object>> runTerminal(@PathVariable Integer projectId, @RequestBody TerminalRunRequest request, Authentication auth) {
         try {
-            String command;
-            StudentProject project = this.studentProjectService.getOwnedProject(this.getStudentId(auth), projectId);
+            Integer studentId = this.getStudentId(auth);
+            StudentProject project = this.studentProjectService.getOwnedProject(studentId, projectId);
             if (project == null) {
                 return Result.error("Project not found");
             }
-            String string = command = request != null ? request.getCommand() : null;
+            String command = request != null ? request.getCommand() : null;
             if (command == null || command.isBlank()) {
                 return Result.error("command is required");
             }
-            ProjectCommandSafety.SafetyCheck safety = ProjectCommandSafety.check((String)command, (request != null && Boolean.TRUE.equals(request.getAllowDangerous()) ? 1 : 0) != 0);
-            if (!safety.allowed()) {
-                return Result.success(Map.of("command", command, "exitCode", "", "output", safety.message(), "approvalRequired", safety.approvalRequired(), "riskLevel", safety.riskLevel(), "matchedRule", safety.matchedRule()));
-            }
-            ProjectTerminalService.TerminalSession session = this.projectTerminalService.create(this.getStudentId(auth), project, "Terminal", request != null ? request.getPath() : null);
-            int timeout = Math.min(600, Math.max(1, request != null && request.getTimeoutSeconds() != null ? request.getTimeoutSeconds() : 60));
-            ProjectTerminalService.TerminalRunResult result = this.projectTerminalService.run(session, project, command, request != null ? request.getPath() : null, false, timeout);
-            ProjectTerminalService.TerminalSession snapSession = result.session();
-            return Result.success(Map.of("command", command, "exitCode", result.exitCode() == null ? "" : result.exitCode(), "output", snapSession.snapshot()));
-        }
-        catch (Exception e) {
-            return Result.error((String)e.getMessage());
+            ProjectTerminalService.TerminalSession session = this.projectTerminalService.create(studentId, project, "Terminal", request != null ? request.getPath() : null);
+            int timeout = terminalTimeout(request != null ? request.getTimeoutSeconds() : null);
+            return authorizeOrRunTerminal(studentId, project, session, command, request != null ? request.getPath() : null, false, timeout);
+        } catch (Exception e) {
+            return Result.error(e.getMessage());
         }
     }
 
@@ -221,38 +230,168 @@ public class StudentProjectController {
     @PostMapping(value={"/{projectId}/terminal/sessions/{sessionId}/run"})
     public Result<Map<String, Object>> runTerminalSession(@PathVariable Integer projectId, @PathVariable String sessionId, @RequestBody TerminalRunRequest request, Authentication auth) {
         try {
-            String command;
-            StudentProject project = this.studentProjectService.getOwnedProject(this.getStudentId(auth), projectId);
+            Integer studentId = this.getStudentId(auth);
+            StudentProject project = this.studentProjectService.getOwnedProject(studentId, projectId);
             if (project == null) {
                 return Result.error("Project not found");
             }
-            ProjectTerminalService.TerminalSession session = this.projectTerminalService.getOwned(this.getStudentId(auth), projectId, sessionId);
+            ProjectTerminalService.TerminalSession session = this.projectTerminalService.getOwned(studentId, projectId, sessionId);
             if (session == null) {
                 return Result.error("Terminal session not found");
             }
-            String string = command = request != null ? request.getCommand() : null;
+            String command = request != null ? request.getCommand() : null;
             if (command == null || command.isBlank()) {
                 return Result.error("command is required");
             }
-            ProjectCommandSafety.SafetyCheck safety = ProjectCommandSafety.check((String)command, (request != null && Boolean.TRUE.equals(request.getAllowDangerous()) ? 1 : 0) != 0);
-            if (!safety.allowed()) {
-                return Result.success(Map.of("approvalRequired", safety.approvalRequired(), "message", safety.message(), "riskLevel", safety.riskLevel(), "matchedRule", safety.matchedRule(), "output", session.snapshot()));
+            int timeout = terminalTimeout(request != null ? request.getTimeoutSeconds() : null);
+            return authorizeOrRunTerminal(studentId, project, session, command, request != null ? request.getPath() : null,
+                    request != null && Boolean.TRUE.equals(request.getLongRunning()), timeout);
+        } catch (Exception e) {
+            return Result.error(e.getMessage());
+        }
+    }
+
+    @PostMapping(value={"/{projectId}/terminal/approvals/{approvalId}/decision"})
+    public Result<Map<String, Object>> decideTerminalApproval(@PathVariable Integer projectId, @PathVariable String approvalId,
+                                                               @RequestBody TerminalApprovalDecisionRequest request,
+                                                               Authentication auth) {
+        try {
+            if (request == null || request.getAction() == null || request.getDecisionIdempotencyKey() == null
+                    || request.getDecisionIdempotencyKey().isBlank()) {
+                return Result.error("action and decisionIdempotencyKey are required");
             }
-            int timeout = Math.min(600, Math.max(1, request != null && request.getTimeoutSeconds() != null ? request.getTimeoutSeconds() : 60));
-            ProjectTerminalService.TerminalRunResult result = this.projectTerminalService.run(session, project, command, request != null ? request.getPath() : null, request != null && Boolean.TRUE.equals(request.getLongRunning()), timeout);
-            this.studentProjectService.refreshProjectMetadata(this.getStudentId(auth), projectId);
-            Map<String, Object> info = new java.util.LinkedHashMap<>();
-            info.put("approvalRequired", false);
-            info.put("running", result.running());
-            info.put("exitCode", result.exitCode() == null ? "" : result.exitCode());
-            info.put("sessionId", session.sessionId);
-            info.put("name", session.name);
-            info.put("output", session.snapshot());
-            return Result.success(info);
+            boolean approve;
+            if ("approve".equalsIgnoreCase(request.getAction())) {
+                approve = true;
+            } else if ("reject".equalsIgnoreCase(request.getAction())) {
+                approve = false;
+            } else {
+                return Result.error("invalid approval action");
+            }
+            CommandApproval approval = commandApprovalService.decide(getStudentId(auth), projectId, approvalId,
+                    approve, request.getDecisionIdempotencyKey());
+            return Result.success(Map.of("approvalId", approval.getApprovalId(), "status", approval.getStatus()));
+        } catch (IllegalArgumentException e) {
+            return Result.error("Command approval not found");
+        } catch (Exception e) {
+            return Result.error("Command approval is unavailable");
         }
-        catch (Exception e) {
-            return Result.error((String)e.getMessage());
+    }
+
+    @PostMapping(value={"/{projectId}/terminal/approvals/{approvalId}/execute"})
+    public Result<Map<String, Object>> executeTerminalApproval(@PathVariable Integer projectId, @PathVariable String approvalId,
+                                                                Authentication auth) {
+        try {
+            Integer studentId = getStudentId(auth);
+            StudentProject project = studentProjectService.getOwnedProject(studentId, projectId);
+            CommandApproval approval = commandApprovalService.findOwned(studentId, projectId, approvalId);
+            if (project == null || approval == null || !TERMINAL_SOURCE.equals(approval.getSource())) {
+                return unavailableApproval();
+            }
+            ProjectTerminalService.TerminalSession session = projectTerminalService.getOwned(studentId, projectId,
+                    approval.getSessionId());
+            if (session == null || !consumeTerminalApproval(approval)) {
+                return unavailableApproval();
+            }
+            ProjectTerminalService.TerminalRunResult result = projectTerminalService.run(session, project,
+                    approval.getCanonicalCommand(), approval.getWorkingDirectory(), terminalLongRunning(approval.getCommandOptions()),
+                    terminalTimeout(approval.getCommandOptions()));
+            studentProjectService.refreshProjectMetadata(studentId, projectId);
+            return Result.success(terminalResult(session, result));
+        } catch (Exception e) {
+            return unavailableApproval();
         }
+    }
+
+    private Result<Map<String, Object>> authorizeOrRunTerminal(Integer studentId, StudentProject project,
+                                                                 ProjectTerminalService.TerminalSession session,
+                                                                 String command, String path, boolean longRunning,
+                                                                 int timeout) throws Exception {
+        String workingDirectory = terminalWorkingDirectory(project, session, path);
+        CommandClassification classification = commandClassifier.classify(new CommandRequest(command, TERMINAL_SHELL,
+                workingDirectory, timeout, longRunning, false, TERMINAL_PROFILE));
+        if (classification.decision() == CommandDecision.BLOCK) {
+            return Result.success(Map.of("refused", true, "reasonCode", classification.reasonCode().name(),
+                    "riskLevel", classification.riskClass().name(), "output", "Command blocked by policy"));
+        }
+        if (classification.requiresApproval()) {
+            CommandApproval approval = createTerminalApproval(studentId, project.getProjectId(), session.sessionId,
+                    classification, timeout, longRunning);
+            return Result.success(Map.of("approvalRequired", true, "approvalId", approval.getApprovalId(),
+                    "expiresTime", approval.getExpiresTime().toString(), "displayCommand", approval.getDisplayCommand(),
+                    "riskLevel", classification.riskClass().name()));
+        }
+        ProjectTerminalService.TerminalRunResult result = projectTerminalService.run(session, project,
+                classification.normalizedCommand().canonicalCommand(), classification.normalizedCommand().canonicalWorkingDirectory(),
+                longRunning, timeout);
+        studentProjectService.refreshProjectMetadata(studentId, project.getProjectId());
+        return Result.success(terminalResult(session, result));
+    }
+
+    private CommandApproval createTerminalApproval(Integer studentId, Integer projectId, String sessionId,
+                                                    CommandClassification classification, int timeout, boolean longRunning) {
+        String invocationId = UUID.randomUUID().toString();
+        return commandApprovalService.createOrGet(new CommandApprovalService.CreateRequest(
+                UUID.randomUUID().toString(), invocationId, studentId, projectId, TERMINAL_TASK_ID,
+                TERMINAL_CONVERSATION, sessionId, TERMINAL_SOURCE, invocationId, UUID.randomUUID().toString(),
+                classification.normalizedCommand().digest(), classification.normalizedCommand().canonicalCommand(),
+                classification.normalizedCommand().displayCommand(), classification.normalizedCommand().canonicalWorkingDirectory(),
+                TERMINAL_SHELL, terminalOptions(timeout, longRunning), classification.decision().name(),
+                classification.policyVersion(), LocalDateTime.now().plusMinutes(APPROVAL_TTL_MINUTES)));
+    }
+
+    private boolean consumeTerminalApproval(CommandApproval approval) {
+        return commandApprovalService.consume(new CommandApprovalService.ConsumeRequest(approval.getApprovalId(),
+                approval.getStudentId(), approval.getProjectId(), approval.getTaskId(), approval.getConversationId(),
+                approval.getSessionId(), approval.getSource(), approval.getInvocationId(), approval.getToolCallId(),
+                approval.getCommandDigest(), approval.getCanonicalCommand(), approval.getWorkingDirectory(), approval.getShell(),
+                approval.getCommandOptions(), approval.getClassification(), approval.getPolicyVersion(), approval.getExpiresTime()));
+    }
+
+    private Map<String, Object> terminalResult(ProjectTerminalService.TerminalSession session,
+                                               ProjectTerminalService.TerminalRunResult result) {
+        Map<String, Object> info = new java.util.LinkedHashMap<>();
+        info.put("approvalRequired", false);
+        info.put("running", result.running());
+        info.put("exitCode", result.exitCode() == null ? "" : result.exitCode());
+        info.put("sessionId", session.sessionId);
+        info.put("name", session.name);
+        info.put("output", session.snapshot());
+        return info;
+    }
+
+    private String terminalWorkingDirectory(StudentProject project, ProjectTerminalService.TerminalSession session, String path) {
+        Path root = ProjectWorkspace.paths(project).workspaceRoot();
+        Path cwd = path == null || path.isBlank() ? Path.of(session.cwd) : ProjectWorkspace.paths(project).resolveExisting(path);
+        if (!cwd.toAbsolutePath().normalize().startsWith(root)) {
+            throw new IllegalArgumentException("Unsafe path");
+        }
+        String relative = root.relativize(cwd.toAbsolutePath().normalize()).toString().replace('\\', '/');
+        return relative.isBlank() ? "." : relative;
+    }
+
+    private int terminalTimeout(Integer timeout) {
+        return Math.min(600, Math.max(1, timeout == null ? 60 : timeout));
+    }
+
+    private String terminalOptions(int timeout, boolean longRunning) {
+        return "timeout=" + timeout + ";longRunning=" + longRunning;
+    }
+
+    private int terminalTimeout(String options) {
+        try {
+            return terminalTimeout(Integer.parseInt(options.split(";", 2)[0].substring("timeout=".length())));
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("invalid approval options");
+        }
+    }
+
+    private boolean terminalLongRunning(String options) {
+        return options.endsWith(";longRunning=true");
+    }
+
+    private Result<Map<String, Object>> unavailableApproval() {
+        return Result.success(Map.of("approvalUnavailable", true, "output", "Command approval is unavailable"));
     }
 
     @GetMapping(value={"/{projectId}/terminal/sessions/{sessionId}"})
@@ -288,9 +427,10 @@ public class StudentProjectController {
             if (project == null) {
                 return Result.error("Project not found");
             }
-            Path root = Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize();
-            Path dir = root.resolve(".labex").normalize();
-            Files.createDirectories(dir, new FileAttribute[0]);
+            SecureWorkspacePath workspace = ProjectWorkspace.paths(project);
+            Path runtimeEnv = workspace.resolveForCreate(".labex/runtime.env");
+            Path runtimeReadme = workspace.resolveForCreate(".labex/README.md");
+            Files.createDirectories(runtimeEnv.getParent());
             StringBuilder env = new StringBuilder("# Labex cloud runtime config\n");
             if (config != null) {
                 config.forEach((key, value) -> {
@@ -299,8 +439,8 @@ public class StudentProjectController {
                     }
                 });
             }
-            Files.writeString(dir.resolve("runtime.env"), env.toString(), StandardCharsets.UTF_8, new OpenOption[0]);
-            Files.writeString(dir.resolve("README.md"), "# Labex Runtime\n\n\u4e91\u7aef\u8fd0\u884c\u914d\u7f6e\u4fdd\u5b58\u5728 runtime.env\uff0c\u53ef\u88ab Agent \u548c\u7ec8\u7aef\u547d\u4ee4\u8bfb\u53d6\u3002\n", StandardCharsets.UTF_8, new OpenOption[0]);
+            Files.writeString(runtimeEnv, env.toString(), StandardCharsets.UTF_8, new OpenOption[0]);
+            Files.writeString(runtimeReadme, "# Labex Runtime\n\n\u4e91\u7aef\u8fd0\u884c\u914d\u7f6e\u4fdd\u5b58\u5728 runtime.env\uff0c\u53ef\u88ab Agent \u548c\u7ec8\u7aef\u547d\u4ee4\u8bfb\u53d6\u3002\n", StandardCharsets.UTF_8, new OpenOption[0]);
             return Result.success(this.studentProjectService.refreshProjectMetadata(this.getStudentId(auth), projectId));
         }
         catch (Exception e) {
@@ -316,6 +456,24 @@ public class StudentProjectController {
         }
         catch (Exception e) {
             return Result.error((String)e.getMessage());
+        }
+    }
+
+    @GetMapping(value={"/{projectId}/tree/page"})
+    public Result<StudentProjectService.ProjectTreePage> listTreePage(@PathVariable Integer projectId,
+                                                                        @RequestParam(required=false) String path,
+                                                                        @RequestParam(defaultValue="0") int offset,
+                                                                        @RequestParam(defaultValue="100") int limit,
+                                                                        Authentication auth) {
+        try {
+            Integer studentId = this.getStudentId(auth);
+            log.info("[DEBUG_TREE] projectId={} path={} offset={} limit={} studentId={}", projectId, path, offset, limit, studentId);
+            return Result.success(this.studentProjectService.listProjectTreePage(studentId, projectId,
+                    path, offset, limit));
+        } catch (Exception e) {
+            log.info("[DEBUG_TREE] projectId={} EXCEPTION: {}", projectId, e.getMessage());
+            log.error("[DEBUG_TREE] projectId={} EXCEPTION_STACK", projectId, e);
+            return Result.error((String) e.getMessage());
         }
     }
 
@@ -363,5 +521,6 @@ public class StudentProjectController {
     public static class FileCreateRequest { private String parentPath; private String name; private String type; public String getParentPath() { return parentPath; } public void setParentPath(String parentPath) { this.parentPath = parentPath; } public String getName() { return name; } public void setName(String name) { this.name = name; } public String getType() { return type; } public void setType(String type) { this.type = type; } }
     public static class FileRenameRequest { private String path; private String newName; public String getPath() { return path; } public void setPath(String path) { this.path = path; } public String getNewName() { return newName; } public void setNewName(String newName) { this.newName = newName; } }
     public static class AgentAskRequest { private String path; private String question; private String conversationId; private String mode; public String getPath() { return path; } public void setPath(String path) { this.path = path; } public String getQuestion() { return question; } public void setQuestion(String question) { this.question = question; } public String getConversationId() { return conversationId; } public void setConversationId(String conversationId) { this.conversationId = conversationId; } public String getMode() { return mode; } public void setMode(String mode) { this.mode = mode; } }
-    public static class TerminalRunRequest { private String command; private String path; private String sessionId; private String name; private boolean allowDangerous; private Integer timeoutSeconds; private Boolean longRunning; public String getCommand() { return command; } public void setCommand(String command) { this.command = command; } public String getPath() { return path; } public void setPath(String path) { this.path = path; } public String getSessionId() { return sessionId; } public void setSessionId(String sessionId) { this.sessionId = sessionId; } public String getName() { return name; } public void setName(String name) { this.name = name; } public boolean getAllowDangerous() { return allowDangerous; } public void setAllowDangerous(boolean allowDangerous) { this.allowDangerous = allowDangerous; } public Integer getTimeoutSeconds() { return timeoutSeconds; } public void setTimeoutSeconds(Integer timeoutSeconds) { this.timeoutSeconds = timeoutSeconds; } public Boolean getLongRunning() { return longRunning; } public void setLongRunning(Boolean longRunning) { this.longRunning = longRunning; } }
+    public static class TerminalRunRequest { private String command; private String path; private String sessionId; private String name; private Integer timeoutSeconds; private Boolean longRunning; public String getCommand() { return command; } public void setCommand(String command) { this.command = command; } public String getPath() { return path; } public void setPath(String path) { this.path = path; } public String getSessionId() { return sessionId; } public void setSessionId(String sessionId) { this.sessionId = sessionId; } public String getName() { return name; } public void setName(String name) { this.name = name; } public Integer getTimeoutSeconds() { return timeoutSeconds; } public void setTimeoutSeconds(Integer timeoutSeconds) { this.timeoutSeconds = timeoutSeconds; } public Boolean getLongRunning() { return longRunning; } public void setLongRunning(Boolean longRunning) { this.longRunning = longRunning; } }
+    public static class TerminalApprovalDecisionRequest { private String action; private String decisionIdempotencyKey; public String getAction() { return action; } public void setAction(String action) { this.action = action; } public String getDecisionIdempotencyKey() { return decisionIdempotencyKey; } public void setDecisionIdempotencyKey(String decisionIdempotencyKey) { this.decisionIdempotencyKey = decisionIdempotencyKey; } }
 }

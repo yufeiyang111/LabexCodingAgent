@@ -19,6 +19,8 @@ extends IService<StudentProject> {
 
     public String readProjectFile(Integer var1, Integer var2, String var3);
 
+    public Map<String, Object> readProjectFileForEditor(Integer var1, Integer var2, String var3);
+
     public StudentProject saveProjectFile(Integer var1, Integer var2, String var3, String var4);
 
     public StudentProject createProjectItem(Integer var1, Integer var2, String var3, String var4, String var5);
@@ -36,6 +38,11 @@ extends IService<StudentProject> {
     public StudentProject renameProject(Integer var1, Integer var2, String var3);
 
     public List<Map<String, Object>> listProjectTree(Integer var1, Integer var2, String var3);
+
+    public ProjectTreePage listProjectTreePage(Integer var1, Integer var2, String var3, int var4, int var5);
+
+    public record ProjectTreePage(List<Map<String, Object>> entries, Integer nextOffset) {
+    }
 
     public void exportProject(Integer var1, Integer var2, OutputStream var3);
 }

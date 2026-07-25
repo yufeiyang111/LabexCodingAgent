@@ -6,15 +6,15 @@ import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
-import com.labex.rag.service.ImageUnderstandingService;
+import com.labex.labexagent.multimodal.ConfiguredImageUnderstandingService;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ImageUnderstandingTool implements AgentTool {
 
-    private final ImageUnderstandingService imageUnderstandingService;
+    private final ConfiguredImageUnderstandingService imageUnderstandingService;
 
-    public ImageUnderstandingTool(ImageUnderstandingService imageUnderstandingService) {
+    public ImageUnderstandingTool(ConfiguredImageUnderstandingService imageUnderstandingService) {
         this.imageUnderstandingService = imageUnderstandingService;
     }
 
@@ -37,8 +37,24 @@ public class ImageUnderstandingTool implements AgentTool {
             return ToolResult.failed("image_url is required");
         }
 
-        ImageUnderstandingService.ImageAnalysisResult result =
-                imageUnderstandingService.analyzeImage(prompt, imageUrl, "tool-image");
-        return result.isSuccess() ? ToolResult.ok(result.getContent()) : ToolResult.failed(result.getContent());
+        try {
+            ConfiguredImageUnderstandingService.ImageAnalysisResult result = imageUnderstandingService.analyzeImage(
+                    context, prompt, safeImageSource(context, imageUrl), "tool-image");
+            return result.success() ? ToolResult.ok(result.content()) : ToolResult.failed(result.content());
+        } catch (IllegalArgumentException e) {
+            return ToolResult.failed("unsafe image source: " + e.getMessage());
+        }
+    }
+
+    private String safeImageSource(AgentContext context, String imageSource) {
+        String source = imageSource == null ? "" : imageSource.trim();
+        if (source.startsWith("@")) {
+            source = source.substring(1).trim();
+        }
+        String lower = source.toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith("data:") || lower.startsWith("http://") || lower.startsWith("https://")) {
+            return source;
+        }
+        return ToolSupport.resolve(context, source).toString();
     }
 }

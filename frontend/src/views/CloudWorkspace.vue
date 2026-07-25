@@ -1,5 +1,5 @@
 <template>
-  <div class="ws-shell">
+  <div class="ws-shell" :class="{ 'ws-dark': aiDarkTheme }">
     <header class="ws-topbar">
       <button class="ws-btn ws-btn-ghost" @click="goBack">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
@@ -10,6 +10,10 @@
         <span class="ws-title">{{ projectName || '工作空间' }}</span>
       </div>
       <div class="ws-topbar-right">
+        <button class="ws-btn ws-btn-outline ws-btn-sm ws-theme-settings-btn" @click="themeStore.openSettings()" title="主题设置">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>主题</span>
+        </button>
         <button class="ws-btn ws-btn-outline ws-btn-sm" @click="exportProject" title="导出项目">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           <span>导出</span>
@@ -19,7 +23,7 @@
       </div>
     </header>
     <div class="ws-body">
-      <aside class="ws-sidebar">
+      <aside class="ws-sidebar" :style="{ width: `${sidebarWidth}px` }">
         <div class="ws-sidebar-header">
           <span>文件资源管理器</span>
           <div class="ws-sidebar-actions">
@@ -34,11 +38,18 @@
             </button>
           </div>
         </div>
-        <div class="ws-tree" v-loading="treeLoading">
+        <div class="ws-tree" v-loading="treeLoading" @scroll="handleTreeScroll">
+          <div v-if="treeError" class="ws-tree-error" role="alert">
+            <span>{{ treeError }}</span>
+            <button type="button" @click="loadRoot">重试</button>
+          </div>
           <FileTreeNode v-for="child in fileTree" :key="child.path" :node="child" :selected-path="activePath" :load-children="loadChildren" :show-actions="true" @select="openFile" @newItem="handleNewItem" @rename="handleRename" @delete="handleDelete"/>
-          <div v-if="!treeLoading && fileTree.length === 0" class="ws-tree-empty">暂无文件</div>
+          <button v-if="treeNextOffset !== null" class="ws-tree-load-more" type="button" @click="loadMoreRoot">加载更多文件</button>
+          <div v-if="!treeLoading && !treeError && fileTree.length === 0" class="ws-tree-empty">暂无文件</div>
         </div>
       </aside>
+      <div class="ws-resize-handle" @pointerdown="startSidebarResize"></div>
+      <div ref="workspaceCenterRef" class="ws-center">
       <main class="ws-editor">
         <div v-if="openFiles.length === 0" class="ws-editor-empty">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -56,14 +67,26 @@
               </button>
             </div>
           </div>
-          <div class="ws-monaco"><MonacoEditor v-if="editorReady" v-model="fileContent" :language="detectedLang" height="100%"/></div>
+          <div class="ws-monaco"><MonacoEditor v-if="editorReady" v-model="fileContent" :language="detectedLang" :theme="editorTheme" :read-only="activeFileReadOnly" height="100%"/></div>
         </template>
       </main>
+
+      <div v-show="terminalPanelVisible" class="ws-terminal-resize-handle" @pointerdown="startTerminalResize" title="拖动调整终端高度"></div>
+      <section v-show="terminalPanelVisible" class="ws-terminal-dock" :class="{ dark: aiDarkTheme }" :style="{ height: `${terminalHeight}px` }">
+        <div class="ws-terminal-dock-header">
+          <span>终端</span>
+          <button class="ws-btn ws-btn-outline ws-btn-icon" @click="toggleTerminalPanel" title="关闭终端">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <TerminalPanel ref="terminalPanelRef" :project-id="projectId" :project-path="projectPath" :is-dark="aiDarkTheme" @toggle-theme="toggleAiTheme" />
+      </section>
+      </div>
 
       <!-- ==================== AI ASSISTANT SIDEBAR ==================== -->
       <aside class="ai-panel" :class="{ collapsed: aiCollapsed, dark: aiDarkTheme }">
         <!-- Resize Handle -->
-        <div v-if="!aiCollapsed" class="ai-resize-handle" @mousedown="startResize"></div>
+        <div v-if="!aiCollapsed" class="ai-resize-handle" @pointerdown="startResize"></div>
 
         <!-- Collapsed State: Icon Column -->
         <div v-if="aiCollapsed" class="ai-collapsed-bar">
@@ -93,32 +116,23 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 0 1 9-9"/></svg>
                 <span class="ai-session-name">{{ currentSessionName }}</span>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                <div v-if="showSessions" class="ai-session-dropdown" @click.stop>
-                  <div v-for="c in conversations" :key="c.conversationId" class="ai-session-item"
-                    :class="{ active: (currentAgentSession && currentAgentSession.conversationId === c.conversationId) }"
-                    @click="selectConversation(c)">
-                    <span class="ai-session-title">{{ c.title || '新对话' }}</span>
-                    <span class="ai-session-time">{{ c.createTime?.substring(0, 16) || '' }}</span>
-                    <button class="ai-session-action" @click.stop="forkConversation(c)" title="从此会话创建分支">
-                      分支
-                    </button>
-                    <button class="ai-session-action" @click.stop="compactConversation(c)" title="压缩上下文">
-                      压缩
-                    </button>
-                    <button class="ai-session-del" @click.stop="deleteConversation(c)" title="删除">
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                    </button>
-                  </div>
-                  <div v-if="conversations.length === 0" class="ai-session-empty">暂无历史会话</div>
-                  <div class="ai-session-new" @click="createNewSession">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                    <span>新建会话</span>
-                  </div>
+                <ConversationMenu
+                  v-if="showSessions"
+                  :conversations="conversations"
+                  :current-conversation-id="currentAgentSession?.conversationId"
+                  @select="selectConversation"
+                  @fork="forkConversation"
+                  @compact="compactConversation"
+                  @delete="deleteConversation"
+                  @create="createNewSession"
+                />
                 </div>
-              </div>
               <button class="ai-topbar-btn" @click="toggleAiTheme" :title="aiDarkTheme ? '切换亮色主题' : '切换暗色主题'">
                 <svg v-if="aiDarkTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
                 <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              </button>
+              <button class="ai-topbar-btn" @click="openContextUsageDialog" title="查看上下文使用情况">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
               </button>
               <button class="ai-topbar-btn" @click="clearMessages" title="清空会话">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -129,7 +143,7 @@
               <button class="ai-topbar-btn" @click="compactCurrentConversation" title="压缩当前上下文">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l6-6"/><path d="M10 14l-6 6"/></svg>
               </button>
-              <button class="ai-topbar-btn" title="设置" @click="showSettings = true">
+              <button class="ai-topbar-btn" title="设置" @click="themeStore.openSettings()">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
               </button>
             </div>
@@ -178,41 +192,42 @@
 
           <!-- Tab Bar -->
           <div class="ai-tabs">
-            <button v-for="tab in aiTabs" :key="tab.key" class="ai-tab" :class="{ active: activeAiTab === tab.key }" @click="activeAiTab = tab.key">
+            <button v-for="tab in aiTabs" :key="tab.key" class="ai-tab" :class="{ active: tab.key === 'terminal' ? terminalPanelVisible : activeAiTab === tab.key }" @click="selectAiTab(tab.key)">
               <span v-html="tab.icon"></span>
               <span>{{ tab.label }}</span>
             </button>
           </div>
 
           <!-- ==================== CHAT TAB ==================== -->
-          <div v-if="activeAiTab === 'chat'" class="ai-content">
+          <div v-if="activeAiTab === 'chat'" :class="['ai-content', { 'is-empty': messages.length === 0 }]">
             <div class="ai-messages" ref="msgContainer" @scroll="handleScroll">
+              <button v-if="hasOlderMessages" class="ai-history-load" type="button" :disabled="loadingOlderMessages" @click="loadOlderHistory">
+                {{ loadingOlderMessages ? '正在加载更早记录...' : '加载更早记录' }}
+              </button>
               <!-- Empty State -->
               <div v-if="messages.length === 0" class="ai-empty">
-                <div class="ai-empty-icon">
-                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="1.5" opacity="0.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                </div>
-                <p class="ai-empty-title">Labex AI Assistant</p>
-                <p class="ai-empty-desc">向 AI 提问，获取代码帮助、调试建议和最佳实践</p>
+                <h2 class="ai-empty-greeting">有什么我可以帮您的吗？</h2>
               </div>
 
               <!-- Messages -->
               <TransitionGroup name="ai-msg" tag="div" class="ai-msg-list">
                 <div v-for="(msg, i) in messages" :key="i" class="ai-msg" :class="msg.role">
-                  <div class="ai-msg-avatar">
-                    <svg v-if="msg.role === 'user'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/></svg>
+                  <div class="ai-msg-header">
+                    <div class="ai-msg-avatar">
+                      <svg v-if="msg.role === 'user'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/></svg>
+                    </div>
+                    <span class="ai-msg-name">{{ msg.role === 'user' ? 'You' : 'LabexAgent' }}</span>
                   </div>
                   <div class="ai-msg-body">
                     <!-- Merged Thinking + Tool Calls (by time order) -->
                     <template v-if="(msg.thinkingBlocks && msg.thinkingBlocks.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0)">
                       <template v-for="item in getMergedItems(msg)" :key="item._order">
-                        <div v-if="item.type === 'thinking'" class="ai-thinking-block">
+                        <div v-if="item.type === 'thinking'" class="ai-thinking-block" :class="{ 'is-open': item.data._open }">
                           <div class="ai-thinking-header" @click="item.data._open = !item.data._open">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-                            <span>思考</span>
+                            <svg class="ai-think-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :style="{ transform: item.data._open ? 'rotate(90deg)' : '' }"><polyline points="9 18 15 12 9 6"/></svg>
+                            <span>思考过程</span>
                             <span class="tb-summary" v-if="item.data.summary">{{ item.data.summary }}</span>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" :style="{ transform: item.data._open ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
                           </div>
                           <Transition name="tc-slide">
                             <div
@@ -227,15 +242,16 @@
                           v-else-if="item.type === 'tool'"
                           :call="item.data"
                           @permission="handlePermissionDecision"
+                          @command-approval="handleCommandApproval"
                           @question="handleQuestionReply"
                         />
                       </template>
                     </template>
                     <!-- Current Thinking (streaming) -->
-                    <div v-if="msg.thinking" class="ai-thinking-block active">
+                    <div v-if="msg.thinking" class="ai-thinking-block active is-open">
                       <div class="ai-thinking-header">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-                        <span>思考中...</span>
+                        <svg class="ai-think-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(90deg)"><polyline points="9 18 15 12 9 6"/></svg>
+                        <span>思考过程...</span>
                         <span class="thinking-cursor"></span>
                       </div>
                       <div
@@ -258,11 +274,16 @@
                       <div v-if="msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</div>
                     </div>
                     <!-- Token Usage (on last assistant message) -->
-                    <PlanDisplay v-if="i === messages.length - 1 && msg.role === 'assistant' && (msg.plan || msg.planJson)" :plan="msg.plan" :plan-json="msg.planJson" />
+                    <PlanDisplay v-if="msg.role === 'assistant' && (msg.plan || msg.planJson)" :plan="msg.plan" :plan-json="msg.planJson" />
                     <TokenChart v-if="i === messages.length - 1 && msg.role === 'assistant' && tokenUsage.totalTokens > 0"
                       :prompt-tokens="tokenUsage.promptTokens"
                       :completion-tokens="tokenUsage.completionTokens"
                       :call-count="tokenUsage.callCount" />
+                    <AgentTimer
+                      v-if="msg.role === 'assistant' && msg.timing"
+                      :started-at="msg.timing.startedAt"
+                      :active-elapsed-ms="msg.timing.activeElapsedMs"
+                      :is-running="msg.timing.isRunning" />
                     <div v-if="msg.role === 'assistant'" class="ai-msg-actions">
                       <button class="ai-msg-action" title="复制" @click="copyMessage(msg.content)">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
@@ -368,74 +389,85 @@
                   </div>
                 </div>
               </div>
-              <div class="ai-input-row">
-                <textarea v-model="agentInput" class="ai-textarea" rows="3" :placeholder="activePath ? '输入问题，例如：这段代码有什么问题？' : '选择文件后开始对话...'" @keydown.enter.exact.prevent="sendMessage" @keydown.escape="closeCommandPalette" @input="handleInput" :disabled="agentLoading" ref="aiInputRef"></textarea>
+              <!-- 1. 外挂的模式切换排 (类似 Claude 的建议指令) -->
+              <div class="ai-quick-actions">
+                <button
+                  v-for="mode in agentModes"
+                  :key="mode.key"
+                  :class="['ai-quick-pill', { active: agentMode === mode.key, transitioning: modeTransitioning }]"
+                  @click="switchMode(mode.key)"
+                >
+                  <svg v-if="mode.icon === 'cube'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                  <svg v-else-if="mode.icon === 'map'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+                  <svg v-else-if="mode.icon === 'search'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <span>{{ mode.label }}</span>
+                </button>
               </div>
-              <div class="ai-input-bottom">
-                <!-- 模式切换 - 独立一行 -->
-                <div class="ai-mode-bar">
-                  <div class="ai-mode-switch" title="切换 Agent 工作模式">
-                    <button
-                      v-for="mode in agentModes"
-                      :key="mode.key"
-                      type="button"
-                      :class="{ active: agentMode === mode.key, transitioning: modeTransitioning }"
-                      @click="switchMode(mode.key)"
-                    >
-                      <svg v-if="mode.icon === 'cube'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-                      <svg v-else-if="mode.icon === 'map'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
-                      <svg v-else-if="mode.icon === 'search'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                      <span class="mode-label">{{ mode.label }}</span>
-                    </button>
-                  </div>
+
+              <!-- 2. Claude 风格主输入框 -->
+              <div class="ai-input-box">
+                <!-- 上层文本区 -->
+                <div class="ai-input-text-area">
+                  <textarea v-model="agentInput" rows="1" :placeholder="activePath ? '输入问题，例如：这段代码有什么问题？' : 'How can I help you today?'" @keydown.enter.exact.prevent="sendMessage" @keydown.escape="closeCommandPalette" @input="handleInput" :disabled="agentLoading" ref="aiInputRef"></textarea>
                 </div>
-                <!-- 工具栏和发送按钮 -->
-                <div class="ai-toolbar">
-                  <div class="ai-toolbar-left">
-                    <button class="ai-tool-btn" title="模型配置" @click="showModelConfig = !showModelConfig">
+
+                <!-- 底层工具栏与发送按钮 -->
+                <div class="ai-input-footer">
+                  <div class="ai-input-toolbar">
+                    <button class="ai-toolbar-btn" title="模型配置" @click="showModelConfig = !showModelConfig">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                       <span>模型</span>
                     </button>
-                    <button class="ai-tool-btn" title="优化提示词" @click="optimizePrompt">
+                    <button class="ai-toolbar-btn" title="优化提示词" @click="optimizePrompt">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
                       <span>优化</span>
                     </button>
-                    <button class="ai-tool-btn" title="引用文件 (@)" @click="atFile">
+                    <button class="ai-toolbar-btn" title="引用文件 (@)" @click="atFile">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                       <span>引用</span>
                     </button>
-                    <button class="ai-tool-btn" title="指令 (/)" @click="showCommandMenu">
+                    <button class="ai-toolbar-btn" title="指令 (/)" @click="showCommandMenu">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
                       <span>指令</span>
                     </button>
                   </div>
-                  <div class="ai-toolbar-right">
+
+                  <div class="ai-bar-right">
                     <div v-if="agentLoading" class="ai-generating-indicator">
                       <span class="gen-dot"></span>
-                      <span>生成中...</span>
                     </div>
+                    <ContextUsageIndicator :status="contextUsageStatus" @open="openContextUsageDialog" />
                     <button
                       v-if="agentLoading"
-                      class="ai-send-btn ai-send-stop"
+                      class="ai-submit-btn"
                       @click="stopGeneration"
                       title="停止生成 (Esc)"
                     >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
                     </button>
                     <button
                       v-else
-                      class="ai-send-btn"
+                      class="ai-submit-btn"
                       @click="sendMessage"
                       :disabled="!agentInput.trim()"
                       title="发送 (Enter)"
                     >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                     </button>
                   </div>
                 </div>
               </div>
             </div>
           </div>
+
+          <ContextUsageDialog
+            :open="showContextUsageDialog"
+            :status="contextUsageStatus"
+            :prediction="nextContextPreview"
+            :prediction-loading="nextContextPreviewLoading"
+            @close="showContextUsageDialog = false"
+            @load-next-preview="loadNextContextPreview"
+          />
 
           <!-- ==================== REVIEW TAB (Changes) ==================== -->
           <div v-if="activeAiTab === 'review'" class="ai-content ai-content-nopad">
@@ -637,16 +669,6 @@
             </div>
           </div>
 
-          <!-- ==================== TERMINAL TAB ==================== -->
-          <div v-if="activeAiTab === 'terminal'" class="ai-content ai-content-nopad term-wrap">
-            <TerminalPanel
-              ref="terminalPanelRef"
-              :project-id="projectId"
-              :project-path="projectPath"
-              :is-dark="true"
-            />
-          </div>
-
           <!-- Status Bar -->
           <div class="ai-statusbar">
             <div class="ai-status-left">
@@ -704,244 +726,59 @@
       </Transition>
     </Teleport>
 
-    <!-- Settings Modal -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="showSettings" class="ws-overlay" @click.self="showSettings = false">
-          <div class="settings-dialog">
-            <div class="settings-header">
-              <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -3px; margin-right: 6px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</h3>
-              <button class="mc-close-btn" @click="showSettings = false">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-            <div class="settings-body">
-              <div class="settings-section">
-                <div class="settings-label">外观主题</div>
-                <div class="settings-row">
-                  <button class="settings-theme-btn" :class="{ active: !aiDarkTheme }" @click="aiDarkTheme && toggleAiTheme()">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-                    <span>亮色</span>
-                  </button>
-                  <button class="settings-theme-btn" :class="{ active: aiDarkTheme }" @click="!aiDarkTheme && toggleAiTheme()">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-                    <span>暗色</span>
-                  </button>
-                </div>
-              </div>
-              <div class="settings-section">
-                <div class="settings-label">字体大小</div>
-                <div class="settings-row">
-                  <button class="settings-opt-btn" :class="{ active: fontSize === 'small' }" @click="setFontSize('small')">小</button>
-                  <button class="settings-opt-btn" :class="{ active: fontSize === 'medium' }" @click="setFontSize('medium')">中</button>
-                  <button class="settings-opt-btn" :class="{ active: fontSize === 'large' }" @click="setFontSize('large')">大</button>
-                </div>
-              </div>
-              <div class="settings-section">
-                <div class="settings-label">消息密度</div>
-                <div class="settings-row">
-                  <button class="settings-opt-btn" :class="{ active: msgDensity === 'compact' }" @click="setMsgDensity('compact')">紧凑</button>
-                  <button class="settings-opt-btn" :class="{ active: msgDensity === 'comfortable' }" @click="setMsgDensity('comfortable')">舒适</button>
-                  <button class="settings-opt-btn" :class="{ active: msgDensity === 'relaxed' }" @click="setMsgDensity('relaxed')">宽松</button>
-                </div>
-              </div>
-              <div class="settings-section">
-                <div class="settings-label">快捷操作</div>
-                <div class="settings-shortcuts">
-                  <button class="settings-action-btn" @click="showSettings = false; showModelConfig = true">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    <span>模型配置</span>
-                  </button>
-                  <button class="settings-action-btn" @click="clearMessages(); showSettings = false">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                    <span>清空会话</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
-
-    <!-- Model Config Modal -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="showModelConfig" class="ws-overlay" @click.self="showModelConfig = false">
-          <div class="mc-dialog">
-            <div class="mc-header">
-              <h3>模型配置</h3>
-              <button class="mc-close-btn" @click="showModelConfig = false">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-
-            <!-- Template Selection View -->
-            <div v-if="mcTemplateSelecting" class="mc-body">
-              <div class="mc-template-grid">
-                <button v-for="tpl in mcTemplateOptions" :key="tpl.name" class="mc-template-card" @click="selectModelTemplate(tpl)">
-                  <span class="mc-template-icon" :style="{ background: tpl.accent }">{{ tpl.iconText }}</span>
-                  <span class="mc-template-main">
-                    <span class="mc-template-name">{{ tpl.name }}</span>
-                    <span class="mc-template-vendor">{{ tpl.vendor }}</span>
-                    <span class="mc-template-model">{{ tpl.modelName || '手动填写模型名称' }}</span>
-                  </span>
-                  <span v-if="tpl.modelsUrl" class="mc-template-source">官方列表</span>
-                </button>
-              </div>
-              <div class="mc-form-actions">
-                <button class="mc-btn mc-btn-outline" @click="mcTemplateSelecting = false">返回</button>
-              </div>
-            </div>
-
-            <!-- Config List View -->
-            <div v-else-if="!mcEditing" class="mc-body">
-              <div class="mc-config-list">
-                <div v-if="modelConfigs.length === 0" class="mc-empty">
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                  <p>暂无模型配置</p>
-                  <p class="mc-empty-hint">添加一个模型配置开始使用 AI 助手</p>
-                </div>
-                <div v-for="cfg in modelConfigs" :key="cfg.configId" class="mc-config-card" :class="{ active: selectedModelConfigId === cfg.configId, default: cfg.isDefault === 1 }">
-                  <div class="mc-card-main" @click="selectedModelConfigId = cfg.configId">
-                    <div class="mc-card-top">
-                      <span class="mc-card-name">{{ cfg.configName }}</span>
-                      <span v-if="cfg.isDefault === 1" class="mc-badge-default">默认</span>
-                    </div>
-                    <div class="mc-card-meta">
-                      <span class="mc-card-provider">{{ cfg.provider || 'openai_compatible' }}</span>
-                      <span class="mc-card-sep">|</span>
-                      <span class="mc-card-model">{{ cfg.modelName || 'gpt-4o-mini' }}</span>
-                    </div>
-                    <div class="mc-card-url" v-if="cfg.baseUrl">{{ cfg.baseUrl }}</div>
-                    <!-- Test Result -->
-                    <div v-if="mcTestResults[cfg.configId]" class="mc-test-result" :class="mcTestResults[cfg.configId].success ? 'mc-test-ok' : 'mc-test-fail'">
-                      <svg v-if="mcTestResults[cfg.configId].success" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                      <span v-if="mcTestResults[cfg.configId].success">连接成功 {{ mcTestResults[cfg.configId].latency }}ms</span>
-                      <span v-else>{{ mcTestResults[cfg.configId].error }}</span>
-                    </div>
-                  </div>
-                  <div class="mc-card-actions">
-                    <button class="mc-action-btn mc-action-test" title="测试连接" @click.stop="testConfig(cfg)" :disabled="mcTestingIds[cfg.configId]">
-                      <svg v-if="mcTestingIds[cfg.configId]" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mc-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-                      <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    </button>
-                    <button class="mc-action-btn" title="编辑" @click="editConfig(cfg)">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                    </button>
-                    <button class="mc-action-btn mc-action-delete" title="删除" @click="deleteConfig(cfg)">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <button class="mc-add-btn" @click="startCreateConfig">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                <span>添加配置</span>
-              </button>
-            </div>
-
-            <!-- Config Edit/Create View -->
-            <div v-else class="mc-body">
-              <div class="mc-form">
-                <div class="mc-field">
-                  <label>配置名称 <span class="mc-required">*</span></label>
-                  <input v-model="mcForm.configName" class="mc-input" placeholder="例如：我的DeepSeek" />
-                </div>
-                <div class="mc-field">
-                  <label>提供商</label>
-                  <select v-model="mcForm.provider" class="mc-select">
-                    <option value="openai_compatible">OpenAI Compatible</option>
-                  </select>
-                  <div class="mc-hint">所有兼容 OpenAI 接口的服务均可接入</div>
-                </div>
-                <div class="mc-field">
-                  <label>Base URL <span class="mc-required">*</span></label>
-                  <input v-model="mcForm.baseUrl" class="mc-input" placeholder="https://api.deepseek.com" />
-                  <div class="mc-hint">API 地址，不包含 /v1/chat/completions 路径</div>
-                </div>
-                <div class="mc-field">
-                  <label>模型名称 <span class="mc-required">*</span></label>
-                  <input v-model="mcForm.modelName" class="mc-input" placeholder="deepseek-chat" />
-                </div>
-                <div class="mc-field">
-                  <label>{{ mcCustomMode ? '模型列表 URL' : '官方模型列表' }}</label>
-                  <div class="mc-field-action-row">
-                    <input v-if="mcCustomMode" v-model="mcForm.modelsUrl" class="mc-input" placeholder="https://api.example.com/v1/models" />
-                    <div v-else class="mc-official-url">{{ mcForm.modelsUrl || '该模板暂未提供官方模型列表接口' }}</div>
-                    <button class="mc-btn mc-btn-outline mc-btn-nowrap" @click="fetchModelList" :disabled="mcModelsLoading || !mcForm.modelsUrl">
-                      {{ mcModelsLoading ? '获取中...' : '获取模型' }}
-                    </button>
-                  </div>
-                  <div class="mc-hint">{{ mcCustomMode ? '仅自定义配置需要填写模型列表 URL' : '从厂商官方模型列表接口读取可用模型；多数服务需要先填写 API Key' }}</div>
-                  <select v-if="mcFetchedModels.length > 0" v-model="mcForm.modelName" class="mc-select mc-model-select" @change="applyFetchedModelLimits">
-                    <option v-for="m in mcFetchedModels" :key="m.id" :value="m.id">{{ m.id }}{{ m.owner ? ' · ' + m.owner : '' }}</option>
-                  </select>
-                </div>
-                <div class="mc-field">
-                  <label>API Key / Token Plan Key <span class="mc-required">*</span></label>
-                  <input v-model="mcForm.apiKey" class="mc-input" type="password" :placeholder="mcApiKeyHint ? '已设置 (' + mcApiKeyHint + ')，留空则保持不变' : 'sk-...'" autocomplete="new-password" />
-                  <div v-if="mcApiKeyHint && !mcForm.apiKey" class="mc-hint mc-hint-ok">API Key 已设置，留空将保持原值不变</div>
-                </div>
-                <div class="mc-row">
-                  <div class="mc-field mc-field-half">
-                    <label>Max Tokens</label>
-                    <input v-model.number="mcForm.maxTokens" class="mc-input" type="number" placeholder="32768" />
-                    <div class="mc-hint">单次回复最大长度，非上下文窗口</div>
-                  </div>
-                  <div class="mc-field mc-field-half">
-                    <label>Temperature</label>
-                    <input v-model.number="mcForm.temperature" class="mc-input" type="number" step="0.1" min="0" max="2" placeholder="0.7" />
-                    <div class="mc-hint">0=确定性 2=高随机</div>
-                  </div>
-                </div>
-                <label class="mc-checkbox-row">
-                  <input type="checkbox" v-model="mcForm.isDefault" />
-                  <span>设为默认模型</span>
-                </label>
-              </div>
-              <div class="mc-form-actions">
-                <button class="mc-btn mc-btn-outline" @click="cancelModelConfigEdit">取消</button>
-                <button class="mc-btn mc-btn-primary" @click="saveConfig" :disabled="mcSaving">{{ mcSaving ? '保存中...' : (mcEditingId ? '更新' : '创建') }}</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+    <ModelConfigDialog :state="modelConfigDialogState" :actions="modelConfigDialogActions" />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, modelConfigApi, agentExtensionApi } from '@/api'
 import { modelConfigPresets } from '@/constants/modelPresets'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
-import MonacoEditor from '@/components/MonacoEditor.vue'
 import ToolCallCard from '@/components/cloud/ToolCallCard.vue'
 import ChangesPanel from '@/components/cloud/ChangesPanel.vue'
 import PlanDisplay from '@/components/cloud/PlanDisplay.vue'
-import TokenChart from '@/components/cloud/TokenChart.vue'
-import TerminalPanel from '@/components/terminal/TerminalPanel.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import * as echarts from 'echarts'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/common'
-import 'highlight.js/styles/github-dark.css'
+import { useAgentStream } from '@/composables/useAgentStream'
+import { useThemeStore } from '@/stores/theme'
+import { loadWorkspaceResources } from '@/composables/workspaceInitialization'
+import { useConversationState } from '@/composables/useConversationState'
+import { useAgentInteraction } from '@/composables/useAgentInteraction'
+import { useChangeSetState } from '@/composables/useChangeSetState'
+import { reduceHistoryEvent } from '@/composables/agentHistoryReducer'
+import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
+import 'highlight.js/styles/github.css'
 
 const route = useRoute()
 const router = useRouter()
+const themeStore = useThemeStore()
+const { stream: streamAgent, replay: replayAgent, stop: stopAgent } = useAgentStream()
+const MonacoEditor = defineAsyncComponent(() => import('@/components/MonacoEditor.vue'))
+const TerminalPanel = defineAsyncComponent(() => import('@/components/terminal/TerminalPanel.vue'))
+const TokenChart = defineAsyncComponent(() => import('@/components/cloud/TokenChart.vue'))
+const AgentTimer = defineAsyncComponent(() => import('@/components/cloud/AgentTimer.vue'))
+const ContextUsageIndicator = defineAsyncComponent(() => import('@/components/cloud/ContextUsageIndicator.vue'))
+const ContextUsageDialog = defineAsyncComponent(() => import('@/components/cloud/ContextUsageDialog.vue'))
+const ConversationMenu = defineAsyncComponent(() => import('@/components/cloud/ConversationMenu.vue'))
+const ModelConfigDialog = defineAsyncComponent(() => import('@/components/cloud/ModelConfigDialog.vue'))
 
 // Core project state
 const projectId = ref(null)
 const projectName = ref('')
 const fileTree = ref([])
+const treeError = ref('')
+const treeNextOffset = ref(null)
+const treeLoadingMore = ref(false)
+const sidebarWidth = ref(240)
 const activePath = ref('')
 const fileContent = ref('')
 const fileContentDirty = ref(false)
+const activeFileReadOnly = ref(false)
 const savingFile = ref(false)
 const editorReady = ref(false)
 const treeLoading = ref(false)
@@ -979,6 +816,10 @@ const isNavigating = ref(false) // 标记是否正在导航中，防止滚动事
 
 // Token usage tracking
 const tokenUsage = ref({ promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0, conversationTotal: 0 })
+const contextUsageStatus = ref(null)
+const showContextUsageDialog = ref(false)
+const nextContextPreview = ref(null)
+const nextContextPreviewLoading = ref(false)
 const sessionHistory = ref([])
 const selectedSessionIdx = ref(-1)
 const usagePieRef = ref(null)
@@ -993,19 +834,15 @@ let usageModelChart = null
 
 
 // Multi-session management
-const conversations = ref([])
 const showSessions = ref(false)
 
 // AI Panel UI state
 const aiCollapsed = ref(false)
-const aiDarkTheme = ref(localStorage.getItem('labex-ai-theme') === 'dark')
-if (aiDarkTheme.value) document.documentElement.setAttribute('data-theme', 'dark')
+const aiDarkTheme = computed(() => themeStore.effectiveTheme === 'dark')
+const editorTheme = computed(() => aiDarkTheme.value ? 'vs-dark' : 'vs')
 const activeAiTab = ref('chat')
 const contextExpanded = ref(false)
 const showModelConfig = ref(false)
-const showSettings = ref(false)
-const fontSize = ref(localStorage.getItem('labex-ai-fontsize') || 'medium')
-const msgDensity = ref(localStorage.getItem('labex-ai-density') || 'comfortable')
 
 // Command palette state
 const showCommandPalette = ref(false)
@@ -1109,22 +946,6 @@ const commandList = [
   { name: 'tokens', description: '查看token使用', category: '分析', aliases: [] },
 ]
 
-function setFontSize(size) {
-  fontSize.value = size
-  localStorage.setItem('labex-ai-fontsize', size)
-  const sizeMap = { small: '12px', medium: '13px', large: '14.5px' }
-  document.documentElement.style.setProperty('--ai-font-size', sizeMap[size] || '13px')
-}
-function setMsgDensity(density) {
-  msgDensity.value = density
-  localStorage.setItem('labex-ai-density', density)
-  const gapMap = { compact: '10px', comfortable: '16px', relaxed: '22px' }
-  document.querySelector('.ai-panel')?.style.setProperty('--ai-msg-gap', gapMap[density] || '16px')
-}
-// 初始化设置
-if (fontSize.value !== 'medium') nextTick(() => setFontSize(fontSize.value))
-if (msgDensity.value !== 'comfortable') nextTick(() => setMsgDensity(msgDensity.value))
-
 // Model config dialog state
 const mcEditing = ref(false)
 const mcTemplateSelecting = ref(false)
@@ -1138,6 +959,17 @@ const emptyModelConfigForm = () => ({
   baseUrl: '',
   modelsUrl: '',
   maxTokens: 32768,
+  contextWindowTokens: 1_000_000,
+  promptCacheKeyEnabled: false,
+  reasoningEffort: 'medium',
+  imageInputEnabled: false,
+  compactionAuto: true,
+  compactionPrune: false,
+  compactionTailTurns: 2,
+  compactionPreserveRecentTokens: null,
+  compactionReservedTokens: null,
+  compactionModelConfigId: 0,
+  compactionThresholdPercent: 90,
   temperature: 0.7,
   isDefault: false
 })
@@ -1151,6 +983,7 @@ const mcCustomTemplate = {
   modelsUrl: '',
   modelName: '',
   maxTokens: 32768,
+  contextWindowTokens: 1_000_000,
   provider: 'openai_compatible',
   note: '手动填写服务信息',
   custom: true
@@ -1178,6 +1011,9 @@ const mcpForm = ref({ serverName: '', serverKey: '', endpoint: '', authHeader: '
 // Terminal quick commands
 // Terminal panel ref
 const terminalPanelRef = ref(null)
+const workspaceCenterRef = ref(null)
+const terminalPanelVisible = ref(false)
+const terminalHeight = ref(280)
 const projectPath = ref('')
 
 const langMap = { js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', vue: 'html', py: 'python', java: 'java', c: 'c', cpp: 'cpp', html: 'html', css: 'css', scss: 'scss', json: 'json', xml: 'xml', yml: 'yaml', yaml: 'yaml', md: 'markdown', sql: 'sql', sh: 'shell', bat: 'shell', ps1: 'powershell', go: 'go', rs: 'rust', php: 'php' }
@@ -1222,13 +1058,17 @@ onMounted(async () => {
     projectName.value = d.projectName || '未命名项目'
     projectPath.value = d.workspacePath || d.path || ''
   } catch (e) { ElMessage.error('无法加载项目信息'); router.replace({ name: 'Projects' }); return }
+  const secondaryResources = loadWorkspaceResources([
+    () => loadModelConfigs(),
+    () => loadAgentExtensions(),
+    () => loadConversations()
+  ])
   await loadRoot()
-  await loadModelConfigs()
-  await loadAgentExtensions()
-  await loadConversations()
-  if (conversations.value.length > 0) {
-    selectConversation(conversations.value[0])
-  }
+  void secondaryResources.then(async () => {
+    if (conversations.value.length > 0) {
+      await selectConversation(conversations.value[0])
+    }
+  })
 })
 
 // 清理定时器，防止内存泄漏
@@ -1519,11 +1359,56 @@ async function deleteMcp(server) {
 async function loadRoot() {
   if (!projectId.value) return
   treeLoading.value = true
-  try { const r = await projectApi.getTree(projectId.value, ''); fileTree.value = r.data || [] } catch (e) { fileTree.value = [] } finally { treeLoading.value = false }
+  treeError.value = ''
+  treeNextOffset.value = null
+  try {
+    const r = await projectApi.getTreePage(projectId.value, '', 0)
+    fileTree.value = r.data?.entries || []
+    treeNextOffset.value = r.data?.nextOffset ?? null
+  } catch (e) {
+    fileTree.value = []
+    treeError.value = treeLoadErrorMessage(e)
+  } finally {
+    treeLoading.value = false
+  }
 }
-async function loadChildren(dirPath) {
-  if (!projectId.value) return []
-  try { const r = await projectApi.getTree(projectId.value, dirPath); return r.data || [] } catch (e) { return [] }
+
+function treeLoadErrorMessage(error) {
+  if (error?.response?.status === 404) {
+    return '文件分页接口暂不可用，请重启后端服务后重试'
+  }
+  return error?.message || '文件列表加载失败，请重试'
+}
+
+async function loadMoreRoot() {
+  if (!projectId.value || treeNextOffset.value === null || treeLoadingMore.value) return
+  treeLoadingMore.value = true
+  try {
+    const r = await projectApi.getTreePage(projectId.value, '', treeNextOffset.value)
+    fileTree.value = [...fileTree.value, ...(r.data?.entries || [])]
+    treeNextOffset.value = r.data?.nextOffset ?? null
+  } catch (e) {
+    treeError.value = treeLoadErrorMessage(e)
+  } finally {
+    treeLoadingMore.value = false
+  }
+}
+
+function handleTreeScroll(event) {
+  const target = event.currentTarget
+  if (target.scrollHeight - target.scrollTop - target.clientHeight < 80) {
+    void loadMoreRoot()
+  }
+}
+
+async function loadChildren(dirPath, offset = 0) {
+  if (!projectId.value) return { entries: [], nextOffset: null }
+  try {
+    const r = await projectApi.getTreePage(projectId.value, dirPath, offset)
+    return r.data || { entries: [], nextOffset: null }
+  } catch (e) {
+    return { entries: [], nextOffset: null }
+  }
 }
 async function openFile(path) {
   if (!projectId.value) return
@@ -1531,22 +1416,34 @@ async function openFile(path) {
   if (existingIdx >= 0) {
     activeTabIndex.value = existingIdx
     activePath.value = path
+    activeFileReadOnly.value = Boolean(openFiles.value[existingIdx].readOnly)
     fileContent.value = openFiles.value[existingIdx].content
     fileContentDirty.value = false
     const ext = path.split('.').pop()?.toLowerCase()
     detectedLang.value = langMap[ext] || 'plaintext'
     return
   }
-  let content = ''
-  try { const r = await projectApi.readFile(projectId.value, path); content = r.data?.content || '' } catch (e) { content = '' }
+  let file
+  try {
+    const r = await projectApi.readFile(projectId.value, path)
+    file = r.data || {}
+  } catch (e) {
+    return
+  }
+  const content = file.content || ''
+  const readOnly = Boolean(file.readOnly)
   const ext = path.split('.').pop()?.toLowerCase()
   const name = path.split('/').pop() || path
-  openFiles.value.push({ path, name, content, lang: langMap[ext] || 'plaintext', dirty: false })
+  openFiles.value.push({ path, name, content, lang: langMap[ext] || 'plaintext', dirty: false, readOnly })
   activeTabIndex.value = openFiles.value.length - 1
   activePath.value = path
+  activeFileReadOnly.value = readOnly
   fileContent.value = content
   fileContentDirty.value = false
   detectedLang.value = langMap[ext] || 'plaintext'
+  if (file.truncated) {
+    ElMessage.warning(`??????????? ${Math.round(content.length / 1024)} KB?????`)
+  }
   editorReady.value = false
   await nextTick(); editorReady.value = true
 }
@@ -1559,6 +1456,7 @@ function switchTab(idx) {
   activeTabIndex.value = idx
   const f = openFiles.value[idx]
   activePath.value = f.path
+  activeFileReadOnly.value = Boolean(f.readOnly)
   fileContent.value = f.content
   fileContentDirty.value = f.dirty
   detectedLang.value = f.lang
@@ -1575,6 +1473,7 @@ function closeFile(idx) {
       activePath.value = ''
       fileContent.value = ''
       fileContentDirty.value = false
+      activeFileReadOnly.value = false
     }
   } else if (idx < activeTabIndex.value) {
     activeTabIndex.value--
@@ -1590,9 +1489,18 @@ watch(fileContent, (val, old) => {
   }
 })
 async function saveFile() {
-  if (!projectId.value || !activePath.value || savingFile.value) return
+  if (!projectId.value || !activePath.value || savingFile.value || activeFileReadOnly.value) return
   savingFile.value = true
   try { await projectApi.saveFile(projectId.value, activePath.value, fileContent.value); fileContentDirty.value = false; if (activeTabIndex.value >= 0 && activeTabIndex.value < openFiles.value.length) { openFiles.value[activeTabIndex.value].dirty = false } ElMessage.success('文件已保存') } catch (e) { ElMessage.error('保存失败') } finally { savingFile.value = false }
+}
+async function selectAiTab(key) {
+  if (key === 'terminal') {
+    terminalPanelVisible.value = true
+    await nextTick()
+    terminalPanelRef.value?.fitAllTerminals()
+    return
+  }
+  activeAiTab.value = key
 }
 watch(activeAiTab, (tab) => { if (tab === 'usage') initUsageCharts() })
 
@@ -1693,7 +1601,7 @@ async function sendMessage() {
   }
 
   messages.value.push({ role: 'user', content: q, timestamp: Date.now() })
-  messages.value.push({ role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now() })
+  messages.value.push({ role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), timing: createMessageTiming() })
   const assistantMsg = messages.value[messages.value.length - 1]
   agentInput.value = ''; agentLoading.value = true
   userScrolled.value = false
@@ -1702,56 +1610,42 @@ async function sendMessage() {
   const sessionId = currentAgentSession.value?.sessionId || crypto.randomUUID()
 
   try {
-    const response = await fetch(`/api/student/projects/${projectId.value}/agent/stream`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-      },
-      body: JSON.stringify({
-        sessionId,
-        conversationId: currentAgentSession.value?.conversationId,
-        mode: agentMode.value,
-        message: messageToSend,  // 使用解析后的模板作为消息
-        activePath: activePath.value || '',
-        modelConfigId: selectedModelConfigId.value || null
-      })
+    await streamAgent(projectId.value, {
+      sessionId,
+      conversationId: currentAgentSession.value?.conversationId,
+      mode: agentMode.value,
+      message: messageToSend,
+      activePath: activePath.value || '',
+      modelConfigId: selectedModelConfigId.value || null
+    }, {
+      onEvent: event => handleAgentEvent(event, assistantMsg)
     })
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data:')) {
-          const dataStr = line.substring(5).trim()
-          if (!dataStr) continue
-          try {
-            const event = JSON.parse(dataStr)
-            handleAgentEvent(event, assistantMsg)
-          } catch (e) { /* ignore parse errors */ }
-        }
-      }
-    }
   } catch (e) {
-    if (e.name !== 'AbortError') {
+    if (e.name === 'AbortError') {
+      assistantMsg.content += '\n[???]'
+    } else {
       assistantMsg.error = e.message
-      assistantMsg.content = `错误: ${e.message}`
+      assistantMsg.content = `??: ${e.message}`
     }
   } finally {
     flushThinkingDisplay(assistantMsg)
     assistantMsg.isStreaming = false
+    stopMessageTimer(assistantMsg)
+    await syncTaskTiming(assistantMsg)
     agentLoading.value = false
     await nextTick(); scrollDown()
+  }
+}
+
+function contextManagementEventText(type, data = {}) {
+  const before = Number.isFinite(data.tokensBefore) ? ` ${data.tokensBefore}` : ''
+  const after = Number.isFinite(data.tokensAfter) ? ` \u2192 ${data.tokensAfter}` : ''
+  switch (type) {
+    case 'COMPACTION_STARTED': return `\u6b63\u5728\u538b\u7f29\u4e0a\u4e0b\u6587${before}${after}`
+    case 'CONTEXT_PRUNED': return `\u5df2\u6e05\u7406\u65e7\u5de5\u5177\u8f93\u51fa${before}${after}`
+    case 'COMPACTION_COMPLETED': return `\u4e0a\u4e0b\u6587\u538b\u7f29\u5b8c\u6210${before}${after}`
+    case 'COMPACTION_FAILED': return '\u6a21\u578b\u538b\u7f29\u672a\u6210\u529f\uff0c\u5df2\u5c1d\u8bd5\u5b89\u5168\u56de\u9000'
+    default: return ''
   }
 }
 
@@ -1761,6 +1655,8 @@ function handleAgentEvent(event, assistantMsg) {
   switch (type) {
     case 'SESSION':
       currentAgentSession.value = data
+      assistantMsg.taskId = data.taskId || null
+      if (assistantMsg.timing) assistantMsg.timing.taskId = assistantMsg.taskId
       break
     case 'THINK_START':
       if (assistantMsg.thinking) {
@@ -1770,7 +1666,8 @@ function handleAgentEvent(event, assistantMsg) {
       break
     case 'THINK_DELTA':
       assistantMsg.thinking += (data.delta || '')
-      startThinkingReveal(assistantMsg)
+      assistantMsg._thinkingDisplay = assistantMsg.thinking
+      scheduleAgentRender()
       break
     case 'THINK':
       if (data.content) {
@@ -1792,6 +1689,7 @@ function handleAgentEvent(event, assistantMsg) {
         assistantMsg._thinkingDisplay = ''
       }
       assistantMsg.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+      scheduleAgentRender()
       break
     case 'OBSERVE':
       if (assistantMsg.toolCalls.length > 0) {
@@ -1806,6 +1704,10 @@ function handleAgentEvent(event, assistantMsg) {
           changesRefreshKey.value++
         }
       }
+      scheduleAgentRender()
+      break
+    case 'COMMAND_APPROVAL_REQUIRED':
+      attachCommandApproval(assistantMsg, data)
       break
     case 'PERMISSION_ASK':
       {
@@ -1836,14 +1738,27 @@ function handleAgentEvent(event, assistantMsg) {
       break
     case 'FINAL_DELTA':
       assistantMsg.content += (data.delta || '')
+      scheduleAgentRender()
       break
     case 'FINAL':
-      if (data.content) assistantMsg.content = data.content
+      if (data.content && !assistantMsg.error) assistantMsg.content = data.content
       break
     case 'DONE':
       flushThinkingDisplay(assistantMsg)
       assistantMsg.isStreaming = false
+      stopMessageTimer(assistantMsg)
       break
+    case 'CONTEXT_STATUS':
+      contextUsageStatus.value = data
+      break
+    case 'COMPACTION_STARTED':
+    case 'CONTEXT_PRUNED':
+    case 'COMPACTION_COMPLETED':
+    case 'COMPACTION_FAILED': {
+      const content = contextManagementEventText(type, data)
+      if (content) assistantMsg.thinkingBlocks.push({ content, summary: '\u4e0a\u4e0b\u6587\u7ba1\u7406', iteration: 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+      break
+    }
     case 'TOKEN_USAGE':
       tokenUsage.value.promptTokens += (data.promptTokens || 0)
       tokenUsage.value.completionTokens += (data.completionTokens || 0)
@@ -1867,14 +1782,106 @@ function handleAgentEvent(event, assistantMsg) {
         })
       }
       break
-    case 'ERROR':
-      assistantMsg.error = data.message
+    case 'ERROR': {
+      const message = data.message || '模型服务调用失败'
+      assistantMsg.error = message
+      if (!assistantMsg.content) assistantMsg.content = `错误：${message}`
+      assistantMsg.isStreaming = false
+      stopMessageTimer(assistantMsg)
       break
+    }
     case 'INTERRUPTED':
       assistantMsg.content += '\n[已中断]'
       assistantMsg.isStreaming = false
+      stopMessageTimer(assistantMsg)
       break
   }
+}
+
+function createMessageTiming() {
+  return {
+    taskId: null,
+    startedAt: Date.now(),
+    activeElapsedMs: null,
+    isRunning: true
+  }
+}
+
+function stopMessageTimer(message) {
+  if (message?.timing) message.timing.isRunning = false
+}
+
+function isTerminalTask(task) {
+  return ['completed', 'failed', 'cancelled'].includes(String(task?.status || '').toLowerCase())
+}
+
+function applyTaskTiming(message, task) {
+  if (!message || !task) return
+  const existing = message.timing || createMessageTiming()
+  message.timing = {
+    ...existing,
+    taskId: task.taskId || existing.taskId,
+    activeElapsedMs: Number.isFinite(task.activeElapsedMs) ? task.activeElapsedMs : existing.activeElapsedMs,
+    isRunning: message.isStreaming && !isTerminalTask(task)
+  }
+}
+
+async function fetchAgentTasks() {
+  if (!projectId.value) return []
+  const response = await projectApi.agentTasks(projectId.value)
+  return Array.isArray(response?.data) ? response.data : []
+}
+
+async function syncTaskTiming(message) {
+  if (!message?.taskId) return
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const task = (await fetchAgentTasks()).find(item => Number(item.taskId) === Number(message.taskId))
+      if (!task) return
+      applyTaskTiming(message, task)
+      if (isTerminalTask(task) || attempt === 2) return
+    } catch (error) {
+      console.warn('Failed to load agent task timing:', error)
+      return
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 150))
+  }
+}
+
+async function syncConversationTaskTimings(conversationId) {
+  if (!conversationId) return
+  try {
+    const tasksById = new Map((await fetchAgentTasks())
+      .filter(task => task.conversationId === conversationId)
+      .map(task => [Number(task.taskId), task]))
+    messages.value
+      .filter(message => message.role === 'assistant' && message.taskId)
+      .forEach(message => applyTaskTiming(message, tasksById.get(Number(message.taskId))))
+  } catch (error) {
+    console.warn('Failed to load conversation task timings:', error)
+  }
+}
+
+function attachCommandApproval(msg, data) {
+  if (!msg || !data?.approvalId) return
+  msg.toolCalls = msg.toolCalls || []
+  const last = msg.toolCalls[msg.toolCalls.length - 1]
+  const summary = data.displayCommand || '命令需要一次性批准'
+  if (last && last.status === 'running' && last.name === data.tool) {
+    last.status = 'waiting_approval'
+    last.commandApproval = data
+    last.summary = summary
+    return
+  }
+  msg.toolCalls.push({
+    name: data.tool || 'bash',
+    args: { command: '<redacted; approval required>' },
+    summary,
+    result: null,
+    status: 'waiting_approval',
+    commandApproval: data,
+    _order: (msg._nextOrder = (msg._nextOrder || 0) + 1)
+  })
 }
 
 function attachUserQuestion(msg, data) {
@@ -1899,117 +1906,132 @@ function attachUserQuestion(msg, data) {
   })
 }
 
-function trackFileChange(data, toolCall) {
-  const filePath = data.file || data.path || toolCall.args?.path || toolCall.args?.file_path || ''
-  if (!filePath) return
-  const existing = sessionChanges.value.find(c => c.file === filePath)
-  const patch = data.diff || ''
-  let additions = 0, deletions = 0
-  const patchLines = patch.split('\n')
-  for (const l of patchLines) {
-    if (l.startsWith('+') && !l.startsWith('+++')) additions++
-    if (l.startsWith('-') && !l.startsWith('---')) deletions++
-  }
-  if (existing) {
-    existing.patch = patch
-    existing.additions = additions
-    existing.deletions = deletions
-    existing.status = data.success !== false ? 'modified' : existing.status
+async function handleCommandApproval(payload) {
+  const approval = payload?.call?.commandApproval
+  if (!approval?.approvalId) return
+
+  const call = payload.call
+  if (payload.action === 'reject') {
+    call.status = 'error'
+    call.result = '已拒绝本次命令执行'
   } else {
-    sessionChanges.value.push({
-      file: filePath,
-      patch,
-      additions,
-      deletions,
-      status: toolCall.name === 'write_file' ? 'added' : 'modified'
+    call.status = 'running'
+    call.result = '已批准，正在执行已保存的单次命令...'
+  }
+
+  try {
+    const decision = await projectApi.agentDecideCommandApproval(projectId.value, approval.approvalId, {
+      action: payload.action,
+      decisionIdempotencyKey: call._commandDecisionIdempotencyKey ||
+        (call._commandDecisionIdempotencyKey = crypto.randomUUID())
     })
+    if (decision?.data?.approvalUnavailable) {
+      call.status = 'error'
+      call.result = '命令批准不可用或已失效'
+      return
+    }
+    if (payload.action === 'reject') {
+      if (decision?.data?.resumeAgentLoop) {
+        call.status = 'running'
+        call.result = '????????Agent ???????????...'
+        const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
+        const taskId = approval.taskId || assistantMsg?.taskId
+        if (assistantMsg && taskId) {
+          assistantMsg.isStreaming = true
+          agentLoading.value = true
+          void replayResumedAgent(taskId, assistantMsg)
+        }
+      }
+      return
+    }
+
+    const execution = await projectApi.agentExecuteCommandApproval(projectId.value, approval.approvalId)
+    if (execution?.data?.approvalUnavailable) {
+      call.status = 'error'
+      call.result = '命令执行不可用、已失效或已执行'
+      return
+    }
+    const commandStatus = execution?.data?.status
+    if (commandStatus === 'resuming') {
+      call.status = 'running'
+      call.result = (execution?.data?.output || '?????') + '?Agent ????????????...'
+      const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
+      const taskId = approval.taskId || assistantMsg?.taskId
+      if (assistantMsg && taskId) {
+        assistantMsg.isStreaming = true
+        agentLoading.value = true
+        void replayResumedAgent(taskId, assistantMsg)
+      }
+    } else {
+      call.status = commandStatus === 'completed' ? 'completed' : 'error'
+      call.result = execution?.data?.output || (call.status === 'completed' ? '?????' : '??????')
+    }
+  } catch (error) {
+    call.status = 'error'
+    call.result = '命令批准提交失败：' + (error?.response?.data?.message || error?.message || '未知错误')
   }
 }
 
-async function handlePermissionDecision({ call, action, feedback }) {
-  const request = call?.permissionRequest
-  if (!request?.requestId) return
+async function replayResumedAgent(taskId, assistantMsg) {
   try {
-    call.status = action === 'reject' ? 'error' : 'running'
-    call.result = action === 'reject'
-      ? (feedback ? `已拒绝执行：${feedback}` : '已拒绝执行')
-      : '已确认，等待工具继续执行...'
-    const response = await projectApi.agentApprovePermission(projectId.value, {
-      requestId: request.requestId,
-      action,
-      feedback: action === 'reject' ? (feedback || '用户拒绝了本次工具调用') : (feedback || '')
-    })
-    if (response?.data && !response.data.granted && action !== 'reject') {
-      call.status = 'error'
-      call.result = response.data.feedback || '权限确认失败'
+    // The original command-approval stream intentionally ended while awaiting consent.
+    // Poll durable events until the resumed run emits DONE or its persisted task reaches a terminal state.
+    // Do not impose a wall-clock limit here: command execution and the first resumed model call can exceed 20 seconds.
+    while (assistantMsg.isStreaming) {
+      await replayAgent(projectId.value, taskId, {
+        onEvent: event => handleAgentEvent(event, assistantMsg)
+      })
+      if (!assistantMsg.isStreaming) break
+
+      const task = (await fetchAgentTasks()).find(item => Number(item.taskId) === Number(taskId))
+      if (task) {
+        applyTaskTiming(assistantMsg, task)
+        if (isTerminalTask(task)) {
+          assistantMsg.isStreaming = false
+          stopMessageTimer(assistantMsg)
+          break
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 500))
     }
-  } catch (e) {
-    call.status = 'error'
-    call.result = '权限确认提交失败：' + (e?.response?.data?.message || e?.message || '未知错误')
+  } catch (error) {
+    assistantMsg.error = '恢复 Agent 任务失败：' + (error?.message || '未知错误')
+    if (!assistantMsg.content) assistantMsg.content = assistantMsg.error
+  } finally {
+    if (assistantMsg.isStreaming) {
+      assistantMsg.isStreaming = false
+      stopMessageTimer(assistantMsg)
+    }
+    agentLoading.value = false
+    await nextTick()
+    scrollDown()
   }
 }
 
-async function handleQuestionReply({ call, action, answer }) {
-  const request = call?.questionRequest
-  if (!request?.requestId) return
-  if (action === 'answer' && !answer) {
-    ElMessage.warning('请先输入回答')
-    return
-  }
-  try {
-    call.status = action === 'answer' ? 'running' : 'error'
-    call.questionAnswer = answer || ''
-    call.result = action === 'answer'
-      ? `已提交回答：${answer}\n等待 Agent 继续执行...`
-      : '已取消这次提问'
-    const response = await projectApi.agentReplyQuestion(projectId.value, {
-      requestId: request.requestId,
-      action,
-      answer: answer || ''
-    })
-    if (response?.data && !response.data.answered && action === 'answer') {
-      call.status = 'error'
-      call.result = response.data.feedback || '回答提交失败'
-    }
-  } catch (e) {
-    call.status = 'error'
-    call.result = '回答提交失败：' + (e?.response?.data?.message || e?.message || '未知错误')
+async function handlePermissionDecision(payload) {
+  await submitPermissionDecision(payload)
+}
+
+async function handleQuestionReply(payload) {
+  const result = await submitQuestionReply(payload)
+  if (result.reason === 'answer_required') {
+    ElMessage.warning('\u8bf7\u5148\u8f93\u5165\u56de\u7b54')
   }
 }
 
 async function revertChange(change) {
-  if (!change || !change.file) return
   try {
-    const original = await projectApi.readFile(projectId.value, change.file)
-    const originalContent = original.data?.content || ''
-    const patch = change.patch || ''
-    const lines = originalContent.split('\n')
-    const newLines = []
-    let li = 0
-    for (const pLine of patch.split('\n')) {
-      if (pLine.startsWith('@@') || pLine.startsWith('---') || pLine.startsWith('+++') || pLine.startsWith('diff ')) continue
-      if (pLine.startsWith('+')) { /* skip added lines to revert */ }
-      else if (pLine.startsWith('-')) { newLines.push(pLine.slice(1)) }
-      else if (pLine.startsWith(' ')) { newLines.push(pLine.slice(1)) }
-    }
-    await projectApi.saveFile(projectId.value, change.file, newLines.join('\n'))
-    sessionChanges.value = sessionChanges.value.filter(c => c.file !== change.file)
-    if (activePath.value === change.file) {
-      fileContent.value = newLines.join('\n')
-      fileContentDirty.value = false
-    }
-    if (activeTabIndex.value >= 0) {
-      const tab = openFiles.value.find(f => f.path === change.file)
-      if (tab) { tab.content = newLines.join('\n'); tab.dirty = false }
-    }
-  } catch (e) {
-    ElMessage.error('Revert failed: ' + (e?.response?.data?.message || e?.message))
+    return await revertChangeState(change)
+  } catch (error) {
+    ElMessage.error('Revert failed: ' + (error?.response?.data?.message || error?.message))
+    return { success: false }
   }
 }
 
 function onUndoChange(change) {
-  sessionChanges.value = sessionChanges.value.filter(c => c.file !== (change.relativePath || change.file))
-  if (activePath.value === (change.relativePath || change.file)) {
+  const file = change?.relativePath || change?.file
+  if (!removeChange(change)) return
+  if (activePath.value === file) {
     fileContentDirty.value = false
   }
 }
@@ -2019,6 +2041,67 @@ const selectedModelConfigId = ref(null)
 const modelConfigs = ref([])
 const sessionChanges = ref([])
 const changesRefreshKey = ref(0)
+
+const modelConfigDialogState = reactive({
+  showModelConfig, mcTemplateSelecting, mcTemplateOptions, mcEditing, modelConfigs,
+  selectedModelConfigId, mcTestResults, mcTestingIds, mcForm, mcCustomMode,
+  mcModelsLoading, mcFetchedModels, mcApiKeyHint, mcEditingId, mcSaving
+})
+const modelConfigDialogActions = {
+  cancelModelConfigEdit, deleteConfig, editConfig, fetchModelList, saveConfig,
+  selectModelTemplate, startCreateConfig, testConfig, applyFetchedModelLimits
+}
+
+function syncRevertedFile({ file, content }) {
+  if (activePath.value === file) {
+    fileContent.value = content
+    fileContentDirty.value = false
+  }
+  const tab = openFiles.value.find(item => item.path === file)
+  if (tab) {
+    tab.content = content
+    tab.dirty = false
+  }
+}
+
+const { trackFileChange, revertChange: revertChangeState, removeChange } = useChangeSetState({
+  projectId,
+  api: projectApi,
+  sessionChanges,
+  onFileReverted: syncRevertedFile
+})
+
+const conversationState = useConversationState({
+  projectId,
+  api: projectApi,
+  messages,
+  sessionChanges,
+  tokenUsage,
+  agentLoading,
+  currentAgentSession,
+  replayHistoryEvent,
+  onHistoryLoaded: initialScroll
+})
+const {
+  conversations,
+  currentSessionName,
+  hasOlderMessages,
+  loadingOlderMessages,
+  clearConversationState,
+  loadConversations,
+  createNewSession: resetConversation,
+  selectConversation: selectConversationState,
+  loadConversationMessages: loadConversationMessagesState,
+  loadOlderMessages,
+  forkConversation: forkConversationState,
+  compactConversation: compactConversationState,
+  deleteConversation: deleteConversationState
+} = conversationState
+
+const { submitPermissionDecision, submitQuestionReply } = useAgentInteraction({
+  projectId,
+  api: projectApi
+})
 
 async function loadModelConfigs() {
   try {
@@ -2049,6 +2132,17 @@ function editConfig(cfg) {
     baseUrl: cfg.baseUrl || '',
     modelsUrl: '',
     maxTokens: cfg.maxTokens || 32768,
+    contextWindowTokens: cfg.contextWindowTokens ?? 1_000_000,
+    promptCacheKeyEnabled: cfg.promptCacheKeyEnabled === 1,
+    reasoningEffort: cfg.reasoningEffort || 'medium',
+    imageInputEnabled: cfg.imageInputEnabled === 1,
+    compactionAuto: cfg.compactionAuto !== 0,
+    compactionPrune: cfg.compactionPrune === 1,
+    compactionTailTurns: cfg.compactionTailTurns ?? 2,
+    compactionPreserveRecentTokens: cfg.compactionPreserveRecentTokens ?? null,
+    compactionReservedTokens: cfg.compactionReservedTokens ?? null,
+    compactionModelConfigId: cfg.compactionModelConfigId ?? 0,
+    compactionThresholdPercent: cfg.compactionThresholdPercent ?? 90,
     temperature: cfg.temperature ?? 0.7,
     isDefault: cfg.isDefault === 1
   }
@@ -2066,6 +2160,7 @@ function selectModelTemplate(tpl) {
     modelsUrl: tpl.modelsUrl || '',
     modelName: tpl.modelName || '',
     maxTokens: tpl.maxTokens || 32768,
+    contextWindowTokens: tpl.contextWindowTokens ?? 1_000_000,
     temperature: tpl.temperature ?? 0.7
   }
   mcFetchedModels.value = []
@@ -2124,10 +2219,22 @@ async function fetchModelList() {
 }
 async function saveConfig() {
   const f = mcForm.value
+  const preserveRecentTokens = f.compactionPreserveRecentTokens === '' ? null : f.compactionPreserveRecentTokens
+  const reservedTokens = f.compactionReservedTokens === '' ? null : f.compactionReservedTokens
+  const compactionModelConfigId = Number.isInteger(f.compactionModelConfigId) && f.compactionModelConfigId > 0
+    ? f.compactionModelConfigId : 0
   if (!f.configName.trim()) { ElMessage.warning('请输入配置名称'); return }
   if (!f.baseUrl.trim()) { ElMessage.warning('请输入 Base URL'); return }
   if (!f.modelName.trim()) { ElMessage.warning('请输入模型名称'); return }
   if (!mcEditingId.value && !f.apiKey.trim()) { ElMessage.warning('请输入 API Key'); return }
+  if (!Number.isFinite(f.maxTokens) || !Number.isInteger(f.maxTokens) || f.maxTokens <= 0) { ElMessage.warning('Max Tokens 必须为正整数'); return }
+  if (!Number.isFinite(f.contextWindowTokens) || !Number.isInteger(f.contextWindowTokens) || f.contextWindowTokens <= 0) { ElMessage.warning('上下文窗口 Tokens 必须为正整数'); return }
+  if (f.contextWindowTokens <= f.maxTokens) { ElMessage.warning('上下文窗口 Tokens 必须大于 Max Tokens'); return }
+  if (!['low', 'medium', 'high', 'xhigh'].includes(f.reasoningEffort)) { ElMessage.warning('推理程度必须为低、中、高或超高'); return }
+  if (!Number.isFinite(f.compactionTailTurns) || !Number.isInteger(f.compactionTailTurns) || f.compactionTailTurns <= 0) { ElMessage.warning('最近保留回合数必须为正整数'); return }
+  if (!Number.isFinite(f.compactionThresholdPercent) || !Number.isInteger(f.compactionThresholdPercent) || f.compactionThresholdPercent < 70 || f.compactionThresholdPercent > 99) { ElMessage.warning('自动压缩触发阈值必须是 70 到 99 之间的整数'); return }
+  if (preserveRecentTokens != null && (!Number.isFinite(preserveRecentTokens) || !Number.isInteger(preserveRecentTokens) || preserveRecentTokens <= 0)) { ElMessage.warning('最近上下文 Token 预算必须为正整数'); return }
+  if (reservedTokens != null && (!Number.isFinite(reservedTokens) || !Number.isInteger(reservedTokens) || reservedTokens < 0)) { ElMessage.warning('压缩安全缓冲必须是非负整数'); return }
   mcSaving.value = true
   try {
     const payload = {
@@ -2135,7 +2242,18 @@ async function saveConfig() {
       provider: f.provider,
       modelName: f.modelName.trim(),
       baseUrl: f.baseUrl.trim(),
-      maxTokens: f.maxTokens || 8192,
+      maxTokens: f.maxTokens,
+      contextWindowTokens: f.contextWindowTokens,
+      promptCacheKeyEnabled: f.promptCacheKeyEnabled,
+      reasoningEffort: f.reasoningEffort,
+      imageInputEnabled: f.imageInputEnabled,
+      compactionAuto: f.compactionAuto,
+      compactionPrune: f.compactionPrune,
+      compactionTailTurns: f.compactionTailTurns,
+      compactionPreserveRecentTokens: preserveRecentTokens,
+      compactionReservedTokens: reservedTokens,
+      compactionModelConfigId,
+      compactionThresholdPercent: f.compactionThresholdPercent,
       temperature: f.temperature ?? 0.7,
       isDefault: f.isDefault
     }
@@ -2182,208 +2300,206 @@ async function testConfig(cfg) {
   }
 }
 
-function stopGeneration() {
+async function stopGeneration() {
   agentLoading.value = false
-  if (currentAgentSession.value?.sessionId) {
-    fetch(`/api/student/projects/${projectId.value}/agent/interrupt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` },
-      body: JSON.stringify({ sessionId: currentAgentSession.value.sessionId })
-    }).catch(() => {})
+  await stopAgent(projectId.value, currentAgentSession.value?.sessionId)
+}
+function startTerminalResize(event) {
+  const center = workspaceCenterRef.value
+  const handle = event.currentTarget
+  if (!center || !handle) return
+  event.preventDefault()
+  const pointerId = event.pointerId
+  const startY = event.clientY
+  const startHeight = terminalHeight.value
+  let latestY = startY
+  let frame = null
+
+  const applyHeight = () => {
+    frame = null
+    const maxHeight = Math.max(140, Math.floor(center.clientHeight * 0.7))
+    terminalHeight.value = Math.min(maxHeight, Math.max(140, startHeight + startY - latestY))
+    nextTick(() => terminalPanelRef.value?.fitAllTerminals())
+  }
+  const onMove = moveEvent => {
+    latestY = moveEvent.clientY
+    if (frame == null) frame = requestAnimationFrame(applyHeight)
+  }
+  const finish = () => {
+    if (frame != null) cancelAnimationFrame(frame)
+    handle.removeEventListener('pointermove', onMove)
+    handle.removeEventListener('pointerup', finish)
+    handle.removeEventListener('pointercancel', finish)
+    if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId)
+    terminalPanelRef.value?.fitAllTerminals()
+  }
+
+  handle.setPointerCapture?.(pointerId)
+  handle.addEventListener('pointermove', onMove)
+  handle.addEventListener('pointerup', finish)
+  handle.addEventListener('pointercancel', finish)
+}
+
+async function toggleTerminalPanel() {
+  terminalPanelVisible.value = !terminalPanelVisible.value
+  if (terminalPanelVisible.value) {
+    await nextTick()
+    terminalPanelRef.value?.fitAllTerminals()
   }
 }
-function clearMessages() { messages.value = []; currentAgentSession.value = null; sessionChanges.value = []; tokenUsage.value = { promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0, conversationTotal: 0 } }
-
-const currentSessionName = computed(() => {
-  if (!currentAgentSession.value || !currentAgentSession.value.conversationId) return '新会话'
-  const c = conversations.value.find(x => x.conversationId === currentAgentSession.value.conversationId)
-  return c ? (c.title || '对话') : '新会话'
-})
-
-async function loadConversations() {
-  try {
-    const r = await projectApi.agentConversations(projectId.value)
-    conversations.value = (r.data || []).sort((a, b) => new Date(b.createTime) - new Date(b.createTime))
-  } catch (e) { /* ignore */ }
+function clearMessages() {
+  clearConversationState()
 }
 
 function createNewSession() {
   showSessions.value = false
-  clearMessages()
-  currentAgentSession.value = null
+  resetConversation()
 }
 
-function selectConversation(c) {
-  if (currentAgentSession.value && currentAgentSession.value.conversationId === c.conversationId) return
+async function selectConversation(conversation) {
+  if (!conversation?.conversationId || currentAgentSession.value?.conversationId === conversation.conversationId) {
+    return false
+  }
   showSessions.value = false
-  loadConversationMessages(c.conversationId)
+  try {
+    const loaded = await selectConversationState(conversation)
+    if (loaded) {
+      await syncConversationTaskTimings(conversation.conversationId)
+      await loadContextUsageStatus(conversation.conversationId)
+    }
+    return loaded
+  } catch (error) {
+    ElMessage.error('\u52a0\u8f7d\u5386\u53f2\u6d88\u606f\u5931\u8d25')
+    return false
+  }
 }
 
 async function loadConversationMessages(conversationId) {
-  messages.value = []
-  sessionChanges.value = []
-  tokenUsage.value = { promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0, conversationTotal: 0 }
-  currentAgentSession.value = { sessionId: crypto.randomUUID(), conversationId }
-  agentLoading.value = false
-
   try {
-    const r = await projectApi.agentMessages(projectId.value, conversationId)
-    const events = r.data || []
-    for (const event of events) {
-      let data = {}
-      try { data = JSON.parse(event.eventData || '{}') } catch (e) {}
-      if (event.eventType === 'USER') {
-        messages.value.push({ role: 'user', content: event.content || data.content || '' })
-        messages.value.push({ role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', thinkingBlocks: [], toolCalls: [], plan: null, planJson: null, isStreaming: false, error: null, _nextOrder: 0 })
-      } else {
-        const last = messages.value.length > 0 ? messages.value[messages.value.length - 1] : null
-        if (!last || last.role !== 'assistant') continue
-        replayHistoryEvent(event.eventType, data, last)
-      }
+    const loaded = await loadConversationMessagesState(conversationId)
+    if (loaded) {
+      await syncConversationTaskTimings(conversationId)
+      await loadContextUsageStatus(conversationId)
     }
-    for (const msg of messages.value) {
-      if (msg.role === 'assistant' && msg.thinkingBlocks) {
-        msg.thinkingBlocks = msg.thinkingBlocks.filter(tb => tb.content && tb.content.trim().length > 0)
-      }
-      if (msg.role === 'assistant' && msg.toolCalls) {
-        for (const tc of msg.toolCalls) {
-          if (tc.status === 'running') tc.status = 'completed'
-        }
-      }
-    }
-  } catch (e) {
-    ElMessage.error('加载历史消息失败')
+    return loaded
+  } catch (error) {
+    ElMessage.error('\u52a0\u8f7d\u5386\u53f2\u6d88\u606f\u5931\u8d25')
+    return false
   }
-
-  // 加载完成后初始滚动到底部
-  initialScroll()
 }
 
-function replayHistoryEvent(type, data, msg) {
-  switch (type) {
-    case 'THINK_START':
-      if (msg.thinking) { msg.thinkingBlocks = msg.thinkingBlocks || []; msg.thinkingBlocks.push({ content: msg.thinking, summary: data.summary || '', _open: false, _order: (msg._nextOrder = (msg._nextOrder || 0) + 1) }); msg.thinking = '' }
-      msg._hasThinkStart = true
-      break
-    case 'THINK_DELTA':
-      msg.thinking += (data.delta || '')
-      msg._thinkingDisplay = msg.thinking
-      break
-    case 'THINK':
-      if (data.content) {
-        if (msg.thinking) { msg.thinkingBlocks = msg.thinkingBlocks || []; msg.thinkingBlocks.push({ content: msg.thinking, summary: data.summary || '', _open: false, _order: (msg._nextOrder = (msg._nextOrder || 0) + 1) }) }
-        else if (!msg._hasThinkStart) { msg.thinkingBlocks = msg.thinkingBlocks || []; msg.thinkingBlocks.push({ content: data.content, summary: data.summary || '', _open: false, _order: (msg._nextOrder = (msg._nextOrder || 0) + 1) }) }
-        msg.thinking = ''
-        msg._hasThinkStart = false
-      }
-      break
-    case 'TOOL_CALL':
-      if (msg.thinking) { msg.thinkingBlocks = msg.thinkingBlocks || []; msg.thinkingBlocks.push({ content: msg.thinking, summary: data.summary || data.tool || '', _open: false, _order: (msg._nextOrder = (msg._nextOrder || 0) + 1) }); msg.thinking = '' }
-      msg.toolCalls = msg.toolCalls || []; msg.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', _order: (msg._nextOrder = (msg._nextOrder || 0) + 1) })
-      break
-    case 'OBSERVE':
-      if (msg.toolCalls && msg.toolCalls.length > 0) { const l = msg.toolCalls[msg.toolCalls.length - 1]; l.result = data.result || data.content; l.status = data.success !== false ? 'completed' : 'error' }
-      if (data.pendingChangeId) changesRefreshKey.value++
-      break
-    case 'PERMISSION_ASK':
-      if (msg.toolCalls && msg.toolCalls.length > 0) {
-        const l = msg.toolCalls[msg.toolCalls.length - 1]
-        if (l.status === 'running' && l.name === data.toolName) {
-          l.status = 'waiting_approval'
-          l.permissionRequest = data
-          l.summary = data.summary || l.summary
-          break
-        }
-      }
-      msg.toolCalls = msg.toolCalls || []
-      msg.toolCalls.push({ name: 'permission_ask', args: { toolName: data.toolName, input: data.input }, summary: data.summary || `${data.toolName} 需要确认`, result: null, status: 'waiting_approval', permissionRequest: data, _order: (msg._nextOrder = (msg._nextOrder || 0) + 1) })
-      break
-    case 'USER_QUESTION':
-      attachUserQuestion(msg, data)
-      break
-    case 'PLAN_UPDATE':
-      msg.plan = data.summary || data.plan || null; msg.planJson = data.planJson || null
-      break
-    case 'FINAL_DELTA':
-      msg.content += (data.delta || '')
-      break
-    case 'FINAL':
-      if (data.content) msg.content = data.content
-      break
-    case 'ERROR':
-      msg.error = data.message
-      break
-    case 'INTERRUPTED':
-      msg.content += '\n[已中断]'
-      break
-    case 'TOKEN_USAGE':
-      tokenUsage.value.promptTokens += (data.promptTokens || 0)
-      tokenUsage.value.completionTokens += (data.completionTokens || 0)
-      tokenUsage.value.totalTokens += (data.totalTokens || 0)
+async function openContextUsageDialog() {
+  const conversationId = currentAgentSession.value?.conversationId
+  nextContextPreview.value = null
+  if (conversationId) await loadContextUsageStatus(conversationId)
+  showContextUsageDialog.value = true
+}
+
+async function loadNextContextPreview() {
+  const conversationId = currentAgentSession.value?.conversationId
+  if (!conversationId || !projectId.value || nextContextPreviewLoading.value) return
+
+  nextContextPreviewLoading.value = true
+  try {
+    const response = await projectApi.agentNextContextPreview(projectId.value, conversationId, {
+      modelConfigId: selectedModelConfigId.value || null,
+      activePath: activePath.value || '',
+      agentMode: agentMode.value,
+      draftMessage: agentInput.value.trim()
+    })
+    nextContextPreview.value = response.data || null
+  } catch (error) {
+    nextContextPreview.value = null
+    ElMessage.error('\u751f\u6210\u4e0b\u4e00\u6b21\u8bf7\u6c42\u9884\u6d4b\u5931\u8d25: ' + (error?.response?.data?.message || error?.message || '\u672a\u77e5\u9519\u8bef'))
+  } finally {
+    nextContextPreviewLoading.value = false
+  }
+}
+
+async function loadContextUsageStatus(conversationId) {
+  if (!conversationId || !projectId.value) {
+    contextUsageStatus.value = null
+    return
+  }
+  try {
+    const response = await projectApi.agentContextStatus(projectId.value, conversationId)
+    contextUsageStatus.value = resolveContextUsageStatus(contextUsageStatus.value, response.data, conversationId)
+  } catch (error) {
+    contextUsageStatus.value = resolveContextUsageStatus(contextUsageStatus.value, null, conversationId)
+  }
+}
+
+function replayHistoryEvent(type, data, message) {
+  reduceHistoryEvent(type, data, message, {
+    onPendingChange: () => { changesRefreshKey.value++ },
+    onUserQuestion: attachUserQuestion,
+    onTokenUsage: usage => {
+      tokenUsage.value.promptTokens += usage.promptTokens || 0
+      tokenUsage.value.completionTokens += usage.completionTokens || 0
+      tokenUsage.value.totalTokens += usage.totalTokens || 0
       tokenUsage.value.callCount++
-      tokenUsage.value.conversationTotal = data.conversationTotal || tokenUsage.value.totalTokens
-      break
-  }
+      tokenUsage.value.conversationTotal = usage.conversationTotal || tokenUsage.value.totalTokens
+    },
+    onContextStatus: status => { contextUsageStatus.value = status }
+  })
 }
 
-async function forkConversation(c) {
-  if (!c?.conversationId) return
+async function forkConversation(conversation) {
   try {
-    const r = await projectApi.agentForkConversation(projectId.value, c.conversationId)
-    if (r.code === 0 && r.data?.conversationId) {
-      await loadConversations()
-      await loadConversationMessages(r.data.conversationId)
-      showSessions.value = false
-      ElMessage.success('已创建会话分支')
-    } else {
-      ElMessage.error(r.message || '创建分支失败')
+    const result = await forkConversationState(conversation)
+    if (!result.success) {
+      ElMessage.error(result.message)
+      return false
     }
-  } catch (e) {
-    ElMessage.error('创建分支失败：' + (e?.response?.data?.message || e?.message || '未知错误'))
+    showSessions.value = false
+    ElMessage.success('\u5df2\u521b\u5efa\u4f1a\u8bdd\u5206\u652f')
+    return true
+  } catch (error) {
+    ElMessage.error('\u521b\u5efa\u5206\u652f\u5931\u8d25\uff1a' + (error?.response?.data?.message || error?.message || '\u672a\u77e5\u9519\u8bef'))
+    return false
   }
 }
 
 async function forkCurrentConversation() {
   if (!currentAgentSession.value?.conversationId) {
-    ElMessage.info('当前还没有可分支的会话')
+    ElMessage.info('\u5f53\u524d\u8fd8\u6ca1\u6709\u53ef\u5206\u652f\u7684\u4f1a\u8bdd')
     return
   }
-  const c = conversations.value.find(x => x.conversationId === currentAgentSession.value.conversationId)
-  await forkConversation(c || { conversationId: currentAgentSession.value.conversationId })
+  const conversation = conversations.value.find(item => item.conversationId === currentAgentSession.value.conversationId)
+  await forkConversation(conversation || { conversationId: currentAgentSession.value.conversationId })
 }
 
-async function compactConversation(c) {
-  if (!c?.conversationId) return
+async function compactConversation(conversation) {
   try {
-    const r = await projectApi.agentCompactConversation(projectId.value, c.conversationId)
-    if (r.code === 0) {
-      await loadConversations()
-      ElMessage.success('上下文已压缩，后续对话会携带摘要')
-    } else {
-      ElMessage.error(r.message || '压缩失败')
+    const result = await compactConversationState(conversation, selectedModelConfigId.value)
+    if (!result.success) {
+      ElMessage.error(result.message)
+      return false
     }
-  } catch (e) {
-    ElMessage.error('压缩失败：' + (e?.response?.data?.message || e?.message || '未知错误'))
+    ElMessage.success('\u4e0a\u4e0b\u6587\u5df2\u538b\u7f29\uff0c\u540e\u7eed\u5bf9\u8bdd\u4f1a\u643a\u5e26\u6458\u8981')
+    return true
+  } catch (error) {
+    ElMessage.error('\u538b\u7f29\u5931\u8d25\uff1a' + (error?.response?.data?.message || error?.message || '\u672a\u77e5\u9519\u8bef'))
+    return false
   }
 }
 
 async function compactCurrentConversation() {
   if (!currentAgentSession.value?.conversationId) {
-    ElMessage.info('当前还没有可压缩的会话')
+    ElMessage.info('\u5f53\u524d\u8fd8\u6ca1\u6709\u53ef\u538b\u7f29\u7684\u4f1a\u8bdd')
     return
   }
-  const c = conversations.value.find(x => x.conversationId === currentAgentSession.value.conversationId)
-  await compactConversation(c || { conversationId: currentAgentSession.value.conversationId })
+  const conversation = conversations.value.find(item => item.conversationId === currentAgentSession.value.conversationId)
+  await compactConversation(conversation || { conversationId: currentAgentSession.value.conversationId })
 }
 
-async function deleteConversation(c) {
+async function deleteConversation(conversation) {
   try {
-    await projectApi.agentDeleteConversation(projectId.value, c.conversationId)
-    if (currentAgentSession.value && currentAgentSession.value.conversationId === c.conversationId) {
-      clearMessages()
-    }
-    conversations.value = conversations.value.filter(x => x.conversationId !== c.conversationId)
-  } catch (e) { ElMessage.error('删除失败') }
+    return await deleteConversationState(conversation)
+  } catch (error) {
+    ElMessage.error('\u5220\u9664\u5931\u8d25')
+    return false
+  }
 }
 
 function getMergedItems(msg) {
@@ -2408,24 +2524,20 @@ function formatTokenCount(n) {
   return String(n)
 }
 
-const THINK_CHARS_PER_SEC = 80
+let agentRenderFrame = null
+function scheduleAgentRender() {
+  if (agentRenderFrame != null) return
+  agentRenderFrame = requestAnimationFrame(async () => {
+    agentRenderFrame = null
+    await nextTick()
+    scrollDown()
+  })
+}
 function startThinkingReveal(msg) {
-  if (msg._thinkingTimer) return
-  msg._thinkingTimer = setInterval(() => {
-    if (!msg.thinking) { stopThinkingReveal(msg); return }
-    const full = msg.thinking
-    const shown = msg._thinkingDisplay || ''
-    if (shown.length < full.length) {
-      const nextLen = Math.min(full.length, shown.length + THINK_CHARS_PER_SEC)
-      msg._thinkingDisplay = full.substring(0, nextLen)
-    }
-    if (msg._thinkingDisplay.length >= full.length && !msg.isStreaming) {
-      stopThinkingReveal(msg)
-    }
-  }, 1000)
+  msg._thinkingDisplay = msg.thinking || ''
 }
 function stopThinkingReveal(msg) {
-  if (msg._thinkingTimer) { clearInterval(msg._thinkingTimer); msg._thinkingTimer = null }
+  msg._thinkingTimer = null
 }
 function flushThinkingDisplay(msg) {
   stopThinkingReveal(msg)
@@ -2613,9 +2725,22 @@ function scrollDown(force = false) {
 
 // 滚动事件处理（带防抖）
 let scrollTimeout = null
+async function loadOlderHistory() {
+  const container = msgContainer.value
+  const oldScrollHeight = container?.scrollHeight || 0
+  const oldScrollTop = container?.scrollTop || 0
+  const loaded = await loadOlderMessages()
+  if (!loaded || !container) return
+  await nextTick()
+  container.scrollTop = container.scrollHeight - oldScrollHeight + oldScrollTop
+}
+
 function handleScroll() {
   if (!msgContainer.value) return
   const { scrollTop, scrollHeight, clientHeight } = msgContainer.value
+  if (scrollTop <= 48 && hasOlderMessages.value && !loadingOlderMessages.value) {
+    void loadOlderHistory()
+  }
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight
   // 当距离底部超过 200px 时显示滚动按钮
   showScrollBtn.value = distanceFromBottom > 200
@@ -2652,11 +2777,7 @@ function switchMode(mode) {
 }
 
 function applyChip(prompt) { agentInput.value = prompt; nextTick(() => aiInputRef.value?.focus()) }
-function toggleAiTheme() {
-  aiDarkTheme.value = !aiDarkTheme.value
-  localStorage.setItem('labex-ai-theme', aiDarkTheme.value ? 'dark' : 'light')
-  document.documentElement.setAttribute('data-theme', aiDarkTheme.value ? 'dark' : 'light')
-}
+function toggleAiTheme() { themeStore.toggleLightDark() }
 function refreshContext() { ElMessage.success('上下文已刷新') }
 function copyMessage(content) { navigator.clipboard?.writeText(content); ElMessage.success('已复制') }
 function insertToEditor(content) { ElMessage.success('代码已插入编辑器') }
@@ -2910,7 +3031,10 @@ async function optimizePrompt() {
   const originalPrompt = agentInput.value.trim()
   const loadingMsg = ElMessage({ message: '正在优化提示词...', type: 'info', duration: 0, showClose: false })
   try {
-    const r = await projectApi.optimizePrompt(projectId.value, { message: originalPrompt })
+    const r = await projectApi.optimizePrompt(projectId.value, {
+      message: originalPrompt,
+      modelConfigId: selectedModelConfigId.value || null
+    })
     loadingMsg.close()
     const optimized = r.data?.optimizedPrompt?.trim()
     if (optimized && optimized !== originalPrompt) {
@@ -3000,17 +3124,65 @@ function selectFirstCommand() {
   }
 }
 
-// Resize
-let resizing = false
-function startResize(e) {
-  resizing = true
+function startSidebarResize(e) {
+  const handle = e.currentTarget
   const startX = e.clientX
-  const panel = e.target.closest('.ai-panel')
-  const startWidth = panel?.offsetWidth || 340
-  const onMove = (ev) => { if (!resizing) return; const diff = startX - ev.clientX; const newW = Math.max(280, Math.min(startWidth + diff, window.innerWidth * 0.4)); if (panel) panel.style.width = newW + 'px' }
-  const onUp = () => { resizing = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
+  const startWidth = sidebarWidth.value
+  let latestX = startX
+  let frame = null
+  handle.setPointerCapture?.(e.pointerId)
+  const apply = () => {
+    frame = null
+    sidebarWidth.value = Math.max(180, Math.min(startWidth + latestX - startX, 520))
+  }
+  const move = event => { latestX = event.clientX; if (frame == null) frame = requestAnimationFrame(apply) }
+  const finish = () => {
+    if (frame != null) { cancelAnimationFrame(frame); frame = null; apply() }
+    handle.removeEventListener('pointermove', move)
+    handle.removeEventListener('pointerup', finish)
+    handle.removeEventListener('pointercancel', finish)
+  }
+  handle.addEventListener('pointermove', move)
+  handle.addEventListener('pointerup', finish)
+  handle.addEventListener('pointercancel', finish)
+}
+
+// Resize
+let resizeFrame = null
+function startResize(e) {
+  const handle = e.currentTarget
+  const panel = handle.closest('.ai-panel')
+  if (!panel) return
+  const startX = e.clientX
+  const startWidth = panel.offsetWidth || 340
+  let latestX = startX
+  panel.classList.add('is-resizing')
+  handle.setPointerCapture?.(e.pointerId)
+
+  const applyWidth = () => {
+    resizeFrame = null
+    const diff = startX - latestX
+    const width = Math.max(280, Math.min(startWidth + diff, window.innerWidth * 0.7))
+    panel.style.width = `${width}px`
+  }
+  const onMove = event => {
+    latestX = event.clientX
+    if (resizeFrame == null) resizeFrame = requestAnimationFrame(applyWidth)
+  }
+  const finish = () => {
+    if (resizeFrame != null) {
+      cancelAnimationFrame(resizeFrame)
+      resizeFrame = null
+      applyWidth()
+    }
+    panel.classList.remove('is-resizing')
+    handle.removeEventListener('pointermove', onMove)
+    handle.removeEventListener('pointerup', finish)
+    handle.removeEventListener('pointercancel', finish)
+  }
+  handle.addEventListener('pointermove', onMove)
+  handle.addEventListener('pointerup', finish)
+  handle.addEventListener('pointercancel', finish)
 }
 </script>
 
@@ -3022,19 +3194,33 @@ function startResize(e) {
 .ws-title { font-size: 13px; font-weight: 600; color: #111827; }
 .ws-topbar-right { display: flex; align-items: center; gap: 8px; }
 .ws-unsaved { font-size: 11px; color: #f59e0b; background: #fef3c7; padding: 2px 8px; border-radius: 4px; }
-.ws-body { flex: 1; display: flex; overflow: hidden; }
+.ws-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+.ws-center { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: #fff; }
 
 /* ===== Left Sidebar (File Tree) ===== */
 .ws-sidebar { width: 240px; border-right: 1px solid #f0f0f0; display: flex; flex-direction: column; background: #fafbfc; flex-shrink: 0; }
 .ws-sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f0f0f0; }
 .ws-sidebar-actions { display: flex; gap: 2px; text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 500; color: #374151; }
+.ws-resize-handle { width: 5px; cursor: col-resize; flex: 0 0 5px; background: transparent; }
+.ws-resize-handle:hover { background: #cbd5e1; }
 .ws-tree { flex: 1; overflow-y: auto; padding: 6px 4px; }
 .ws-tree *:focus { outline: none !important; }
 .ws-tree *:focus-visible { outline: none !important; }
 .ws-tree-empty { padding: 16px; color: #9ca3af; font-size: 13px; text-align: center; }
+.ws-tree-error { margin: 8px; padding: 8px; border: 1px solid #fecaca; border-radius: 6px; background: #fef2f2; color: #b91c1c; font-size: 12px; line-height: 1.5; }
+.ws-tree-error button { margin-top: 6px; border: 0; border-radius: 4px; padding: 4px 7px; background: #fee2e2; color: inherit; font: inherit; cursor: pointer; }
+.ws-tree-load-more { display: block; width: calc(100% - 8px); margin: 6px 4px; padding: 7px 8px; border: 1px solid #dbe1f0; border-radius: 6px; background: #fff; color: #4f46e5; font: inherit; font-size: 12px; cursor: pointer; }
+.ws-tree-load-more:hover { background: #eef2ff; border-color: #c7d2fe; }
 
 /* ===== Editor ===== */
-.ws-editor { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; min-width: 0; }
+.ws-editor { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; min-width: 0; min-height: 0; }
+.ws-terminal-resize-handle { flex: 0 0 5px; height: 5px; cursor: row-resize; background: transparent; border-top: 1px solid #dfe3e8; position: relative; z-index: 3; touch-action: none; }
+.ws-terminal-resize-handle::after { content: ''; position: absolute; left: 50%; top: 1px; width: 44px; height: 2px; transform: translateX(-50%); border-radius: 2px; background: #c7cdd4; opacity: 0; transition: opacity .15s; }
+.ws-terminal-resize-handle:hover::after { opacity: 1; }
+.ws-terminal-dock { flex: 0 0 auto; min-height: 140px; max-height: 70%; border-top: 0; background: #fff; display: flex; flex-direction: column; overflow: hidden; }
+.ws-terminal-dock-header { height: 34px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; background: #f6f8fa; border-bottom: 1px solid #dfe3e8; }
+.ws-terminal-dock.dark .ws-terminal-dock-header { background: #252526; color: #d4d4d4; border-color: #3c3c3c; }
+.ws-terminal-dock :deep(.terminal-panel) { flex: 1; min-height: 0; }
 .ws-editor-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #9ca3af; font-size: 13px; }
 .ws-editor-hint { font-size: 12px; color: #d1d5db; }
 .ws-editor-tabs { display: flex; border-bottom: 1px solid #f0f0f0; background: #fafbfc; padding: 0 8px; flex-shrink: 0; overflow-x: auto; }
@@ -3064,6 +3250,118 @@ function startResize(e) {
 .ws-btn-sm { padding: 5px 10px; font-size: 12px; }
 .ws-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+
+/* ===== Command Palette ===== */
+.command-palette {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  width: 100%;
+  max-height: 340px;
+  background: var(--ai-bg);
+  border: 1px solid var(--ai-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 100;
+}
+
+.command-palette-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--ai-bg-secondary);
+  border-bottom: 1px solid var(--ai-border);
+}
+
+.command-palette-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ai-text);
+}
+
+.command-palette-hint {
+  font-size: 12px;
+  color: var(--ai-text-muted);
+}
+
+.command-palette-search {
+  padding: 10px;
+  border-bottom: 1px solid var(--ai-border);
+}
+
+.command-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 13.5px;
+  background: transparent;
+  border: 1px solid var(--ai-border-strong);
+  border-radius: 6px;
+  color: var(--ai-text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.command-search-input:focus {
+  border-color: var(--ai-accent);
+}
+
+.command-palette-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.command-item {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.command-item.active,
+.command-item:hover {
+  background: var(--ai-bg-hover);
+}
+
+.command-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.command-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ai-text);
+}
+
+.command-aliases {
+  font-size: 12px;
+  color: var(--ai-text-muted);
+}
+
+.command-item-desc {
+  font-size: 12.5px;
+  color: var(--ai-text-muted);
+}
+
+.command-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--ai-text-muted);
+}
+
+</style>
+<style>
 /* ===== Dialogs ===== */
 .ws-overlay {
   --ai-bg: #ffffff;
@@ -3132,51 +3430,52 @@ function startResize(e) {
    AI ASSISTANT PANEL - Light Theme (unified with page)
    ======================================================================== */
 .ai-panel {
-  --ai-bg: #ffffff;
-  --ai-bg-secondary: #f9fafb;
-  --ai-bg-tertiary: #f3f4f6;
-  --ai-bg-elevated: #ffffff;
-  --ai-border: #f0f0f0;
-  --ai-border-strong: #e5e7eb;
-  --ai-border-focus: #3b82f6;
-  --ai-text: #111827;
-  --ai-text-secondary: #374151;
-  --ai-text-muted: #6b7280;
-  --ai-text-faint: #9ca3af;
-  --ai-accent: #3b82f6;
-  --ai-accent-hover: #2563eb;
-  --ai-accent-bg: #eff6ff;
-  --ai-accent-border: #bfdbfe;
-  --ai-purple: #8b5cf6;
-  --ai-purple-text: #7c3aed;
-  --ai-purple-bg: #f5f3ff;
-  --ai-purple-border: #ede9fe;
-  --ai-purple-deep: #6d28d9;
+  --ai-bg: #fcf9f2;
+  --ai-bg-secondary: #f2ecdf;
+  --ai-bg-tertiary: #e9e2d3;
+  --ai-bg-elevated: #fcf9f2;
+  --ai-border: rgba(0,0,0,0.06);
+  --ai-border-strong: #e0d8c8;
+  --ai-border-focus: #5c5545;
+  --ai-text: #2f2b26;
+  --ai-text-secondary: #4a453d;
+  --ai-text-muted: #736d62;
+  --ai-text-faint: #a1a1aa;
+  --ai-accent: #18181b;
+  --ai-accent-hover: #3f3f46;
+  --ai-accent-bg: #f4f4f5;
+  --ai-accent-border: #e4e4e7;
+  --ai-purple: #d97757;
+  --ai-purple-text: #c26143;
+  --ai-purple-bg: #fff7ed;
+  --ai-purple-border: #ffedd5;
+  --ai-purple-deep: #b35035;
   --ai-green: #10b981;
   --ai-red: #ef4444;
   --ai-red-hover: #dc2626;
   --ai-yellow: #f59e0b;
-  --ai-shadow-sm: 0 1px 4px rgba(0,0,0,0.06);
-  --ai-shadow-md: 0 4px 16px rgba(0,0,0,0.1);
-  --ai-shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+  --ai-shadow-sm: 0 1px 2px rgba(0,0,0,0.03);
+  --ai-shadow-md: 0 4px 12px rgba(0,0,0,0.05);
+  --ai-shadow-lg: 0 8px 24px rgba(0,0,0,0.08);
   --ai-code-bg: #1e1e2e;
   --ai-code-text: #cdd6f4;
-  --ai-inline-code-bg: #f0f0f0;
-  --ai-inline-code-border: #e5e7eb;
+  --ai-inline-code-bg: #f4f4f5;
+  --ai-inline-code-border: transparent;
   --ai-inline-code-text: #e11d48;
-  --ai-font-size: 13px;
-  --ai-msg-gap: 16px;
-  --ai-radius: 8px;
-  --ai-radius-sm: 6px;
+  --ai-font-size: 14px;
+  --ai-msg-gap: 20px;
+  --ai-radius: 12px;
+  --ai-radius-sm: 8px;
 
   position: relative;
   width: 420px;
   min-width: 320px;
-  max-width: 45vw;
+  max-width: 70vw;
   display: flex;
   flex-direction: column;
-  background: var(--ai-bg);
-  color: var(--ai-text-secondary);
+  background: var(--ai-bg-secondary);
+  color: var(--ai-text);
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
   font-size: var(--ai-font-size);
   flex-shrink: 0;
   border-left: 1px solid var(--ai-border);
@@ -3185,37 +3484,37 @@ function startResize(e) {
 
 /* ===== Dark Theme ===== */
 .ai-panel.dark {
-  --ai-bg: #1a1b26;
-  --ai-bg-secondary: #1f2033;
-  --ai-bg-tertiary: #282a3a;
-  --ai-bg-elevated: #24253a;
-  --ai-border: #2e3044;
-  --ai-border-strong: #383a50;
-  --ai-border-focus: #7aa2f7;
-  --ai-text: #c0caf5;
-  --ai-text-secondary: #a9b1d6;
-  --ai-text-muted: #787c99;
-  --ai-text-faint: #565f89;
-  --ai-accent: #7aa2f7;
-  --ai-accent-hover: #5d87e0;
-  --ai-accent-bg: #1a1d3a;
-  --ai-accent-border: #2e3a5e;
-  --ai-purple: #bb9af7;
-  --ai-purple-text: #c0a8f7;
-  --ai-purple-bg: #1f1d30;
-  --ai-purple-border: #2d2a45;
-  --ai-purple-deep: #bb9af7;
+  --ai-bg: #27272a;
+  --ai-bg-secondary: #18181b;
+  --ai-bg-tertiary: #3f3f46;
+  --ai-bg-elevated: #27272a;
+  --ai-border: rgba(255,255,255,0.08);
+  --ai-border-strong: rgba(255,255,255,0.15);
+  --ai-border-focus: #fafafa;
+  --ai-text: #fafafa;
+  --ai-text-secondary: #e4e4e7;
+  --ai-text-muted: #a1a1aa;
+  --ai-text-faint: #71717a;
+  --ai-accent: #fafafa;
+  --ai-accent-hover: #e4e4e7;
+  --ai-accent-bg: rgba(255,255,255,0.1);
+  --ai-accent-border: rgba(255,255,255,0.2);
+  --ai-purple: #d97757;
+  --ai-purple-text: #fdbca4;
+  --ai-purple-bg: rgba(217,119,87,0.15);
+  --ai-purple-border: rgba(217,119,87,0.3);
+  --ai-purple-deep: #d97757;
   --ai-green: #9ece6a;
   --ai-red: #f7768e;
   --ai-red-hover: #e05f75;
   --ai-yellow: #e0af68;
-  --ai-shadow-sm: 0 1px 4px rgba(0,0,0,0.2);
-  --ai-shadow-md: 0 4px 16px rgba(0,0,0,0.3);
-  --ai-shadow-lg: 0 8px 24px rgba(0,0,0,0.4);
+  --ai-shadow-sm: 0 1px 4px rgba(0,0,0,0.3);
+  --ai-shadow-md: 0 4px 16px rgba(0,0,0,0.4);
+  --ai-shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
   --ai-code-bg: #13141c;
   --ai-code-text: #c0caf5;
-  --ai-inline-code-bg: #24253a;
-  --ai-inline-code-border: #383a50;
+  --ai-inline-code-bg: #3f3f46;
+  --ai-inline-code-border: transparent;
   --ai-inline-code-text: #f7768e;
 }
 .ai-panel.collapsed {
@@ -3235,9 +3534,63 @@ function startResize(e) {
   z-index: 10;
   transition: background 0.15s;
 }
+.ai-panel.is-resizing { transition: none; }
+
 .ai-resize-handle:hover,
 .ai-resize-handle:active {
   background: var(--ai-accent);
+}
+
+.ai-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: aiMsgIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  min-width: 0;
+  overflow: hidden;
+  margin-bottom: var(--ai-msg-gap, 24px);
+}
+@keyframes aiMsgIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.ai-msg-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ai-msg-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ai-text);
+}
+.ai-msg-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ai-msg.user .ai-msg-avatar {
+  background: var(--ai-bg-tertiary);
+  color: var(--ai-text);
+}
+.ai-msg.assistant .ai-msg-avatar {
+  background: transparent;
+  color: var(--ai-purple);
+}
+.ai-msg-body {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding-left: 40px; /* Aligns with the text, skipping the 28px avatar + 12px gap */
 }
 
 /* ===== Collapsed Icon Bar ===== */
@@ -3282,10 +3635,9 @@ function startResize(e) {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--ai-border);
   flex-shrink: 0;
   backdrop-filter: blur(12px);
-  background: color-mix(in srgb, var(--ai-bg) 85%, transparent);
+  background: color-mix(in srgb, var(--ai-bg-secondary) 85%, transparent);
   position: sticky;
   top: 0;
   z-index: 10;
@@ -3312,8 +3664,9 @@ function startResize(e) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
+  font-family: 'Georgia', 'Times New Roman', serif;
   color: var(--ai-text);
 }
 .ai-topbar-actions {
@@ -3425,22 +3778,27 @@ function startResize(e) {
 /* ===== Tab Bar ===== */
 .ai-tabs {
   display: flex;
-  border-bottom: 1px solid var(--ai-border);
-  padding: 0 8px;
+  padding: 4px;
+  background: var(--ai-bg-tertiary);
+  border-radius: var(--ai-radius-sm);
+  margin: 10px 12px;
   flex-shrink: 0;
 }
 .ai-tab {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 9px 14px;
-  font-size: 12px;
-  color: var(--ai-text-faint);
+  justify-content: center;
+  gap: 6px;
+  flex: 1;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ai-text-muted);
   border: none;
   background: transparent;
-  border-bottom: 2px solid transparent;
+  border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   font-family: inherit;
   white-space: nowrap;
 }
@@ -3448,8 +3806,9 @@ function startResize(e) {
   color: var(--ai-text-secondary);
 }
 .ai-tab.active {
-  color: var(--ai-accent);
-  border-bottom-color: var(--ai-accent);
+  color: var(--ai-text);
+  background: var(--ai-bg-elevated);
+  box-shadow: var(--ai-shadow-sm);
 }
 .ai-tab svg { flex-shrink: 0; }
 
@@ -3469,40 +3828,37 @@ function startResize(e) {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 12px;
-  scroll-behavior: smooth;
   min-width: 0;
 }
 .ai-messages::-webkit-scrollbar { width: 4px; }
 .ai-messages::-webkit-scrollbar-track { background: transparent; }
 .ai-messages::-webkit-scrollbar-thumb { background: var(--ai-border-strong); border-radius: 4px; }
+.ai-history-load { display: block; margin: 0 auto 10px; padding: 5px 10px; border: 1px solid var(--ai-border); border-radius: 999px; background: var(--ai-bg-secondary); color: var(--ai-text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.ai-history-load:hover:not(:disabled) { border-color: var(--ai-accent-border); color: var(--ai-accent); }
+.ai-history-load:disabled { cursor: wait; opacity: 0.65; }
+.ai-content.is-empty {
+  justify-content: center;
+}
+.ai-content.is-empty .ai-messages {
+  flex: none;
+  height: auto;
+  overflow: visible;
+  padding: 0;
+}
 .ai-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 48px 16px;
+  padding: 0 16px 24px 16px;
   text-align: center;
 }
-.ai-empty-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: 16px;
-  background: var(--ai-accent-bg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.ai-empty-title {
-  font-size: 14px;
-  font-weight: 600;
+.ai-empty-greeting {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  font-size: 24px;
+  font-weight: 500;
   color: var(--ai-text);
-  margin: 4px 0 0;
-}
-.ai-empty-desc {
-  font-size: 12px;
-  color: var(--ai-text-faint);
   margin: 0;
-  line-height: 1.5;
 }
 .ai-msg-list {
   display: flex;
@@ -3514,7 +3870,6 @@ function startResize(e) {
 .ai-msg {
   display: flex;
   gap: 10px;
-  animation: aiMsgIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   min-width: 0;
   overflow: hidden;
   margin-bottom: var(--ai-msg-gap, 16px);
@@ -3554,43 +3909,29 @@ function startResize(e) {
   max-width: 100%;
   overflow: hidden;
 }
-.ai-msg.user .ai-msg-body {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
 .ai-msg-content {
-  padding: 14px 18px;
-  border-radius: 12px;
-  font-size: var(--ai-font-size, 13.5px);
-  line-height: 1.75;
+  font-size: var(--ai-font-size, 14px);
+  line-height: 1.7;
   word-break: break-word;
   overflow-wrap: anywhere;
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
 }
-.ai-msg.user .ai-msg-content {
-  background: var(--ai-accent);
-  color: #fff;
-  border-radius: 12px 12px 4px 12px;
-  max-width: 85%;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.2);
-}
+.ai-msg.user .ai-msg-content,
 .ai-msg.assistant .ai-msg-content {
-  background: var(--ai-bg-secondary);
-  color: var(--ai-text-secondary);
-  border: 1px solid var(--ai-border-strong);
-  border-radius: 12px 12px 12px 4px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  overflow-x: auto;
+  background: transparent;
+  color: var(--ai-text);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
   max-width: 100%;
 }
 .ai-msg-text {
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
-  letter-spacing: 0.01em;
   min-width: 0;
 }
 .ai-msg-text p {
@@ -3820,12 +4161,12 @@ function startResize(e) {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: var(--ai-purple-bg);
-  border: 1px solid var(--ai-purple-border);
+  background: #fafafa;
+  border: 1px dashed #d1d5db;
   border-radius: 10px;
   cursor: pointer;
   font-size: 11.5px;
-  color: var(--ai-purple-text);
+  color: #6b7280;
   user-select: none;
   transition: background 0.12s;
 }
@@ -3845,16 +4186,23 @@ function startResize(e) {
   50% { opacity: 0; }
 }
 .ai-thinking-body {
-  padding: 10px 14px;
-  margin-top: 6px;
-  font-size: 12.5px;
-  color: var(--ai-text-muted);
-  background: var(--ai-purple-bg);
-  border-radius: 6px;
-  border-left: 3px solid var(--ai-purple);
-  white-space: pre-wrap;
-  max-height: 200px;
+  max-height: 400px;
+  margin: 4px 0 0 18px;
+  padding: 4px 0;
   overflow-y: auto;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: #7a6e5d;
+  font-family: 'Georgia', 'Times New Roman', serif;
+  font-style: italic;
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: normal;
+}
+.ai-thinking-body:empty::after {
+  content: '思考中...';
+  color: var(--ai-text-faint);
 }
 
 /* Tool Calls Section */
@@ -4055,6 +4403,11 @@ function startResize(e) {
   background: var(--ai-bg);
   position: relative;
 }
+.ai-content.is-empty .ai-input-area {
+  border-top: none;
+  background: transparent;
+  width: 100%;
+}
 .ai-input-context {
   display: flex;
   align-items: center;
@@ -4083,299 +4436,164 @@ function startResize(e) {
 .ai-input-ctx-remove:hover {
   background: rgba(37, 99, 235, 0.1);
 }
-.ai-input-row {
+/* Claude 风格输入框布局重构 */
+.ai-quick-actions {
   display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.ai-quick-pill {
+  display: flex;
+  align-items: center;
   gap: 6px;
-  align-items: flex-end;
-  position: relative;
-}
-.ai-textarea {
-  flex: 1;
-  background: var(--ai-bg-secondary);
-  border: 1px solid var(--ai-border-strong);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 13px;
-  color: var(--ai-text);
-  resize: none;
-  outline: none;
-  font-family: inherit;
-  line-height: 1.5;
-  max-height: 160px;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.ai-textarea::placeholder { color: var(--ai-text-faint); }
-.ai-textarea:focus { border-color: var(--ai-accent); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
-
-/* Command Palette Styles */
-.command-palette {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
-  background: var(--ai-bg-secondary);
-  border: 1px solid var(--ai-border);
-  border-radius: 12px;
-  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
-  margin-bottom: 8px;
-  max-height: 400px;
-  display: flex;
-  flex-direction: column;
-  z-index: 100;
-  overflow: hidden;
-}
-.command-palette-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--ai-border);
-  background: var(--ai-bg-tertiary);
-}
-.command-palette-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ai-text);
-}
-.command-palette-hint {
-  font-size: 11px;
-  color: var(--ai-text-muted);
-}
-.command-palette-search {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--ai-border);
-}
-.command-search-input {
-  width: 100%;
-  height: 32px;
-  border: 1px solid var(--ai-border);
-  border-radius: 8px;
-  padding: 0 10px;
-  font-size: 13px;
+  padding: 6px 14px;
   background: var(--ai-bg);
-  color: var(--ai-text);
-  outline: none;
-}
-.command-search-input:focus {
-  border-color: var(--ai-accent);
-}
-.command-search-input::placeholder {
-  color: var(--ai-text-faint);
-}
-.command-palette-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 4px 0;
-}
-.command-palette-list::-webkit-scrollbar {
-  width: 6px;
-}
-.command-palette-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-.command-palette-list::-webkit-scrollbar-thumb {
-  background: var(--ai-border);
-  border-radius: 3px;
-}
-.command-item {
-  display: flex;
-  flex-direction: column;
-  padding: 10px 16px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.command-item:hover,
-.command-item.active {
-  background: var(--ai-bg-tertiary);
-}
-.command-item-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.command-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ai-accent);
-  font-family: 'Consolas', 'Monaco', monospace;
-}
-.command-aliases {
-  font-size: 11px;
-  color: var(--ai-text-muted);
-}
-.command-item-desc {
-  font-size: 12px;
-  color: var(--ai-text-muted);
-  margin-top: 2px;
-}
-.command-empty {
-  padding: 20px 16px;
-  text-align: center;
-  color: var(--ai-text-muted);
-  font-size: 13px;
-}
-
-/* 优化后的输入框布局 */
-.ai-input-bottom {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.ai-mode-bar {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.ai-mode-switch {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px;
-  border-radius: 10px;
-  background: var(--ai-bg-tertiary);
   border: 1px solid var(--ai-border);
-}
-
-.ai-mode-switch button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  border: none;
-  background: transparent;
-  color: var(--ai-text-muted);
-  border-radius: 8px;
-  padding: 0 12px;
-  font-size: 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--ai-text-secondary);
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-  z-index: 1;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
 }
-
-.ai-mode-switch button:hover:not(.active) {
-  color: var(--ai-text-secondary);
-  background: rgba(0, 0, 0, 0.05);
+.ai-quick-pill:hover:not(.active) {
+  background: var(--ai-bg-secondary);
+  color: var(--ai-text);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 6px rgba(0,0,0,0.04);
 }
-
-.ai-mode-switch button.active {
-  color: #fff;
+.ai-quick-pill.active {
   background: var(--ai-text);
-  box-shadow: 0 1px 4px rgba(17, 24, 39, 0.14);
-  transform: scale(1.02);
+  color: #fff;
+  border-color: var(--ai-text);
 }
 
-.ai-mode-switch button.active:active {
-  transform: scale(0.98);
+.ai-input-box {
+  background: var(--ai-bg);
+  border: 1px solid var(--ai-border);
+  border-radius: 16px;
+  padding: 12px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.ai-input-box:focus-within {
+  border-color: var(--ai-accent);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
 }
 
-.mode-icon {
-  font-size: 12px;
+.ai-input-text-area {
+  display: flex;
+}
+.ai-input-text-area textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  resize: none;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ai-text);
+  outline: none;
+  min-height: 24px;
+  max-height: 200px;
+  padding: 0;
+  font-family: inherit;
+}
+.ai-input-text-area textarea::placeholder {
+  color: var(--ai-text-faint);
 }
 
-.ai-toolbar {
+.ai-input-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  margin-top: 8px;
 }
-
-.ai-toolbar-left {
+.ai-input-toolbar {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-
-.ai-toolbar-right {
+.ai-toolbar-btn {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 6px;
+  color: var(--ai-text-faint);
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.ai-tool-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--ai-border-strong);
-  background: var(--ai-bg);
-  color: var(--ai-text-muted);
-  border-radius: 8px;
-  font-size: 12px;
-  font-family: inherit;
+  justify-content: center;
   cursor: pointer;
-  transition: all 0.15s;
-  white-space: nowrap;
+  transition: all 0.2s;
 }
-
-.ai-tool-btn:hover {
-  border-color: var(--ai-accent);
-  color: var(--ai-accent);
-  background: var(--ai-accent-bg);
+.ai-toolbar-btn:hover {
+  background: var(--ai-bg-elevated);
+  color: var(--ai-text-secondary);
 }
-
-.ai-tool-btn svg {
-  flex-shrink: 0;
+.ai-toolbar-btn span {
+  display: none; /* Hide labels to make it compact like Claude */
+}
+.ai-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .ai-generating-indicator {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  color: var(--ai-text-muted);
 }
-
 .gen-dot {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   background: var(--ai-accent);
   border-radius: 50%;
   animation: gen-pulse 1s infinite;
 }
-
 @keyframes gen-pulse {
   0%, 100% { opacity: 0.5; transform: scale(0.8); }
-  50% { opacity: 1; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.1); }
 }
 
-.ai-send-btn {
-  width: 36px;
-  height: 36px;
+.ai-submit-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--ai-text);
+  color: var(--ai-bg);
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  background: #3b82f6;
-  color: #fff;
-  border-radius: 10px;
   cursor: pointer;
   transition: all 0.2s;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
-  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
-
-.ai-send-btn:hover {
-  background: #2563eb;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+.ai-submit-btn:hover:not(:disabled) {
   transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  opacity: 0.9;
 }
-
-.ai-send-btn:disabled {
-  background: var(--ai-bg-tertiary);
+.ai-submit-btn:disabled {
+  background: var(--ai-border-strong);
   color: var(--ai-text-faint);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.ai-submit-btn:disabled {
+  background: var(--ai-border);
+  color: #fff;
   cursor: not-allowed;
   box-shadow: none;
   transform: none;
 }
-
 .ai-send-stop {
   background: var(--ai-red);
-  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
 }
-
 .ai-send-stop:hover {
   background: var(--ai-red-hover);
 }
@@ -5508,21 +5726,6 @@ function startResize(e) {
 }
 
 /* Thinking blocks */
-.ai-thinking-blocks { margin: 4px 0; }
-.ai-thinking-block { margin: 6px 0; border: 1px solid #e9d5ff; border-radius: 8px; overflow: hidden; background: #faf5ff; }
-.ai-thinking-block.active { border-color: #c4b5fd; }
-.ai-thinking-header {
-  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
-  cursor: pointer; font-size: 12px; font-weight: 600; color: #6d28d9;
-  user-select: none;
-}
-.tb-summary { font-size: 11px; color: #8b5cf6; font-weight: 400; margin-right: auto; }
-.ai-thinking-body {
-  background: #f5f3ff; border-top: 1px solid #e9d5ff;
-  padding: 8px 12px; font-size: 12px; line-height: 1.6;
-  color: #4c1d95; max-height: 300px; overflow-y: auto;
-}
-.ai-thinking-body:empty::after { content: '正在分析...'; color: #a78bfa; }
 .ai-think-dot {
   width: 7px; height: 7px; background: #d1d5db; border-radius: 50%;
   display: inline-block; animation: aiDot 1.4s ease-in-out infinite;
@@ -5677,11 +5880,11 @@ function startResize(e) {
 }
 .markdown-rendered :deep(.code-block) {
   margin: 12px 0;
-  border: 1px solid #243044;
+  border: none;
   border-radius: 9px;
   overflow: hidden;
-  background: #0f172a;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+  background: var(--ai-bg-secondary);
+  box-shadow: none;
 }
 .markdown-rendered :deep(.code-block-header) {
   display: flex;
@@ -5689,42 +5892,44 @@ function startResize(e) {
   justify-content: space-between;
   gap: 12px;
   min-height: 32px;
-  padding: 0 10px 0 12px;
-  background: linear-gradient(180deg, #111827, #0b1220);
-  border-bottom: 1px solid #243044;
+  padding: 8px 12px 0 16px;
+  background: transparent;
+  border-bottom: none;
 }
 .markdown-rendered :deep(.code-lang) {
-  color: #93a4bc;
-  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  color: var(--ai-text-faint);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
 }
 .markdown-rendered :deep(.code-copy-btn),
 .markdown-rendered :deep(.table-copy-btn) {
-  border: 1px solid rgba(148, 163, 184, 0.32);
+  border: none;
   border-radius: 6px;
-  background: rgba(15, 23, 42, 0.72);
-  color: #cbd5e1;
+  background: transparent;
+  color: var(--ai-text-faint);
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
-  padding: 3px 8px;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
 }
 .markdown-rendered :deep(.code-copy-btn:hover),
 .markdown-rendered :deep(.table-copy-btn:hover) {
-  background: #1e293b;
-  border-color: #60a5fa;
-  color: #fff;
+  background: var(--ai-bg-tertiary);
+  color: var(--ai-text-secondary);
 }
 .markdown-rendered :deep(pre) {
   margin: 0;
-  padding: 14px 16px;
+  padding: 8px 16px 14px 16px;
   overflow-x: auto;
-  background: #0f172a;
-  color: #dbeafe;
+  background: transparent;
+  color: var(--ai-text-secondary);
   font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
   font-size: 12.5px;
   line-height: 1.65;
@@ -5832,69 +6037,176 @@ function startResize(e) {
 
 /* Modern thinking timeline */
 .ai-thinking-block {
-  position: relative;
-  margin: 8px 0 10px 0;
-  border: 1px solid var(--ai-purple-border);
-  border-radius: 9px;
-  overflow: hidden;
-  background: linear-gradient(180deg, #faf7ff 0%, #f5f3ff 100%);
-  box-shadow: 0 10px 24px rgba(109, 40, 217, 0.06);
+  margin: 4px 0 8px 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 .ai-thinking-block::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, #8b5cf6, #60a5fa);
+  display: none;
 }
 .ai-thinking-block.active {
-  border-color: #c4b5fd;
+  border-color: transparent;
 }
 .ai-thinking-header {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 8px 12px 8px 14px;
-  border: 0;
-  border-radius: 0;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
   background: transparent;
-  color: #6d28d9;
+  color: var(--ai-text-muted);
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 500;
   user-select: none;
+  transition: background 0.2s, color 0.2s;
 }
 .ai-thinking-header:hover {
-  background: rgba(139, 92, 246, 0.08);
+  background: var(--ai-bg-tertiary);
+  color: var(--ai-text-secondary);
+}
+.ai-think-chevron {
+  transition: transform 0.2s ease;
+  color: inherit;
 }
 .tb-summary {
   min-width: 0;
   margin-right: auto;
   overflow: hidden;
-  color: #8b5cf6;
-  font-size: 11px;
-  font-weight: 500;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ai-thinking-body {
-  max-height: 320px;
-  margin: 0;
-  padding: 9px 14px 11px 14px;
+  max-height: 400px;
+  margin: 4px 0 0 18px;
+  padding: 4px 0;
   overflow-y: auto;
-  border-top: 1px solid #e9d5ff;
-  border-left: 0;
+  border: none;
   border-radius: 0;
-  background: rgba(255, 255, 255, 0.54);
-  color: #4c1d95;
-  font-size: 12.5px;
-  line-height: 1.72;
+  background: transparent;
+  color: #7a6e5d; /* distinct muted brown */
+  font-family: 'Georgia', 'Times New Roman', serif;
+  font-style: italic;
+  font-size: 13.5px;
+  line-height: 1.6;
   white-space: normal;
 }
 .ai-thinking-body:empty::after {
-  content: '正在分析...';
-  color: #a78bfa;
+  content: '正在思考...';
+  color: var(--ai-text-faint);
 }
+
+/* ===== Command Palette ===== */
+.command-palette {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  width: 100%;
+  max-height: 340px;
+  background: var(--ai-bg);
+  border: 1px solid var(--ai-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 100;
+}
+
+.command-palette-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--ai-bg-secondary);
+  border-bottom: 1px solid var(--ai-border);
+}
+
+.command-palette-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ai-text);
+}
+
+.command-palette-hint {
+  font-size: 12px;
+  color: var(--ai-text-muted);
+}
+
+.command-palette-search {
+  padding: 10px;
+  border-bottom: 1px solid var(--ai-border);
+}
+
+.command-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 13.5px;
+  background: transparent;
+  border: 1px solid var(--ai-border-strong);
+  border-radius: 6px;
+  color: var(--ai-text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.command-search-input:focus {
+  border-color: var(--ai-accent);
+}
+
+.command-palette-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.command-item {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.command-item.active,
+.command-item:hover {
+  background: var(--ai-bg-hover);
+}
+
+.command-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.command-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ai-text);
+}
+
+.command-aliases {
+  font-size: 12px;
+  color: var(--ai-text-muted);
+}
+
+.command-item-desc {
+  font-size: 12.5px;
+  color: var(--ai-text-muted);
+}
+
+.command-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--ai-text-muted);
+}
+
 </style>

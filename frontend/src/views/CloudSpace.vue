@@ -47,6 +47,7 @@
           </div>
         </TransitionGroup>
       </div>
+      <UserPanel />
     </div>
     <div class="cs-right">
       <div v-if="!selectedProject" class="cs-right-empty">
@@ -64,11 +65,16 @@
             <span>打开工作空间</span>
           </button>
         </div>
-        <div class="cs-tree-panel" v-loading="treeLoading">
+        <div class="cs-tree-panel" v-loading="treeLoading" @scroll="handleTreeScroll">
+          <div v-if="treeError" class="cs-tree-error" role="alert">
+            <span>{{ treeError }}</span>
+            <button type="button" @click="selectProject(selectedProject)">重试</button>
+          </div>
           <TransitionGroup name="ftn-list" tag="div">
             <FileTreeNode v-for="child in fileTree" :key="child.path" :node="child" :selected-path="selectedPath" :load-children="loadTreeChildren" @select="onFileSelect"/>
           </TransitionGroup>
-          <div v-if="!treeLoading && fileTree.length === 0" class="cs-empty" style="padding:24px">
+          <button v-if="treeNextOffset !== null" class="cs-tree-load-more" type="button" @click="loadMoreTree">加载更多文件</button>
+          <div v-if="!treeLoading && !treeError && fileTree.length === 0" class="cs-empty" style="padding:24px">
             <p>项目为空</p>
           </div>
         </div>
@@ -120,12 +126,16 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi } from '@/api'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
+import UserPanel from '@/components/cloud/UserPanel.vue'
 
 const router = useRouter()
 const projects = ref([])
 const selectedId = ref(null)
 const selectedProject = ref(null)
 const fileTree = ref([])
+const treeError = ref('')
+const treeNextOffset = ref(null)
+const treeLoadingMore = ref(false)
 const selectedPath = ref('')
 const listLoading = ref(false)
 const treeLoading = ref(false)
@@ -162,23 +172,55 @@ async function selectProject(proj) {
   selectedProject.value = proj
   selectedPath.value = ''
   treeLoading.value = true
+  treeError.value = ''
+  treeNextOffset.value = null
   try {
-    const r = await projectApi.getTree(proj.projectId, '')
-    fileTree.value = r.data || []
+    const r = await projectApi.getTreePage(proj.projectId, '', 0)
+    fileTree.value = r.data?.entries || []
+    treeNextOffset.value = r.data?.nextOffset ?? null
   } catch (e) {
     fileTree.value = []
+    treeError.value = treeLoadErrorMessage(e)
   } finally {
     treeLoading.value = false
   }
 }
 
-async function loadTreeChildren(dirPath) {
-  if (!selectedProject.value) return []
+function treeLoadErrorMessage(error) {
+  if (error?.response?.status === 404) {
+    return '文件分页接口暂不可用，请重启后端服务后重试'
+  }
+  return error?.message || '文件列表加载失败，请重试'
+}
+
+async function loadMoreTree() {
+  if (!selectedProject.value || treeNextOffset.value === null || treeLoadingMore.value) return
+  treeLoadingMore.value = true
   try {
-    const r = await projectApi.getTree(selectedProject.value.projectId, dirPath)
-    return r.data || []
+    const r = await projectApi.getTreePage(selectedProject.value.projectId, '', treeNextOffset.value)
+    fileTree.value = [...fileTree.value, ...(r.data?.entries || [])]
+    treeNextOffset.value = r.data?.nextOffset ?? null
   } catch (e) {
-    return []
+    treeError.value = treeLoadErrorMessage(e)
+  } finally {
+    treeLoadingMore.value = false
+  }
+}
+
+function handleTreeScroll(event) {
+  const target = event.currentTarget
+  if (target.scrollHeight - target.scrollTop - target.clientHeight < 80) {
+    void loadMoreTree()
+  }
+}
+
+async function loadTreeChildren(dirPath, offset = 0) {
+  if (!selectedProject.value) return { entries: [], nextOffset: null }
+  try {
+    const r = await projectApi.getTreePage(selectedProject.value.projectId, dirPath, offset)
+    return r.data || { entries: [], nextOffset: null }
+  } catch (e) {
+    return { entries: [], nextOffset: null }
   }
 }
 
@@ -307,7 +349,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.cs-shell { display: flex; height: calc(100vh - 120px); background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+.cs-shell { display: flex; min-height: 100dvh; height: 100dvh; background: #fff; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 .cs-left { width: 300px; border-right: 1px solid #f0f0f0; display: flex; flex-direction: column; background: #fafbfc; flex-shrink: 0; }
 .cs-right { flex: 1; display: flex; flex-direction: column; background: #fff; min-width: 0; }
 .cs-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #f0f0f0; }
@@ -348,6 +390,10 @@ onMounted(() => {
 .cs-right-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #9ca3af; gap: 10px; font-size: 13px; }
 .cs-right-panel { flex: 1; display: flex; flex-direction: column; }
 .cs-tree-panel { flex: 1; overflow-y: auto; padding: 8px; }
+.cs-tree-error { margin: 8px; padding: 8px; border: 1px solid #fecaca; border-radius: 6px; background: #fef2f2; color: #b91c1c; font-size: 12px; }
+.cs-tree-error button { margin-top: 6px; border: 0; border-radius: 4px; padding: 4px 7px; background: #fee2e2; color: inherit; font: inherit; cursor: pointer; }
+.cs-tree-load-more { display: block; width: calc(100% - 8px); margin: 7px 4px; padding: 7px 8px; border: 1px solid #dbe1f0; border-radius: 6px; background: #fff; color: #4f46e5; font: inherit; font-size: 12px; cursor: pointer; }
+.cs-tree-load-more:hover { background: #eef2ff; border-color: #c7d2fe; }
 .ftn-list-enter-active { transition: all 0.2s ease; }
 .ftn-list-leave-active { transition: all 0.15s ease; }
 .ftn-list-enter-from { opacity: 0; transform: translateX(-8px); }

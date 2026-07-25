@@ -27,3 +27,20 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Local recovery and debugging archive
+/local-recovery-debug-archive/
+
+# Local agent and session artifacts
+.labex-agent/
+.superpowers/
+.claude/
+.labex*/
+
+# Personal private docs
+docs/个人资料/
+
+# Project documentation (keep in repo separately)
+LabexAgent.md
+CLAUDE.md
+AGENTS.md

@@ -22,6 +22,11 @@ public class AgentContextManager {
     }
 
     public String buildInitialContext(StudentProject project, String activePath, String activeFileContent, String toolDefinitions, String userMessage, String projectIndexContent, boolean smallModel) {
+        return buildInitialContext(project, activePath, activeFileContent, toolDefinitions, userMessage, projectIndexContent, smallModel, null);
+    }
+
+    public String buildInitialContext(StudentProject project, String activePath, String activeFileContent, String toolDefinitions, String userMessage, String projectIndexContent, boolean smallModel,
+                                      com.labex.labexagent.service.IncrementalContextService.IndexSnapshot snapshot) {
         int structureLimit = smallModel ? 4000 : 10000;
         int contentLimit = smallModel ? 8000 : 30000;
         int projectIndexLimit = smallModel ? 6000 : 16000;
@@ -31,7 +36,9 @@ public class AgentContextManager {
         if (projectIndexContent != null && !projectIndexContent.isBlank()) {
             context.append("\u6301\u4e45\u9879\u76ee\u7d22\u5f15 `.labex/project-index.md`\uff08\u4f18\u5148\u7528\u4e8e\u5b9a\u4f4d\u6587\u4ef6\uff0c\u5fc5\u8981\u65f6\u518d\u8bfb\u53d6\u5b8c\u6574\u6e90\u7801\uff09:\n").append(this.limit(projectIndexContent, projectIndexLimit)).append("\n\n");
         } else if (!smallModel) {
-            context.append(this.projectIndexService.buildProjectDigest(project, userMessage)).append("\n\n");
+            context.append(snapshot == null
+                    ? this.projectIndexService.buildProjectDigest(project, userMessage)
+                    : this.projectIndexService.buildProjectDigest(project, userMessage, snapshot)).append("\n\n");
         }
         if (activePath != null && !activePath.isBlank()) {
             context.append("\u5f53\u524d\u6253\u5f00\u6587\u4ef6: ").append(activePath).append('\n');

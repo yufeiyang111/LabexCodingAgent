@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.LocalDateTime;
 
 @TableName("t_agent_mcp_server")
@@ -28,6 +29,12 @@ public class AgentMcpServer {
 
     @TableField("auth_header")
     private String authHeader;
+
+    @TableField("auth_header_encrypted")
+    private String authHeaderEncrypted;
+
+    @TableField("auth_header_key_version")
+    private String authHeaderKeyVersion;
 
     @TableField("tools_json")
     private String toolsJson;
@@ -56,8 +63,15 @@ public class AgentMcpServer {
     public void setTransport(String transport) { this.transport = transport; }
     public String getEndpoint() { return endpoint; }
     public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
+    @JsonIgnore
     public String getAuthHeader() { return authHeader; }
     public void setAuthHeader(String authHeader) { this.authHeader = authHeader; }
+    @JsonIgnore
+    public String getAuthHeaderEncrypted() { return authHeaderEncrypted; }
+    public void setAuthHeaderEncrypted(String authHeaderEncrypted) { this.authHeaderEncrypted = authHeaderEncrypted; }
+    @JsonIgnore
+    public String getAuthHeaderKeyVersion() { return authHeaderKeyVersion; }
+    public void setAuthHeaderKeyVersion(String authHeaderKeyVersion) { this.authHeaderKeyVersion = authHeaderKeyVersion; }
     public String getToolsJson() { return toolsJson; }
     public void setToolsJson(String toolsJson) { this.toolsJson = toolsJson; }
     public Integer getIsEnabled() { return isEnabled; }

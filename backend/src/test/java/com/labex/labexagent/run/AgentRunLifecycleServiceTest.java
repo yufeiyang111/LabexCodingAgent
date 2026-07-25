@@ -1,0 +1,368 @@
+package com.labex.labexagent.run;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.labex.entity.AgentRunEvent;
+import com.labex.entity.AgentRunOutbox;
+import com.labex.entity.AgentTask;
+import com.labex.mapper.AgentRunEventMapper;
+import com.labex.mapper.AgentRunOutboxMapper;
+import com.labex.mapper.AgentTaskMapper;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+class AgentRunLifecycleServiceTest {
+
+    @Test
+    void initializesAQueuedRunWithItsFirstEventAndOutboxMessage() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.QUEUED);
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(900L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        AgentRunLifecycleService.TransitionResult result = service.initialize(
+                task,
+                Map.of("message", "Implement replay"),
+                "task-71-queued");
+
+        assertEquals("RUN_QUEUED", result.event().getEventType());
+        assertEquals("queued", result.event().getState());
+        assertEquals(1L, result.event().getSequenceNumber());
+        assertEquals(1L, task.getLastEventSequence());
+        assertEquals(1L, task.getRunVersion());
+        verify(outboxMapper).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void appendsAStreamEventWithoutChangingTheRunStateAndAdvancesTheOptimisticVersion() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setLastEventSequence(3L);
+        task.setRunVersion(5L);
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(903L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        AgentRunEvent event = service.appendEvent(
+                71L,
+                "THINK",
+                Map.of("content", "Inspecting the project"),
+                "task-71-think-4");
+
+        assertEquals("running", event.getState());
+        assertEquals("THINK", event.getEventType());
+        assertEquals(4L, event.getSequenceNumber());
+        assertEquals("running", task.getStatus());
+        assertEquals(4L, task.getLastEventSequence());
+        assertEquals(6L, task.getRunVersion());
+        verify(outboxMapper).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void persistsStateEventAndOutboxMessageInOneTransition() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.QUEUED);
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(901L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        AgentRunLifecycleService.TransitionResult result = service.transition(
+                71L,
+                AgentRunState.PREPARING,
+                "RUN_PREPARING",
+                Map.of("reason", "worker accepted run"),
+                "Preparing workspace",
+                "Run accepted by worker",
+                "run-71-preparing");
+
+        assertTrue(result.stateChanged());
+        assertEquals(1L, result.event().getSequenceNumber());
+        assertEquals("preparing", result.event().getState());
+        assertEquals("preparing", task.getStatus());
+        assertEquals(1L, task.getLastEventSequence());
+        assertEquals(1L, task.getRunVersion());
+
+        ArgumentCaptor<AgentRunOutbox> outbox = ArgumentCaptor.forClass(AgentRunOutbox.class);
+        verify(outboxMapper).insert(outbox.capture());
+        assertEquals(901L, outbox.getValue().getEventId());
+        assertEquals("pending", outbox.getValue().getStatus());
+    }
+
+    @Test
+    void schedulesRetryStateAndRetryMetadataInTheSameCompareAndSet() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        java.time.LocalDateTime retryAt = java.time.LocalDateTime.of(2026, 7, 23, 10, 1);
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(904L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        boolean scheduled = service.scheduleModelRetry(
+                71L, 1, retryAt, Map.of("delayMs", 1_000), "Retrying model request",
+                "Scheduled model retry 1", "model-retry-71-1");
+
+        assertTrue(scheduled);
+        assertEquals("retrying", task.getStatus());
+        assertEquals(1, task.getRetryAttempts());
+        assertEquals(retryAt, task.getNextRetryAt());
+        assertEquals("Retrying model request", task.getCurrentStep());
+        verify(outboxMapper).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void cancelsRetryAndClearsItsScheduledDeadline() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RETRYING);
+        task.setNextRetryAt(java.time.LocalDateTime.of(2026, 7, 24, 15, 0));
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(990L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+
+        boolean cancelled = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper)
+                .cancelScheduledRetry(71L, Map.of(), "retry-cancel-71");
+
+        assertTrue(cancelled);
+        assertEquals("cancelled", task.getStatus());
+        assertEquals(null, task.getNextRetryAt());
+        verify(outboxMapper).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void claimsAnExpiredLeaseAtomicallyBeforePersistingTakeoverEventAndOutbox() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setRunVersion(8L);
+        task.setLastEventSequence(3L);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-old");
+        task.setExecutionLeaseExpiresAt(java.time.LocalDateTime.now().minusSeconds(1));
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(991L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        AgentRunLifecycleService.RecoveryClaim claim = service.claimRecovery(
+                71L, AgentRunState.RUNNING, "instance-new", 30_000L);
+
+        assertEquals("instance-new", claim.owner());
+        assertEquals(5L, claim.epoch());
+        ArgumentCaptor<AgentRunEvent> event = ArgumentCaptor.forClass(AgentRunEvent.class);
+        verify(eventMapper).insert(event.capture());
+        assertEquals("RUN_RECOVERY_TAKEOVER", event.getValue().getEventType());
+        assertEquals("recovering", event.getValue().getState());
+        assertEquals(4L, event.getValue().getSequenceNumber());
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<AgentTask>> update = ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper.class);
+        verify(taskMapper).update(org.mockito.ArgumentMatchers.isNull(), update.capture());
+        assertTrue(update.getValue().getSqlSet().contains("execution_epoch"));
+        assertTrue(update.getValue().getSqlSet().contains("execution_owner"));
+        assertTrue(update.getValue().getSqlSegment().contains("execution_lease_expires_at"));
+        verify(outboxMapper).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void refusesAnUnexpiredForeignLeaseWithoutWritingTakeoverEvent() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-other");
+        task.setExecutionLeaseExpiresAt(java.time.LocalDateTime.now().plusSeconds(30));
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        AgentRunLifecycleService.RecoveryClaim claim = service.claimRecovery(
+                71L, AgentRunState.RUNNING, "instance-new", 30_000L);
+
+        assertEquals(null, claim);
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void reusesTheExistingEventForTheSameIdempotencyKey() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentRunEvent existing = new AgentRunEvent();
+        existing.setEventId(902L);
+        existing.setState("preparing");
+        existing.setSequenceNumber(1L);
+        when(eventMapper.selectOne(any())).thenReturn(existing);
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        AgentRunLifecycleService.TransitionResult result = service.transition(
+                71L,
+                AgentRunState.PREPARING,
+                "RUN_PREPARING",
+                Map.of(),
+                "Preparing workspace",
+                "Run accepted by worker",
+                "run-71-preparing");
+
+        assertFalse(result.stateChanged());
+        assertEquals(existing, result.event());
+        verify(taskMapper, never()).updateById(any(AgentTask.class));
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void declinesAnExpectedStateTransitionWhenItsCompareAndSetLosesTheRace() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.WAITING_USER);
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        boolean transitioned = service.transitionIfCurrent(
+                71L,
+                AgentRunState.WAITING_USER,
+                AgentRunState.FAILED,
+                "RUN_INTERACTION_TIMED_OUT",
+                Map.of(),
+                "Interaction timed out",
+                "Timed out while waiting for user input",
+                "interaction-timeout-wait-71");
+
+        assertFalse(transitioned);
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void rejectsAConcurrentStreamEventAppendWithoutPublishingAnOutboxMessage() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        assertThrows(IllegalStateException.class, () -> service.appendEvent(
+                71L, "THINK", Map.of("content", "Inspecting"), "task-71-think-concurrent"));
+
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void rejectsAConcurrentStateWriteWithoutPublishingAnOutboxMessage() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(905L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        assertThrows(IllegalStateException.class, () -> service.transition(
+                71L, AgentRunState.FAILED, "RUN_FAILED", Map.of(), "Failure", "Concurrent write", "run-71-failed"));
+
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void rejectsAnIllegalTransitionBeforeWritingAnything() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        when(taskMapper.selectById(71L)).thenReturn(task(AgentRunState.QUEUED));
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        assertThrows(IllegalStateException.class, () -> service.transition(
+                71L,
+                AgentRunState.COMPLETED,
+                "RUN_COMPLETED",
+                Map.of(),
+                "Completed",
+                "Run completed",
+                "run-71-completed"));
+
+        verify(taskMapper, never()).updateById(any(AgentTask.class));
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    private AgentTask task(AgentRunState state) {
+        AgentTask task = new AgentTask();
+        task.setTaskId(71L);
+        task.setStudentId(7);
+        task.setProjectId(12);
+        task.setStatus(state.persistedStatus());
+        task.setLastEventSequence(0L);
+        task.setRunVersion(0L);
+        return task;
+    }
+}

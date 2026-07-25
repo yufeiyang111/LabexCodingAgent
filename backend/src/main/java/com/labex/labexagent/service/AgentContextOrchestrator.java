@@ -6,10 +6,13 @@ import com.labex.labexagent.lsp.LspSessionManager;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.runtime.AgentContextManager;
 import com.labex.labexagent.tool.ToolResult;
+import com.labex.labexagent.workspace.ProjectWorkspace;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -48,11 +51,12 @@ public class AgentContextOrchestrator {
                                             String projectIndexContent,
                                             boolean smallModel,
                                             AgentContext agentContext) {
+        IncrementalContextService.IndexSnapshot snapshot = projectIndexService.snapshot(project);
         String base = contextManager.buildInitialContext(
-                project, activePath, activeFileContent, toolDefinitions, userMessage, projectIndexContent, smallModel);
+                project, activePath, activeFileContent, toolDefinitions, userMessage, projectIndexContent, smallModel, snapshot);
         AgentWorkspaceMemoryService.WorkspaceMemory memory = workspaceMemoryService.readMemory(project);
-        String adaptiveIndex = projectIndexService.buildAdaptiveProjectContext(project, userMessage, memory.touchedFiles);
-        String repoMap = projectCodeMapService.buildRepoMap(project, userMessage, memory.touchedFiles, smallModel ? 10 : 20);
+        String adaptiveIndex = projectIndexService.buildAdaptiveProjectContext(project, userMessage, memory.touchedFiles, snapshot);
+        String repoMap = projectCodeMapService.buildRepoMap(project, userMessage, memory.touchedFiles, smallModel ? 10 : 20, snapshot);
         String workspaceMemory = workspaceMemoryService.buildMemoryContext(project, userMessage, activePath);
         String workspaceDiagnostics = buildDiagnosticsContext(project, activePath, memory.touchedFiles, smallModel ? 5 : 10);
         String stage = agentContext == null ? "intake" : agentContext.getStage();
@@ -123,6 +127,7 @@ public class AgentContextOrchestrator {
         if (isVerificationTool(tool)) {
             if (result.isSuccess()) {
                 context.incrementVerificationCount();
+                context.recordTrustedVerification(tool);
                 context.markChangesVerified();
             }
             context.setStage(result.isSuccess() ? "verify" : "repair");
@@ -168,8 +173,7 @@ public class AgentContextOrchestrator {
     }
 
     private boolean isVerificationTool(String tool) {
-        return "run_tests".equals(tool) || "execute_code".equals(tool) || "shell".equals(tool)
-                || "bash".equals(tool) || "run_command".equals(tool) || "diagnostics".equals(tool);
+        return "run_tests".equals(tool);
     }
 
     private String stageGuidance(String stage) {
@@ -207,14 +211,20 @@ public class AgentContextOrchestrator {
         if (paths.isEmpty()) {
             return "- no active or recently touched files";
         }
-        Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
+        SecureWorkspacePath workspace = ProjectWorkspace.paths(project);
+        Path root = workspace.workspaceRoot();
         StringBuilder out = new StringBuilder();
         int analyzed = 0;
         int totalIssues = 0;
         for (String relative : paths) {
             if (analyzed >= maxFiles) break;
-            Path file = root.resolve(relative).normalize();
-            if (!file.startsWith(root) || !Files.isRegularFile(file) || !isDiagnosable(file)) {
+            Path file;
+            try {
+                file = workspace.resolveExisting(relative);
+            } catch (IllegalArgumentException ignored) {
+                continue;
+            }
+            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || !isDiagnosable(file)) {
                 continue;
             }
             analyzed++;

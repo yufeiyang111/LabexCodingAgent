@@ -1,19 +1,25 @@
 package com.labex.labexagent.diff;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.service.ProjectScanPolicy;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -22,45 +28,71 @@ import org.springframework.stereotype.Service;
 public class GitSnapshotService {
     private static final Logger log = LoggerFactory.getLogger(GitSnapshotService.class);
     private static final int MAX_OUTPUT = 120_000;
-    private static final List<String> EXCLUDED_PATHS = List.of(
-            ":(exclude).git",
-            ":(exclude).git/**",
-            ":(exclude).labex",
-            ":(exclude).labex/**",
-            ":(exclude)node_modules",
-            ":(exclude)node_modules/**",
-            ":(exclude)dist",
-            ":(exclude)dist/**",
-            ":(exclude)build",
-            ":(exclude)build/**",
-            ":(exclude)target",
-            ":(exclude)target/**",
-            ":(exclude).gradle",
-            ":(exclude).gradle/**",
-            ":(exclude)__pycache__",
-            ":(exclude)__pycache__/**"
-    );
+    private static final int SNAPSHOT_TIMEOUT_SECONDS = 20;
 
+    /**
+     * Captures every trackable workspace file. This remains the compatibility entry point for
+     * tools whose writes cannot be reduced to a verified path list (for example shell commands).
+     */
     public Snapshot capture(StudentProject project, String label) {
+        return captureInternal(project, label, List.of(), false);
+    }
+
+    /**
+     * Captures only the supplied, workspace-relative paths. The private Git index is updated with
+     * those paths and {@code git write-tree} returns a tree object; no commit, status scan, or
+     * HEAD lookup is needed on the write-tool hot path.
+     */
+    public Snapshot capture(StudentProject project, String label, Collection<String> relativePaths) {
+        List<String> paths = trackablePaths(relativePaths);
+        if (paths.isEmpty()) {
+            return Snapshot.unavailable("no trackable paths");
+        }
+        return captureInternal(project, label, paths, true);
+    }
+
+    private Snapshot captureInternal(StudentProject project, String label, List<String> paths, boolean pathScoped) {
+        long startedNanos = System.nanoTime();
+        Integer projectId = project == null ? null : project.getProjectId();
+        String scope = pathScoped ? "paths" : "global";
+        String safeLabel = safeLabel(label);
+        log.info("GIT_SNAPSHOT_CAPTURE_START projectId={} label={} scope={} pathCount={}",
+                projectId, safeLabel, scope, paths.size());
         try {
             Path root = workspaceRoot(project);
             if (!Files.isDirectory(root)) {
-                return Snapshot.unavailable("workspace not found");
+                Snapshot unavailable = Snapshot.unavailable("workspace not found");
+                log.warn("GIT_SNAPSHOT_CAPTURE_UNAVAILABLE projectId={} label={} scope={} elapsedMs={} reason={}",
+                        projectId, safeLabel, scope, elapsedMs(startedNanos), unavailable.error());
+                return unavailable;
             }
             Path gitDir = gitDir(root);
             init(root, gitDir);
-            boolean hasHead = hasHead(root, gitDir);
-            runGit(root, gitDir, 60, buildArgs("add", "-A", "--", ".", EXCLUDED_PATHS));
-            String status = runGit(root, gitDir, 60, buildArgs("status", "--porcelain", "--untracked-files=all", "--", ".", EXCLUDED_PATHS)).output();
-            if (status.isBlank() && hasHead) {
-                String current = runGit(root, gitDir, 20, List.of("rev-parse", "HEAD")).output().trim();
-                return Snapshot.available(current, "clean");
+
+            long stageStartedNanos = System.nanoTime();
+            if (pathScoped) {
+                runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, pathScopedAddArgs(paths));
+            } else {
+                runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS,
+                        buildArgs("add", "-A", "--", ".", excludedPathspecs()));
             }
-            runGit(root, gitDir, 60, List.of("commit", "--allow-empty", "-m", safeLabel(label)));
-            String ref = runGit(root, gitDir, 20, List.of("rev-parse", "HEAD")).output().trim();
-            return Snapshot.available(ref, status.isBlank() ? "empty" : "changed");
+            long stageElapsedMs = elapsedMs(stageStartedNanos);
+
+            long writeTreeStartedNanos = System.nanoTime();
+            String ref = runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, List.of("write-tree")).output().trim();
+            if (ref.isBlank()) {
+                throw new IOException("git write-tree returned an empty tree ref");
+            }
+            long writeTreeElapsedMs = elapsedMs(writeTreeStartedNanos);
+            Snapshot snapshot = Snapshot.available(ref, "tree");
+            log.info("GIT_SNAPSHOT_CAPTURE_COMPLETE projectId={} label={} scope={} pathCount={} state={} refPrefix={} stageMs={} writeTreeMs={} elapsedMs={}",
+                    projectId, safeLabel, scope, paths.size(), snapshot.status(), ref.substring(0, Math.min(12, ref.length())),
+                    stageElapsedMs, writeTreeElapsedMs, elapsedMs(startedNanos));
+            return snapshot;
         } catch (Exception e) {
-            log.debug("Workspace snapshot unavailable: {}", e.getMessage());
+            log.warn("GIT_SNAPSHOT_CAPTURE_FAILED projectId={} label={} scope={} pathCount={} elapsedMs={} errorType={} error={}",
+                    projectId, safeLabel, scope, paths.size(), elapsedMs(startedNanos),
+                    e.getClass().getSimpleName(), e.getMessage());
             return Snapshot.unavailable(e.getMessage());
         }
     }
@@ -105,6 +137,7 @@ public class GitSnapshotService {
             Path gitDir = gitDir(root);
             List<String> args = new ArrayList<>();
             args.add("diff");
+            args.add("-M");
             args.add("--binary");
             args.add(before.ref());
             args.add(after.ref());
@@ -120,7 +153,7 @@ public class GitSnapshotService {
     }
 
     public String readTextAt(StudentProject project, String ref, String path) {
-        if (ref == null || ref.isBlank() || path == null || path.isBlank()) {
+        if (ref == null || ref.isBlank() || !isTrackable(path)) {
             return "";
         }
         try {
@@ -217,6 +250,9 @@ public class GitSnapshotService {
     }
 
     private boolean existsAt(Path root, Path gitDir, String ref, String path) {
+        if (!isTrackable(path)) {
+            return false;
+        }
         try {
             runGit(root, gitDir, 20, List.of("cat-file", "-e", ref + ":" + path));
             return true;
@@ -226,11 +262,17 @@ public class GitSnapshotService {
     }
 
     private void deletePath(Path root, String relativePath) throws IOException {
-        if (relativePath == null || relativePath.isBlank()) {
+        if (!isTrackable(relativePath)) {
             return;
         }
-        Path target = root.resolve(relativePath).normalize();
-        if (!target.startsWith(root) || !Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+        SecureWorkspacePath paths = new SecureWorkspacePath(root);
+        Path target;
+        try {
+            target = paths.resolveExisting(relativePath);
+        } catch (IllegalArgumentException e) {
+            return;
+        }
+        if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             return;
         }
         if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
@@ -254,25 +296,21 @@ public class GitSnapshotService {
 
     private void init(Path root, Path gitDir) throws IOException, InterruptedException {
         Files.createDirectories(gitDir.getParent());
-        if (!Files.exists(gitDir.resolve("HEAD"))) {
+        boolean newRepository = !Files.exists(gitDir.resolve("HEAD"));
+        if (newRepository) {
+            long initStartedNanos = System.nanoTime();
+            log.info("GIT_SNAPSHOT_INIT_START gitDir={}", gitDir);
             run(root, List.of("git", "init", "--bare", gitDir.toString()), 60);
+            // Tree snapshots never commit, so author identity is unnecessary. Keep line endings stable
+            // for the private index and configure it only once when the repository is created.
+            runGit(root, gitDir, 20, List.of("config", "core.autocrlf", "false"));
+            log.info("GIT_SNAPSHOT_INIT_COMPLETE gitDir={} elapsedMs={}", gitDir, elapsedMs(initStartedNanos));
         }
-        runGit(root, gitDir, 20, List.of("config", "user.email", "labex-agent@local"));
-        runGit(root, gitDir, 20, List.of("config", "user.name", "Labex Agent"));
-        runGit(root, gitDir, 20, List.of("config", "core.autocrlf", "false"));
         Path exclude = gitDir.resolve("info").resolve("exclude");
         Files.createDirectories(exclude.getParent());
         if (!Files.exists(exclude)) {
-            Files.writeString(exclude, ".labex/\n.git/\nnode_modules/\ndist/\nbuild/\ntarget/\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE);
-        }
-    }
-
-    private boolean hasHead(Path root, Path gitDir) {
-        try {
-            runGit(root, gitDir, 20, List.of("rev-parse", "--verify", "HEAD"));
-            return true;
-        } catch (Exception e) {
-            return false;
+            Files.writeString(exclude, String.join("\n", ProjectScanPolicy.ignoredDirectoryNames()) + "\n",
+                    StandardCharsets.UTF_8, StandardOpenOption.CREATE);
         }
     }
 
@@ -288,20 +326,56 @@ public class GitSnapshotService {
     }
 
     private CommandResult run(Path root, List<String> command, int timeoutSeconds) throws IOException, InterruptedException {
+        long startedNanos = System.nanoTime();
+        String operation = gitOperation(command);
+        log.info("GIT_SNAPSHOT_COMMAND_START operation={} timeoutSeconds={}", operation, timeoutSeconds);
         Process process = new ProcessBuilder(command)
                 .directory(root.toFile())
                 .redirectErrorStream(true)
                 .start();
+        OutputCollector collector = new OutputCollector(process.getInputStream(), MAX_OUTPUT);
+        Thread reader = new Thread(collector, "labex-git-snapshot-output");
+        reader.setDaemon(true);
+        reader.start();
         boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
         if (!finished) {
             process.destroyForcibly();
+            process.waitFor(5, TimeUnit.SECONDS);
+            reader.join(2_000);
+            log.warn("GIT_SNAPSHOT_COMMAND_TIMEOUT operation={} timeoutSeconds={} elapsedMs={} outputChars={}",
+                    operation, timeoutSeconds, elapsedMs(startedNanos), collector.output().length());
             throw new IOException("git command timeout");
         }
-        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        reader.join(2_000);
+        if (reader.isAlive()) {
+            throw new IOException("git command output reader did not finish");
+        }
+        if (collector.error() != null) {
+            throw collector.error();
+        }
+        String output = collector.output();
         if (process.exitValue() != 0) {
+            log.warn("GIT_SNAPSHOT_COMMAND_FAILED operation={} exitCode={} elapsedMs={} outputChars={} truncated={}",
+                    operation, process.exitValue(), elapsedMs(startedNanos), output.length(), collector.truncated());
             throw new IOException(limit(output, 4000));
         }
+        log.info("GIT_SNAPSHOT_COMMAND_COMPLETE operation={} exitCode={} elapsedMs={} outputChars={} truncated={}",
+                operation, process.exitValue(), elapsedMs(startedNanos), output.length(), collector.truncated());
         return new CommandResult(process.exitValue(), output);
+    }
+
+    private String gitOperation(List<String> command) {
+        for (String value : command) {
+            if (List.of("add", "status", "commit", "rev-parse", "diff", "config", "init", "checkout", "reset",
+                    "write-tree", "cat-file", "show").contains(value)) {
+                return value;
+            }
+        }
+        return command == null || command.isEmpty() ? "unknown" : command.get(0);
+    }
+
+    private static long elapsedMs(long startedNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
     }
 
     private List<String> buildArgs(String first, String second, String third, String fourth, String fifth, List<String> tail) {
@@ -334,17 +408,49 @@ public class GitSnapshotService {
         return args;
     }
 
+    private List<String> pathScopedAddArgs(List<String> paths) {
+        List<String> args = new ArrayList<>();
+        args.add("add");
+        args.add("--all");
+        args.add("--");
+        args.addAll(paths);
+        return args;
+    }
+
+    private List<String> trackablePaths(Collection<String> relativePaths) {
+        if (relativePaths == null || relativePaths.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<String> paths = new LinkedHashSet<>();
+        for (String relativePath : relativePaths) {
+            String normalized = normalizeGitPath(relativePath);
+            if (isTrackable(normalized)) {
+                paths.add(normalized);
+            }
+        }
+        return List.copyOf(paths);
+    }
+
+    private List<String> excludedPathspecs() {
+        List<String> pathspecs = new ArrayList<>();
+        for (String name : ProjectScanPolicy.ignoredDirectoryNames()) {
+            pathspecs.add(":(exclude,glob)**/" + name);
+            pathspecs.add(":(exclude,glob)**/" + name + "/**");
+        }
+        return pathspecs;
+    }
+
     private Path workspaceRoot(StudentProject project) {
-        return Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
+        return new SecureWorkspacePath(Path.of(project.getWorkspacePath())).workspaceRoot();
     }
 
     private Path gitDir(Path root) {
-        return root.resolve(".labex").resolve("git-snapshots");
+        return new SecureWorkspacePath(root).resolveForCreate(".labex/git-snapshots");
     }
 
     private String safeLabel(String label) {
         String base = label == null || label.isBlank() ? "workspace snapshot" : label.replaceAll("[\\r\\n]+", " ").trim();
-        return limit(base, 120) + " @ " + LocalDateTime.now();
+        return limit(base, 120);
     }
 
     private String normalizeGitPath(String path) {
@@ -353,15 +459,31 @@ public class GitSnapshotService {
 
     private boolean isTrackable(String path) {
         String p = normalizeGitPath(path);
-        return !p.isBlank()
-                && !p.startsWith(".git/")
-                && !p.equals(".git")
-                && !p.startsWith(".labex/")
-                && !p.equals(".labex")
-                && !p.startsWith("node_modules/")
-                && !p.startsWith("dist/")
-                && !p.startsWith("build/")
-                && !p.startsWith("target/");
+        return isWorkspaceRelativePath(p) && !ProjectScanPolicy.isIgnoredRelativePath(p);
+    }
+
+    private boolean isWorkspaceRelativePath(String path) {
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        String normalized = path.replace('\\', '/');
+        if (normalized.startsWith("/") || normalized.matches("^[A-Za-z]:.*")) {
+            return false;
+        }
+        try {
+            Path candidate = Path.of(normalized);
+            if (candidate.isAbsolute()) {
+                return false;
+            }
+            for (Path segment : candidate) {
+                if (".".equals(segment.toString()) || "..".equals(segment.toString())) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private String encode(String value) {
@@ -394,6 +516,50 @@ public class GitSnapshotService {
     }
 
     public record ChangedFile(String status, String oldPath, String path) {
+    }
+
+    private static final class OutputCollector implements Runnable {
+        private final InputStream input;
+        private final int limit;
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        private final AtomicReference<IOException> error = new AtomicReference<>();
+        private volatile boolean truncated;
+
+        private OutputCollector(InputStream input, int limit) {
+            this.input = input;
+            this.limit = limit;
+        }
+
+        @Override
+        public void run() {
+            byte[] buffer = new byte[8_192];
+            try (InputStream stream = input) {
+                int read;
+                while ((read = stream.read(buffer)) != -1) {
+                    int remaining = limit - output.size();
+                    if (remaining > 0) {
+                        output.write(buffer, 0, Math.min(read, remaining));
+                    }
+                    if (read > remaining) {
+                        truncated = true;
+                    }
+                }
+            } catch (IOException e) {
+                error.set(e);
+            }
+        }
+
+        private String output() {
+            return output.toString(StandardCharsets.UTF_8);
+        }
+
+        private IOException error() {
+            return error.get();
+        }
+
+        private boolean truncated() {
+            return truncated;
+        }
     }
 
     private record CommandResult(int exitCode, String output) {

@@ -1,18 +1,28 @@
 package com.labex.service;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.commandsecurity.CommandRedactor;
+import com.labex.labexagent.commandsecurity.StatefulCommandRedactor;
+import com.labex.labexagent.commandsecurity.DirectCommandTokenizer;
+import com.labex.labexagent.execution.ProcessExecutionRequest;
+import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.runtime.CancellationToken;
+import com.labex.labexagent.worker.SandboxWorker;
+import com.labex.labexagent.worker.WorkerRunSpec;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -20,7 +30,12 @@ import org.springframework.stereotype.Service;
 @Service
 public class ProjectTerminalService {
     private static final Logger log = LoggerFactory.getLogger(ProjectTerminalService.class);
+    private final SandboxWorker sandboxWorker;
     private final Map<String, TerminalSession> sessions = new ConcurrentHashMap<>();
+
+    public ProjectTerminalService(SandboxWorker sandboxWorker) {
+        this.sandboxWorker = sandboxWorker;
+    }
 
     public List<TerminalSession> list(Integer studentId, Integer projectId) {
         return this.sessions.values().stream()
@@ -58,44 +73,41 @@ public class ProjectTerminalService {
         if (session.process != null && session.process.isAlive()) {
             throw new IllegalStateException("Another command is already running");
         }
-        Path cwd = this.resolveCwd(project, (path == null || path.isBlank()) ? session.cwd : path);
+        Path cwd = path == null || path.isBlank()
+                ? this.resolveSavedCwd(project, session.cwd)
+                : this.resolveCwd(project, path);
         session.cwd = cwd.toString();
         session.lastCommand = command;
         session.exitCode = null;
         session.running = true;
         session.append("\n$ " + command + "\n");
-        boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
-        List<String> cmd = windows ? List.of("cmd.exe", "/c", command) : List.of("/bin/sh", "-lc", command);
-        Process process = new ProcessBuilder(cmd).directory(cwd.toFile()).redirectErrorStream(true).start();
+        List<String> cmd = DirectCommandTokenizer.tokenize(command);
+        int timeout = Math.min(600, Math.max(1, timeoutSeconds));
+        WorkerRunSpec run = WorkerRunSpec.forWorkspace("terminal-" + session.sessionId,
+                workspacePaths(project).workspaceRoot());
+        ProcessExecutionRequest request = new ProcessExecutionRequest(
+                cmd, cwd, Duration.ofSeconds(timeout), 60_000);
+        if (!longRunning) {
+            ProcessExecutionResult result = sandboxWorker.execute(run, request, CancellationToken.none());
+            session.running = false;
+            session.exitCode = result.exitCode();
+            if (!result.output().isBlank()) {
+                session.append(result.output());
+            }
+            return new TerminalRunResult(false, session.exitCode, session.snapshot(), session);
+        }
+        SandboxWorker.WorkerProcess process = sandboxWorker.startProcess(run, request);
         session.process = process;
         this.startOutputReader(session, process);
         if (longRunning) {
             return new TerminalRunResult(true, null, session.snapshot(), session);
         }
-        int timeout = Math.min(600, Math.max(1, timeoutSeconds));
-        boolean finished = process.waitFor(timeout, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            session.running = false;
-            session.exitCode = -1;
-            session.append("\n[Timeout - Force Killed]\n");
-            return new TerminalRunResult(false, Integer.valueOf(-1), session.snapshot(), session);
-        }
-        session.running = false;
-        session.exitCode = process.exitValue();
-        return new TerminalRunResult(false, session.exitCode, session.snapshot(), session);
+        throw new IllegalStateException("unreachable");
     }
 
     public void stop(TerminalSession session) {
         if (session.process != null && session.process.isAlive()) {
-            session.process.destroy();
-            try {
-                if (!session.process.waitFor(3L, TimeUnit.SECONDS)) {
-                    session.process.destroyForcibly();
-                }
-            } catch (Exception ignored) {
-                session.process.destroyForcibly();
-            }
+            session.process.terminate();
         }
         session.running = false;
         session.exitCode = -1;
@@ -107,23 +119,23 @@ public class ProjectTerminalService {
         this.sessions.remove(session.sessionId);
     }
 
-    private void startOutputReader(TerminalSession session, Process process) {
+    private void startOutputReader(TerminalSession session, SandboxWorker.WorkerProcess process) {
         Thread thread = new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.standardOutput(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    session.append(line + "\n");
+                    session.appendOutputChunk(line + "\n");
                 }
             } catch (Exception e) {
                 session.append("\n[terminal reader error] " + e.getMessage() + "\n");
             } finally {
+                session.finishOutputRedaction();
                 if (!process.isAlive()) {
                     session.running = false;
-                    try {
-                        session.exitCode = process.exitValue();
+                    Integer exitCode = process.exitCode();
+                    if (exitCode != null) {
+                        session.exitCode = exitCode;
                         session.append("\nexit=" + session.exitCode + "\n");
-                    } catch (Exception exitEx) {
-                        log.debug("Failed to get process exit value for session {}: {}", session.sessionId, exitEx.getMessage());
                     }
                 }
             }
@@ -132,19 +144,61 @@ public class ProjectTerminalService {
         thread.start();
     }
 
-    private Path resolveCwd(StudentProject project, String path) throws Exception {
-        Path root = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize();
+    private Path resolveCwd(StudentProject project, String path) {
+        SecureWorkspacePath paths = workspacePaths(project);
         if (path == null || path.isBlank()) {
-            return root;
+            return paths.workspaceRoot();
         }
-        Path candidate = Path.of(path).isAbsolute() ? Path.of(path).toAbsolutePath().normalize() : root.resolve(path.replace('\\', '/')).normalize();
-        if (!candidate.startsWith(root)) {
-            throw new IllegalArgumentException("Unsafe path");
+        String normalized = path.trim().replace('\\', '/');
+        try {
+            Path requested = Path.of(normalized);
+            if (requested.isAbsolute() || normalized.startsWith("/") || normalized.matches("^[A-Za-z]:.*")) {
+                throw new IllegalArgumentException("Unsafe path");
+            }
+            Path candidate = paths.resolveExisting(normalized);
+            if (Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                return candidate.getParent();
+            }
+            if (!Files.isDirectory(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("Unsafe path");
+            }
+            return candidate;
+        } catch (InvalidPathException e) {
+            throw new IllegalArgumentException("Unsafe path", e);
+        } catch (IllegalArgumentException e) {
+            if ("Unsafe path".equals(e.getMessage())) {
+                throw e;
+            }
+            throw new IllegalArgumentException("Unsafe path", e);
         }
-        if (Files.isRegularFile(candidate, new LinkOption[0])) {
-            candidate = candidate.getParent();
+    }
+
+    private Path resolveSavedCwd(StudentProject project, String savedCwd) {
+        SecureWorkspacePath paths = workspacePaths(project);
+        if (savedCwd == null || savedCwd.isBlank()) {
+            return paths.workspaceRoot();
         }
-        return candidate;
+        try {
+            Path candidate = Path.of(savedCwd).toAbsolutePath().normalize();
+            if (!candidate.startsWith(paths.workspaceRoot())) {
+                throw new IllegalArgumentException("Unsafe path");
+            }
+            String relativePath = paths.workspaceRoot().relativize(candidate).toString();
+            Path resolved = paths.resolveExisting(relativePath.isBlank() ? "." : relativePath);
+            if (!Files.isDirectory(resolved, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("Unsafe path");
+            }
+            return resolved;
+        } catch (InvalidPathException e) {
+            throw new IllegalArgumentException("Unsafe path", e);
+        }
+    }
+
+    private SecureWorkspacePath workspacePaths(StudentProject project) {
+        if (project == null || project.getWorkspacePath() == null || project.getWorkspacePath().isBlank()) {
+            throw new IllegalArgumentException("Project workspace is unavailable");
+        }
+        return new SecureWorkspacePath(Path.of(project.getWorkspacePath()));
     }
 
     public static class TerminalSession {
@@ -157,10 +211,31 @@ public class ProjectTerminalService {
         public Integer exitCode;
         public boolean running;
         public LocalDateTime createdAt;
-        public Process process;
+        public SandboxWorker.WorkerProcess process;
         public List<String> output = new java.util.ArrayList<>();
-        public void append(String line) { output.add(line); }
-        public String snapshot() { return String.join("\n", output); }
+        private final StatefulCommandRedactor outputRedactor = new StatefulCommandRedactor();
+
+        public synchronized void append(String line) {
+            output.add(CommandRedactor.redact(line));
+        }
+
+        public synchronized void appendOutputChunk(String chunk) {
+            String redacted = outputRedactor.append(chunk);
+            if (!redacted.isEmpty()) {
+                output.add(redacted);
+            }
+        }
+
+        public synchronized void finishOutputRedaction() {
+            String redacted = outputRedactor.finish();
+            if (!redacted.isEmpty()) {
+                output.add(redacted);
+            }
+        }
+
+        public synchronized String snapshot() {
+            return CommandRedactor.redact(String.join("\n", output) + outputRedactor.snapshotSuffix());
+        }
     }
 
     public static class TerminalRunResult {

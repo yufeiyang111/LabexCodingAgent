@@ -5,9 +5,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.labex.labexagent.network.OutboundUrlPolicy;
 import com.labex.rag.config.RagConfig;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Connection;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -15,6 +17,7 @@ import org.jsoup.select.Elements;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -36,6 +39,8 @@ import java.util.Set;
 @Service
 public class WebSearchService {
 
+    private final OutboundUrlPolicy outboundUrlPolicy;
+
     @Autowired
     private RagConfig ragConfig;
 
@@ -45,6 +50,10 @@ public class WebSearchService {
     private static final int FETCH_TIMEOUT_MS = 10000;
     private static final String TAVILY_URL = "https://api.tavily.com/search";
     private static final Gson GSON = new Gson();
+
+    public WebSearchService(OutboundUrlPolicy outboundUrlPolicy) {
+        this.outboundUrlPolicy = outboundUrlPolicy;
+    }
 
     public SearchBundle search(String question, int limit) {
         return search(question, limit, Math.min(4, Math.max(0, limit)));
@@ -251,6 +260,7 @@ public class WebSearchService {
         List<WebSearchResult> results = new ArrayList<>();
         HttpURLConnection connection = null;
         try {
+            URI tavilyEndpoint = outboundUrlPolicy.validate(TAVILY_URL).uri();
             JsonObject body = new JsonObject();
             body.addProperty("api_key", ragConfig.getTavilyApiKey());
             body.addProperty("query", query);
@@ -259,18 +269,24 @@ public class WebSearchService {
             body.addProperty("include_answer", false);
             body.addProperty("include_raw_content", true);
 
-            connection = (HttpURLConnection) URI.create(TAVILY_URL).toURL().openConnection();
+            connection = (HttpURLConnection) tavilyEndpoint.toURL().openConnection();
             connection.setRequestMethod("POST");
             connection.setRequestProperty("Content-Type", "application/json");
             connection.setDoOutput(true);
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(15000);
+            connection.setInstanceFollowRedirects(false);
 
             try (OutputStream os = connection.getOutputStream()) {
                 os.write(body.toString().getBytes(StandardCharsets.UTF_8));
             }
 
             int status = connection.getResponseCode();
+            if (isRedirect(status)) {
+                outboundUrlPolicy.validateRedirect(tavilyEndpoint, connection.getHeaderField("Location"));
+                log.warn("Tavily API redirect is not supported");
+                return results;
+            }
             if (status != 200) {
                 log.warn("Tavily API returned status {}: {}", status, readStream(connection.getErrorStream()));
                 return results;
@@ -337,7 +353,7 @@ public class WebSearchService {
 
     private List<WebSearchResult> searchDuckDuckGo(String query, int limit) throws Exception {
         String url = "https://duckduckgo.com/html/?q=" + encode(query) + "&kl=wt-wt";
-        Document doc = Jsoup.connect(url).userAgent(USER_AGENT).timeout(TIMEOUT_MS).get();
+        Document doc = fetchDocument(url, TIMEOUT_MS, 0, false);
         List<WebSearchResult> results = new ArrayList<>();
         Elements items = doc.select(".result");
         for (Element item : items) {
@@ -360,7 +376,7 @@ public class WebSearchService {
 
     private List<WebSearchResult> searchBing(String query, int limit) throws Exception {
         String url = "https://www.bing.com/search?q=" + encode(query) + "&setlang=zh-Hans";
-        Document doc = Jsoup.connect(url).userAgent(USER_AGENT).timeout(TIMEOUT_MS).get();
+        Document doc = fetchDocument(url, TIMEOUT_MS, 0, false);
         List<WebSearchResult> results = new ArrayList<>();
         Elements items = doc.select("li.b_algo");
         for (Element item : items) {
@@ -425,7 +441,7 @@ public class WebSearchService {
 
     private List<WebSearchResult> searchBingNews(String query, int limit) throws Exception {
         String url = "https://www.bing.com/news/search?q=" + encode(query) + "&setlang=zh-Hans";
-        Document doc = Jsoup.connect(url).userAgent(USER_AGENT).timeout(TIMEOUT_MS).get();
+        Document doc = fetchDocument(url, TIMEOUT_MS, 0, false);
         List<WebSearchResult> results = new ArrayList<>();
         Elements items = doc.select(".news-card, .newsitem, .t_s");
         for (Element item : items) {
@@ -483,14 +499,7 @@ public class WebSearchService {
             return new FetchedPage("", "");
         }
         try {
-            Document doc = Jsoup.connect(url)
-                    .userAgent(USER_AGENT)
-                    .timeout(FETCH_TIMEOUT_MS)
-                    .maxBodySize(1_800_000)
-                    .ignoreHttpErrors(true)
-                    .ignoreContentType(true)
-                    .followRedirects(true)
-                    .get();
+            Document doc = fetchDocument(url, FETCH_TIMEOUT_MS, 1_800_000, true);
             doc.select("script,style,noscript,svg,nav,footer,header,aside,form").remove();
             String title = clean(doc.title());
             String publishedAt = extractPublishedAt(doc);
@@ -514,6 +523,36 @@ public class WebSearchService {
             log.debug("Fetch search result content failed: {} -> {}", url, e.getMessage());
             return new FetchedPage("", "");
         }
+    }
+
+    Document fetchDocument(String url, int timeoutMs, int maxBodySize, boolean ignoreHttpErrors) throws IOException {
+        OutboundUrlPolicy.ValidatedDestination destination = outboundUrlPolicy.validate(url);
+        for (int redirectCount = 0; redirectCount <= 5; redirectCount++) {
+            destination = outboundUrlPolicy.validate(destination.uri());
+            Connection connection = Jsoup.connect(destination.uri().toString())
+                    .userAgent(USER_AGENT)
+                    .timeout(timeoutMs)
+                    .ignoreHttpErrors(true)
+                    .ignoreContentType(true)
+                    .followRedirects(false);
+            if (maxBodySize > 0) {
+                connection.maxBodySize(maxBodySize);
+            }
+            Connection.Response response = connection.execute();
+            if (isRedirect(response.statusCode())) {
+                destination = outboundUrlPolicy.validateRedirect(destination.uri(), response.header("Location"));
+                continue;
+            }
+            if (!ignoreHttpErrors && response.statusCode() >= 400) {
+                throw new IOException("HTTP status " + response.statusCode());
+            }
+            return response.parse();
+        }
+        throw new IOException("Web fetch exceeded the redirect limit");
+    }
+
+    private boolean isRedirect(int statusCode) {
+        return statusCode >= 300 && statusCode < 400;
     }
 
     private List<WebSearchResult> rankResults(List<WebSearchResult> results, List<String> exactPhrases, boolean temporal) {

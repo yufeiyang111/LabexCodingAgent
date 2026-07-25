@@ -1,6 +1,7 @@
 package com.labex.labexagent.runtime;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.workspace.ProjectWorkspace;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -13,15 +14,18 @@ public class AgentContext {
     private StudentProject project;
     private String conversationId;
     private Long taskId;
+    private Integer modelConfigId;
     private Path workspaceRoot;
     private List<String> transcript;
     private List<PlanItem> plan;
     private int currentPlanIndex;
     private String mode = "agent";
     private String stage = "intake";
+    private CancellationToken cancellationToken = CancellationToken.none();
     private boolean unverifiedChanges;
     private int writeCount;
     private int verificationCount;
+    private Set<String> trustedVerificationSources = new LinkedHashSet<>();
     private Set<String> unverifiedChangeTargets = new LinkedHashSet<>();
 
     public boolean isPlanMode() {
@@ -33,7 +37,8 @@ public class AgentContext {
     }
 
     public static AgentContext create(String sessionId, Integer studentId, StudentProject project, String conversationId, Long taskId) {
-        return new AgentContext(sessionId, studentId, project, conversationId, taskId, Path.of(project.getWorkspacePath(), new String[0]).toAbsolutePath().normalize(), new ArrayList(), new ArrayList(), 0);
+        return new AgentContext(sessionId, studentId, project, conversationId, taskId,
+                ProjectWorkspace.paths(project).workspaceRoot(), new ArrayList(), new ArrayList(), 0);
     }
 
     public String getPlanSummary() {
@@ -96,6 +101,10 @@ public class AgentContext {
         return this.taskId;
     }
 
+    public Integer getModelConfigId() {
+        return this.modelConfigId;
+    }
+
     public Path getWorkspaceRoot() {
         return this.workspaceRoot;
     }
@@ -132,6 +141,10 @@ public class AgentContext {
         this.taskId = taskId;
     }
 
+    public void setModelConfigId(Integer modelConfigId) {
+        this.modelConfigId = modelConfigId;
+    }
+
     public void setWorkspaceRoot(Path workspaceRoot) {
         this.workspaceRoot = workspaceRoot;
     }
@@ -152,12 +165,23 @@ public class AgentContext {
     public void setMode(String mode) { this.mode = mode; }
     public String getStage() { return stage == null || stage.isBlank() ? "intake" : stage; }
     public void setStage(String stage) { this.stage = stage == null || stage.isBlank() ? "intake" : stage; }
+    public CancellationToken getCancellationToken() { return cancellationToken; }
+    public void setCancellationToken(CancellationToken cancellationToken) {
+        this.cancellationToken = cancellationToken == null ? CancellationToken.none() : cancellationToken;
+    }
     public boolean hasUnverifiedChanges() { return unverifiedChanges; }
     public void setUnverifiedChanges(boolean unverifiedChanges) { this.unverifiedChanges = unverifiedChanges; }
     public int getWriteCount() { return writeCount; }
     public void incrementWriteCount() { this.writeCount++; }
     public int getVerificationCount() { return verificationCount; }
     public void incrementVerificationCount() { this.verificationCount++; }
+    public void recordTrustedVerification(String source) {
+        if (source != null && !source.isBlank()) {
+            this.trustedVerificationSources.add(source.trim().toLowerCase(java.util.Locale.ROOT));
+        }
+    }
+    public boolean hasTrustedVerification() { return !this.trustedVerificationSources.isEmpty(); }
+    public Set<String> getTrustedVerificationSources() { return Set.copyOf(this.trustedVerificationSources); }
     public Set<String> getUnverifiedChangeTargets() { return unverifiedChangeTargets; }
     public void markUnverifiedChangeTarget(String target) {
         this.unverifiedChanges = true;

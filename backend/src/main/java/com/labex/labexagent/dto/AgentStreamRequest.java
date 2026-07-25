@@ -1,5 +1,7 @@
 package com.labex.labexagent.dto;
 
+import java.time.LocalDateTime;
+
 public class AgentStreamRequest {
     private String sessionId;
     private String conversationId;
@@ -7,6 +9,9 @@ public class AgentStreamRequest {
     private String message;
     private String activePath;
     private Integer modelConfigId;
+    private Long resumeTaskId;
+    private boolean backgroundRun;
+    private LocalDateTime submittedAt;
 
     public String getSessionId() {
         return this.sessionId;
@@ -52,8 +57,32 @@ public class AgentStreamRequest {
         return this.modelConfigId;
     }
 
+    public Long getResumeTaskId() {
+        return this.resumeTaskId;
+    }
+
+    public boolean isBackgroundRun() {
+        return this.backgroundRun;
+    }
+
+    public LocalDateTime getSubmittedAt() {
+        return this.submittedAt;
+    }
+
     public void setModelConfigId(Integer modelConfigId) {
         this.modelConfigId = modelConfigId;
+    }
+
+    public void setResumeTaskId(Long resumeTaskId) {
+        this.resumeTaskId = resumeTaskId;
+    }
+
+    public void setBackgroundRun(boolean backgroundRun) {
+        this.backgroundRun = backgroundRun;
+    }
+
+    public void setSubmittedAt(LocalDateTime submittedAt) {
+        this.submittedAt = submittedAt;
     }
 
     public boolean equals(Object o) {
@@ -116,4 +145,3 @@ public class AgentStreamRequest {
         return "AgentStreamRequest(sessionId=" + this.getSessionId() + ", conversationId=" + this.getConversationId() + ", mode=" + this.getMode() + ", message=" + this.getMessage() + ", activePath=" + this.getActivePath() + ")";
     }
 }
-

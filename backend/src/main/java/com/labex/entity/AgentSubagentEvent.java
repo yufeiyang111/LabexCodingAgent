@@ -1,0 +1,6 @@
+package com.labex.entity;
+import com.baomidou.mybatisplus.annotation.IdType;import com.baomidou.mybatisplus.annotation.TableField;import com.baomidou.mybatisplus.annotation.TableId;import com.baomidou.mybatisplus.annotation.TableName;import java.time.LocalDateTime;
+@TableName("t_agent_subagent_event") public class AgentSubagentEvent {
+ @TableId(value="event_id",type=IdType.AUTO) private Long eventId; @TableField("subagent_id") private Long subagentId; @TableField("sequence_no") private Long sequenceNo; @TableField("event_type") private String eventType; @TableField("payload") private String payload; @TableField("create_time") private LocalDateTime createTime;
+ public Long getEventId(){return eventId;}public void setEventId(Long v){eventId=v;}public Long getSubagentId(){return subagentId;}public void setSubagentId(Long v){subagentId=v;}public Long getSequenceNo(){return sequenceNo;}public void setSequenceNo(Long v){sequenceNo=v;}public String getEventType(){return eventType;}public void setEventType(String v){eventType=v;}public String getPayload(){return payload;}public void setPayload(String v){payload=v;}public LocalDateTime getCreateTime(){return createTime;}public void setCreateTime(LocalDateTime v){createTime=v;}
+}

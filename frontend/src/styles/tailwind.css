@@ -1,0 +1,19 @@
+@import "tailwindcss/theme.css";
+@import "tailwindcss/utilities.css";
+
+@source "../views/Auth.vue";
+@source "../views/Login.vue";
+@source "../components/Logo.vue";
+@source "../components/LoginForm.vue";
+
+@theme {
+  --color-auth-background: #FAFAFA;
+  --color-auth-ink: #1D1D1F;
+  --color-auth-muted: #6B6B6B;
+  --color-auth-border: #E5E5E5;
+  --font-auth-sans: Inter, "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@keyframes auth-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.animate-auth-enter { animation: auth-enter 220ms ease-out both; }
+@media (prefers-reduced-motion: reduce) { .animate-auth-enter { animation: none; } }

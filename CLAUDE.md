@@ -66,7 +66,7 @@ npm run preview                                        # 本地预览生产构�
 | `security/JwtUtil` | JWT 签发 / 解析 |
 | `config/SecurityConfig` | 全部路径 `authenticated()`，仅 `/auth/**`、`/error`、`/preview/**`、`/ws/**` 放行；CORS 全部 origin |
 | `config/MybatisPlusConfig`、`config/WebSocketConfig` | MyBatis-Plus 分页 / WebSocket 端点注册 |
-| `entity/` | MyBatis-Plus 实体，命名沿用历史：`AppUser`（对应表 `t_user`）、`StudentProject`（`t_student_project`）、`AgentConversation`、`AgentMessage`、`AgentTask`、`AgentChangeSet`、`AgentFileChange`、`AgentModelConfig`、`AgentMcpServer`、`AgentSkill`、`AgentTokenUsage`、`AgentVerification` |
+| `entity/` | MyBatis-Plus 实体，命名沿用历史：`AppUser`（`t_user`）、`StudentProject`（`t_student_project`）、`AgentConversation`、`AgentMessage`、`AgentTask`、`AgentChangeSet`、`AgentFileChange`、`AgentModelConfig`、`AgentMcpServer`、`AgentSkill`、`AgentTokenUsage`、`AgentVerification`、`AgentPermissionApproval`、`AgentRunEvent`、`AgentRunOutbox`、`AgentRunInteraction`、`AgentRunArtifact`、`AgentSubagent`（含 `parentSubagentId` 支持树形结构）、`AgentSubagentEvent`、`AgentEvaluationRun` |
 | `mapper/` | MyBatis-Plus BaseMapper，每个 entity 一个 |
 | `common/Result` | 统一返回 `{code, data, message}`（前端 request.js 里只把 `code === 0` 视作成功） |
 
@@ -98,6 +98,13 @@ HTTP request
 | `runtime/AgentCancellationRegistry` | 中断信号（前端 `/agent/interrupt`） |
 | `runtime/AgentSsePublisher` | Spring `SseEmitter` 封装 |
 | `runtime/ToolCallExtractor` | 从模型输出里解析 tool_call JSON |
+| `run/AgentRunLifecycleService` | Agent run 的状态流转（QUEUED → PREPARING → RUNNING → WAITING_APPROVAL / WAITING_USER → COMPLETED / FAILED / CANCELLED），每次转换用 outbox 模式保证事务内可靠投递 |
+| `run/AgentRunStateMachine` | 合法状态转换白名单，违规转换抛 `IllegalStateException` |
+| `run/AgentSubagentService` / `SubagentDispatchService` / `SubagentScheduler` / `LlmSubagentExecutor` | Subagent 子系统：支持在同一 task 下创建子 agent（有 token budget 和独立权限），支持 background 模式 |
+| `run/AgentRunOutboxPublisher` / `AgentRunOutboxSink` / `InProcessAgentRunOutboxSink` | Outbox 投递模式；`InProcessAgentRunOutboxSink` 是开发期的进程内实现 |
+| `run/AgentRunResumeScheduler` / `AgentRunRecoveryService` | 进程重启后自动恢复未完成的 run |
+| `run/BackgroundRunWorktreeService` / `BackgroundRunWorkspaceResolver` | background run 在 `<project-root>/.labex/background-runs/` 下创建隔离 worktree；`BackgroundRunWorkspaceResolver` 做路径越界校验 |
+| `workspace/ProjectWorkspace` / `SecureWorkspacePath` / `WorkspaceLeaseService` | 从 `StudentProject.workspacePath` 构建防路径穿越的 workspace resolver |
 | `service/AgentConversationService` | 对话 + 消息的 CRUD（落库到 `t_agent_conversation` / `t_agent_message`） |
 | `service/AgentTaskService` | 任务级编排 |
 | `service/AgentContextOrchestrator` | 跨轮上下文裁剪、压缩、fork |
@@ -175,3 +182,7 @@ API 调用全部走 `projectApi.xxx(projectId, ...)` 形式，路径前缀 `/stu
 - **新增 MCP server**：UI 走 `AgentModelConfigController` / `AgentMcpServerService`，后端通过 `McpManager` 连接。
 - **JWT secret 太短**会被后端启动期校验拦截（`JwtUtil` 里有最小长度断言）；用 `openssl rand -base64 64` 生成一个就行。
 - **`t_user` / `t_student_project` 等表名沿用历史**（前缀 `t_`，列名 snake_case），跟 entity 类名驼峰无关。MyBatis-Plus 已开 `map-underscore-to-camel-case`，所以 entity 字段直接驼峰即可。
+- **Agent run 状态流转**走 `AgentRunStateMachine` 校验——非法转换直接抛异常，不要绕过 `AgentRunLifecycleService` 直接改 `AgentTask.status`。
+- **Subagent 有 token budget**，超出会抛 `IllegalStateException`；`SubagentPolicy.validateSpawn` 还会限制同一 task 下并发 subagent 数量上限。
+- **Background run worktree** 落在 `<project-root>/.labex/background-runs/` 下，`BackgroundRunWorkspaceResolver` 会做路径越界校验——不要绕过它直接操作这个目录。
+- **新增 workspace 文件操作**：用 `ProjectWorkspace.paths(project)` 拿到 `SecureWorkspacePath`，再通过它做路径解析，不要直接拼 `project.getWorkspacePath() + "/"` 字符串，否则没有路径穿越防护。

@@ -1,23 +1,24 @@
 package com.labex.labexagent.service;
 
 import com.google.gson.Gson;
+import com.labex.entity.AgentModelConfig;
 import com.labex.entity.AgentConversation;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.command.CommandExecutor;
 import com.labex.labexagent.command.CommandExecutor.CommandResult;
 import com.labex.labexagent.command.CommandInfo;
 import com.labex.labexagent.command.CommandRegistry;
-import com.labex.rag.config.RagConfig;
-import com.labex.rag.llm.MiniMaxChat;
-import com.labex.rag.llm.OllamaChat;
+import com.labex.labexagent.dto.PromptOptimizationRequest;
+import com.labex.labexagent.llm.LlmProvider;
+import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.service.AgentModelConfigService;
 import com.labex.service.StudentProjectService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Lazy;
-import org.springframework.stereotype.Service;
-
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
 
 /**
  * Agent命令服务 - 工业级别的命令处理系统
@@ -32,24 +33,21 @@ public class AgentCommandService {
     private final AgentConversationService conversationService;
     private final CommandRegistry commandRegistry;
     private final CommandExecutor commandExecutor;
-    private final RagConfig ragConfig;
-    private final MiniMaxChat miniMaxChat;
-    private final OllamaChat ollamaChat;
+    private final AgentModelConfigService modelConfigService;
+    private final LlmProviderFactory providerFactory;
 
     public AgentCommandService(StudentProjectService studentProjectService,
                               AgentConversationService conversationService,
                               CommandRegistry commandRegistry,
                               CommandExecutor commandExecutor,
-                              RagConfig ragConfig,
-                              @Lazy MiniMaxChat miniMaxChat,
-                              @Lazy OllamaChat ollamaChat) {
+                              AgentModelConfigService modelConfigService,
+                              LlmProviderFactory providerFactory) {
         this.studentProjectService = studentProjectService;
         this.conversationService = conversationService;
         this.commandRegistry = commandRegistry;
         this.commandExecutor = commandExecutor;
-        this.ragConfig = ragConfig;
-        this.miniMaxChat = miniMaxChat;
-        this.ollamaChat = ollamaChat;
+        this.modelConfigService = modelConfigService;
+        this.providerFactory = providerFactory;
 
         // 初始化时加载自定义命令
         loadCustomCommands();
@@ -172,13 +170,13 @@ public class AgentCommandService {
     /**
      * 优化提示词
      */
-    public Map<String, String> optimizePrompt(Integer studentId, Integer projectId, Map<String, String> request) {
+    public Map<String, String> optimizePrompt(Integer studentId, Integer projectId, PromptOptimizationRequest request) {
         StudentProject project = this.requireProject(studentId, projectId);
-        String original = this.value(request, "message");
+        String original = this.value(request == null ? null : request.getMessage());
         if (original.isBlank()) {
             throw new IllegalArgumentException("请输入要优化的提示词");
         }
-        String activePath = this.value(request, "activePath");
+        String activePath = this.value(request == null ? null : request.getActivePath());
         String context = "项目名称: " + project.getProjectName() + "\n当前打开文件: " +
             (activePath.isBlank() ? "未指定" : activePath) + "\n你的任务是: 分析用户的编码意图" +
             "（新建功能/修复Bug/重构/代码审查/配置/其他），将原始提示词重构为结构化的任务描述，" +
@@ -208,9 +206,22 @@ public class AgentCommandService {
             "- 即使原始提示词已经很清晰，也要按上述格式结构化输出\n" +
             "- 仅输出优化后的提示词正文，不要解释、不要加 \"优化后:\" 等前缀、不要加引号包裹\n";
 
-        String optimized = "ollama".equalsIgnoreCase(this.ragConfig.getLlmProvider())
-            ? this.ollamaChat.chat(system, context, original)
-            : this.miniMaxChat.chat(system, context, original);
+        AgentModelConfig modelConfig = this.modelConfigService.resolveForStudent(
+                studentId, request == null ? null : request.getModelConfigId());
+        if (modelConfig == null
+                || !Integer.valueOf(1).equals(modelConfig.getStatus())
+                || !this.modelConfigService.hasStoredApiKey(modelConfig)) {
+            throw new IllegalArgumentException("请先配置一个启用的模型服务后再优化提示词");
+        }
+
+        LlmProvider provider = this.providerFactory.resolveProvider(modelConfig);
+        LlmProvider.LlmConfig llmConfig = this.providerFactory.buildConfig(modelConfig);
+        Map<String, Object> response = provider.chatWithTools(
+                system,
+                List.of(Map.<String, Object>of("role", "user", "content", context + "\n\n原始提示词:\n" + original)),
+                List.of(),
+                llmConfig);
+        String optimized = this.extractOptimizedPrompt(response);
         optimized = this.cleanOptimizedPrompt(optimized, original);
         return Map.of("optimizedPrompt", optimized);
     }
@@ -254,6 +265,25 @@ public class AgentCommandService {
         if (request == null) return "";
         String value = request.get(key);
         return value == null ? "" : value.trim();
+    }
+
+    private String value(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private String extractOptimizedPrompt(Map<String, Object> response) {
+        if (response == null) {
+            throw new IllegalArgumentException("LLM 未返回有效结果，请检查模型配置");
+        }
+        Object content = response.get("content");
+        if (content != null && !content.toString().isBlank()) {
+            return content.toString();
+        }
+        Object message = response.get("message");
+        if (message != null && !message.toString().isBlank()) {
+            throw new IllegalArgumentException(message.toString());
+        }
+        throw new IllegalArgumentException("LLM 未返回有效结果，请检查模型配置");
     }
 
     private String cleanOptimizedPrompt(String optimized, String fallback) {

@@ -2,6 +2,9 @@ package com.labex.labexagent.mcp;
 
 import com.google.gson.JsonObject;
 import com.labex.entity.AgentMcpServer;
+import com.labex.labexagent.network.OutboundUrlPolicy;
+import com.labex.labexagent.worker.SandboxWorker;
+import com.labex.labexagent.worker.WorkerRunSpec;
 import com.labex.service.AgentMcpServerService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -19,20 +22,32 @@ import java.util.concurrent.ConcurrentHashMap;
 public class McpManager {
 
     private final AgentMcpServerService mcpServerService;
+    private final SandboxWorker sandboxWorker;
+    private final OutboundUrlPolicy outboundUrlPolicy;
 
     // studentId -> serverKey -> McpClient
     private final Map<Integer, Map<String, McpClient>> clientMap = new ConcurrentHashMap<>();
 
-    public McpManager(AgentMcpServerService mcpServerService) {
+    public McpManager(
+            AgentMcpServerService mcpServerService,
+            SandboxWorker sandboxWorker,
+            OutboundUrlPolicy outboundUrlPolicy) {
         this.mcpServerService = mcpServerService;
+        this.sandboxWorker = sandboxWorker;
+        this.outboundUrlPolicy = outboundUrlPolicy;
     }
 
     /**
      * 获取或创建学生的 MCP 客户端
      */
     public McpClient getClient(Integer studentId, String serverKey) throws IOException {
+        return getClient(studentId, null, serverKey);
+    }
+
+    public McpClient getClient(Integer studentId, WorkerRunSpec workerRun, String serverKey) throws IOException {
         Map<String, McpClient> clients = clientMap.computeIfAbsent(studentId, k -> new ConcurrentHashMap<>());
-        McpClient client = clients.get(serverKey);
+        String clientKey = clientKey(serverKey, workerRun);
+        McpClient client = clients.get(clientKey);
 
         if (client != null && client.isConnected()) {
             return client;
@@ -49,16 +64,22 @@ public class McpManager {
         }
 
         // 创建新客户端
-        client = new McpClient(
+        client = McpClient.withAuthHeaderSupplier(
             serverKey,
             server.getTransport() != null ? server.getTransport() : "http",
             server.getEndpoint(),
-            server.getAuthHeader(),
-            null
+            () -> {
+                AgentMcpServer current = mcpServerService.findEnabled(studentId, serverKey);
+                return current == null ? "" : mcpServerService.resolveAuthHeader(current);
+            },
+            null,
+            sandboxWorker,
+            workerRun,
+            outboundUrlPolicy
         );
 
         client.connect();
-        clients.put(serverKey, client);
+        clients.put(clientKey, client);
 
         return client;
     }
@@ -67,8 +88,13 @@ public class McpManager {
      * 调用 MCP 工具
      */
     public McpClient.CallResult callTool(Integer studentId, String serverKey, String toolName, String argumentsJson) {
+        return callTool(studentId, null, serverKey, toolName, argumentsJson);
+    }
+
+    public McpClient.CallResult callTool(
+            Integer studentId, WorkerRunSpec workerRun, String serverKey, String toolName, String argumentsJson) {
         try {
-            McpClient client = getClient(studentId, serverKey);
+            McpClient client = getClient(studentId, workerRun, serverKey);
             return client.callTool(toolName, argumentsJson);
         } catch (Exception e) {
             log.error("MCP call failed: {}.{}", serverKey, toolName, e);
@@ -121,10 +147,13 @@ public class McpManager {
     public void disconnect(Integer studentId, String serverKey) {
         Map<String, McpClient> clients = clientMap.get(studentId);
         if (clients != null) {
-            McpClient client = clients.remove(serverKey);
-            if (client != null) {
-                client.close();
-            }
+            clients.entrySet().removeIf(entry -> {
+                if (!entry.getKey().startsWith(serverKey + "::")) {
+                    return false;
+                }
+                entry.getValue().close();
+                return true;
+            });
         }
     }
 
@@ -134,5 +163,10 @@ public class McpManager {
     public void reconnect(Integer studentId, String serverKey) throws IOException {
         disconnect(studentId, serverKey);
         getClient(studentId, serverKey);
+    }
+
+    private String clientKey(String serverKey, WorkerRunSpec workerRun) {
+        String workspace = workerRun == null ? "global" : workerRun.workspaceRoot().toString();
+        return serverKey + "::" + workspace;
     }
 }

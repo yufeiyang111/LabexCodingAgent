@@ -1,6 +1,10 @@
 package com.labex.labexagent.mcp;
 
 import com.google.gson.*;
+import com.labex.labexagent.execution.ProcessExecutionRequest;
+import com.labex.labexagent.network.OutboundUrlPolicy;
+import com.labex.labexagent.worker.SandboxWorker;
+import com.labex.labexagent.worker.WorkerRunSpec;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.*;
@@ -8,8 +12,10 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Supplier;
 
 /**
  * MCP (Model Context Protocol) 客户端
@@ -26,10 +32,13 @@ public class McpClient implements Closeable {
     private final String serverKey;
     private final String transport; // "stdio", "http", "sse"
     private final String endpoint;
-    private final String authHeader;
+    private final Supplier<String> authHeaderSupplier;
     private final Map<String, String> env;
+    private final SandboxWorker sandboxWorker;
+    private final WorkerRunSpec workerRun;
+    private final OutboundUrlPolicy outboundUrlPolicy;
 
-    private Process stdioProcess;
+    private SandboxWorker.WorkerProcess stdioProcess;
     private OutputStream stdioIn;
     private BufferedReader stdioOut;
     private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -88,11 +97,62 @@ public class McpClient implements Closeable {
     }
 
     public McpClient(String serverKey, String transport, String endpoint, String authHeader, Map<String, String> env) {
+        this(serverKey, transport, endpoint, () -> authHeader, env, null, null, new OutboundUrlPolicy());
+    }
+
+    public McpClient(
+            String serverKey,
+            String transport,
+            String endpoint,
+            String authHeader,
+            Map<String, String> env,
+            SandboxWorker sandboxWorker,
+            WorkerRunSpec workerRun) {
+        this(serverKey, transport, endpoint, () -> authHeader, env, sandboxWorker, workerRun, new OutboundUrlPolicy());
+    }
+
+    public McpClient(
+            String serverKey,
+            String transport,
+            String endpoint,
+            String authHeader,
+            Map<String, String> env,
+            SandboxWorker sandboxWorker,
+            WorkerRunSpec workerRun,
+            OutboundUrlPolicy outboundUrlPolicy) {
+        this(serverKey, transport, endpoint, () -> authHeader, env, sandboxWorker, workerRun, outboundUrlPolicy);
+    }
+
+    public static McpClient withAuthHeaderSupplier(
+            String serverKey,
+            String transport,
+            String endpoint,
+            Supplier<String> authHeaderSupplier,
+            Map<String, String> env,
+            SandboxWorker sandboxWorker,
+            WorkerRunSpec workerRun,
+            OutboundUrlPolicy outboundUrlPolicy) {
+        return new McpClient(
+                serverKey, transport, endpoint, authHeaderSupplier, env, sandboxWorker, workerRun, outboundUrlPolicy);
+    }
+
+    private McpClient(
+            String serverKey,
+            String transport,
+            String endpoint,
+            Supplier<String> authHeaderSupplier,
+            Map<String, String> env,
+            SandboxWorker sandboxWorker,
+            WorkerRunSpec workerRun,
+            OutboundUrlPolicy outboundUrlPolicy) {
         this.serverKey = serverKey;
         this.transport = transport;
         this.endpoint = endpoint;
-        this.authHeader = authHeader;
+        this.authHeaderSupplier = authHeaderSupplier == null ? () -> "" : authHeaderSupplier;
         this.env = env != null ? env : new HashMap<>();
+        this.sandboxWorker = sandboxWorker;
+        this.workerRun = workerRun;
+        this.outboundUrlPolicy = Objects.requireNonNull(outboundUrlPolicy, "outboundUrlPolicy");
     }
 
     /**
@@ -124,20 +184,24 @@ public class McpClient implements Closeable {
      * stdio 传输连接
      */
     private void connectStdio() throws IOException {
-        String[] cmdParts = endpoint.split("\\s+");
-        ProcessBuilder pb = new ProcessBuilder(cmdParts);
-        pb.redirectErrorStream(true);
-
-        // 设置环境变量
-        Map<String, String> pbEnv = pb.environment();
-        pbEnv.putAll(env);
-
-        stdioProcess = pb.start();
-        stdioIn = stdioProcess.getOutputStream();
-        stdioOut = new BufferedReader(new InputStreamReader(stdioProcess.getInputStream(), StandardCharsets.UTF_8));
+        stdioProcess = startStdioProcess();
+        stdioIn = stdioProcess.standardInput();
+        stdioOut = new BufferedReader(new InputStreamReader(stdioProcess.standardOutput(), StandardCharsets.UTF_8));
 
         // 启动读取线程
         executor.submit(this::readStdioMessages);
+    }
+
+    SandboxWorker.WorkerProcess startStdioProcess() throws IOException {
+        if (sandboxWorker == null || workerRun == null) {
+            throw new IOException("stdio MCP requires a sandbox worker workspace");
+        }
+        String[] cmdParts = endpoint == null ? new String[0] : endpoint.trim().split("\\s+");
+        if (cmdParts.length == 0 || cmdParts[0].isBlank()) {
+            throw new IOException("stdio MCP command is required");
+        }
+        return sandboxWorker.startProcess(workerRun, new ProcessExecutionRequest(
+                List.of(cmdParts), workerRun.workspaceRoot(), Duration.ofHours(4), 1));
     }
 
     /**
@@ -145,20 +209,31 @@ public class McpClient implements Closeable {
      */
     private void connectHttp() throws IOException {
         // HTTP 是无连接的，只需验证端点可达
+        URI endpointUri = validatedHttpEndpoint();
+        HttpURLConnection conn = null;
         try {
-            URL url = URI.create(endpoint).toURL();
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            URL url = endpointUri.toURL();
+            conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("OPTIONS");
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(5000);
-            if (authHeader != null && !authHeader.isBlank()) {
+            conn.setInstanceFollowRedirects(false);
+            String authHeader = authorizationHeader();
+            if (!authHeader.isBlank()) {
                 conn.setRequestProperty("Authorization", authHeader);
             }
             int code = conn.getResponseCode();
-            conn.disconnect();
+            if (isRedirect(code)) {
+                validateRedirect(endpointUri, conn.getHeaderField("Location"));
+                throw new IOException("MCP HTTP redirects are not supported");
+            }
             // 任何响应都表示服务器可达
         } catch (Exception e) {
             throw new IOException("MCP HTTP endpoint unreachable: " + endpoint, e);
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
     }
 
@@ -303,42 +378,80 @@ public class McpClient implements Closeable {
      * 通过 HTTP 发送请求
      */
     private JsonObject sendHttpRequest(String json) throws IOException {
-        URL url = URI.create(endpoint).toURL();
+        URI endpointUri = validatedHttpEndpoint();
+        URL url = endpointUri.toURL();
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Accept", "application/json");
-        if (authHeader != null && !authHeader.isBlank()) {
+        String authHeader = authorizationHeader();
+        if (!authHeader.isBlank()) {
             conn.setRequestProperty("Authorization", authHeader);
         }
         conn.setDoOutput(true);
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(30000);
+        conn.setInstanceFollowRedirects(false);
 
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(json.getBytes(StandardCharsets.UTF_8));
-        }
-
-        int code = conn.getResponseCode();
-        InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
-
-        String response;
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line);
+        try {
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(json.getBytes(StandardCharsets.UTF_8));
             }
-            response = sb.toString();
-        }
-        conn.disconnect();
 
-        JsonObject resp = JsonParser.parseString(response).getAsJsonObject();
-        if (resp.has("error")) {
-            JsonObject error = resp.getAsJsonObject("error");
-            throw new IOException("MCP error: " + error);
+            int code = conn.getResponseCode();
+            if (isRedirect(code)) {
+                validateRedirect(endpointUri, conn.getHeaderField("Location"));
+                throw new IOException("MCP HTTP redirects are not supported");
+            }
+            InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            if (is == null) {
+                throw new IOException("MCP HTTP response has no body");
+            }
+
+            String response;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+                response = sb.toString();
+            }
+
+            JsonObject resp = JsonParser.parseString(response).getAsJsonObject();
+            if (resp.has("error")) {
+                JsonObject error = resp.getAsJsonObject("error");
+                throw new IOException("MCP error: " + error);
+            }
+            return resp.has("result") ? resp.getAsJsonObject("result") : new JsonObject();
+        } finally {
+            conn.disconnect();
         }
-        return resp.has("result") ? resp.getAsJsonObject("result") : new JsonObject();
+    }
+
+    private URI validatedHttpEndpoint() throws IOException {
+        try {
+            return outboundUrlPolicy.validate(endpoint).uri();
+        } catch (OutboundUrlPolicy.RejectedOutboundUrlException e) {
+            throw new IOException("MCP HTTP endpoint is blocked", e);
+        }
+    }
+
+    private void validateRedirect(URI current, String location) throws IOException {
+        try {
+            outboundUrlPolicy.validateRedirect(current, location);
+        } catch (OutboundUrlPolicy.RejectedOutboundUrlException e) {
+            throw new IOException("MCP HTTP redirect is blocked", e);
+        }
+    }
+
+    private boolean isRedirect(int statusCode) {
+        return statusCode >= 300 && statusCode < 400;
+    }
+
+    private String authorizationHeader() {
+        String authHeader = authHeaderSupplier.get();
+        return authHeader == null ? "" : authHeader;
     }
 
     /**
@@ -430,7 +543,7 @@ public class McpClient implements Closeable {
         connected = false;
 
         if (stdioProcess != null) {
-            stdioProcess.destroyForcibly();
+            stdioProcess.terminate();
             stdioProcess = null;
         }
 

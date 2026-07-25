@@ -1,17 +1,21 @@
 package com.labex.labexagent.permission;
 
+import com.labex.entity.AgentRunInteraction;
+import com.labex.labexagent.run.AgentRunInteractionService;
+import com.labex.labexagent.run.AgentRunResumeScheduler;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -20,11 +24,25 @@ public class PermissionService {
     private static final Logger log = LoggerFactory.getLogger(PermissionService.class);
 
     private final JdbcTemplate jdbcTemplate;
+    private final AgentRunInteractionService runInteractionService;
+    private final AgentRunResumeScheduler resumeScheduler;
     private final Map<String, List<PermissionRule>> approvedRules = new ConcurrentHashMap<>();
-    private final Map<String, PendingApproval> pendingApprovals = new ConcurrentHashMap<>();
+    private final Map<String, PermissionApprovalRequest> pendingApprovals = new ConcurrentHashMap<>();
 
     public PermissionService(JdbcTemplate jdbcTemplate) {
+        this(jdbcTemplate, null, null);
+    }
+
+    public PermissionService(JdbcTemplate jdbcTemplate, AgentRunInteractionService runInteractionService) {
+        this(jdbcTemplate, runInteractionService, null);
+    }
+
+    @Autowired
+    public PermissionService(JdbcTemplate jdbcTemplate, AgentRunInteractionService runInteractionService,
+                             @Lazy AgentRunResumeScheduler resumeScheduler) {
         this.jdbcTemplate = jdbcTemplate;
+        this.runInteractionService = runInteractionService;
+        this.resumeScheduler = resumeScheduler;
     }
 
     public PermissionEvaluation evaluate(String toolName, String input, List<PermissionRule> rules) {
@@ -75,46 +93,95 @@ public class PermissionService {
                 matchedRulePermission,
                 matchedRulePattern
         );
-        pendingApprovals.put(requestId, new PendingApproval(request));
+        pendingApprovals.put(requestId, request);
         return request;
     }
 
-    public PermissionApprovalResult awaitApproval(String requestId) throws InterruptedException, TimeoutException {
-        PendingApproval pending = pendingApprovals.get(requestId);
-        if (pending == null) {
-            return new PermissionApprovalResult(false, false, "Permission request not found");
+    public PermissionApprovalRequest beginApproval(Integer projectId, Integer studentId, Long taskId,
+                                                    String conversationId, String sessionId, String toolName,
+                                                    String input, String summary, String matchedRulePermission,
+                                                    String matchedRulePattern) {
+        PermissionApprovalRequest request = beginApproval(
+                projectId, sessionId, toolName, input, summary, matchedRulePermission, matchedRulePattern);
+        if (runInteractionService == null) {
+            return request;
         }
         try {
-            return pending.future.get(10, TimeUnit.MINUTES);
-        } catch (java.util.concurrent.ExecutionException e) {
-            String message = e.getCause() != null ? e.getCause().getMessage() : e.getMessage();
-            return new PermissionApprovalResult(false, false, message);
-        } finally {
-            pendingApprovals.remove(requestId);
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("toolName", toolName);
+            payload.put("input", input);
+            payload.put("summary", summary);
+            payload.put("matchedRulePermission", matchedRulePermission);
+            payload.put("matchedRulePattern", matchedRulePattern);
+            runInteractionService.createWaiting(new AgentRunInteractionService.WaitingInteraction(
+                    request.getRequestId(), taskId, conversationId, sessionId, studentId, projectId,
+                    "permission", payload, "permission-" + request.getRequestId(),
+                    LocalDateTime.now().plusMinutes(10)));
+            return request;
+        } catch (RuntimeException e) {
+            pendingApprovals.remove(request.getRequestId());
+            throw e;
         }
     }
 
     public PermissionApprovalResult reply(String requestId, String action, String feedback) {
-        return reply(null, requestId, action, feedback);
+        return reply(null, null, requestId, action, feedback);
     }
 
     public PermissionApprovalResult reply(Integer projectId, String requestId, String action, String feedback) {
-        PendingApproval pending = pendingApprovals.get(requestId);
-        if (pending == null) {
-            return new PermissionApprovalResult(false, false, "Permission request expired or not found");
-        }
-        if (projectId != null && pending.request.getProjectId() != null && !projectId.equals(pending.request.getProjectId())) {
+        return reply(projectId, null, requestId, action, feedback);
+    }
+
+    public PermissionApprovalResult reply(Integer projectId, Integer studentId, String requestId, String action, String feedback) {
+        PermissionApprovalRequest pending = pendingApprovals.remove(requestId);
+        if (pending != null && projectId != null && pending.getProjectId() != null && !projectId.equals(pending.getProjectId())) {
             return new PermissionApprovalResult(false, false, "Permission request does not belong to this project");
         }
-        PermissionApprovalResult result = handleAskResult(pending.request, action, feedback);
-        if (result.isRemember()) {
-            String pattern = approvalPattern(pending.request);
-            approvedRules.computeIfAbsent(pending.request.getSessionId(), key -> new ArrayList<>())
-                    .add(new PermissionRule(pending.request.getToolName(), pattern, PermissionAction.ALLOW));
-            persistProjectApproval(pending.request);
+        PermissionApprovalResult result = pending == null
+                ? handlePersistedAskResult(action, feedback)
+                : handleAskResult(pending, action, feedback);
+        AgentRunInteraction persisted = null;
+        if (runInteractionService != null && studentId != null && projectId != null) {
+            try {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("action", action == null ? "" : action);
+                payload.put("granted", result.isGranted());
+                payload.put("remember", result.isRemember());
+                payload.put("feedback", result.getFeedback());
+                persisted = runInteractionService.respond(
+                        studentId,
+                        projectId,
+                        requestId,
+                        result.isGranted() ? "approved" : "rejected",
+                        payload);
+            } catch (IllegalArgumentException e) {
+                return new PermissionApprovalResult(false, false, e.getMessage());
+            }
         }
-        pending.future.complete(result);
+        if (persisted == null) {
+            return result;
+        }
+        if (result.isRemember() && pending != null) {
+            String pattern = approvalPattern(pending);
+            approvedRules.computeIfAbsent(pending.getSessionId(), key -> new ArrayList<>())
+                    .add(new PermissionRule(pending.getToolName(), pattern, PermissionAction.ALLOW));
+            persistProjectApproval(pending);
+        }
+        if (resumeScheduler != null) {
+            resumeScheduler.resumeIfWaiting(persisted);
+        }
         return result;
+    }
+
+    private PermissionApprovalResult handlePersistedAskResult(String action, String feedback) {
+        if (action == null) {
+            return new PermissionApprovalResult(false, false, "Unknown response");
+        }
+        return switch (action.toLowerCase()) {
+            case "allow_once", "once", "allow_always", "always" -> new PermissionApprovalResult(true, false, null);
+            case "reject" -> new PermissionApprovalResult(false, false, feedback);
+            default -> new PermissionApprovalResult(false, false, "Unknown response");
+        };
     }
 
     public PermissionApprovalResult handleAskResult(
@@ -209,7 +276,7 @@ public class PermissionService {
             return;
         }
         approvedRules.remove(sessionId);
-        pendingApprovals.entrySet().removeIf(entry -> sessionId.equals(entry.getValue().request.getSessionId()));
+        pendingApprovals.entrySet().removeIf(entry -> sessionId.equals(entry.getValue().getSessionId()));
     }
 
     private boolean wildcardMatch(String pattern, String input) {
@@ -267,12 +334,5 @@ public class PermissionService {
         public String getFeedback() { return feedback; }
     }
 
-    private static class PendingApproval {
-        private final PermissionApprovalRequest request;
-        private final CompletableFuture<PermissionApprovalResult> future = new CompletableFuture<>();
 
-        private PendingApproval(PermissionApprovalRequest request) {
-            this.request = request;
-        }
-    }
 }

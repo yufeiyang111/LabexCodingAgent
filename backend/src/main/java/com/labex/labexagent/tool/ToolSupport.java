@@ -2,6 +2,9 @@ package com.labex.labexagent.tool;
 
 import com.google.gson.JsonObject;
 import com.labex.labexagent.runtime.AgentContext;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -10,6 +13,9 @@ import java.nio.file.Path;
  * Exception performing whole class analysis ignored.
  */
 public final class ToolSupport {
+    public static final long MAX_TEXT_MUTATION_FILE_BYTES = 1_000_000;
+    private static final int BINARY_PROBE_BYTES = 8192;
+
     private ToolSupport() {
     }
 
@@ -42,16 +48,39 @@ public final class ToolSupport {
         if (relativePath == null || relativePath.isBlank()) {
             throw new IllegalArgumentException("path is required");
         }
-        Path root = context.getWorkspaceRoot();
-        String cleaned = ToolSupport.normalizeRelativePath((String)relativePath);
-        if (".".equals(cleaned) || "/".equals(cleaned)) {
-            return root;
+        return workspacePaths(context).resolveExisting(normalizeRelativePath(relativePath));
+    }
+
+    public static Path resolveForCreate(AgentContext context, String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            throw new IllegalArgumentException("path is required");
         }
-        Path resolved = root.resolve(cleaned).normalize();
-        if (!resolved.startsWith(root)) {
-            throw new IllegalArgumentException("Unsafe file path");
+        return workspacePaths(context).resolveForCreate(normalizeRelativePath(relativePath));
+    }
+
+    public static SecureWorkspacePath workspacePaths(AgentContext context) {
+        if (context == null || context.getWorkspaceRoot() == null) {
+            throw new IllegalArgumentException("workspace is required");
         }
-        return resolved;
+        return new SecureWorkspacePath(context.getWorkspaceRoot());
+    }
+
+    public static boolean isSafeExistingWorkspaceEntry(AgentContext context, Path entry) {
+        if (entry == null) {
+            return false;
+        }
+        try {
+            SecureWorkspacePath paths = workspacePaths(context);
+            Path normalized = entry.toAbsolutePath().normalize();
+            if (!normalized.startsWith(paths.workspaceRoot())) {
+                return false;
+            }
+            String relativePath = paths.workspaceRoot().relativize(normalized).toString();
+            paths.resolveExisting(relativePath.isBlank() ? "." : relativePath);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     public static String normalizeRelativePath(String relativePath) {
@@ -59,20 +88,12 @@ public final class ToolSupport {
             return "";
         }
         String cleaned = relativePath.trim().replace('\\', '/');
-        while (cleaned.startsWith("/")) {
-            cleaned = cleaned.substring(1);
+        if ("/workspace".equals(cleaned) || "workspace".equals(cleaned)) {
+            return ".";
         }
-        while (cleaned.startsWith("./")) {
-            cleaned = cleaned.substring(2);
-        }
-        int workspaceMarker = cleaned.lastIndexOf("/workspace/");
-        if (workspaceMarker >= 0) {
-            cleaned = cleaned.substring(workspaceMarker + "/workspace/".length());
-        }
-        if ("workspace".equals(cleaned)) {
-            return "";
-        }
-        while (cleaned.startsWith("workspace/")) {
+        if (cleaned.startsWith("/workspace/")) {
+            cleaned = cleaned.substring("/workspace/".length());
+        } else if (cleaned.startsWith("workspace/")) {
             cleaned = cleaned.substring("workspace/".length());
         }
         while (cleaned.startsWith("./")) {
@@ -81,15 +102,39 @@ public final class ToolSupport {
         return cleaned;
     }
 
+    public static void requireEditableTextContent(String content) {
+        long contentBytes = content == null ? 0 : content.getBytes(StandardCharsets.UTF_8).length;
+        if (contentBytes > MAX_TEXT_MUTATION_FILE_BYTES) {
+            throw new IllegalArgumentException("File content exceeds max_file_bytes=" + MAX_TEXT_MUTATION_FILE_BYTES);
+        }
+    }
+
+    public static String readEditableText(Path file) throws Exception {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("File target is not a regular file");
+        }
+        if (Files.size(file) > MAX_TEXT_MUTATION_FILE_BYTES) {
+            throw new IllegalArgumentException("File target exceeds max_file_bytes=" + MAX_TEXT_MUTATION_FILE_BYTES);
+        }
+        if (isLikelyBinary(file)) {
+            throw new IllegalArgumentException("File target appears to be binary");
+        }
+        return Files.readString(file, StandardCharsets.UTF_8);
+    }
+
     public static boolean isLikelyBinary(Path file) throws Exception {
-        if (!Files.isRegularFile(file, new LinkOption[0])) {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             return false;
         }
-        byte[] bytes = Files.readAllBytes(file);
-        int limit = Math.min(bytes.length, 8192);
-        for (int i = 0; i < limit; ++i) {
-            if (bytes[i] != 0) continue;
-            return true;
+        byte[] bytes = new byte[BINARY_PROBE_BYTES];
+        int length;
+        try (InputStream input = Files.newInputStream(file)) {
+            length = input.read(bytes);
+        }
+        for (int index = 0; index < Math.max(0, length); index++) {
+            if (bytes[index] == 0) {
+                return true;
+            }
         }
         return false;
     }
@@ -101,4 +146,3 @@ public final class ToolSupport {
         return text.substring(0, max) + "\n...\u8f93\u51fa\u5df2\u622a\u65ad...";
     }
 }
-

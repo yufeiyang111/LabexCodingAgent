@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.ToolResult;
+import com.labex.labexagent.workspace.ProjectWorkspace;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -75,9 +76,8 @@ public class AgentMetricsService {
     }
 
     private void append(StudentProject project, Map<String, Object> event) throws Exception {
-        Path dir = Path.of(project.getWorkspacePath()).toAbsolutePath().normalize().resolve(".labex");
-        Files.createDirectories(dir);
-        Path file = dir.resolve("agent-metrics.jsonl");
+        Path file = ProjectWorkspace.paths(project).resolveForCreate(".labex/agent-metrics.jsonl");
+        Files.createDirectories(file.getParent());
         Files.writeString(file, GSON.toJson(event) + "\n", StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND);
     }

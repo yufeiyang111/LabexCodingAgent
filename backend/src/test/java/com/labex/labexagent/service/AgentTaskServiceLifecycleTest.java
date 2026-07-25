@@ -1,0 +1,199 @@
+package com.labex.labexagent.service;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.when;
+
+import com.labex.entity.AgentTask;
+import com.labex.entity.StudentProject;
+import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunState;
+import com.labex.mapper.AgentChangeSetMapper;
+import com.labex.mapper.AgentFileChangeMapper;
+import com.labex.mapper.AgentTaskMapper;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+class AgentTaskServiceLifecycleTest {
+
+    @Test
+    void createsAQueuedRunAndPersistsItsInitialLifecycleEvent() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        doAnswer(invocation -> {
+            invocation.<AgentTask>getArgument(0).setTaskId(72L);
+            return 1;
+        }).when(taskMapper).insert(any(AgentTask.class));
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTaskService service = new AgentTaskService(
+                taskMapper,
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class),
+                lifecycle);
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+
+        AgentTask task = service.createTask(7, project, "conversation-1", "session-1", "build", "Implement replay");
+
+        assertEquals("queued", task.getStatus());
+        verify(lifecycle).initialize(eq(task), any(), eq("task-72-queued"));
+    }
+
+
+    @Test
+    void usesTheSameIdempotencyKeyForARepeatedLogicalStateUpdate() {
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTaskService service = new AgentTaskService(
+                mock(AgentTaskMapper.class),
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class),
+                lifecycle);
+
+        service.updateTask(72L, "preparing", "Preparing workspace", "Worker accepted run");
+        service.updateTask(72L, "preparing", "Preparing workspace", "Worker accepted run");
+
+        ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+        verify(lifecycle, times(2)).transition(
+                eq(72L), eq(AgentRunState.PREPARING), eq("RUN_STATE_PREPARING"), any(),
+                eq("Preparing workspace"), eq("Worker accepted run"), keys.capture());
+        assertEquals(keys.getAllValues().get(0), keys.getAllValues().get(1));
+    }
+
+    @Test
+    void finalizesTimingInsideTheTerminalStateUpdateTransaction() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask task = new AgentTask();
+        task.setTaskId(72L);
+        task.setStatus("running");
+        task.setSubmittedAt(java.time.LocalDateTime.of(2026, 7, 23, 10, 0));
+        task.setActiveSegmentStartedAt(java.time.LocalDateTime.of(2026, 7, 23, 10, 0, 5));
+        task.setActiveElapsedMs(0L);
+        when(taskMapper.selectById(72L)).thenReturn(task);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        doAnswer(invocation -> {
+            task.setStatus("completed");
+            return null;
+        }).when(lifecycle).transition(eq(72L), eq(AgentRunState.COMPLETED), any(), any(), any(), any(), any());
+        AgentTaskService service = new AgentTaskService(
+                taskMapper,
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class),
+                lifecycle);
+
+        service.updateTask(72L, "completed", "Done", "Run completed");
+
+        org.junit.jupiter.api.Assertions.assertNull(task.getStartedAt());
+        org.junit.jupiter.api.Assertions.assertNotNull(task.getFinishedAt());
+        org.junit.jupiter.api.Assertions.assertNull(task.getActiveSegmentStartedAt());
+        org.junit.jupiter.api.Assertions.assertTrue(task.getElapsedMs() >= 0L);
+    }
+
+    @Test
+    void timingUpdatesDoNotWriteTheWholeTaskOrOverwriteRunVersion() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask task = new AgentTask();
+        task.setTaskId(72L);
+        task.setStatus("queued");
+        task.setRunVersion(9L);
+        task.setActiveElapsedMs(120L);
+        when(taskMapper.selectById(72L)).thenReturn(task);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        AgentTaskService service = new AgentTaskService(
+                taskMapper,
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class));
+
+        service.startTiming(72L, java.time.LocalDateTime.of(2026, 7, 23, 10, 1));
+
+        assertEquals(9L, task.getRunVersion());
+        org.junit.jupiter.api.Assertions.assertNotNull(task.getActiveSegmentStartedAt());
+        verify(taskMapper, never()).updateById(any(AgentTask.class));
+    }
+
+    @Test
+    void schedulesAModelRetryWithPausedActiveTimingAndDurableMetadata() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask task = new AgentTask();
+        task.setTaskId(72L);
+        task.setStatus("running");
+        task.setRetryAttempts(0);
+        task.setActiveSegmentStartedAt(java.time.LocalDateTime.of(2026, 7, 23, 10, 0));
+        task.setActiveElapsedMs(100L);
+        when(taskMapper.selectById(72L)).thenReturn(task);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        when(lifecycle.scheduleModelRetry(eq(72L), eq(1), any(), any(), any(), any(), any())).thenReturn(true);
+        AgentTaskService service = new AgentTaskService(
+                taskMapper,
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class),
+                lifecycle);
+
+        AgentTaskService.ModelRetrySchedule schedule = service.scheduleModelRetry(
+                72L, 2, 1_000L, "temporary upstream failure");
+
+        org.junit.jupiter.api.Assertions.assertNotNull(schedule);
+        assertEquals(1, schedule.attempt());
+        org.junit.jupiter.api.Assertions.assertNull(task.getActiveSegmentStartedAt());
+        org.junit.jupiter.api.Assertions.assertTrue(task.getActiveElapsedMs() >= 100L);
+        verify(lifecycle).scheduleModelRetry(eq(72L), eq(1), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void finalizesAnActiveCancellationThroughCancellingBeforeCancelled() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask running = new AgentTask();
+        running.setTaskId(72L);
+        running.setStatus("running");
+        AgentTask cancelling = new AgentTask();
+        cancelling.setTaskId(72L);
+        cancelling.setStatus("cancelling");
+        when(taskMapper.selectById(72L)).thenReturn(running, running, cancelling);
+
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.RUNNING), eq(AgentRunState.CANCELLING),
+                any(), any(), any(), any(), any())).thenReturn(true);
+        when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.CANCELLING), eq(AgentRunState.CANCELLED),
+                any(), any(), any(), any(), any())).thenReturn(true);
+        AgentTaskService service = new AgentTaskService(
+                taskMapper,
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class),
+                lifecycle);
+
+        org.junit.jupiter.api.Assertions.assertTrue(service.finalizeCancellation(72L, "Cancelled", "User cancelled"));
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(lifecycle);
+        order.verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.RUNNING), eq(AgentRunState.CANCELLING),
+                any(), any(), any(), any(), any());
+        order.verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.CANCELLING), eq(AgentRunState.CANCELLED),
+                any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void routesKnownRunStatesThroughTheLifecycleService() {
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTaskService service = new AgentTaskService(
+                mock(AgentTaskMapper.class),
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class),
+                lifecycle);
+
+        service.updateTask(72L, "preparing", "Preparing workspace", "Worker accepted run");
+
+        verify(lifecycle).transition(
+                eq(72L),
+                eq(AgentRunState.PREPARING),
+                eq("RUN_STATE_PREPARING"),
+                any(),
+                eq("Preparing workspace"),
+                eq("Worker accepted run"),
+                any());
+    }
+}

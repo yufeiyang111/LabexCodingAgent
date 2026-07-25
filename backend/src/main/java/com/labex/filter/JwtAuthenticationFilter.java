@@ -32,6 +32,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
 
         String token = resolveToken(request);
+        log.info("[DEBUG_JWT] requestURI={} authHeader={} tokenResolve={}", request.getRequestURI(),
+                request.getHeader("Authorization"),
+                token != null ? "tokenPresent(prefixRemoved) len=" + token.length() : "null");
         if (token != null && jwtUtil.validateToken(token)) {
             String username = jwtUtil.getUsernameFromToken(token);
             Integer userId = jwtUtil.getUserIdFromToken(token);
@@ -59,6 +62,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     new UsernamePasswordAuthenticationToken(
                             userDetails, null, userDetails.getAuthorities());
             SecurityContextHolder.getContext().setAuthentication(authentication);
+        } else {
+            log.info("[DEBUG_JWT] token={} validateToken={}", token != null ? "present" : "null", token != null ? "INVALID" : "N/A");
         }
 
         filterChain.doFilter(request, response);

@@ -8,11 +8,11 @@ import com.labex.common.Result;
 import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.labexagent.network.OutboundUrlPolicy;
 import com.labex.service.AgentModelConfigService;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
-import java.net.InetAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -35,34 +35,69 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentModelConfigController {
     private final AgentModelConfigService configService;
     private final LlmProviderFactory providerFactory;
+    private final OutboundUrlPolicy outboundUrlPolicy;
 
-    public AgentModelConfigController(AgentModelConfigService configService, LlmProviderFactory providerFactory) {
+    public AgentModelConfigController(AgentModelConfigService configService,
+                                      LlmProviderFactory providerFactory,
+                                      OutboundUrlPolicy outboundUrlPolicy) {
         this.configService = configService;
         this.providerFactory = providerFactory;
+        this.outboundUrlPolicy = outboundUrlPolicy;
     }
 
     @GetMapping
     public Result<List<AgentModelConfig>> list(Authentication auth) {
-        return Result.success(configService.listByStudent(getStudentId(auth)));
+        return Result.success(configService.listByStudent(getStudentId(auth)).stream()
+                .map(this::sanitizeConfig)
+                .toList());
     }
 
     @GetMapping("/{configId}")
     public Result<AgentModelConfig> get(@PathVariable Integer configId, Authentication auth) {
         AgentModelConfig config = configService.getOwned(getStudentId(auth), configId);
         if (config == null) return Result.error("Config not found");
-        config.setApiKey(maskKey(config.getApiKey()));
-        return Result.success(config);
+        return Result.success(sanitizeConfig(config));
     }
 
     @PostMapping
     public Result<AgentModelConfig> create(@RequestBody CreateConfigRequest req, Authentication auth) {
         try {
-            AgentModelConfig config = configService.create(
-                    getStudentId(auth), req.configName, req.provider, req.modelName,
-                    req.apiKey, req.baseUrl, req.maxTokens, req.temperature,
-                    Boolean.TRUE.equals(req.isDefault));
-            config.setApiKey(maskKey(config.getApiKey()));
-            return Result.success(config);
+            validateTokenLimits(req.maxTokens, req.contextWindowTokens);
+            validateCompactionThreshold(req.compactionThresholdPercent);
+            validateCapabilities(req.reasoningEffort);
+            boolean hasCompactionPolicy = hasCompactionPolicy(req.compactionAuto, req.compactionPrune,
+                    req.compactionTailTurns, req.compactionPreserveRecentTokens, req.compactionReservedTokens,
+                    req.compactionModelConfigId);
+            AgentModelConfig config = hasCompactionPolicy
+                    ? req.compactionModelConfigId == null
+                    ? configService.createWithCompactionPolicy(
+                            getStudentId(auth), req.configName, req.provider, req.modelName,
+                            req.apiKey, req.baseUrl, req.maxTokens, req.contextWindowTokens, req.temperature,
+                            Boolean.TRUE.equals(req.isDefault), Boolean.TRUE.equals(req.promptCacheKeyEnabled),
+                            req.compactionAuto, req.compactionPrune, req.compactionTailTurns,
+                            req.compactionPreserveRecentTokens, req.compactionReservedTokens)
+                    : configService.createWithCompactionPolicy(
+                            getStudentId(auth), req.configName, req.provider, req.modelName,
+                            req.apiKey, req.baseUrl, req.maxTokens, req.contextWindowTokens, req.temperature,
+                            Boolean.TRUE.equals(req.isDefault), Boolean.TRUE.equals(req.promptCacheKeyEnabled),
+                            req.compactionAuto, req.compactionPrune, req.compactionTailTurns,
+                            req.compactionPreserveRecentTokens, req.compactionReservedTokens,
+                            req.compactionModelConfigId)
+                    : Boolean.TRUE.equals(req.promptCacheKeyEnabled)
+                    ? configService.create(
+                            getStudentId(auth), req.configName, req.provider, req.modelName,
+                            req.apiKey, req.baseUrl, req.maxTokens, req.contextWindowTokens, req.temperature,
+                            Boolean.TRUE.equals(req.isDefault), true)
+                    : configService.create(
+                            getStudentId(auth), req.configName, req.provider, req.modelName,
+                            req.apiKey, req.baseUrl, req.maxTokens, req.contextWindowTokens, req.temperature,
+                            Boolean.TRUE.equals(req.isDefault));
+            if (req.compactionThresholdPercent != null) {
+                config = configService.updateCompactionThreshold(getStudentId(auth), config.getConfigId(), req.compactionThresholdPercent);
+            }
+            config = configService.updateCapabilities(getStudentId(auth), config.getConfigId(),
+                    req.reasoningEffort, req.imageInputEnabled);
+            return Result.success(sanitizeConfig(config));
         } catch (Exception e) {
             return Result.error(e.getMessage());
         }
@@ -72,12 +107,41 @@ public class AgentModelConfigController {
     public Result<AgentModelConfig> update(@PathVariable Integer configId,
                                             @RequestBody UpdateConfigRequest req, Authentication auth) {
         try {
-            AgentModelConfig config = configService.update(
-                    getStudentId(auth), configId, req.configName, req.provider,
-                    req.modelName, req.apiKey, req.baseUrl, req.maxTokens,
-                    req.temperature, req.isDefault);
-            config.setApiKey(maskKey(config.getApiKey()));
-            return Result.success(config);
+            validateTokenLimits(req.maxTokens, req.contextWindowTokens);
+            validateCompactionThreshold(req.compactionThresholdPercent);
+            validateCapabilities(req.reasoningEffort);
+            boolean hasCompactionPolicy = hasCompactionPolicy(req.compactionAuto, req.compactionPrune,
+                    req.compactionTailTurns, req.compactionPreserveRecentTokens, req.compactionReservedTokens,
+                    req.compactionModelConfigId);
+            AgentModelConfig config = hasCompactionPolicy
+                    ? req.compactionModelConfigId == null
+                    ? configService.updateWithCompactionPolicy(
+                            getStudentId(auth), configId, req.configName, req.provider,
+                            req.modelName, req.apiKey, req.baseUrl, req.maxTokens, req.contextWindowTokens,
+                            req.temperature, req.isDefault, req.promptCacheKeyEnabled, req.compactionAuto,
+                            req.compactionPrune, req.compactionTailTurns, req.compactionPreserveRecentTokens,
+                            req.compactionReservedTokens)
+                    : configService.updateWithCompactionPolicy(
+                            getStudentId(auth), configId, req.configName, req.provider,
+                            req.modelName, req.apiKey, req.baseUrl, req.maxTokens, req.contextWindowTokens,
+                            req.temperature, req.isDefault, req.promptCacheKeyEnabled, req.compactionAuto,
+                            req.compactionPrune, req.compactionTailTurns, req.compactionPreserveRecentTokens,
+                            req.compactionReservedTokens, req.compactionModelConfigId, true)
+                    : req.promptCacheKeyEnabled == null
+                    ? configService.update(
+                            getStudentId(auth), configId, req.configName, req.provider,
+                            req.modelName, req.apiKey, req.baseUrl, req.maxTokens, req.contextWindowTokens,
+                            req.temperature, req.isDefault)
+                    : configService.update(
+                            getStudentId(auth), configId, req.configName, req.provider,
+                            req.modelName, req.apiKey, req.baseUrl, req.maxTokens, req.contextWindowTokens,
+                            req.temperature, req.isDefault, req.promptCacheKeyEnabled);
+            if (req.compactionThresholdPercent != null) {
+                config = configService.updateCompactionThreshold(getStudentId(auth), config.getConfigId(), req.compactionThresholdPercent);
+            }
+            config = configService.updateCapabilities(getStudentId(auth), config.getConfigId(),
+                    req.reasoningEffort, req.imageInputEnabled);
+            return Result.success(sanitizeConfig(config));
         } catch (Exception e) {
             return Result.error(e.getMessage());
         }
@@ -175,17 +239,50 @@ public class AgentModelConfigController {
     @GetMapping("/default")
     public Result<AgentModelConfig> getDefault(Authentication auth) {
         AgentModelConfig config = configService.getDefault(getStudentId(auth));
-        if (config != null) config.setApiKey(maskKey(config.getApiKey()));
-        return Result.success(config);
+        return Result.success(sanitizeConfig(config));
     }
 
     private Integer getStudentId(Authentication auth) {
         return Integer.parseInt(auth.getName());
     }
 
-    private String maskKey(String key) {
-        if (key == null || key.length() < 8) return "****";
-        return key.substring(0, 4) + "****" + key.substring(key.length() - 4);
+    private void validateCapabilities(String reasoningEffort) {
+        if (reasoningEffort != null) {
+            com.labex.labexagent.llm.ReasoningEffort.normalize(reasoningEffort);
+        }
+    }
+
+    private boolean hasCompactionPolicy(Boolean compactionAuto, Boolean compactionPrune,
+                                        Integer compactionTailTurns, Integer compactionPreserveRecentTokens,
+                                        Integer compactionReservedTokens, Integer compactionModelConfigId) {
+        return compactionAuto != null || compactionPrune != null || compactionTailTurns != null
+                || compactionPreserveRecentTokens != null || compactionReservedTokens != null
+                || compactionModelConfigId != null;
+    }
+
+    private void validateCompactionThreshold(Integer thresholdPercent) {
+        if (thresholdPercent != null && (thresholdPercent < 70 || thresholdPercent > 99)) {
+            throw new IllegalArgumentException("compactionThresholdPercent must be between 70 and 99");
+        }
+    }
+
+    private void validateTokenLimits(Integer maxTokens, Integer contextWindowTokens) {
+        if (maxTokens != null && maxTokens <= 0) {
+            throw new IllegalArgumentException("maxTokens must be greater than 0");
+        }
+        if (contextWindowTokens != null && contextWindowTokens <= 0) {
+            throw new IllegalArgumentException("contextWindowTokens must be greater than 0");
+        }
+        if (maxTokens != null && contextWindowTokens != null && contextWindowTokens <= maxTokens) {
+            throw new IllegalArgumentException("contextWindowTokens must be greater than maxTokens");
+        }
+    }
+
+    private AgentModelConfig sanitizeConfig(AgentModelConfig config) {
+        if (config != null) {
+            config.setApiKeyMasked(configService.hasStoredApiKey(config) ? "****" : "");
+        }
+        return config;
     }
 
     private String buildModelsUrl(String baseUrl) {
@@ -231,15 +328,7 @@ public class AgentModelConfigController {
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("Models URL host is required");
         }
-        String lowerHost = host.toLowerCase();
-        if ("localhost".equals(lowerHost) || lowerHost.endsWith(".localhost")) {
-            throw new IllegalArgumentException("Models URL host is not allowed");
-        }
-        for (InetAddress address : InetAddress.getAllByName(host)) {
-            if (isBlockedAddress(address)) {
-                throw new IllegalArgumentException("Models URL must resolve to a public address");
-            }
-        }
+        outboundUrlPolicy.validate(rawUrl);
     }
 
     private void applyModelListAuth(HttpURLConnection conn, URI uri, String apiKey) {
@@ -249,23 +338,6 @@ public class AgentModelConfigController {
             return;
         }
         conn.setRequestProperty("Authorization", "Bearer " + apiKey);
-    }
-
-    private boolean isBlockedAddress(InetAddress address) {
-        byte[] bytes = address.getAddress();
-        if (address.isAnyLocalAddress()
-                || address.isLoopbackAddress()
-                || address.isLinkLocalAddress()
-                || address.isSiteLocalAddress()
-                || address.isMulticastAddress()) {
-            return true;
-        }
-        if (bytes.length == 16) {
-            int first = bytes[0] & 0xff;
-            int second = bytes[1] & 0xff;
-            return (first & 0xfe) == 0xfc || (first == 0xfe && (second & 0xc0) == 0x80);
-        }
-        return false;
     }
 
     private List<Map<String, Object>> parseModels(String body) {
@@ -356,6 +428,17 @@ public class AgentModelConfigController {
         public String apiKey;
         public String baseUrl;
         public Integer maxTokens;
+        public Integer contextWindowTokens;
+        public Boolean promptCacheKeyEnabled;
+        public String reasoningEffort;
+        public Boolean imageInputEnabled;
+        public Boolean compactionAuto;
+        public Boolean compactionPrune;
+        public Integer compactionTailTurns;
+        public Integer compactionPreserveRecentTokens;
+        public Integer compactionReservedTokens;
+        public Integer compactionModelConfigId;
+        public Integer compactionThresholdPercent;
         public Double temperature;
         public Boolean isDefault;
     }
@@ -367,6 +450,17 @@ public class AgentModelConfigController {
         public String apiKey;
         public String baseUrl;
         public Integer maxTokens;
+        public Integer contextWindowTokens;
+        public Boolean promptCacheKeyEnabled;
+        public String reasoningEffort;
+        public Boolean imageInputEnabled;
+        public Boolean compactionAuto;
+        public Boolean compactionPrune;
+        public Integer compactionTailTurns;
+        public Integer compactionPreserveRecentTokens;
+        public Integer compactionReservedTokens;
+        public Integer compactionModelConfigId;
+        public Integer compactionThresholdPercent;
         public Double temperature;
         public Boolean isDefault;
     }
