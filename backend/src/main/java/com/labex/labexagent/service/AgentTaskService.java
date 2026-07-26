@@ -235,6 +235,33 @@ public class AgentTaskService {
         return finalized;
     }
 
+    /**
+     * Moves a resolved user interaction into recovery before a new worker reacquires the project checkout.
+     * The run is not marked running until the worker actually owns all required leases.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean beginInteractionResume(Long taskId, String currentStep, String summary) {
+        if (taskId == null) return false;
+        if (this.lifecycleService == null) {
+            this.updateTask(taskId, "recovering", currentStep, summary);
+            return true;
+        }
+        AgentTask task = this.task(taskId);
+        if (task == null) return false;
+        AgentRunState current = this.runState(task.getStatus());
+        if (current == AgentRunState.RECOVERING) return true;
+        if (current != AgentRunState.WAITING_USER && current != AgentRunState.WAITING_APPROVAL) return false;
+        return this.lifecycleService.transitionIfCurrent(
+                taskId,
+                current,
+                AgentRunState.RECOVERING,
+                "RUN_INTERACTION_RESUME_QUEUED",
+                this.taskUpdatePayload("recovering", currentStep, summary),
+                currentStep,
+                summary,
+                AgentRunTransitionKey.forTaskUpdate(taskId, "recovering", currentStep, summary));
+    }
+
     /** Places a task behind the active task that owns the same project checkout. */
     @Transactional(rollbackFor = Exception.class)
     public boolean waitForWorkspace(Long taskId, String currentStep, String summary, Long blockingTaskId) {

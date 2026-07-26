@@ -118,6 +118,12 @@ public class CommandApprovalOrchestrator {
                             "resumeAgentLoop", resumeAgentLoop)),
                     lifecycleKey(approval, "execution-outcome:" + executionStatus));
             if (resumeAgentLoop) {
+                lifecycleService.transition(approval.getTaskId(), AgentRunState.RECOVERING,
+                        "COMMAND_EXECUTION_RESUME_QUEUED",
+                        publicPayload(approval, Map.of("executionStatus", executionStatus, "resumeAgentLoop", true)),
+                        "Resuming Agent after approved command",
+                        "The one-time command finished and the Agent continuation is queued.",
+                        lifecycleKey(approval, "execution-resume:" + executionStatus));
                 resumeAgentLoop(approval, executionStatus, result);
             } else {
                 log.info("COMMAND_APPROVAL_AGENT_RESUME_SKIPPED taskId={} projectId={} approvalId={} reason=superseded",
@@ -159,7 +165,7 @@ public class CommandApprovalOrchestrator {
                     approval.getTaskId(), approval.getProjectId(), approval.getApprovalId(), status);
             return false;
         }
-        lifecycleService.transition(approval.getTaskId(), AgentRunState.RUNNING,
+        lifecycleService.transition(approval.getTaskId(), AgentRunState.RECOVERING,
                 "COMMAND_APPROVAL_RESOLVED", publicPayload(approval, Map.of("decision", status, "resumeAgentLoop", true)),
                 "Resolving command approval", "The one-time command approval was resolved.",
                 lifecycleKey(approval, "resolve:" + decisionIdempotencyKey));

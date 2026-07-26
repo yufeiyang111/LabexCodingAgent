@@ -46,10 +46,12 @@ public final class AgentRunStateMachine {
                 AgentRunState.FAILED));
         transitions.put(AgentRunState.WAITING_APPROVAL, EnumSet.of(
                 AgentRunState.RUNNING,
+                AgentRunState.RECOVERING,
                 AgentRunState.CANCELLING,
                 AgentRunState.FAILED));
         transitions.put(AgentRunState.WAITING_USER, EnumSet.of(
                 AgentRunState.RUNNING,
+                AgentRunState.RECOVERING,
                 AgentRunState.CANCELLING,
                 AgentRunState.FAILED));
         transitions.put(AgentRunState.WAITING_WORKSPACE, EnumSet.of(

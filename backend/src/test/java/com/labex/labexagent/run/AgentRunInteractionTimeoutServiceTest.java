@@ -11,6 +11,7 @@ import com.labex.entity.AgentRunInteraction;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class AgentRunInteractionTimeoutServiceTest {
 
@@ -28,10 +29,13 @@ class AgentRunInteractionTimeoutServiceTest {
         int expired = service.expireAvailable(now);
 
         assertEquals(1, expired);
+        ArgumentCaptor<java.util.Map<String, Object>> payload = ArgumentCaptor.forClass(java.util.Map.class);
         verify(lifecycle).transitionIfCurrent(
                 eq(71L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.FAILED),
-                eq("RUN_INTERACTION_TIMED_OUT"), any(), eq("Interaction timed out"),
+                eq("RUN_INTERACTION_TIMED_OUT"), payload.capture(), eq("Interaction timed out"),
                 eq("Timed out while waiting for user input"), eq("interaction-timeout-" + question.getInteractionId()));
+        assertEquals("2026-07-23T12:00", payload.getValue().get("timedOutAt"));
+        assertEquals("2026-07-23T11:59", payload.getValue().get("expiresTime"));
     }
 
     @Test
@@ -56,6 +60,7 @@ class AgentRunInteractionTimeoutServiceTest {
         interaction.setInteractionType(type);
         interaction.setStudentId(7);
         interaction.setProjectId(12);
+        interaction.setExpiresTime(LocalDateTime.of(2026, 7, 23, 11, 59));
         return interaction;
     }
 }

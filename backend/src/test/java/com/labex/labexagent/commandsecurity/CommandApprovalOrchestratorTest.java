@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 class CommandApprovalOrchestratorTest {
 
     @Test
-    void rejectionResolvesWaitingRunThroughLegalRunningThenFailedTransitions() {
+    void rejectionQueuesTheSameRunForRecoveryBeforeResuming() {
         CommandApprovalService approvals = mock(CommandApprovalService.class);
         CommandAuditService audit = mock(CommandAuditService.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
@@ -48,7 +48,7 @@ class CommandApprovalOrchestratorTest {
                 7, 12, "approval-71", false, "decision-71");
 
         org.assertj.core.api.Assertions.assertThat(result.available()).isTrue();
-        verify(lifecycle).transition(eq(71L), eq(AgentRunState.RUNNING), eq("COMMAND_APPROVAL_RESOLVED"),
+        verify(lifecycle).transition(eq(71L), eq(AgentRunState.RECOVERING), eq("COMMAND_APPROVAL_RESOLVED"),
                 any(), any(), any(), any());
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_APPROVAL_REJECTED"), any(), any());
         verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
@@ -84,6 +84,8 @@ class CommandApprovalOrchestratorTest {
 
         org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("resuming");
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_COMPLETED"), any(), any());
+        verify(lifecycle).transition(eq(71L), eq(AgentRunState.RECOVERING),
+                eq("COMMAND_EXECUTION_RESUME_QUEUED"), any(), any(), any(), any());
         verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
         verify(metadataRefresh).schedule(eq(7), eq(12), eq("command_approval"));
         verify(projects, never()).refreshProjectMetadata(eq(7), eq(12));

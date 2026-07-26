@@ -23,13 +23,15 @@ class AgentRunResumeSchedulerTest {
         AgentLoopEngine engine = mock(AgentLoopEngine.class);
         AgentTask task = task(71L, "waiting_user");
         when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
+        when(tasks.beginInteractionResume(71L, "Resuming after user response", "A persisted user response is ready"))
+                .thenReturn(true);
         AgentRunResumeScheduler scheduler = new AgentRunResumeScheduler(tasks, engine);
 
         boolean scheduled = scheduler.resumeIfWaiting(questionAnswer(71L));
 
         ArgumentCaptor<AgentStreamRequest> request = ArgumentCaptor.forClass(AgentStreamRequest.class);
         assertThat(scheduled).isTrue();
-        verify(tasks).updateTask(eq(71L), eq("running"), eq("Resuming after user response"), eq("A persisted user response is ready"));
+        verify(tasks).beginInteractionResume(eq(71L), eq("Resuming after user response"), eq("A persisted user response is ready"));
         verify(engine).resume(eq(7), eq(12), request.capture(), eq(71L), eq(true));
         assertThat(request.getValue().getConversationId()).isEqualTo("conversation-1");
         assertThat(request.getValue().getSessionId()).isEqualTo("session-1");
@@ -42,6 +44,8 @@ class AgentRunResumeSchedulerTest {
         AgentTaskService tasks = mock(AgentTaskService.class);
         AgentLoopEngine engine = mock(AgentLoopEngine.class);
         when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task(71L, "waiting_user"));
+        when(tasks.beginInteractionResume(71L, "Resuming after user response", "A persisted user response is ready"))
+                .thenReturn(true);
         AgentRunResumeScheduler scheduler = new AgentRunResumeScheduler(tasks, engine);
 
         boolean scheduled = scheduler.resumeIfWaiting(interaction(71L, "question", "cancelled"));
@@ -55,6 +59,8 @@ class AgentRunResumeSchedulerTest {
         AgentTaskService tasks = mock(AgentTaskService.class);
         AgentLoopEngine engine = mock(AgentLoopEngine.class);
         when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task(71L, "waiting_user"));
+        when(tasks.beginInteractionResume(71L, "Resuming after user response", "A persisted user response is ready"))
+                .thenReturn(true);
         doThrow(new IllegalStateException("queue full")).when(engine)
                 .resume(eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class), eq(71L), eq(true));
         AgentRunResumeScheduler scheduler = new AgentRunResumeScheduler(tasks, engine);
@@ -70,6 +76,8 @@ class AgentRunResumeSchedulerTest {
         AgentTaskService tasks = mock(AgentTaskService.class);
         AgentLoopEngine engine = mock(AgentLoopEngine.class);
         when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task(71L, "waiting_approval"));
+        when(tasks.beginInteractionResume(71L, "Resuming after user response", "A persisted user response is ready"))
+                .thenReturn(true);
         AgentRunResumeScheduler scheduler = new AgentRunResumeScheduler(tasks, engine);
 
         boolean scheduled = scheduler.resumeIfWaiting(interaction(71L, "permission", "approved"));

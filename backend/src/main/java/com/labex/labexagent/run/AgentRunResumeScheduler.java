@@ -29,11 +29,12 @@ public class AgentRunResumeScheduler {
         }
 
         AgentStreamRequest request = continuationRequest(task, interaction);
-        taskService.updateTask(
+        if (!taskService.beginInteractionResume(
                 task.getTaskId(),
-                "running",
                 "Resuming after user response",
-                "A persisted user response is ready");
+                "A persisted user response is ready")) {
+            return false;
+        }
         try {
             agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true);
             return true;

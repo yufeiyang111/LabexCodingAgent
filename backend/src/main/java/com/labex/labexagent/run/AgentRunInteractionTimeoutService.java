@@ -73,7 +73,7 @@ public class AgentRunInteractionTimeoutService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("interactionId", interaction.getInteractionId());
         payload.put("interactionType", interaction.getInteractionType());
-        payload.put("expiresTime", interaction.getExpiresTime());
+        payload.put("expiresTime", interaction.getExpiresTime() == null ? "" : interaction.getExpiresTime().toString());
         payload.put("timedOutAt", now == null ? LocalDateTime.now().toString() : now.toString());
         return payload;
     }
