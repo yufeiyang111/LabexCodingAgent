@@ -16,8 +16,9 @@ test('AgentTimer owns a live interval and releases it on unmount', async () => {
 
 test('CloudWorkspace renders the timer underneath the last assistant token summary', async () => {
   const source = await readFile(new URL('../../views/CloudWorkspace.vue', import.meta.url), 'utf8')
+  const runtimeSource = await readFile(new URL('../../composables/useAgentTaskRuntime.js', import.meta.url), 'utf8')
 
   assert.match(source, /const AgentTimer = defineAsyncComponent\(\(\) => import\('@\/components\/cloud\/AgentTimer\.vue'\)\)/)
   assert.match(source, /<TokenChart[\s\S]*?<AgentTimer[\s\S]*?:started-at="msg\.timing\.startedAt"/)
-  assert.match(source, /projectApi\.agentTasks\(projectId\.value\)/)
+  assert.match(runtimeSource, /api\.agentTasks\(projectId\.value\)/)
 })

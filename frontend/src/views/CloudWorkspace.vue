@@ -210,7 +210,7 @@
               </div>
 
               <!-- Messages -->
-              <TransitionGroup name="ai-msg" tag="div" class="ai-msg-list">
+              <TransitionGroup :key="conversationRenderEpoch" name="ai-msg" tag="div" class="ai-msg-list">
                 <div v-for="(msg, i) in messages" :key="i" class="ai-msg" :class="msg.role">
                   <div class="ai-msg-header">
                     <div class="ai-msg-avatar">
@@ -780,6 +780,8 @@ import * as echarts from 'echarts'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/common'
 import { useAgentStream } from '@/composables/useAgentStream'
+import { useAgentTaskRuntime } from '@/composables/useAgentTaskRuntime'
+import { useContextManagement, contextManagementTitle, contextManagementStatusText, contextManagementStrategyText } from '@/composables/useContextManagement'
 import { useThemeStore } from '@/stores/theme'
 import { loadWorkspaceResources } from '@/composables/workspaceInitialization'
 import { useConversationState } from '@/composables/useConversationState'
@@ -789,6 +791,8 @@ import { useChangeSetState } from '@/composables/useChangeSetState'
 import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
 import { normalizeSpecialMarkdownBlocks } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
+import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
+import { enhanceFileLinks } from '@/utils/fileLinks'
 import 'highlight.js/styles/github.css'
 
 const route = useRoute()
@@ -834,6 +838,7 @@ const renamingItemPath = ref('')
 
 // AI Assistant state
 const messages = ref([])
+const conversationRenderEpoch = ref(0)
 const agentInput = ref('')
 const agentLoading = ref(false)
 const agentMode = ref('build')
@@ -1086,6 +1091,18 @@ const quickChips = [
 ]
 
 // ===== Methods =====
+
+// Re-render mermaid diagrams whenever message content changes (covers both
+// initial render and streaming updates). renderMermaidBlocks is a no-op for
+// elements already marked data-rendered.
+watch(
+  () => messages.value.map((m) => `${m.role}|${m.content || ''}|${m._thinkingDisplay || ''}`).join('\n'),
+  () => {
+    nextTick(() => renderMermaidBlocks(document.querySelector('.ai-panel-body') || document))
+  },
+  { flush: 'post' }
+)
+
 onMounted(async () => {
   const pid = route.params.projectId
   if (!pid) { ElMessage.error('项目ID不存在'); router.replace({ name: 'Projects' }); return }
@@ -1115,6 +1132,7 @@ onMounted(async () => {
 
 // 清理定时器，防止内存泄漏
 onBeforeUnmount(() => {
+  invalidateTaskRuntime()
   // 清理滚动防抖定时器
   if (scrollTimeout) {
     clearTimeout(scrollTimeout)
@@ -1687,7 +1705,7 @@ async function sendMessage() {
 function handleAgentEvent(event, assistantMsg) {
   const type = event.type
   const data = event.data
-  saveTaskEventCursor(data?.taskId || assistantMsg?.taskId, event.eventId)
+  recordTaskEventCursor(data?.taskId || assistantMsg?.taskId, event.eventId)
   switch (type) {
     case 'SESSION':
       currentAgentSession.value = data
@@ -1907,254 +1925,6 @@ function createMessageTiming() {
 
 function stopMessageTimer(message) {
   if (message?.timing) message.timing.isRunning = false
-}
-
-function isTerminalTask(task) {
-  return ['completed', 'failed', 'cancelled'].includes(String(task?.status || '').toLowerCase())
-}
-
-let taskSubscriptionGeneration = 0
-let taskRecoveryGeneration = 0
-
-function logTaskRecovery(event, details = {}) {
-  console.info('[AgentTaskRecovery]', event, {
-    projectId: projectId.value,
-    ...details
-  })
-}
-
-function taskCursorKey(taskId) {
-  return `labex-agent:task-event-cursor:${projectId.value}:${taskId}`
-}
-
-function taskEventCursor(taskId) {
-  if (!taskId || typeof sessionStorage === 'undefined') return null
-  return sessionStorage.getItem(taskCursorKey(taskId))
-}
-
-function saveTaskEventCursor(taskId, eventId) {
-  if (!taskId || eventId == null || typeof sessionStorage === 'undefined') return
-  sessionStorage.setItem(taskCursorKey(taskId), String(eventId))
-}
-
-function clearTaskEventCursor(taskId) {
-  if (!taskId || typeof sessionStorage === 'undefined') return
-  sessionStorage.removeItem(taskCursorKey(taskId))
-}
-
-function sequenceNumber(value) {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
-}
-
-function createRecoveredAssistantMessage(task) {
-  return {
-    role: 'assistant',
-    content: '',
-    thinking: task.currentStep || task.summary || '正在恢复 Agent 任务',
-    _thinkingDisplay: task.currentStep || task.summary || '正在恢复 Agent 任务',
-    _thinkingTimer: null,
-    thinkingBlocks: [],
-    toolCalls: [],
-    plan: null,
-    planJson: null,
-    isStreaming: true,
-    error: null,
-    _nextOrder: 0,
-    timestamp: Date.now(),
-    taskId: task.taskId,
-    timing: createMessageTiming()
-  }
-}
-
-function assistantMessageForTask(task) {
-  for (let index = messages.value.length - 1; index >= 0; index--) {
-    const message = messages.value[index]
-    if (message?.role === 'assistant' && Number(message.taskId) === Number(task.taskId)) return message
-  }
-  const message = createRecoveredAssistantMessage(task)
-  messages.value.push(message)
-  return message
-}
-
-async function recoverActiveTaskForConversation(conversationId) {
-  if (!conversationId || !projectId.value) return false
-  const recoveryGeneration = ++taskRecoveryGeneration
-  taskSubscriptionGeneration++
-  logTaskRecovery('ACTIVE_TASK_RECOVERY_STARTED', { conversationId, recoveryGeneration })
-  disconnectSubscription()
-  const response = await projectApi.agentActiveTask(projectId.value, conversationId)
-  if (recoveryGeneration !== taskRecoveryGeneration
-    || currentAgentSession.value?.conversationId !== conversationId) {
-    logTaskRecovery('ACTIVE_TASK_RECOVERY_STALE_RESPONSE', { conversationId, recoveryGeneration })
-    return false
-  }
-  const task = response?.data
-  if (!task?.taskId || isTerminalTask(task)) {
-    logTaskRecovery('ACTIVE_TASK_RECOVERY_NONE', { conversationId, status: task?.status || 'none' })
-    return false
-  }
-
-  logTaskRecovery('ACTIVE_TASK_RECOVERY_FOUND', {
-    conversationId,
-    taskId: task.taskId,
-    status: task.status,
-    lastEventSequence: task.lastEventSequence || 0
-  })
-  currentAgentSession.value = {
-    conversationId: task.conversationId,
-    sessionId: task.sessionId
-  }
-  const assistantMsg = assistantMessageForTask(task)
-  assistantMsg.taskId = task.taskId
-  reconcileRecoveredCommandApproval(assistantMsg, task)
-  const waitingForCommandApproval = String(task.status || '').toLowerCase() === 'waiting_approval'
-  assistantMsg.isStreaming = !waitingForCommandApproval
-  if (waitingForCommandApproval) stopMessageTimer(assistantMsg)
-  if (assistantMsg.timing) assistantMsg.timing.taskId = task.taskId
-  agentLoading.value = !waitingForCommandApproval
-  void subscribeToTaskEvents(task, assistantMsg)
-  return true
-}
-
-async function subscribeToTaskEvents(initialTask, assistantMsg) {
-  let task = initialTask
-  const generation = ++taskSubscriptionGeneration
-  try {
-    while (generation === taskSubscriptionGeneration && task?.taskId && !isTerminalTask(task)) {
-      const storedCursor = taskEventCursor(task.taskId)
-      const cursor = storedCursor == null
-        ? sequenceNumber(task.lastEventSequence)
-        : sequenceNumber(storedCursor)
-      logTaskRecovery('TASK_EVENT_SUBSCRIBE_STARTED', {
-        taskId: task.taskId,
-        conversationId: task.conversationId,
-        afterSequence: cursor,
-        cursorSource: storedCursor == null ? 'task_snapshot' : 'session_storage'
-      })
-      try {
-        await subscribeAgent(projectId.value, task.taskId, {
-          lastEventId: String(cursor),
-          onEvent: event => {
-            saveTaskEventCursor(task.taskId, event.eventId)
-            logTaskRecovery('TASK_EVENT_RECEIVED', {
-              taskId: task.taskId,
-              eventId: event.eventId || null,
-              eventType: event.type || 'unknown'
-            })
-            handleAgentEvent(event, assistantMsg)
-          }
-        })
-        logTaskRecovery('TASK_EVENT_SUBSCRIBE_ENDED', { taskId: task.taskId })
-      } catch (error) {
-        if (error?.name === 'AbortError' || generation !== taskSubscriptionGeneration) {
-          logTaskRecovery('TASK_EVENT_SUBSCRIBE_ABORTED', { taskId: task.taskId })
-          return
-        }
-        logTaskRecovery('TASK_EVENT_SUBSCRIBE_DISCONNECTED', {
-          taskId: task.taskId,
-          errorType: error?.name || 'Error'
-        })
-        console.warn('Agent task subscription disconnected; reconnecting from durable cursor:', error)
-      }
-      if (generation !== taskSubscriptionGeneration) return
-
-      const response = await projectApi.agentActiveTask(projectId.value, task.conversationId)
-      task = response?.data || null
-      if (!task || isTerminalTask(task)) {
-        logTaskRecovery('TASK_EVENT_SUBSCRIBE_TERMINAL', {
-          taskId: initialTask.taskId,
-          status: task?.status || 'not_found'
-        })
-        assistantMsg.isStreaming = false
-        stopMessageTimer(assistantMsg)
-        clearTaskEventCursor(initialTask.taskId)
-        await syncTaskTiming(assistantMsg)
-        break
-      }
-      await new Promise(resolve => setTimeout(resolve, 500))
-    }
-  } catch (error) {
-    if (generation === taskSubscriptionGeneration) {
-      logTaskRecovery('TASK_EVENT_SUBSCRIBE_FAILED', {
-        taskId: initialTask?.taskId || null,
-        errorType: error?.name || 'Error'
-      })
-      assistantMsg.error = '恢复 Agent 事件流失败：' + (error?.message || '未知错误')
-      if (!assistantMsg.content) assistantMsg.content = assistantMsg.error
-      assistantMsg.isStreaming = false
-      stopMessageTimer(assistantMsg)
-    }
-  } finally {
-    if (generation === taskSubscriptionGeneration) {
-      agentLoading.value = false
-      await nextTick()
-      scrollDown()
-    }
-  }
-}
-
-async function resumeTaskEventSubscription(taskId, assistantMsg, conversationId = currentAgentSession.value?.conversationId) {
-  logTaskRecovery('TASK_EVENT_RESUME_REQUESTED', {
-    taskId,
-    conversationId: conversationId || null
-  })
-  const response = await projectApi.agentActiveTask(projectId.value, conversationId)
-  const task = response?.data
-  if (!task || Number(task.taskId) !== Number(taskId)) {
-    throw new Error('Agent task is no longer active')
-  }
-  assistantMsg.taskId = task.taskId
-  assistantMsg.isStreaming = true
-  agentLoading.value = true
-  void subscribeToTaskEvents(task, assistantMsg)
-}
-
-function applyTaskTiming(message, task) {
-  if (!message || !task) return
-  const existing = message.timing || createMessageTiming()
-  message.timing = {
-    ...existing,
-    taskId: task.taskId || existing.taskId,
-    activeElapsedMs: Number.isFinite(task.activeElapsedMs) ? task.activeElapsedMs : existing.activeElapsedMs,
-    isRunning: message.isStreaming && !isTerminalTask(task)
-  }
-}
-
-async function fetchAgentTasks() {
-  if (!projectId.value) return []
-  const response = await projectApi.agentTasks(projectId.value)
-  return Array.isArray(response?.data) ? response.data : []
-}
-
-async function syncTaskTiming(message) {
-  if (!message?.taskId) return
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const task = (await fetchAgentTasks()).find(item => Number(item.taskId) === Number(message.taskId))
-      if (!task) return
-      applyTaskTiming(message, task)
-      if (isTerminalTask(task) || attempt === 2) return
-    } catch (error) {
-      console.warn('Failed to load agent task timing:', error)
-      return
-    }
-    await new Promise(resolve => window.setTimeout(resolve, 150))
-  }
-}
-
-async function syncConversationTaskTimings(conversationId) {
-  if (!conversationId) return
-  try {
-    const tasksById = new Map((await fetchAgentTasks())
-      .filter(task => task.conversationId === conversationId)
-      .map(task => [Number(task.taskId), task]))
-    messages.value
-      .filter(message => message.role === 'assistant' && message.taskId)
-      .forEach(message => applyTaskTiming(message, tasksById.get(Number(message.taskId))))
-  } catch (error) {
-    console.warn('Failed to load conversation task timings:', error)
-  }
 }
 
 function commandApprovalToolCall(message, approvalId) {
@@ -2552,6 +2322,48 @@ const { submitPermissionDecision, submitQuestionReply } = useAgentInteraction({
   api: projectApi
 })
 
+const {
+  recordTaskEventCursor,
+  invalidate: invalidateTaskRuntime,
+  recoverActiveTaskForConversation,
+  subscribeToTaskEvents,
+  resumeTaskEventSubscription,
+  syncTaskTiming,
+  syncConversationTaskTimings
+} = useAgentTaskRuntime({
+  projectId,
+  currentAgentSession,
+  messages,
+  agentLoading,
+  api: projectApi,
+  subscribeAgent,
+  disconnectSubscription,
+  handleAgentEvent,
+  reconcileRecoveredCommandApproval,
+  createMessageTiming,
+  stopMessageTimer,
+  scrollDown
+})
+
+const {
+  compactConversation,
+  compactCurrentConversation,
+  cancelContextCompaction
+} = useContextManagement({
+  messages,
+  agentLoading,
+  projectId,
+  currentAgentSession,
+  conversations,
+  selectedModelConfigId,
+  api: projectApi,
+  compactConversationState,
+  subscribeToTaskEvents,
+  reduceContextManagementEvent,
+  notify: ElMessage,
+  scheduleAgentRender
+})
+
 async function loadModelConfigs() {
   try {
     const r = await modelConfigApi.list()
@@ -2796,14 +2608,18 @@ async function toggleTerminalPanel() {
     terminalPanelRef.value?.fitAllTerminals()
   }
 }
+function resetRenderedConversation() {
+  conversationRenderEpoch.value += 1
+}
+
 function clearMessages() {
+  resetRenderedConversation()
   clearConversationState()
 }
 
 function createNewSession() {
   conversationSelectionGuard.invalidate()
-  taskSubscriptionGeneration++
-  taskRecoveryGeneration++
+  invalidateTaskRuntime()
   disconnectAgentStream()
   showSessions.value = false
   showContextUsageDialog.value = false
@@ -2811,6 +2627,7 @@ function createNewSession() {
   nextContextPreview.value = null
   nextContextPreviewLoading.value = false
   selectedSessionIdx.value = -1
+  resetRenderedConversation()
   resetConversation()
 }
 
@@ -2820,6 +2637,7 @@ async function selectConversation(conversation, { explicit = true } = {}) {
     return false
   }
   showSessions.value = false
+  resetRenderedConversation()
   try {
     const loaded = await selectConversationState(conversation)
     if (loaded) {
@@ -2835,6 +2653,7 @@ async function selectConversation(conversation, { explicit = true } = {}) {
 }
 
 async function loadConversationMessages(conversationId) {
+  resetRenderedConversation()
   try {
     const loaded = await loadConversationMessagesState(conversationId)
     if (loaded) {
@@ -2937,88 +2756,6 @@ async function forkCurrentConversation() {
   await forkConversation(conversation || { conversationId: currentAgentSession.value.conversationId })
 }
 
-function contextManagementMessage() {
-  const existing = [...messages.value].reverse().find(message => message.role === 'assistant')
-  if (existing) return existing
-  const message = { role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', thinkingBlocks: [], toolCalls: [], contextManagementEvents: [], isStreaming: false, _nextOrder: 0, timestamp: Date.now() }
-  messages.value.push(message)
-  return message
-}
-
-async function compactConversation(conversation) {
-  if (!conversation?.conversationId) {
-    ElMessage.error('缺少会话 ID，无法压缩上下文')
-    return false
-  }
-  if (agentLoading.value) {
-    ElMessage.info('Agent 任务运行中，请等当前任务结束后再压缩')
-    return false
-  }
-
-  const message = contextManagementMessage()
-  try {
-    const result = await compactConversationState(conversation, selectedModelConfigId.value)
-    if (!result.success) {
-      reduceContextManagementEvent('COMPACTION_FAILED', {
-        strategy: 'manual',
-        reason: result.message || '手动压缩失败'
-      }, message)
-      ElMessage.error(result.message || '手动压缩失败')
-      return false
-    }
-    if (!result.taskId) {
-      const reason = '压缩任务未返回任务 ID'
-      reduceContextManagementEvent('COMPACTION_FAILED', { strategy: 'manual', reason }, message)
-      ElMessage.error(reason)
-      return false
-    }
-
-    const task = {
-      taskId: result.taskId,
-      conversationId: conversation.conversationId,
-      status: result.status || 'queued',
-      lastEventSequence: 0
-    }
-    reduceContextManagementEvent('COMPACTION_STARTED', {
-      taskId: result.taskId,
-      sessionId: result.sessionId,
-      strategy: 'manual'
-    }, message)
-    agentLoading.value = true
-    void subscribeToTaskEvents(task, message)
-    ElMessage.success('压缩任务已提交，完成状态会显示在时间线中')
-    return true
-  } catch (error) {
-    const reason = error?.response?.data?.message || error?.message || '未知错误'
-    reduceContextManagementEvent('COMPACTION_FAILED', { strategy: 'manual', reason }, message)
-    ElMessage.error('压缩失败：' + reason)
-    return false
-  } finally {
-    scheduleAgentRender()
-  }
-}
-
-async function cancelContextCompaction(event) {
-  if (!event?.taskId) return
-  try {
-    event.cancelRequested = true
-    await projectApi.agentInterrupt(projectId.value, event.sessionId || '', event.taskId)
-    ElMessage.info('\u5df2\u8bf7\u6c42\u53d6\u6d88\u4e0a\u4e0b\u6587\u538b\u7f29')
-  } catch (error) {
-    event.cancelRequested = false
-    ElMessage.error('\u53d6\u6d88\u538b\u7f29\u5931\u8d25\uff1a' + (error?.response?.data?.message || error?.message || '\u672a\u77e5\u9519\u8bef'))
-  }
-}
-
-async function compactCurrentConversation() {
-  if (!currentAgentSession.value?.conversationId) {
-    ElMessage.info('\u5f53\u524d\u8fd8\u6ca1\u6709\u53ef\u538b\u7f29\u7684\u4f1a\u8bdd')
-    return
-  }
-  const conversation = conversations.value.find(item => item.conversationId === currentAgentSession.value.conversationId)
-  await compactConversation(conversation || { conversationId: currentAgentSession.value.conversationId })
-}
-
 async function deleteConversation(conversation) {
   try {
     return await deleteConversationState(conversation)
@@ -3026,33 +2763,6 @@ async function deleteConversation(conversation) {
     ElMessage.error('\u5220\u9664\u5931\u8d25')
     return false
   }
-}
-
-function contextManagementTitle(event) {
-  if (event.phase === 'pruned') return '已清理历史工具结果'
-  if (event.status === 'running') return '正在压缩上下文'
-  if (event.status === 'warning') return '上下文压缩正在安全回退'
-  if (event.phase === 'fallback') return '上下文压缩完成（安全回退）'
-  return '上下文压缩完成'
-}
-
-function contextManagementStatusText(event) {
-  if (event.status === 'running') return '处理中'
-  if (event.status === 'warning') return '回退中'
-  return '已完成'
-}
-
-function contextManagementStrategyText(event) {
-  const labels = {
-    manual: '手动压缩',
-    manual_model: '手动模型摘要',
-    manual_deterministic_fallback: '手动安全回退',
-    proactive: '自动触发',
-    tool_result_prune: '工具结果裁剪',
-    model: '模型摘要',
-    deterministic_fallback: '确定性安全回退'
-  }
-  return labels[event.strategy] || ''
 }
 
 function getMergedItems(msg) {
@@ -3414,19 +3124,106 @@ function enhanceMarkdownHtml(html) {
       }
     }
 
+    // Mermaid gets a custom block with chart/code tabs (rendered async after
+    // the HTML is mounted). Other languages use the standard code block UI.
+    if (lang === 'mermaid') {
+      const wrapper = document.createElement('div')
+      wrapper.className = 'mermaid-block'
+      wrapper.dataset.code = rawCode
+
+      const tabs = document.createElement('div')
+      tabs.className = 'mermaid-tabs'
+      const tabChart = document.createElement('button')
+      tabChart.type = 'button'
+      tabChart.className = 'mermaid-tab is-active'
+      tabChart.dataset.view = 'chart'
+      tabChart.innerHTML = `${iconSvg('chart')}<span>图表</span>`
+      const tabCode = document.createElement('button')
+      tabCode.type = 'button'
+      tabCode.className = 'mermaid-tab'
+      tabCode.dataset.view = 'code'
+      tabCode.innerHTML = `${iconSvg('code')}<span>代码</span>`
+      tabs.append(tabChart, tabCode)
+
+      const tools = document.createElement('div')
+      tools.className = 'mermaid-tools'
+      const zoomOut = document.createElement('button')
+      zoomOut.type = 'button'
+      zoomOut.className = 'mermaid-tool-btn'
+      zoomOut.dataset.action = 'zoom-out'
+      zoomOut.title = '缩小'
+      zoomOut.innerHTML = iconSvg('zoom-out')
+      const zoomIn = document.createElement('button')
+      zoomIn.type = 'button'
+      zoomIn.className = 'mermaid-tool-btn'
+      zoomIn.dataset.action = 'zoom-in'
+      zoomIn.title = '放大'
+      zoomIn.innerHTML = iconSvg('zoom-in')
+      const dl = document.createElement('button')
+      dl.type = 'button'
+      dl.className = 'mermaid-tool-btn'
+      dl.dataset.action = 'download'
+      dl.title = '下载 SVG'
+      dl.innerHTML = iconSvg('download')
+      const fs = document.createElement('button')
+      fs.type = 'button'
+      fs.className = 'mermaid-tool-btn'
+      fs.dataset.action = 'fullscreen'
+      fs.title = '全屏'
+      fs.innerHTML = iconSvg('fullscreen')
+      tools.append(zoomOut, zoomIn, dl, fs)
+
+      const header = document.createElement('div')
+      header.className = 'mermaid-header'
+      header.append(tabs, tools)
+
+      const chartArea = document.createElement('div')
+      chartArea.className = 'mermaid-chart'
+      const status = document.createElement('div')
+      status.className = 'mermaid-status'
+      status.textContent = '正在渲染图表…'
+      chartArea.append(status)
+
+      const codeArea = document.createElement('div')
+      codeArea.className = 'mermaid-code'
+      codeArea.hidden = true
+      const codePre = document.createElement('pre')
+      const codeEl = document.createElement('code')
+      codeEl.className = 'language-mermaid'
+      codeEl.textContent = rawCode
+      codePre.append(codeEl)
+      codeArea.append(codePre)
+
+      wrapper.append(header, chartArea, codeArea)
+      pre.parentNode.insertBefore(wrapper, pre)
+      pre.remove()
+      return
+    }
+
     const wrapper = document.createElement('div')
     wrapper.className = 'code-block'
+    wrapper.dataset.lang = lang
     const header = document.createElement('div')
     header.className = 'code-block-header'
     const label = document.createElement('span')
     label.className = 'code-lang'
-    label.textContent = lang
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'code-copy-btn'
-    button.dataset.code = rawCode
-    button.textContent = '复制'
-    header.append(label, button)
+    label.innerHTML = `${iconSvg('code')}<span>${lang}</span>`
+    const tools = document.createElement('div')
+    tools.className = 'code-tools'
+    const dl = document.createElement('button')
+    dl.type = 'button'
+    dl.className = 'code-tool-btn'
+    dl.dataset.action = 'download'
+    dl.title = '下载代码'
+    dl.innerHTML = iconSvg('download')
+    const copy = document.createElement('button')
+    copy.type = 'button'
+    copy.className = 'code-copy-btn'
+    copy.dataset.code = rawCode
+    copy.title = '复制代码'
+    copy.innerHTML = `${iconSvg('copy')}<span>复制</span>`
+    tools.append(dl, copy)
+    header.append(label, tools)
     pre.parentNode.insertBefore(wrapper, pre)
     wrapper.append(header, pre)
   })
@@ -3441,12 +3238,33 @@ function enhanceMarkdownHtml(html) {
     const tag = document.createElement('span')
     tag.className = 'msg-table-tag'
     tag.textContent = '表格'
+    const tools = document.createElement('div')
+    tools.className = 'msg-table-tools'
     const copy = document.createElement('button')
     copy.type = 'button'
-    copy.className = 'table-copy-btn'
+    copy.className = 'msg-table-tool'
+    copy.dataset.action = 'copy'
     copy.dataset.table = tableText
-    copy.textContent = '复制表格'
-    header.append(tag, copy)
+    copy.title = '复制为 TSV'
+    copy.setAttribute('aria-label', '复制')
+    copy.innerHTML = iconSvg('copy')
+    const dl = document.createElement('button')
+    dl.type = 'button'
+    dl.className = 'msg-table-tool'
+    dl.dataset.action = 'download'
+    dl.dataset.table = tableText
+    dl.title = '下载为 CSV'
+    dl.setAttribute('aria-label', '下载')
+    dl.innerHTML = iconSvg('download')
+    const fs = document.createElement('button')
+    fs.type = 'button'
+    fs.className = 'msg-table-tool'
+    fs.dataset.action = 'fullscreen'
+    fs.title = '全屏查看'
+    fs.setAttribute('aria-label', '全屏')
+    fs.innerHTML = iconSvg('fullscreen')
+    tools.append(copy, dl, fs)
+    header.append(tag, tools)
     const scroll = document.createElement('div')
     scroll.className = 'msg-table-scroll'
     table.parentNode.insertBefore(wrap, table)
@@ -3455,21 +3273,196 @@ function enhanceMarkdownHtml(html) {
   })
 
   enhanceCallouts(template.content)
+  enhanceFileLinks(template.content, { iconHtml: iconSvg('file') })
 
   return template.innerHTML
 }
 
+// File-link detection lives in src/utils/fileLinks.js — imported above.
+
+function iconSvg(name) {
+  const stroke = 'currentColor'
+  const sw = 2
+  switch (name) {
+    case 'copy':
+      return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
+    case 'download':
+      return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`
+    case 'zoom-in':
+      return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y1="11"/></svg>`
+    case 'zoom-out':
+      return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y1="11"/></svg>`
+    case 'fullscreen':
+      return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`
+    case 'code':
+      return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`
+    case 'chart':
+      return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`
+    case 'table':
+      return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg>`
+    case 'file':
+      return `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`
+    case 'check':
+      return `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
+    default:
+      return ''
+  }
+}
+
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// Render every .mermaid-block contained in `root` that hasn't been rendered
+// yet (data-rendered !== '1'). Called after the HTML is mounted.
+async function renderMermaidBlocks(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return
+  const blocks = root.querySelectorAll('.mermaid-block:not([data-rendered="1"])')
+  for (const block of blocks) {
+    if (block.dataset.rendered === 'pending') continue
+    block.dataset.rendered = 'pending'
+    const code = block.dataset.code || ''
+    const chart = block.querySelector('.mermaid-chart')
+    const status = block.querySelector('.mermaid-status')
+    const result = await renderMermaidDiagram(code)
+    if (!chart) continue
+    if (result.ok) {
+      chart.innerHTML = result.svg
+      const svg = chart.querySelector('svg')
+      if (svg) {
+        svg.style.maxWidth = '100%'
+        svg.style.height = 'auto'
+        svg.dataset.scale = svg.dataset.scale || '1'
+      }
+    } else {
+      if (status) status.remove()
+      const err = document.createElement('div')
+      err.className = 'mermaid-error'
+      err.textContent = result.error
+      chart.append(err)
+    }
+    block.dataset.rendered = '1'
+  }
+}
+
 function handleMarkdownClick(event) {
+  // File path — open in workspace
+  const fileLink = event.target?.closest?.('.file-link')
+  if (fileLink) {
+    const path = fileLink.dataset.path
+    if (path) {
+      openFile(path).then(() => {
+        if (!openFiles.value.some((f) => f.path === path)) {
+          ElMessage.warning(`无法打开 ${path}`)
+        }
+      })
+    }
+    return
+  }
+
+  // Code block — copy
   const copyBtn = event.target?.closest?.('.code-copy-btn')
   if (copyBtn) {
     navigator.clipboard?.writeText(copyBtn.dataset.code || '')
     ElMessage.success('代码已复制')
     return
   }
-  const tableBtn = event.target?.closest?.('.table-copy-btn')
-  if (tableBtn) {
-    navigator.clipboard?.writeText(tableBtn.dataset.table || '')
-    ElMessage.success('表格已复制')
+
+  // Code block — download
+  const codeDlBtn = event.target?.closest?.('.code-block .code-tool-btn[data-action="download"]')
+  if (codeDlBtn) {
+    const block = codeDlBtn.closest('.code-block')
+    const lang = block?.dataset.lang || 'txt'
+    const realCode = block?.querySelector('pre code')?.textContent || ''
+    const ext = lang === 'text' ? 'txt' : lang
+    downloadTextFile(`code.${ext}`, realCode)
+    return
+  }
+
+  // Table — copy / download / fullscreen
+  const tableTool = event.target?.closest?.('.msg-table-tool')
+  if (tableTool) {
+    const wrap = tableTool.closest('.msg-table-wrap')
+    const action = tableTool.dataset.action
+    if (action === 'copy') {
+      navigator.clipboard?.writeText(tableTool.dataset.table || '')
+      ElMessage.success('表格已复制（TSV，可粘贴到 Excel）')
+      return
+    }
+    if (action === 'download') {
+      const tsv = tableTool.dataset.table || ''
+      const csv = tsv.replace(/\t/g, ',').replace(/\n/g, '\r\n')
+      downloadTextFile('table.csv', csv)
+      return
+    }
+    if (action === 'fullscreen') {
+      if (wrap) wrap.classList.toggle('is-fullscreen')
+      return
+    }
+  }
+
+  // Mermaid — tab switch
+  const mermaidTab = event.target?.closest?.('.mermaid-tab')
+  if (mermaidTab) {
+    const block = mermaidTab.closest('.mermaid-block')
+    if (!block) return
+    const view = mermaidTab.dataset.view
+    block.querySelectorAll('.mermaid-tab').forEach((t) => t.classList.toggle('is-active', t === mermaidTab))
+    const chart = block.querySelector('.mermaid-chart')
+    const code = block.querySelector('.mermaid-code')
+    if (chart) chart.hidden = view !== 'chart'
+    if (code) code.hidden = view !== 'code'
+    return
+  }
+
+  // Mermaid — tool button (zoom in/out, download, fullscreen)
+  const toolBtn = event.target?.closest?.('.mermaid-tool-btn')
+  if (toolBtn) {
+    const block = toolBtn.closest('.mermaid-block')
+    if (!block) return
+    const action = toolBtn.dataset.action
+    if (action === 'zoom-in' || action === 'zoom-out') {
+      const svg = block.querySelector('.mermaid-chart svg')
+      if (!svg) return
+      const cur = parseFloat(svg.dataset.scale || '1')
+      const next = action === 'zoom-in' ? Math.min(cur + 0.2, 3) : Math.max(cur - 0.2, 0.4)
+      svg.dataset.scale = String(next)
+      svg.style.transform = `scale(${next})`
+      svg.style.transformOrigin = 'top center'
+      svg.style.transition = 'transform 0.2s'
+      return
+    }
+    if (action === 'download') {
+      const svg = block.querySelector('.mermaid-chart svg')
+      if (!svg) return
+      const serialized = new XMLSerializer().serializeToString(svg)
+      const blob = new Blob([serialized], { type: 'image/svg+xml;charset=utf-8' })
+      downloadBlob('diagram.svg', blob)
+      return
+    }
+    if (action === 'fullscreen') {
+      block.classList.toggle('is-fullscreen')
+      return
+    }
   }
 }
 
@@ -6309,6 +6302,47 @@ function startResize(e) {
   border-bottom-color: #1d4ed8;
   background: rgba(37, 99, 235, 0.08);
 }
+
+/* File path chip — clickable, opens the file in the left workspace tree */
+.markdown-rendered :deep(.file-link) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  margin: 0 1px;
+  color: var(--ai-accent);
+  background: var(--ai-accent-bg);
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 22%, transparent);
+  border-radius: 5px;
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  font-size: 0.92em;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.15s;
+  vertical-align: baseline;
+}
+.markdown-rendered :deep(.file-link:hover) {
+  background: color-mix(in srgb, var(--ai-accent) 14%, var(--ai-bg));
+  border-color: color-mix(in srgb, var(--ai-accent) 40%, transparent);
+  color: var(--ai-accent);
+}
+.markdown-rendered :deep(.file-link:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--ai-accent) 50%, transparent);
+  outline-offset: 1px;
+}
+.markdown-rendered :deep(.file-link svg) {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.markdown-rendered :deep(.file-link .file-link-text) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .markdown-rendered :deep(h1),
 .markdown-rendered :deep(h2),
 .markdown-rendered :deep(h3),
@@ -6407,20 +6441,28 @@ function startResize(e) {
 .markdown-rendered :deep(.code-lang) {
   display: inline-flex;
   align-items: center;
-  padding: 2px 9px;
+  gap: 5px;
+  padding: 3px 10px;
   color: var(--ai-accent);
   background: var(--ai-accent-bg);
   border: 1px solid color-mix(in srgb, var(--ai-accent) 18%, transparent);
   border-radius: 999px;
-  font-family: inherit;
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: lowercase;
 }
+.markdown-rendered :deep(.code-tools) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.markdown-rendered :deep(.code-tool-btn),
 .markdown-rendered :deep(.code-copy-btn) {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   padding: 4px 10px;
   background: var(--ai-bg);
   color: var(--ai-text-muted);
@@ -6431,23 +6473,14 @@ function startResize(e) {
   font-weight: 600;
   transition: all 0.15s;
 }
+.markdown-rendered :deep(.code-tool-btn) {
+  padding: 4px 6px;
+}
+.markdown-rendered :deep(.code-tool-btn:hover),
 .markdown-rendered :deep(.code-copy-btn:hover) {
   background: var(--ai-accent-bg);
   color: var(--ai-accent);
   border-color: color-mix(in srgb, var(--ai-accent) 28%, transparent);
-}
-.markdown-rendered :deep(.table-copy-btn) {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  background: var(--ai-bg);
-  color: var(--ai-text-muted);
-  border: 1px solid var(--ai-border);
-  border-radius: 7px;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-  transition: all 0.15s;
 }
 .markdown-rendered :deep(pre) {
   margin: 0;
@@ -6467,59 +6500,196 @@ function startResize(e) {
   background: transparent;
   color: inherit;
 }
-.markdown-rendered :deep(.msg-table-wrap) {
+
+/* ===== Mermaid block (chart / code tabs + tools) ===== */
+.markdown-rendered :deep(.mermaid-block) {
+  position: relative;
   margin: 14px 0 16px;
-  overflow: hidden;
   border: 1px solid var(--ai-border-strong);
   border-radius: 10px;
+  overflow: hidden;
   background: var(--ai-bg);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.04);
 }
-.markdown-rendered :deep(.msg-table-header) {
+.markdown-rendered :deep(.mermaid-block.is-fullscreen) {
+  position: fixed;
+  inset: 5vh 5vw;
+  z-index: 9999;
+  margin: 0;
+  background: var(--ai-bg);
+  display: flex;
+  flex-direction: column;
+}
+.markdown-rendered :deep(.mermaid-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   min-height: 36px;
-  padding: 0 8px 0 12px;
-  border-bottom: 1px solid var(--ai-border-strong);
+  padding: 4px 6px 4px 10px;
   background: linear-gradient(180deg, var(--ai-bg-tertiary) 0%, var(--ai-bg) 100%);
+  border-bottom: 1px solid var(--ai-border-strong);
 }
-.markdown-rendered :deep(.msg-table-tag) {
+.markdown-rendered :deep(.mermaid-tabs) {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  color: var(--ai-accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  background: var(--ai-accent-bg);
-  border: 1px solid color-mix(in srgb, var(--ai-accent) 18%, transparent);
-  border-radius: 999px;
-}
-.markdown-rendered :deep(.msg-table-tag)::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.85;
-}
-.markdown-rendered :deep(.table-copy-btn) {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  background: var(--ai-bg);
-  color: var(--ai-text-muted);
+  gap: 2px;
+  padding: 2px;
+  background: var(--ai-bg-secondary);
   border: 1px solid var(--ai-border);
   border-radius: 7px;
 }
-.markdown-rendered :deep(.table-copy-btn:hover) {
-  background: var(--ai-accent-bg);
+.markdown-rendered :deep(.mermaid-tab) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--ai-text-muted);
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+.markdown-rendered :deep(.mermaid-tab:hover) {
+  color: var(--ai-text);
+}
+.markdown-rendered :deep(.mermaid-tab.is-active) {
+  background: var(--ai-bg);
+  color: var(--ai-text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+.markdown-rendered :deep(.mermaid-tools) {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.markdown-rendered :deep(.mermaid-tool-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  color: var(--ai-text-muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.markdown-rendered :deep(.mermaid-tool-btn:hover) {
+  background: var(--ai-bg-secondary);
   color: var(--ai-accent);
-  border-color: color-mix(in srgb, var(--ai-accent) 28%, transparent);
+  border-color: var(--ai-border);
+}
+.markdown-rendered :deep(.mermaid-chart) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  padding: 18px 20px;
+  background: var(--ai-bg);
+  overflow: auto;
+}
+.markdown-rendered :deep(.mermaid-chart svg) {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-rendered :deep(.mermaid-status) {
+  color: var(--ai-text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+.markdown-rendered :deep(.mermaid-error) {
+  margin: 12px 0;
+  padding: 10px 12px;
+  color: #b91c1c;
+  background: color-mix(in srgb, #ef4444 8%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.markdown-rendered :deep(.mermaid-code) {
+  background: var(--ai-bg-secondary);
+}
+.markdown-rendered :deep(.mermaid-code pre) {
+  margin: 0;
+  padding: 12px 16px;
+}
+.markdown-rendered :deep(.mermaid-block.is-fullscreen .mermaid-chart) {
+  flex: 1;
+  min-height: 0;
+}
+.markdown-rendered :deep(.msg-table-wrap) {
+  position: relative;
+  margin: 14px 0 16px;
+  overflow: hidden;
+  border: 1px solid #6b7280 !important;
+  border-radius: 10px;
+  background: var(--ai-bg);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.04);
+}
+.markdown-rendered :deep(.msg-table-wrap.is-fullscreen) {
+  position: fixed;
+  inset: 5vh 5vw;
+  z-index: 9999;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.markdown-rendered :deep(.msg-table-wrap.is-fullscreen .msg-table-scroll) {
+  flex: 1;
+  overflow: auto;
+}
+.markdown-rendered :deep(.msg-table-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 12px 0 18px;
+  border-bottom: 1px solid var(--ai-border-strong);
+  background: var(--ai-bg-secondary);
+}
+.markdown-rendered :deep(.msg-table-tag) {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--ai-text);
+  letter-spacing: 0.01em;
+}
+.markdown-rendered :deep(.msg-table-tools) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.markdown-rendered :deep(.msg-table-tool) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: transparent;
+  color: var(--ai-text-muted);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.markdown-rendered :deep(.msg-table-tool svg) {
+  width: 14px;
+  height: 14px;
+}
+.markdown-rendered :deep(.msg-table-tool:hover) {
+  background: var(--ai-bg);
+  color: var(--ai-accent);
+  border-color: var(--ai-border);
 }
 .markdown-rendered :deep(.msg-table-scroll) {
   overflow-x: auto;
@@ -6550,69 +6720,31 @@ function startResize(e) {
 }
 .markdown-rendered :deep(.msg-table th),
 .markdown-rendered :deep(.msg-table td) {
-  padding: 11px 14px;
-  border-right: 1px solid var(--ai-border);
-  border-bottom: 1px solid var(--ai-border);
+  padding: 14px 18px;
+  border-bottom: 1px solid #6b7280 !important;
   text-align: left;
   vertical-align: top;
 }
-.markdown-rendered :deep(.msg-table th) {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: linear-gradient(180deg, var(--ai-bg-secondary) 0%, var(--ai-bg-tertiary) 100%);
+.markdown-rendered :deep(.msg-table thead th) {
+  background: var(--ai-bg-secondary);
   color: var(--ai-text);
   font-weight: 700;
-  font-size: 12.5px;
+  font-size: 13px;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  box-shadow: inset 0 -1px 0 var(--ai-border-strong);
-}
-.markdown-rendered :deep(.msg-table th:first-child) {
-  border-top-left-radius: 0;
-}
-.markdown-rendered :deep(.msg-table th:last-child) {
-  border-top-right-radius: 0;
+  border-bottom: 2px solid #374151 !important;
 }
 .markdown-rendered :deep(.msg-table tbody tr td:first-child) {
   font-weight: 600;
   color: var(--ai-text);
 }
-.markdown-rendered :deep(.msg-table tbody tr td:first-child) {
-  position: relative;
-}
-.markdown-rendered :deep(.msg-table tbody tr td:first-child)::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--ai-accent);
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.markdown-rendered :deep(.msg-table tbody tr:hover td:first-child)::before {
-  opacity: 1;
+.markdown-rendered :deep(.msg-table tbody tr:last-child td) {
+  border-bottom: 0;
 }
 .markdown-rendered :deep(.msg-table tbody tr) {
   transition: background 0.12s;
 }
 .markdown-rendered :deep(.msg-table tbody tr:hover td) {
-  background: var(--ai-accent-bg);
-}
-.markdown-rendered :deep(.msg-table tr:last-child td) {
-  border-bottom: 0;
-}
-.markdown-rendered :deep(.msg-table th:last-child),
-.markdown-rendered :deep(.msg-table td:last-child) {
-  border-right: 0;
-}
-.markdown-rendered :deep(.msg-table tr:nth-child(even) td) {
-  background: rgba(148, 163, 184, 0.05);
-}
-.markdown-rendered :deep(.msg-table tr:nth-child(even):hover td) {
   background: var(--ai-accent-bg);
 }
 .markdown-rendered :deep(blockquote:not(.msg-callout)) {
