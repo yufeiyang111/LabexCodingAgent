@@ -55,6 +55,14 @@ final class ConversationCheckpointCompactor {
         return replaceHistoricalWithCheckpoint(messages, buildCheckpoint(facts), protectedCount);
     }
 
+    boolean hasCompactableHistory(List<Map<String, Object>> messages, int keepRecentTurns) {
+        if (messages == null || messages.isEmpty()) {
+            return false;
+        }
+        int protectedCount = Math.min(messages.size(), Math.max(1, keepRecentTurns) * 2);
+        return messages.size() > protectedCount;
+    }
+
     Result compactWithCheckpoint(List<Map<String, Object>> messages, String checkpoint, int keepRecentTurns) {
         if (messages == null || checkpoint == null || checkpoint.isBlank()) {
             return Result.unchanged();

@@ -123,4 +123,19 @@ class ConversationCheckpointCompactorTest {
     private int messageChars(List<Map<String, Object>> messages) {
         return messages.stream().map(this::content).mapToInt(String::length).sum();
     }
+
+    @Test
+    void reportsNoCompactableHistoryWhenEveryMessageBelongsToTheProtectedTail() {
+        ConversationCheckpointCompactor compactor = new ConversationCheckpointCompactor();
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "user", "content", "initial context"));
+        messages.add(Map.of("role", "user", "content", "task request"));
+        messages.add(Map.of("role", "assistant", "content", "tool call"));
+        messages.add(Map.of("role", "user", "content", "tool result"));
+
+        assertFalse(compactor.hasCompactableHistory(messages, 2));
+        messages.add(Map.of("role", "assistant", "content", "older response"));
+        assertTrue(compactor.hasCompactableHistory(messages, 2));
+    }
+
 }

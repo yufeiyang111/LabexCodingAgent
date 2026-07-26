@@ -12,7 +12,7 @@ public class WebSearchProperties {
     private boolean publicFallbackEnabled = true;
     private String exaApiKey;
     private String parallelApiKey;
-    private int requestTimeoutSeconds = 25;
+    private int requestTimeoutSeconds = 180;
     private int maxResponseBytes = 1_048_576;
 
     public String getProvider() { return provider; }

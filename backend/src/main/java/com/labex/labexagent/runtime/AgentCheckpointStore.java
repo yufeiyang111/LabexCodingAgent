@@ -7,9 +7,11 @@ import com.labex.entity.StudentProject;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -17,11 +19,15 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 /** 按会话和任务持久化可恢复的 Agent 执行状态。 */
 public final class AgentCheckpointStore {
     private static final int VERSION = 1;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final int MAX_REQUEST_CHARS = 2_000;
+    private static final int MAX_NOTE_CHARS = 2_000;
+    private static final int MAX_RESULT_CHARS = 12_000;
 
     public void save(StudentProject project, AgentStreamRequest request, AgentTask task, AgentContext context,
                      String status, String note, String lastTool, String lastResult, Path runLog) {
@@ -31,12 +37,20 @@ public final class AgentCheckpointStore {
         }
         Snapshot snapshot = Snapshot.capture(project, request, task, context, status, note, lastTool, lastResult, runLog);
         Path path = checkpointPath(project, task.getConversationId(), task.getTaskId());
+        Path temporary = path.resolveSibling(path.getFileName() + ".tmp-" + UUID.randomUUID());
         try {
             Files.createDirectories(path.getParent());
-            Files.writeString(path, GSON.toJson(snapshot), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            Files.writeString(temporary, GSON.toJson(snapshot), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            replaceAtomically(temporary, path);
         } catch (Exception exception) {
             throw new IllegalStateException("Unable to persist task checkpoint", exception);
+        } finally {
+            try {
+                Files.deleteIfExists(temporary);
+            } catch (Exception ignored) {
+                // 临时文件清理失败不能覆盖原始持久化异常。
+            }
         }
     }
 
@@ -72,15 +86,22 @@ public final class AgentCheckpointStore {
                 verification_count: %d
                 unverified_changes: %s
                 plan: %s
-                resume_note: %s
-                last_tool: %s
-                last_result:
-                %s
+                resume_note_json: %s
+                last_tool_json: %s
+                last_result_json: %s
                 </agent_task_checkpoint>
                 """.formatted(snapshot.version, safe(snapshot.conversationId), snapshot.taskId,
                 safe(snapshot.status), safe(snapshot.stage), snapshot.writeCount, snapshot.verificationCount,
-                snapshot.unverifiedChanges, GSON.toJson(snapshot.plan), safe(snapshot.note), safe(snapshot.lastTool),
-                safe(snapshot.lastResult));
+                snapshot.unverifiedChanges, GSON.toJson(snapshot.plan), GSON.toJson(bounded(snapshot.note, MAX_NOTE_CHARS)),
+                GSON.toJson(bounded(snapshot.lastTool, 256)), GSON.toJson(bounded(snapshot.lastResult, MAX_RESULT_CHARS)));
+    }
+
+    private static void replaceAtomically(Path temporary, Path target) throws Exception {
+        try {
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException exception) {
+            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     Path checkpointPath(StudentProject project, String conversationId, Long taskId) {
@@ -106,6 +127,12 @@ public final class AgentCheckpointStore {
 
     private static String safe(String value) {
         return value == null ? "" : value.replace("\u0000", "").strip();
+    }
+
+    private static String bounded(String value, int maxChars) {
+        String normalized = safe(value);
+        if (normalized.length() <= maxChars) return normalized;
+        return normalized.substring(0, maxChars) + "...truncated...";
     }
 
     public static final class Snapshot {
@@ -147,10 +174,10 @@ public final class AgentCheckpointStore {
             snapshot.plan = context == null || context.getPlan() == null ? List.of()
                     : context.getPlan().stream().map(PlanState::capture).toList();
             snapshot.currentPlanIndex = context == null ? 0 : context.getCurrentPlanIndex();
-            snapshot.userRequest = safe(request.getMessage());
-            snapshot.note = safe(note);
-            snapshot.lastTool = safe(lastTool);
-            snapshot.lastResult = safe(lastResult);
+            snapshot.userRequest = bounded(request.getMessage(), MAX_REQUEST_CHARS);
+            snapshot.note = bounded(note, MAX_NOTE_CHARS);
+            snapshot.lastTool = bounded(lastTool, 256);
+            snapshot.lastResult = bounded(lastResult, MAX_RESULT_CHARS);
             snapshot.runLog = workspaceRelative(project, runLog);
             snapshot.updatedAt = LocalDateTime.now().toString();
             return snapshot.normalized();

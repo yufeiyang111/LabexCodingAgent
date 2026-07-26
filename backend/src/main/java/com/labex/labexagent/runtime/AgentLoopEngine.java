@@ -2219,13 +2219,17 @@ public class AgentLoopEngine {
                                                                 int keepRecentTurns,
                                                                 int tokensBefore,
                                                                 String trigger) throws Exception {
+        ConversationCheckpointCompactor compactor = new ConversationCheckpointCompactor();
+        if (!compactor.hasCompactableHistory(msgs, keepRecentTurns)) {
+            return ContextManagementResult.none();
+        }
         this.sendEvent(sse, conversation, "COMPACTION_STARTED", contextEvent(trigger, tokensBefore, tokensBefore,
                 Map.of("keepRecentTurns", Math.max(1, keepRecentTurns))));
         CompactionAgent.Result modelResult = this.compactionAgent == null
                 ? CompactionAgent.Result.failure("Compaction agent is unavailable")
                 : this.compactionAgent.compact(studentId, activeModelConfig, msgs, userRequest, context, cancellationToken);
         if (modelResult.success()) {
-            ConversationCheckpointCompactor.Result replacement = new ConversationCheckpointCompactor()
+            ConversationCheckpointCompactor.Result replacement = compactor
                     .compactWithCheckpoint(msgs, modelResult.checkpoint(), keepRecentTurns);
             if (replacement.changed()) {
                 int afterTokens = estimateMessagesTokens(msgs, sysPrompt) + estimateTokens(GSON.toJson(tools));
