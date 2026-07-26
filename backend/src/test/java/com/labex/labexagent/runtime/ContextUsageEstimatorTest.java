@@ -35,6 +35,29 @@ class ContextUsageEstimatorTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void separatesProjectWorkspaceAndCompactedContext() {
+        String sessionContext = "<project_context>repo map</project_context>\n"
+                + "<workspace_memory>durable file facts</workspace_memory>";
+        ContextUsageEstimator.PromptContext context = ContextUsageEstimator.PromptContext.of(
+                "project rules", "compressed conversation and tool records", sessionContext,
+                "recent run tool log", "conversation checkpoint", "skills", "mcp",
+                "mode", "language", "initial context");
+
+        ContextUsageSnapshot snapshot = estimator.estimate("conversation", "session", "provider", "model", 10_000,
+                "system", List.of(), context,
+                List.of(Map.of("role", "user", "content", "initial context")), "NONE");
+
+        Map<String, Integer> categories = (Map<String, Integer>) snapshot.toPayload().get("categories");
+        assertEquals(estimator.estimateTokens("<workspace_memory>durable file facts</workspace_memory>"), categories.get("workspaceMemory"));
+        assertEquals(estimator.estimateTokens("project rules<project_context>repo map</project_context>"),
+                categories.get("projectContext"));
+        assertEquals(estimator.estimateTokens(
+                        "compressed conversation and tool recordsrecent run tool logconversation checkpoint"),
+                categories.get("compactedContext"));
+    }
+
+    @Test
     void leavesPercentageUnknownWithoutConfiguredWindow() {
         ContextUsageSnapshot snapshot = estimator.estimate("conversation", "session", "provider", "model", null,
                 "system", List.of(), new ContextUsageEstimator.PromptContext("", "", "", ""),

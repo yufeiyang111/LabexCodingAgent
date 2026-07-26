@@ -28,10 +28,19 @@ class ContextWindowSupervisorTest {
     }
 
     @Test
-    void leavesContextUntouchedUnderTheSoftLimit() {
+    void startsCompactionWhenUsageReachesTheSoftLimit() {
         ContextWindowPolicy policy = ContextWindowPolicy.from(config()).orElseThrow();
 
         ContextWindowSupervisor.Decision decision = supervisor.decide(policy, policy.softLimitTokens(), true);
+
+        assertEquals(ContextWindowSupervisor.Action.PRUNE, decision.action());
+    }
+
+    @Test
+    void leavesContextUntouchedBelowTheSoftLimit() {
+        ContextWindowPolicy policy = ContextWindowPolicy.from(config()).orElseThrow();
+
+        ContextWindowSupervisor.Decision decision = supervisor.decide(policy, policy.softLimitTokens() - 1, true);
 
         assertEquals(ContextWindowSupervisor.Action.NONE, decision.action());
     }

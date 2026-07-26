@@ -1,8 +1,10 @@
 package com.labex.labexagent.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
@@ -28,6 +30,37 @@ class AgentTaskServiceTest {
                     new MapperBuilderAssistant(new MybatisConfiguration(), ""),
                     AgentFileChange.class);
         }
+        if (TableInfoHelper.getTableInfo(AgentTask.class) == null) {
+            TableInfoHelper.initTableInfo(
+                    new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+                    AgentTask.class);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void findsTheLatestNonTerminalTaskForTheRequestedConversation() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask active = new AgentTask();
+        active.setTaskId(72L);
+        active.setStatus("running");
+        when(taskMapper.selectOne(org.mockito.ArgumentMatchers.any(LambdaQueryWrapper.class))).thenReturn(active);
+        AgentTaskService service = new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class));
+
+        AgentTask result = service.findLatestActiveTask(7, 12, "conversation-71");
+
+        assertEquals(active, result);
+        ArgumentCaptor<LambdaQueryWrapper<AgentTask>> queryCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(taskMapper).selectOne(queryCaptor.capture());
+        AbstractWrapper<AgentTask, ?, ?> query = queryCaptor.getValue();
+        query.getSqlSegment();
+        assertTrue(query.getParamNameValuePairs().containsValue(7));
+        assertTrue(query.getParamNameValuePairs().containsValue(12));
+        assertTrue(query.getParamNameValuePairs().containsValue("conversation-71"));
+        assertTrue(query.getParamNameValuePairs().containsValue("completed"));
+        assertTrue(query.getParamNameValuePairs().containsValue("failed"));
+        assertTrue(query.getParamNameValuePairs().containsValue("cancelled"));
     }
 
     @Test

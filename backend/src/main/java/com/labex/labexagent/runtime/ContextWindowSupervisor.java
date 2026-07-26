@@ -16,7 +16,7 @@ public final class ContextWindowSupervisor {
     }
 
     public Decision decide(ContextWindowPolicy policy, int estimatedTokens, boolean hasPrunableToolResult) {
-        if (policy == null || !policy.autoCompactionEnabled() || estimatedTokens <= policy.softLimitTokens()) {
+        if (policy == null || !policy.autoCompactionEnabled() || estimatedTokens < policy.softLimitTokens()) {
             return new Decision(Action.NONE, estimatedTokens, policy == null ? 0 : policy.softLimitTokens(), 0);
         }
         Action action = policy.pruningEnabled() && hasPrunableToolResult ? Action.PRUNE : Action.CHECKPOINT;

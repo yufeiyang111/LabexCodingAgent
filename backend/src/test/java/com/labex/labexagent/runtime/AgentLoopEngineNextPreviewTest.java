@@ -35,6 +35,7 @@ import com.labex.service.AgentMcpServerService;
 import com.labex.service.AgentModelConfigService;
 import com.labex.service.AgentSkillService;
 import com.labex.service.StudentProjectService;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -47,7 +48,7 @@ class AgentLoopEngineNextPreviewTest {
     Path workspace;
 
     @Test
-    void nextRequestPreviewDoesNotCallAProviderOrPersistConversationState() {
+    void nextRequestPreviewDoesNotCallAProviderOrPersistConversationState() throws Exception {
         StudentProjectService projects = mock(StudentProjectService.class);
         ToolRegistry tools = mock(ToolRegistry.class);
         AgentConversationService conversations = mock(AgentConversationService.class);
@@ -64,6 +65,10 @@ class AgentLoopEngineNextPreviewTest {
         project.setStudentId(7);
         project.setProjectName("preview-project");
         project.setWorkspacePath(workspace.toString());
+        Files.createDirectories(workspace.resolve(".labex/agent-logs"));
+        Files.writeString(workspace.resolve(".labex/agent-logs/previous.md"), "FOREIGN_RUN_LOG_SENTINEL");
+        Files.createDirectories(workspace.resolve(".labex"));
+        Files.writeString(workspace.resolve(".labex/agent-checkpoint.md"), "FOREIGN_CHECKPOINT_SENTINEL");
         AgentConversation conversation = new AgentConversation();
         conversation.setConversationId("conversation");
         conversation.setStudentId(7);
@@ -106,6 +111,8 @@ class AgentLoopEngineNextPreviewTest {
         assertEquals(Boolean.TRUE, metadata.get("nextUserMessageIncluded"));
         assertTrue(((List<?>) payload.get("previewSections")).size() > 0);
         assertFalse(((List<?>) payload.get("previewSections")).isEmpty());
+        assertFalse(payload.toString().contains("FOREIGN_RUN_LOG_SENTINEL"));
+        assertFalse(payload.toString().contains("FOREIGN_CHECKPOINT_SENTINEL"));
         verify(conversations, never()).saveUserMessage(any(AgentConversation.class), anyString());
         verify(conversations, never()).saveEvent(any(AgentConversation.class), anyString(), any());
         verifyNoInteractions(providers, tasks, usageRegistry);

@@ -17,21 +17,33 @@ public class AgentCancellationRegistry {
         }
     }
 
-    public CancellationResult cancel(String sessionId, Integer studentId, Integer projectId) {
+    /** Looks up an owned run without signalling it, so durable cancellation can be persisted first. */
+    public CancellationTarget findCancellationTarget(String sessionId, Integer studentId, Integer projectId) {
         if (sessionId == null || sessionId.isBlank()) {
-            return new CancellationResult(CancellationStatus.NOT_FOUND, null);
+            return new CancellationTarget(CancellationStatus.NOT_FOUND, null);
         }
         ActiveRun activeRun = activeRuns.get(sessionId);
         if (activeRun == null) {
-            return new CancellationResult(CancellationStatus.NOT_FOUND, null);
+            return new CancellationTarget(CancellationStatus.NOT_FOUND, null);
         }
         if (!activeRun.belongsTo(studentId, projectId)) {
-            return new CancellationResult(CancellationStatus.FORBIDDEN, null);
+            return new CancellationTarget(CancellationStatus.FORBIDDEN, null);
         }
-        CancellationStatus status = activeRun.requestCancellation()
+        return new CancellationTarget(CancellationStatus.REQUESTED, activeRun);
+    }
+
+    public CancellationResult signalCancellation(CancellationTarget target) {
+        if (target == null || target.activeRun() == null) {
+            return new CancellationResult(target == null ? CancellationStatus.NOT_FOUND : target.status(), null);
+        }
+        CancellationStatus status = target.activeRun().requestCancellation()
                 ? CancellationStatus.REQUESTED
                 : CancellationStatus.ALREADY_REQUESTED;
-        return new CancellationResult(status, activeRun.taskId());
+        return new CancellationResult(status, target.activeRun().taskId());
+    }
+
+    public CancellationResult cancel(String sessionId, Integer studentId, Integer projectId) {
+        return signalCancellation(findCancellationTarget(sessionId, studentId, projectId));
     }
 
     public ActiveRun register(String sessionId, Integer studentId, Integer projectId, Long taskId) {
@@ -95,6 +107,10 @@ public class AgentCancellationRegistry {
         public boolean accepted() {
             return status == CancellationStatus.REQUESTED || status == CancellationStatus.ALREADY_REQUESTED;
         }
+    }
+
+    public record CancellationTarget(CancellationStatus status, ActiveRun activeRun) {
+        public Long taskId() { return activeRun == null ? null : activeRun.taskId(); }
     }
 
     public static final class ActiveRun implements CancellationToken {

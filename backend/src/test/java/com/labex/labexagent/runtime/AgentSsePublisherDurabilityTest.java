@@ -70,6 +70,42 @@ class AgentSsePublisherDurabilityTest {
     }
 
     @Test
+    void forwardsTransientDeltasToTaskSubscribersAfterTheRunIsBound() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        java.util.concurrent.atomic.AtomicReference<Long> taskId = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<String> type = new java.util.concurrent.atomic.AtomicReference<>();
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter, (id, eventType, payload) -> {
+            taskId.set(id);
+            type.set(eventType);
+        });
+        publisher.bindRun(mock(AgentRunLifecycleService.class), 71L);
+
+        publisher.sendTransient("FINAL_DELTA", Map.of("delta", "live"));
+
+        org.junit.jupiter.api.Assertions.assertEquals(71L, taskId.get());
+        org.junit.jupiter.api.Assertions.assertEquals("FINAL_DELTA", type.get());
+    }
+
+    @Test
+    void keepsForwardingTransientDeltasToReconnectedSubscribersAfterThePrimaryClientDisconnects() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunEvent event = new AgentRunEvent();
+        event.setSequenceNumber(43L);
+        when(lifecycle.appendEvent(eq(71L), eq("THINK"), any(), anyString())).thenReturn(event);
+        org.mockito.Mockito.doThrow(new IOException("original browser disconnected"))
+                .when(emitter).send(any(SseEmitter.SseEventBuilder.class));
+        java.util.concurrent.atomic.AtomicReference<String> forwardedType = new java.util.concurrent.atomic.AtomicReference<>();
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter, (taskId, type, payload) -> forwardedType.set(type));
+        publisher.bindRun(lifecycle, 71L);
+
+        publisher.send("THINK", Map.of("content", "still running"));
+        publisher.sendTransient("FINAL_DELTA", Map.of("delta", "visible after refresh"));
+
+        org.junit.jupiter.api.Assertions.assertEquals("FINAL_DELTA", forwardedType.get());
+    }
+
+    @Test
     void sendsTransientDeltasWithoutPersistingEveryChunk() throws Exception {
         SseEmitter emitter = mock(SseEmitter.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);

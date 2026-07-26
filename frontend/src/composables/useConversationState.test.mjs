@@ -83,8 +83,8 @@ test('loads older history with the server cursor and prepends complete turns', a
         if (!params.beforeMessageId) {
           return { data: {
             events: [
-              { messageId: 30, eventType: 'USER', content: '????', eventData: '{}' },
-              { messageId: 31, eventType: 'FINAL_DELTA', eventData: JSON.stringify({ delta: '????' }) }
+              { messageId: 30, eventType: 'USER', content: '新问题', eventData: '{}' },
+              { messageId: 31, eventType: 'FINAL_DELTA', eventData: JSON.stringify({ delta: '新回答' }) }
             ],
             hasMore: true,
             nextBeforeMessageId: 30
@@ -92,8 +92,8 @@ test('loads older history with the server cursor and prepends complete turns', a
         }
         return { data: {
           events: [
-            { messageId: 10, eventType: 'USER', content: '????', eventData: '{}' },
-            { messageId: 11, eventType: 'FINAL_DELTA', eventData: JSON.stringify({ delta: '????' }) }
+            { messageId: 10, eventType: 'USER', content: '旧问题', eventData: '{}' },
+            { messageId: 11, eventType: 'FINAL_DELTA', eventData: JSON.stringify({ delta: '旧回答' }) }
           ],
           hasMore: false,
           nextBeforeMessageId: 10
@@ -113,7 +113,7 @@ test('loads older history with the server cursor and prepends complete turns', a
     { projectId: 42, conversationId: 'conversation-1', params: { limit: 20 } },
     { projectId: 42, conversationId: 'conversation-1', params: { beforeMessageId: 30, limit: 20 } }
   ])
-  assert.deepEqual(messages.value.map(message => message.content), ['????', '????', '????', '????'])
+  assert.deepEqual(messages.value.map(message => message.content), ['旧问题', '旧回答', '新问题', '新回答'])
 })
 
 test('forking a conversation refreshes its list and opens the branch', async () => {
@@ -153,13 +153,13 @@ test('deleting the active conversation clears only conversation state', async ()
   assert.deepEqual(tokenUsage.value, { promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0, conversationTotal: 0 })
 })
 
-test('manual compaction forwards the selected model config and exposes the chosen strategy', async () => {
+test('manual compaction forwards the selected model config and returns its asynchronous task identity', async () => {
   let request
   const { state } = createHarness({
     api: {
       agentCompactConversation: async (...args) => {
         request = args
-        return { code: 0, data: { strategy: 'manual_model', deterministicFallback: false } }
+        return { code: 0, data: { taskId: 88, status: 'queued' } }
       }
     }
   })
@@ -167,5 +167,5 @@ test('manual compaction forwards the selected model config and exposes the chose
   const result = await state.compactConversation({ conversationId: 'compact-me' }, 17)
 
   assert.deepEqual(request, [42, 'compact-me', { modelConfigId: 17 }])
-  assert.deepEqual(result, { success: true, strategy: 'manual_model', deterministicFallback: false })
+  assert.deepEqual(result, { success: true, taskId: 88, status: 'queued' })
 })

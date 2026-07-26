@@ -74,7 +74,7 @@ public class AgentRunRetryScheduler {
             return false;
         }
         try {
-            agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), continuationRequest(task), task.getTaskId());
+            agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), continuationRequest(task), task.getTaskId(), true);
             return true;
         } catch (RuntimeException exception) {
             log.error("Unable to resume scheduled model retry taskId={}", task.getTaskId(), exception);

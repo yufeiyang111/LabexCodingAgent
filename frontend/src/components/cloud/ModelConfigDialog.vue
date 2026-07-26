@@ -172,12 +172,12 @@
                   <div class="mc-field">
                     <label>自动压缩触发阈值 (%)</label>
                     <input v-model.number="state.mcForm.compactionThresholdPercent" class="mc-input" type="number" min="70" max="99" step="1" />
-                    <div class="mc-hint">达到输入窗口的此比例时提前压缩；90% 为推荐默认值，系统仍会保留安全缓冲。</div>
+                    <div class="mc-hint">按总上下文窗口计算；例如 200K 窗口配置 90%，将在 180K tokens 时触发自动压缩。</div>
                   </div>
                   <div class="mc-field">
                     <label>压缩安全缓冲 Tokens</label>
-                    <input v-model.number="state.mcForm.compactionReservedTokens" class="mc-input" type="number" min="0" step="1" placeholder="自动（输入容量的 10%）" />
-                    <div class="mc-hint">系统会在可用输入窗口减去该缓冲后提前压缩；空值时自动计算。</div>
+                    <input v-model.number="state.mcForm.compactionReservedTokens" class="mc-input" type="number" min="0" step="1" placeholder="自动（总窗口的 10%）" />
+                    <div class="mc-hint">作为总窗口末尾的安全上限；只有当百分比阈值过高时才会更早触发，空值时自动计算。</div>
                   </div>
                   <div class="mc-field">
                     <label>压缩专用模型</label>

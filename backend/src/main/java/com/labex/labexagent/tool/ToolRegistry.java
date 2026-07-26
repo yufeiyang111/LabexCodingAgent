@@ -1,5 +1,6 @@
 package com.labex.labexagent.tool;
 
+import com.labex.labexagent.runtime.AgentMode;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.stereotype.Component;
@@ -59,10 +60,12 @@ public class ToolRegistry {
 
     /** 按模式过滤工具定义（用于 plan/explore 模式） */
     public Collection<ToolDefinition> definitionsForMode(String mode) {
+        if (!AgentMode.isSupported(mode)) {
+            return List.of();
+        }
         Set<String> allowed = MODE_ALLOWED_TOOLS.get(mode);
         if (allowed == null) {
-            // build 模式或其他未定义模式：返回所有工具
-            return definitions();
+            return AgentMode.isUnrestricted(mode) ? definitions() : List.of();
         }
         List<ToolDefinition> result = new ArrayList<>();
         this.tools.values().stream()
@@ -78,10 +81,11 @@ public class ToolRegistry {
 
     /** 检查某工具在某模式下是否允许使用 */
     public boolean isToolAllowed(String mode, String toolName) {
-        // 动态工具（MCP）在所有模式下都允许
+        if (!AgentMode.isSupported(mode)) return false;
+        // Dynamic tools still pass through permission evaluation; unknown modes stop here.
         if (dynamicTools.containsKey(toolName)) return true;
         Set<String> allowed = MODE_ALLOWED_TOOLS.get(mode);
-        if (allowed == null) return true; // build 模式不限制
+        if (allowed == null) return AgentMode.isUnrestricted(mode);
         return allowed.contains(toolName);
     }
 

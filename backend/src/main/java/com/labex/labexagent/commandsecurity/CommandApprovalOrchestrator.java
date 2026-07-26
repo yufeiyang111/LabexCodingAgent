@@ -12,6 +12,9 @@ import com.labex.labexagent.run.AgentRunState;
 import com.labex.service.StudentProjectService;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +24,7 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class CommandApprovalOrchestrator {
+    private static final Logger log = LoggerFactory.getLogger(CommandApprovalOrchestrator.class);
     private final CommandApprovalService approvalService;
     private final CommandAuditService auditService;
     private final AgentApprovedCommandExecutor executor;
@@ -28,11 +32,13 @@ public class CommandApprovalOrchestrator {
     private final AgentRunLifecycleService lifecycleService;
     private final AgentTaskService taskService;
     private final AgentLoopEngine agentLoopEngine;
+    private final AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
 
     public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
                                        AgentApprovedCommandExecutor executor, StudentProjectService projectService,
                                        AgentRunLifecycleService lifecycleService, AgentTaskService taskService,
-                                       @Lazy AgentLoopEngine agentLoopEngine) {
+                                       @Lazy AgentLoopEngine agentLoopEngine,
+                                       AgentProjectMetadataRefreshScheduler metadataRefreshScheduler) {
         this.approvalService = approvalService;
         this.auditService = auditService;
         this.executor = executor;
@@ -40,58 +46,90 @@ public class CommandApprovalOrchestrator {
         this.lifecycleService = lifecycleService;
         this.taskService = taskService;
         this.agentLoopEngine = agentLoopEngine;
+        this.metadataRefreshScheduler = metadataRefreshScheduler;
     }
 
     public DecisionResult decide(Integer studentId, Integer projectId, String approvalId,
                                  boolean approve, String decisionIdempotencyKey) {
         CommandApproval approval = ownedAgentApproval(studentId, projectId, approvalId);
-        if (approval == null) {
+        if (approval == null || !isLatestTaskApproval(approval)) {
+            log.warn("COMMAND_APPROVAL_DECISION_UNAVAILABLE projectId={} approvalId={} reason=superseded_or_missing",
+                    projectId, approvalId);
             return DecisionResult.unavailable();
         }
+        long startedNanos = System.nanoTime();
+        log.info("COMMAND_APPROVAL_DECISION_REQUEST_RECEIVED taskId={} projectId={} approvalId={} approve={}",
+                approval.getTaskId(), projectId, approval.getApprovalId(), approve);
         CommandApproval decided = approvalService.decide(studentId, projectId, approvalId, approve,
                 decisionIdempotencyKey);
         if (!"agent_shell".equals(decided.getSource())) {
             return DecisionResult.unavailable();
         }
         String status = decided.getStatus();
+        boolean resumeAgentLoop = false;
         if ("rejected".equals(status) || "expired".equals(status)) {
-            resolveRejected(decided, status, decisionIdempotencyKey);
+            resumeAgentLoop = resolveRejected(decided, status, decisionIdempotencyKey);
         } else {
             lifecycleService.appendEvent(decided.getTaskId(), "COMMAND_APPROVAL_DECIDED",
-                    publicPayload(decided, Map.of("decision", status)),
+                    publicPayload(decided, Map.of("decision", status, "resumeAgentLoop", false)),
                     lifecycleKey(decided, "decision:" + decisionIdempotencyKey));
         }
-        return DecisionResult.available(decided);
+        log.info("COMMAND_APPROVAL_DECISION_PERSISTED taskId={} projectId={} approvalId={} status={} resumeAgentLoop={} elapsedMs={}",
+                decided.getTaskId(), projectId, decided.getApprovalId(), status, resumeAgentLoop, elapsedMs(startedNanos));
+        return DecisionResult.available(decided, resumeAgentLoop);
     }
 
     public ExecutionResult execute(Integer studentId, Integer projectId, String approvalId) {
+        long requestStartedNanos = System.nanoTime();
         StudentProject project = projectService.getOwnedProject(studentId, projectId);
         CommandApproval approval = ownedAgentApproval(studentId, projectId, approvalId);
-        if (project == null || approval == null || !consume(approval)) {
+        if (project == null || approval == null || !isLatestTaskApproval(approval) || !consume(approval)) {
+            log.warn("COMMAND_APPROVAL_EXECUTION_UNAVAILABLE projectId={} approvalId={} reason=superseded_missing_or_consumed",
+                    projectId, approvalId);
             return ExecutionResult.unavailable();
         }
+        log.info("COMMAND_APPROVAL_EXECUTION_REQUEST_ACCEPTED taskId={} projectId={} approvalId={} workingDirectory={} requestElapsedMs={}",
+                approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory(), elapsedMs(requestStartedNanos));
         approval.setStatus("consumed");
         try {
             lifecycleService.transition(approval.getTaskId(), AgentRunState.RUNNING,
                     "COMMAND_EXECUTION_STARTED", publicPayload(approval, Map.of("resumeAgentLoop", false)),
                     "Executing approved command", "Executing the stored one-time command",
                     lifecycleKey(approval, "execution-started"));
-            long startedAt = System.nanoTime();
+            log.info("COMMAND_APPROVAL_PROCESS_STARTED taskId={} projectId={} approvalId={} workingDirectory={}",
+                    approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory());
+            long processStartedNanos = System.nanoTime();
             ProcessExecutionResult result = executor.execute(approval, project);
-            long durationMs = (System.nanoTime() - startedAt) / 1_000_000L;
-            auditService.recordExecutionOutcome(approval, result, durationMs);
+            long orchestrationDurationMs = elapsedMs(processStartedNanos);
+            long processDurationMs = result.durationMs();
+            auditService.recordExecutionOutcome(approval, result, processDurationMs);
             boolean succeeded = result.succeeded();
+            boolean resumeAgentLoop = isLatestTaskApproval(approval);
+            String executionStatus = succeeded ? "completed" : "failed";
+            log.info("COMMAND_APPROVAL_PROCESS_FINISHED taskId={} projectId={} approvalId={} executionStatus={} exitCode={} processDurationMs={} orchestrationDurationMs={}",
+                    approval.getTaskId(), projectId, approval.getApprovalId(), executionStatus,
+                    result.exitCode(), processDurationMs, orchestrationDurationMs);
             lifecycleService.appendEvent(approval.getTaskId(),
                     succeeded ? "COMMAND_EXECUTION_COMPLETED" : "COMMAND_EXECUTION_FAILED",
                     publicPayload(approval, Map.of(
-                            "executionStatus", succeeded ? "completed" : "failed",
+                            "executionStatus", executionStatus,
                             "exitCode", result.exitCode() == null ? "" : result.exitCode(),
-                            "resumeAgentLoop", true)),
-                    lifecycleKey(approval, "execution-outcome:" + (succeeded ? "completed" : "failed")));
-            projectService.refreshProjectMetadata(studentId, projectId);
-            resumeAgentLoop(approval, succeeded ? "completed" : "failed", result);
-            return ExecutionResult.available(approval, result, "resuming");
+                            "durationMs", processDurationMs,
+                            "resumeAgentLoop", resumeAgentLoop)),
+                    lifecycleKey(approval, "execution-outcome:" + executionStatus));
+            if (resumeAgentLoop) {
+                resumeAgentLoop(approval, executionStatus, result);
+            } else {
+                log.info("COMMAND_APPROVAL_AGENT_RESUME_SKIPPED taskId={} projectId={} approvalId={} reason=superseded",
+                        approval.getTaskId(), projectId, approval.getApprovalId());
+            }
+            metadataRefreshScheduler.schedule(studentId, projectId, "command_approval");
+            log.info("COMMAND_APPROVAL_EXECUTION_HTTP_RETURNED taskId={} projectId={} approvalId={} executionStatus={} resumeAgentLoop={} totalElapsedMs={}",
+                    approval.getTaskId(), projectId, approval.getApprovalId(), executionStatus, resumeAgentLoop,
+                    elapsedMs(requestStartedNanos));
+            return ExecutionResult.available(approval, result, resumeAgentLoop ? "resuming" : executionStatus);
         } catch (Exception exception) {
+
             try {
                 auditService.recordExecutionInterrupted(approval, "orchestration_failure");
                 lifecycleService.transition(approval.getTaskId(), AgentRunState.FAILED,
@@ -115,7 +153,12 @@ public class CommandApprovalOrchestrator {
                 approval.getClassification(), approval.getPolicyVersion(), approval.getExpiresTime()));
     }
 
-    private void resolveRejected(CommandApproval approval, String status, String decisionIdempotencyKey) {
+    private boolean resolveRejected(CommandApproval approval, String status, String decisionIdempotencyKey) {
+        if (!isLatestTaskApproval(approval)) {
+            log.info("COMMAND_APPROVAL_RESOLUTION_SUPERSEDED taskId={} projectId={} approvalId={} status={}",
+                    approval.getTaskId(), approval.getProjectId(), approval.getApprovalId(), status);
+            return false;
+        }
         lifecycleService.transition(approval.getTaskId(), AgentRunState.RUNNING,
                 "COMMAND_APPROVAL_RESOLVED", publicPayload(approval, Map.of("decision", status, "resumeAgentLoop", true)),
                 "Resolving command approval", "The one-time command approval was resolved.",
@@ -123,7 +166,13 @@ public class CommandApprovalOrchestrator {
         lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_APPROVAL_" + status.toUpperCase(),
                 publicPayload(approval, Map.of("decision", status, "resumeAgentLoop", true)),
                 lifecycleKey(approval, "resolution:" + decisionIdempotencyKey));
+        if (!isLatestTaskApproval(approval)) {
+            log.info("COMMAND_APPROVAL_RESUME_SKIPPED taskId={} projectId={} approvalId={} reason=superseded_after_transition",
+                    approval.getTaskId(), approval.getProjectId(), approval.getApprovalId());
+            return false;
+        }
         resumeAgentLoop(approval, status, null);
+        return true;
     }
 
     private void resumeAgentLoop(CommandApproval approval, String resolutionStatus, ProcessExecutionResult result) {
@@ -147,7 +196,22 @@ public class CommandApprovalOrchestrator {
                 Reassess the workspace, use the recorded command outcome, and continue the existing plan.
                 """.formatted(resolutionStatus,
                 result == null || result.exitCode() == null ? "" : result.exitCode(), output));
+        log.info("COMMAND_APPROVAL_AGENT_RESUME_REQUEST taskId={} projectId={} approvalId={} resolutionStatus={}",
+                approval.getTaskId(), approval.getProjectId(), approval.getApprovalId(), resolutionStatus);
         agentLoopEngine.resume(approval.getStudentId(), approval.getProjectId(), request, approval.getTaskId(), true);
+    }
+
+    private boolean isLatestTaskApproval(CommandApproval approval) {
+        if (approval == null || approval.getTaskId() == null) {
+            return false;
+        }
+        CommandApproval latest = approvalService.findLatestForTask(
+                approval.getStudentId(), approval.getProjectId(), approval.getTaskId());
+        return latest != null && Objects.equals(latest.getApprovalId(), approval.getApprovalId());
+    }
+
+    private long elapsedMs(long startedNanos) {
+        return (System.nanoTime() - startedNanos) / 1_000_000L;
     }
 
     private CommandApproval ownedAgentApproval(Integer studentId, Integer projectId, String approvalId) {
@@ -171,9 +235,11 @@ public class CommandApprovalOrchestrator {
         return payload;
     }
 
-    public record DecisionResult(boolean available, CommandApproval approval) {
-        static DecisionResult unavailable() { return new DecisionResult(false, null); }
-        static DecisionResult available(CommandApproval approval) { return new DecisionResult(true, approval); }
+    public record DecisionResult(boolean available, CommandApproval approval, boolean resumeAgentLoop) {
+        static DecisionResult unavailable() { return new DecisionResult(false, null, false); }
+        static DecisionResult available(CommandApproval approval, boolean resumeAgentLoop) {
+            return new DecisionResult(true, approval, resumeAgentLoop);
+        }
     }
 
     public record ExecutionResult(boolean available, CommandApproval approval,

@@ -16,7 +16,8 @@ import org.springframework.stereotype.Service;
 public class AgentRunRecoveryService {
     private static final Logger log = LoggerFactory.getLogger(AgentRunRecoveryService.class);
     private static final List<String> INTERRUPTED_STATES = List.of(
-            "queued", "preparing", "running", "waiting_approval", "waiting_user", "retrying", "cancelling");
+            "queued", "preparing", "running", "waiting_approval", "waiting_user", "waiting_workspace",
+            "waiting_environment", "retrying", "cancelling");
 
     private final AgentTaskMapper taskMapper;
     private final AgentRunLifecycleService lifecycleService;
@@ -81,7 +82,8 @@ public class AgentRunRecoveryService {
                 "reason", "Agent service restarted before the run could resume",
                 "recoveryAttempt", attempts);
 
-        if (state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER) {
+        if (state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER
+                || state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT) {
             lifecycleService.appendEvent(
                     task.getTaskId(),
                     "RUN_RECOVERY_WAITING",

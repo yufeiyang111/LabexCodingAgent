@@ -202,19 +202,21 @@ export function useConversationState({
   }
 
   async function compactConversation(conversation, modelConfigId = null) {
-    if (!conversation?.conversationId) return { success: false, message: '???? ID' }
+    if (!conversation?.conversationId) return { success: false, message: '缺少会话 ID' }
 
     const response = await api.agentCompactConversation(projectId.value, conversation.conversationId, { modelConfigId })
     if (response.code !== 0) {
-      return { success: false, message: response.message || '????' }
+      return { success: false, message: response.message || '压缩会话失败' }
     }
 
     await loadConversations()
-    return {
+    const result = {
       success: true,
-      strategy: response.data?.strategy,
-      deterministicFallback: Boolean(response.data?.deterministicFallback)
+      taskId: response.data?.taskId || null,
+      status: response.data?.status || 'queued'
     }
+    if (response.data?.sessionId) result.sessionId = response.data.sessionId
+    return result
   }
 
   async function deleteConversation(conversation) {

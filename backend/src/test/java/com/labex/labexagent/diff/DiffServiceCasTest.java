@@ -2,6 +2,7 @@ package com.labex.labexagent.diff;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -111,6 +112,9 @@ class DiffServiceCasTest {
         assertEquals("diff --git a/Main.java b/Main.java", applied.getDiff());
         assertEquals("diff --git a/Main.java b/Main.java", storedChange.get().getDiff());
         assertEquals("applied", storedChange.get().getStatus());
+        DiffService.ApplyTelemetry telemetry = service.consumeLastApplyTelemetry();
+        assertEquals("complete", telemetry.phase());
+        assertTrue(telemetry.timingMs().containsKey("snapshotBeforeMs"));
         verify(snapshots, times(2)).capture(eq(project), any(String.class), eq(List.of("Main.java")));
         verify(snapshots, never()).capture(any(StudentProject.class), any(String.class));
     }

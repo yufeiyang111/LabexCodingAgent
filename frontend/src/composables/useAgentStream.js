@@ -6,6 +6,7 @@ import { initialAgentStreamState, reduceAgentStreamState } from './agentStreamSt
 export function useAgentStream() {
   const streamState = ref(initialAgentStreamState())
   const abortController = ref(null)
+  const subscriptionController = ref(null)
   const stopRequest = ref(null)
   const isStreaming = computed(() => streamState.value.status !== 'idle')
 
@@ -84,14 +85,66 @@ export function useAgentStream() {
     })
   }
 
+  async function subscribe(projectId, taskId, options = {}) {
+    if (!taskId) {
+      throw new Error('An agent task ID is required to subscribe')
+    }
+    subscriptionController.value?.abort()
+    const controller = new AbortController()
+    subscriptionController.value = controller
+    const lastEventId = options.lastEventId ?? streamState.value.lastEventId
+    const headers = {
+      'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+    }
+    if (lastEventId != null && String(lastEventId).trim()) {
+      headers['Last-Event-ID'] = String(lastEventId)
+    }
+
+    try {
+      const response = await fetch(`/api/student/projects/${projectId}/agent/tasks/${taskId}/subscribe`, {
+        headers,
+        signal: controller.signal
+      })
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+      if (!response.body) {
+        throw new Error('Agent subscription response has no body')
+      }
+      await consumeAgentSse(response.body, event => {
+        recordEvent(event, taskId)
+        try {
+          options.onEvent?.(event)
+        } catch (error) {
+          console.warn('Agent subscription event handler failed:', error)
+        }
+      })
+    } finally {
+      if (subscriptionController.value === controller) {
+        subscriptionController.value = null
+      }
+    }
+  }
+
+  function disconnectSubscription() {
+    subscriptionController.value?.abort()
+  }
+
+  function disconnect() {
+    abortController.value?.abort()
+    subscriptionController.value?.abort()
+  }
+
   async function stop(projectId, sessionId = streamState.value.sessionId) {
     if (stopRequest.value) return stopRequest.value
-    if (!abortController.value && streamState.value.status === 'idle') return undefined
+    if (!abortController.value && !subscriptionController.value && streamState.value.status === 'idle') return undefined
 
     streamState.value = reduceAgentStreamState(streamState.value, { type: 'STOP_REQUESTED' })
     const controller = abortController.value
+    const subscriber = subscriptionController.value
     const interrupt = sessionId ? projectApi.agentInterrupt(projectId, sessionId) : Promise.resolve()
     controller?.abort()
+    subscriber?.abort()
 
     stopRequest.value = Promise.resolve(interrupt)
       .catch(error => {
@@ -108,6 +161,9 @@ export function useAgentStream() {
     isStreaming,
     stream,
     replay,
+    subscribe,
+    disconnect,
+    disconnectSubscription,
     stop
   }
 

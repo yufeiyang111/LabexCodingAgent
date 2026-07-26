@@ -206,6 +206,21 @@ public class AgentContext {
         }
     }
 
+    public void restoreExecutionState(String stage, List<PlanItem> plan, int currentPlanIndex,
+                                      int writeCount, int verificationCount, boolean unverifiedChanges,
+                                      Set<String> trustedVerificationSources, Set<String> unverifiedChangeTargets) {
+        this.setStage(stage);
+        this.plan = plan == null ? new ArrayList<>() : new ArrayList<>(plan);
+        this.currentPlanIndex = Math.max(0, Math.min(currentPlanIndex, Math.max(0, this.plan.size() - 1)));
+        this.writeCount = Math.max(0, writeCount);
+        this.verificationCount = Math.max(0, verificationCount);
+        this.trustedVerificationSources = trustedVerificationSources == null
+                ? new LinkedHashSet<>() : new LinkedHashSet<>(trustedVerificationSources);
+        this.unverifiedChangeTargets = unverifiedChangeTargets == null
+                ? new LinkedHashSet<>() : new LinkedHashSet<>(unverifiedChangeTargets);
+        this.unverifiedChanges = unverifiedChanges || !this.unverifiedChangeTargets.isEmpty();
+    }
+
     public boolean equals(Object o) {
         if (o == this) {
             return true;

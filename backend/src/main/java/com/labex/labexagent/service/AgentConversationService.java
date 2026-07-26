@@ -267,6 +267,15 @@ public class AgentConversationService {
 
     public ManualCompactionResult compactConversation(Integer studentId, Integer projectId, String conversationId,
                                                        Integer modelConfigId) {
+        return compactConversation(studentId, projectId, conversationId, modelConfigId, CancellationToken.none());
+    }
+
+    public ManualCompactionResult compactConversation(Integer studentId, Integer projectId, String conversationId,
+                                                       Integer modelConfigId, CancellationToken cancellationToken) {
+        CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
+        if (token.isCancellationRequested()) {
+            throw new java.util.concurrent.CancellationException("Manual compaction cancelled");
+        }
         AgentConversation conversation = this.getOwnedConversation(studentId, projectId, conversationId);
         if (conversation == null) {
             throw new IllegalArgumentException("Conversation not found");
@@ -289,7 +298,10 @@ public class AgentConversationService {
         CompactionAgent.Result modelResult = compactionAgent == null
                 ? CompactionAgent.Result.failure("Compaction agent is unavailable")
                 : compactionAgent.compact(studentId, activeConfig, runtimeMessagesForCompaction(recent),
-                        latestUserRequest(recent), null, CancellationToken.none());
+                        latestUserRequest(recent), null, token);
+        if (token.isCancellationRequested() || "Compaction cancelled".equals(modelResult.reason())) {
+            throw new java.util.concurrent.CancellationException("Manual compaction cancelled");
+        }
         if (modelResult.success()) {
             this.saveCompactionSummary(conversation, modelResult.checkpoint(), Map.of(
                     "strategy", "manual_model",

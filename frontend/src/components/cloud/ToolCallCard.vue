@@ -11,6 +11,7 @@
       <div class="tc-info">
         <span class="tc-name">{{ toolLabel }}</span>
         <span class="tc-summary" v-if="call.summary">{{ call.summary }}</span>
+        <span class="tc-execution" v-if="executionText">{{ executionText }}</span>
       </div>
       <div class="tc-toggle">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" :style="{ transform: expanded ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
@@ -67,6 +68,10 @@
               <pre class="tc-args-json">{{ formatJson(call.args) }}</pre>
             </template>
           </div>
+        </div>
+
+        <div v-if="call.projection?.truncated" class="tc-projection-note">
+          完整结果已保留；模型上下文使用 {{ call.projection.modelProjectionChars }} / {{ call.projection.resultChars }} 字符的受限投影。
         </div>
 
         <!-- Result Section -->
@@ -158,7 +163,7 @@ const emit = defineEmits(['permission', 'question', 'command-approval'])
 const expanded = ref(props.call.status === 'error' || props.call.status === 'waiting_approval' || props.call.status === 'waiting_user')
 const answerDraft = ref('')
 const approvalFeedback = ref('')
-const commandSubmitting = ref(false)
+const commandSubmitting = computed(() => props.call._commandApprovalInFlight === true)
 
 const toolMap = {
   read_file: '读取文件', edit_file: '编辑文件', write_file: '写入文件',
@@ -173,6 +178,22 @@ const toolMap = {
   external_directory: '外部目录'
 }
 const toolLabel = computed(() => toolMap[props.call.name] || props.call.name)
+const executionText = computed(() => {
+  const execution = props.call.execution
+  if (!execution) return ''
+  const phaseNames = {
+    tool_delegate: '工具执行',
+    snapshot_before_command: '命令前快照',
+    snapshot_after_command: '命令后快照',
+    record_snapshot_diff: '记录快照差异',
+    post_edit_hook: '编辑后检查',
+    context_orchestration: '上下文编排',
+    metrics_persistence: '指标持久化'
+  }
+  const phase = phaseNames[execution.phase] || execution.phase || '执行阶段'
+  const elapsed = Number(execution.elapsedMs || 0)
+  return elapsed > 0 ? `${phase} · ${(elapsed / 1000).toFixed(elapsed >= 10000 ? 0 : 1)} 秒` : phase
+})
 const statusColor = computed(() => {
   if (props.call.status === 'running') return '#3b82f6'
   if (props.call.status === 'error') return '#ef4444'
@@ -224,14 +245,9 @@ function emitPermission(action) {
   emit('permission', { call: props.call, action, feedback: approvalFeedback.value.trim() })
 }
 
-async function emitCommandApproval(action) {
+function emitCommandApproval(action) {
   if (commandSubmitting.value) return
-  commandSubmitting.value = true
-  try {
-    await emit('command-approval', { call: props.call, action })
-  } finally {
-    commandSubmitting.value = false
-  }
+  emit('command-approval', { call: props.call, action })
 }
 
 function setQuestionAnswer(option) {
@@ -306,10 +322,26 @@ watch(() => props.call.questionRequest, (request) => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.tc-execution {
+  font-size: 10px;
+  color: #64748b;
+}
+.tc-running .tc-execution { color: #2563eb; }
+.tc-error .tc-execution { color: #dc2626; }
 .tc-toggle { flex-shrink: 0; }
 .tc-body {
   border-top: 1px solid #f0f0f0;
   padding: 8px 10px;
+}
+.tc-projection-note {
+  margin: 0 0 8px;
+  padding: 7px 8px;
+  border-left: 3px solid #60a5fa;
+  border-radius: 5px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 11px;
+  line-height: 1.5;
 }
 .tc-section { margin-bottom: 8px; }
 .tc-section:last-child { margin-bottom: 0; }

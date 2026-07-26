@@ -28,7 +28,7 @@ class AgentLoopEngineStreamingContractTest {
         assertTrue(source.contains("catch (TimeoutException e)"));
         assertTrue(source.contains("requestProviderCancellation(cancellationToken)"));
         assertTrue(source.contains("streamFuture.cancel(true)"));
-        assertTrue(source.contains("????????"));
+        assertTrue(source.contains("模型服务响应超时"));
     }
 
     @Test

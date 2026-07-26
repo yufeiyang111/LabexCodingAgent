@@ -161,6 +161,19 @@ public class CommandApprovalService {
         return approval;
     }
 
+    /** Returns the most recently updated approval for the owned durable task. */
+    public CommandApproval findLatestForTask(Integer studentId, Integer projectId, Long taskId) {
+        require(studentId, "studentId");
+        require(projectId, "projectId");
+        require(taskId, "taskId");
+        return approvalMapper.selectOne(new QueryWrapper<CommandApproval>()
+                .eq("student_id", studentId)
+                .eq("project_id", projectId)
+                .eq("task_id", taskId)
+                .orderByDesc("update_time")
+                .last("LIMIT 1"));
+    }
+
     /** Returns only an approval capability owned by the authenticated project user. */
     public CommandApproval findOwned(Integer studentId, Integer projectId, String approvalId) {
         require(studentId, "studentId");

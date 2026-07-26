@@ -44,6 +44,7 @@ test('ModelConfigDialog exposes and persists the automatic compaction threshold'
   const workspace = await readFile(new URL('../../views/CloudWorkspace.vue', import.meta.url), 'utf8')
 
   assert.match(dialog, /state\.mcForm\.compactionThresholdPercent/)
+  assert.match(dialog, /总上下文窗口/)
   assert.match(dialog, /min="70" max="99"/)
   assert.match(workspace, /compactionThresholdPercent: 90/)
   assert.match(workspace, /compactionThresholdPercent: cfg\.compactionThresholdPercent \?\? 90/)

@@ -79,14 +79,16 @@ const activeTab = ref('usage')
 const categories = [
   { key: 'systemPrompt', label: '系统提示', color: '#5d86e8' },
   { key: 'toolDefinitions', label: '工具定义', color: '#68b9ee' },
+  { key: 'projectContext', label: '项目上下文', color: '#72c7b5' },
   { key: 'workspaceMemory', label: '工作区记忆', color: '#8bd98a' },
+  { key: 'compactedContext', label: '压缩上下文', color: '#e58a6b' },
   { key: 'skillsAndInstructions', label: 'Skills 与指令', color: '#e6ad70' },
   { key: 'conversationMessages', label: '会话消息', color: '#b079d3' },
   { key: 'toolResults', label: '工具结果', color: '#ce85c7' }
 ]
 const sectionNames = {
-  systemPrompt: '系统提示', workspaceMemory: '工作区记忆',
-  skillsAndInstructions: 'Skills 与指令', toolDefinitions: '工具定义',
+  systemPrompt: '系统提示', projectContext: '项目上下文', workspaceMemory: '工作区记忆',
+  compactedContext: '压缩上下文', skillsAndInstructions: 'Skills 与指令', toolDefinitions: '工具定义',
   fixedInstructions: '固定运行指令', conversationMessages: '会话消息', toolResults: '工具结果'
 }
 

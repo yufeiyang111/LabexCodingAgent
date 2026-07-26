@@ -7,13 +7,30 @@
 @source "../components/LoginForm.vue";
 
 @theme {
-  --color-auth-background: #FAFAFA;
-  --color-auth-ink: #1D1D1F;
-  --color-auth-muted: #6B6B6B;
-  --color-auth-border: #E5E5E5;
-  --font-auth-sans: Inter, "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-auth-background: #EEE9DE;
+  --color-auth-paper: #FBF8F0;
+  --color-auth-ink: #34352F;
+  --color-auth-muted: #76756D;
+  --color-auth-border: #CFC8BA;
+  --color-auth-moss: #5D675B;
+  --color-auth-clay: #987562;
+  --font-auth-sans: "Noto Sans SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-auth-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", STSong, Georgia, serif;
 }
 
-@keyframes auth-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-.animate-auth-enter { animation: auth-enter 220ms ease-out both; }
-@media (prefers-reduced-motion: reduce) { .animate-auth-enter { animation: none; } }
+.auth-paper-grain { position: relative; isolation: isolate; }
+.auth-paper-grain::before { position: absolute; inset: 0; z-index: -2; content: ''; opacity: .18; pointer-events: none; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.68' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.33'/%3E%3C/svg%3E"); background-size: 180px 180px; }
+.auth-paper-grain::after { position: absolute; right: 8%; bottom: 14%; z-index: -1; width: min(34vw, 420px); height: min(24vw, 270px); border: 1px solid rgba(93,103,91,.18); border-radius: 46% 54% 49% 51%; content: ''; opacity: .75; background: rgba(222, 216, 201, .26); transform: rotate(-7deg); pointer-events: none; }
+
+.auth-card { position: relative; transform: translate3d(var(--card-shift-x, 0px), var(--card-shift-y, 0px), 0); transition: transform 260ms ease, border-color 220ms ease, box-shadow 260ms ease, max-width 260ms ease; }
+.auth-card::after { position: absolute; inset: -1px; z-index: -1; border-radius: inherit; content: ''; opacity: 0; background: radial-gradient(circle at var(--ink-x, 50%) var(--ink-y, 50%), rgba(93,103,91,.12), transparent 43%); transition: opacity 260ms ease; pointer-events: none; }
+.auth-card--active { border-color: #AAB1A3; box-shadow: 0 14px 30px rgba(71,66,52,.07); }
+.auth-card--active::after { opacity: 1; }
+.auth-card--expanded { max-width: 500px; }
+.auth-note-enter-active, .auth-note-leave-active { overflow: hidden; transition: opacity 220ms ease, max-height 260ms ease, margin 260ms ease; }
+.auth-note-enter-from, .auth-note-leave-to { max-height: 0; margin-top: 0; opacity: 0; }
+.auth-note-enter-to, .auth-note-leave-from { max-height: 128px; opacity: 1; }
+@keyframes auth-enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.animate-auth-enter { animation: auth-enter 260ms ease-out both; }
+@media (max-width: 640px) { .auth-layout { min-width: 0; } .auth-card { width: calc(100vw - 40px); max-width: calc(100vw - 40px); } .auth-paper-grain::after { right: -18%; bottom: 10%; width: 240px; height: 168px; } }
+@media (prefers-reduced-motion: reduce) { .auth-card, .auth-card::after, .auth-note-enter-active, .auth-note-leave-active, .animate-auth-enter { animation: none; transition: none; } }

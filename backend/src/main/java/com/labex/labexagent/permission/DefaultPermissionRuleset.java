@@ -5,6 +5,10 @@ import java.util.Map;
 
 public class DefaultPermissionRuleset {
 
+    private static final List<PermissionRule> DENY_ALL_RULES = List.of(
+            new PermissionRule("*", "*", PermissionAction.DENY)
+    );
+
     private static final List<PermissionRule> BUILD_RULES = List.of(
             new PermissionRule("*", "*", PermissionAction.ALLOW),
             new PermissionRule("read", "*.env", PermissionAction.ASK),
@@ -80,6 +84,6 @@ public class DefaultPermissionRuleset {
     );
 
     public static List<PermissionRule> getRulesForAgent(String mode) {
-        return AGENT_RULES.getOrDefault(mode, BUILD_RULES);
+        return AGENT_RULES.getOrDefault(mode, DENY_ALL_RULES);
     }
 }

@@ -343,6 +343,7 @@ Formatting rules:
 - Use fenced code blocks with language tags for code, commands, config, logs, and JSON.
 - Use Markdown links `[label](https://example.com)` for every URL so the UI can render clickable links.
 - Use tables when comparing files, options, APIs, routes, or test results.
+- Use `:::note`, `:::tip`, `:::success`, `:::warning`, `:::important`, or `:::error` for a short user-visible conclusion, risk, verification result, or next-step callout when it improves clarity.
 - Do not emit raw HTML unless the user explicitly asks for it.
 - Only report what was actually done. Never fabricate files, commands, tests, or results.
 - Keep the answer concise, but structured enough to copy directly.

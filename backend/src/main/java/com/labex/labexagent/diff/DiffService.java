@@ -7,6 +7,7 @@ import com.labex.entity.AgentChangeSet;
 import com.labex.entity.AgentFileChange;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.diff.PendingChange;
+import com.labex.labexagent.commandsecurity.AgentProjectMetadataRefreshScheduler;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.WorkspaceContextInvalidator;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
@@ -23,6 +24,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -54,6 +56,8 @@ public class DiffService {
     private final GitSnapshotService snapshotService;
     private final WorkspaceLeaseService workspaceLeases;
     private final WorkspaceContextInvalidator contextInvalidator;
+    private final ThreadLocal<ApplyTelemetry> lastApplyTelemetry = new ThreadLocal<>();
+    private AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
 
     public DiffService(StudentProjectService studentProjectService, AgentTaskService taskService, AgentFileChangeMapper fileChangeMapper, GitSnapshotService snapshotService) {
         this(studentProjectService, taskService, fileChangeMapper, snapshotService, new WorkspaceLeaseService(),
@@ -70,6 +74,21 @@ public class DiffService {
         this.snapshotService = snapshotService;
         this.workspaceLeases = workspaceLeases;
         this.contextInvalidator = contextInvalidator;
+    }
+
+    public ApplyTelemetry consumeLastApplyTelemetry() {
+        ApplyTelemetry telemetry = this.lastApplyTelemetry.get();
+        this.lastApplyTelemetry.remove();
+        return telemetry == null ? ApplyTelemetry.empty() : telemetry;
+    }
+
+    public void clearLastApplyTelemetry() {
+        this.lastApplyTelemetry.remove();
+    }
+
+    @Autowired(required = false)
+    void setMetadataRefreshScheduler(AgentProjectMetadataRefreshScheduler metadataRefreshScheduler) {
+        this.metadataRefreshScheduler = metadataRefreshScheduler;
     }
 
     public PendingChange stage(Integer studentId, StudentProject project, String relativePath, String beforeContent, String afterContent) {
@@ -113,6 +132,8 @@ public class DiffService {
     private List<PendingChange> stageAndApplyBatchInternal(Integer studentId, StudentProject project, String conversationId,
                                                              Long taskId, List<ChangeRequest> requests, boolean deferAfterSnapshot) throws Exception {
         validateBatchRequests(project, requests);
+        this.clearLastApplyTelemetry();
+        Map<String, Long> timingMs = new LinkedHashMap<>();
         long totalStartedNanos = System.nanoTime();
         String checkoutId = checkoutId(project);
         String owner = leaseOwner(conversationId, taskId);
@@ -145,6 +166,7 @@ public class DiffService {
                     throw e;
                 }
                 long stageElapsedMs = elapsedMs(stageStartedNanos);
+                timingMs.put("stagePersistMs", stageElapsedMs);
                 log.info("DIFF_APPLY_STAGED taskId={} projectId={} changeCount={} stageMs={}",
                         taskId, project.getProjectId(), changes.size(), stageElapsedMs);
 
@@ -155,6 +177,7 @@ public class DiffService {
                             this.resolveChangePath(project, changes.get(index).getRelativePath()));
                 }
                 long verifyElapsedMs = elapsedMs(verifyStartedNanos);
+                timingMs.put("verifyBeforeHashMs", verifyElapsedMs);
                 log.info("DIFF_APPLY_HASH_VERIFIED taskId={} projectId={} verifyMs={}",
                         taskId, project.getProjectId(), verifyElapsedMs);
 
@@ -163,6 +186,7 @@ public class DiffService {
                 long beforeSnapshotStartedNanos = System.nanoTime();
                 GitSnapshotService.Snapshot beforeSnapshot = this.snapshotService.capture(project, "before patch batch", snapshotPaths);
                 long beforeSnapshotElapsedMs = elapsedMs(beforeSnapshotStartedNanos);
+                timingMs.put("snapshotBeforeMs", beforeSnapshotElapsedMs);
                 log.info("DIFF_APPLY_SNAPSHOT_BEFORE taskId={} projectId={} available={} state={} elapsedMs={}",
                         taskId, project.getProjectId(), beforeSnapshot.available(), beforeSnapshot.status(), beforeSnapshotElapsedMs);
 
@@ -178,16 +202,34 @@ public class DiffService {
                     throw e;
                 }
                 long writeElapsedMs = elapsedMs(writeStartedNanos);
+                timingMs.put("writeFilesMs", writeElapsedMs);
                 log.info("DIFF_APPLY_FILES_WRITTEN taskId={} projectId={} changeCount={} writeMs={}",
                         taskId, project.getProjectId(), changes.size(), writeElapsedMs);
 
                 if (deferAfterSnapshot) {
                     phase = "defer_snapshot_after";
+                    long deferredRecordStartedNanos = System.nanoTime();
                     this.markDeferredSnapshot(project, owner, changes, fileChanges, beforeSnapshot, snapshotPaths);
-                    this.studentProjectService.refreshProjectMetadata(studentId, project.getProjectId());
+                    long deferredRecordElapsedMs = elapsedMs(deferredRecordStartedNanos);
+                    timingMs.put("deferredRecordMs", deferredRecordElapsedMs);
+                    long metadataRefreshStartedNanos = System.nanoTime();
+                    if (this.metadataRefreshScheduler != null) {
+                        this.metadataRefreshScheduler.schedule(studentId, project.getProjectId(), "agent_file_change");
+                    } else {
+                        this.studentProjectService.refreshProjectMetadata(studentId, project.getProjectId());
+                    }
+                    long metadataRefreshElapsedMs = elapsedMs(metadataRefreshStartedNanos);
+                    timingMs.put("metadataRefreshDispatchMs", metadataRefreshElapsedMs);
+                    long contextInvalidationStartedNanos = System.nanoTime();
                     this.contextInvalidator.invalidate(project, snapshotPaths);
-                    log.info("DIFF_APPLY_DEFERRED taskId={} projectId={} changeCount={} beforeSnapshotMs={} writeMs={}",
-                            taskId, project.getProjectId(), changes.size(), beforeSnapshotElapsedMs, writeElapsedMs);
+                    long contextInvalidationElapsedMs = elapsedMs(contextInvalidationStartedNanos);
+                    timingMs.put("contextInvalidationMs", contextInvalidationElapsedMs);
+                    long totalElapsedMs = elapsedMs(totalStartedNanos);
+                    timingMs.put("totalMs", totalElapsedMs);
+                    this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs)));
+                    log.info("DIFF_APPLY_DEFERRED taskId={} projectId={} changeCount={} beforeSnapshotMs={} writeMs={} deferredRecordMs={} metadataRefreshDispatchMs={} contextInvalidationMs={} totalMs={}",
+                            taskId, project.getProjectId(), changes.size(), beforeSnapshotElapsedMs, writeElapsedMs,
+                            deferredRecordElapsedMs, metadataRefreshElapsedMs, contextInvalidationElapsedMs, totalElapsedMs);
                     return changes;
                 }
 
@@ -195,6 +237,7 @@ public class DiffService {
                 long afterSnapshotStartedNanos = System.nanoTime();
                 GitSnapshotService.Snapshot afterSnapshot = this.snapshotService.capture(project, "after patch batch", snapshotPaths);
                 long afterSnapshotElapsedMs = elapsedMs(afterSnapshotStartedNanos);
+                timingMs.put("snapshotAfterMs", afterSnapshotElapsedMs);
                 log.info("DIFF_APPLY_SNAPSHOT_AFTER taskId={} projectId={} available={} state={} elapsedMs={}",
                         taskId, project.getProjectId(), afterSnapshot.available(), afterSnapshot.status(), afterSnapshotElapsedMs);
 
@@ -203,6 +246,7 @@ public class DiffService {
                 List<GitSnapshotService.ChangedFile> snapshotFiles = this.snapshotService.usablePair(beforeSnapshot, afterSnapshot)
                         ? this.snapshotService.changedFiles(project, beforeSnapshot, afterSnapshot) : List.of();
                 long snapshotDiffElapsedMs = elapsedMs(snapshotDiffStartedNanos);
+                timingMs.put("snapshotDiffMs", snapshotDiffElapsedMs);
                 log.info("DIFF_APPLY_SNAPSHOT_DIFF taskId={} projectId={} changedFiles={} elapsedMs={}",
                         taskId, project.getProjectId(), snapshotFiles.size(), snapshotDiffElapsedMs);
 
@@ -213,6 +257,7 @@ public class DiffService {
                             snapshotFiles);
                 }
                 long completeElapsedMs = elapsedMs(completeStartedNanos);
+                timingMs.put("changeRecordCompletionMs", completeElapsedMs);
                 log.info("DIFF_APPLY_CHANGE_RECORDS_COMPLETE taskId={} projectId={} elapsedMs={}",
                         taskId, project.getProjectId(), completeElapsedMs);
 
@@ -221,16 +266,23 @@ public class DiffService {
                 this.studentProjectService.refreshProjectMetadata(studentId, project.getProjectId());
                 this.contextInvalidator.invalidate(project, changes.stream().map(PendingChange::getRelativePath).toList());
                 long refreshElapsedMs = elapsedMs(refreshStartedNanos);
+                timingMs.put("refreshAndInvalidateMs", refreshElapsedMs);
+                long totalElapsedMs = elapsedMs(totalStartedNanos);
+                timingMs.put("totalMs", totalElapsedMs);
+                this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs)));
                 log.info("DIFF_APPLY_COMPLETE taskId={} projectId={} totalMs={} stageMs={} verifyMs={} beforeSnapshotMs={} writeMs={} afterSnapshotMs={} snapshotDiffMs={} recordsMs={} refreshMs={}",
-                        taskId, project.getProjectId(), elapsedMs(totalStartedNanos), stageElapsedMs, verifyElapsedMs,
+                        taskId, project.getProjectId(), totalElapsedMs, stageElapsedMs, verifyElapsedMs,
                         beforeSnapshotElapsedMs, writeElapsedMs, afterSnapshotElapsedMs, snapshotDiffElapsedMs,
                         completeElapsedMs, refreshElapsedMs);
                 // Applying a file batch is one step of an active Agent run, not completion of the run itself.
                 return changes;
             }
         } catch (Exception failure) {
+            long totalElapsedMs = elapsedMs(totalStartedNanos);
+            timingMs.put("totalMs", totalElapsedMs);
+            this.lastApplyTelemetry.set(new ApplyTelemetry(phase, Map.copyOf(timingMs)));
             log.warn("DIFF_APPLY_FAILED taskId={} projectId={} phase={} elapsedMs={} errorType={} error={}",
-                    taskId, project.getProjectId(), phase, elapsedMs(totalStartedNanos),
+                    taskId, project.getProjectId(), phase, totalElapsedMs,
                     failure.getClass().getSimpleName(), failure.getMessage());
             throw failure;
         }
@@ -814,6 +866,12 @@ public class DiffService {
             this.paths = List.copyOf(paths);
             this.changeIds = List.copyOf(changeIds);
             this.taskId = changes.isEmpty() ? null : changes.get(0).getTaskId();
+        }
+    }
+
+    public record ApplyTelemetry(String phase, Map<String, Long> timingMs) {
+        static ApplyTelemetry empty() {
+            return new ApplyTelemetry("none", Map.of());
         }
     }
 

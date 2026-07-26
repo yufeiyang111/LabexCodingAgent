@@ -81,9 +81,10 @@ class AdditiveSchemaMigratorTimingTest {
         new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, org.mockito.Mockito.times(5)).execute(sql.capture());
+        verify(jdbcTemplate, org.mockito.Mockito.times(6)).execute(sql.capture());
         assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("CREATE TABLE t_command_audit_event")));
         assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("uk_command_audit_approval_idempotency")));
+        assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("CREATE TABLE t_agent_project_checkout_lease")));
     }
 
     @Test

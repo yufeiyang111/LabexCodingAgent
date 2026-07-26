@@ -33,17 +33,17 @@ public record ContextWindowPolicy(
         }
 
         int inputCapacity = contextWindow - maxOutput;
-        int defaultReserved = clamp((int) Math.ceil(inputCapacity * 0.10), MIN_RESERVED_TOKENS, MAX_RESERVED_TOKENS);
+        int defaultReserved = clamp((int) Math.ceil(contextWindow * 0.10), MIN_RESERVED_TOKENS, MAX_RESERVED_TOKENS);
         int requestedReserved = config.getCompactionReservedTokens() == null
                 ? defaultReserved : config.getCompactionReservedTokens();
-        int maxReserve = Math.max(0, inputCapacity - 1_024);
+        int maxReserve = Math.max(0, contextWindow - 1_024);
         int reserved = clamp(requestedReserved, 0, maxReserve);
         int requestedThreshold = config.getCompactionThresholdPercent() == null
                 ? DEFAULT_THRESHOLD_PERCENT : config.getCompactionThresholdPercent();
         int thresholdPercent = clamp(requestedThreshold, MIN_THRESHOLD_PERCENT, MAX_THRESHOLD_PERCENT);
-        int reserveLimit = inputCapacity - reserved;
-        int thresholdLimit = (int) Math.floor(inputCapacity * (thresholdPercent / 100.0));
-        int softLimit = Math.min(reserveLimit, thresholdLimit);
+        int reserveLimit = contextWindow - reserved;
+        int thresholdLimit = (int) Math.floor(contextWindow * (thresholdPercent / 100.0));
+        int softLimit = Math.min(inputCapacity, Math.min(reserveLimit, thresholdLimit));
         int requestedTailTurns = config.getCompactionTailTurns() == null
                 ? DEFAULT_TAIL_TURNS : config.getCompactionTailTurns();
         int tailTurns = Math.max(1, requestedTailTurns);

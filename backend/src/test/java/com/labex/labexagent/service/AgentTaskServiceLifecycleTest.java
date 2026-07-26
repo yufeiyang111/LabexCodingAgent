@@ -177,6 +177,30 @@ class AgentTaskServiceLifecycleTest {
     }
 
     @Test
+    void persistsEnvironmentBlockerAndOnlyResumesItThroughQueued() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask running = new AgentTask(); running.setTaskId(72L); running.setStatus("running");
+        AgentTask waiting = new AgentTask(); waiting.setTaskId(72L); waiting.setStatus("waiting_environment");
+        waiting.setLastEventSequence(4L);
+        when(taskMapper.selectById(72L)).thenReturn(running, waiting);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.RUNNING), eq(AgentRunState.WAITING_ENVIRONMENT),
+                any(), any(), any(), any(), any())).thenReturn(true);
+        when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_ENVIRONMENT), eq(AgentRunState.QUEUED),
+                any(), any(), any(), any(), any())).thenReturn(true);
+        AgentTaskService service = new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class), lifecycle);
+
+        org.junit.jupiter.api.Assertions.assertTrue(service.waitForEnvironment(72L, "Waiting", "DNS failed", "DNS_UNAVAILABLE"));
+        org.junit.jupiter.api.Assertions.assertTrue(service.beginEnvironmentResume(72L));
+
+        verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.RUNNING), eq(AgentRunState.WAITING_ENVIRONMENT),
+                eq("RUN_ENVIRONMENT_BLOCKED"), any(), eq("Waiting"), eq("DNS failed"), any());
+        verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_ENVIRONMENT), eq(AgentRunState.QUEUED),
+                any(), any(), any(), any(), any());
+    }
+
+    @Test
     void routesKnownRunStatesThroughTheLifecycleService() {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         AgentTaskService service = new AgentTaskService(

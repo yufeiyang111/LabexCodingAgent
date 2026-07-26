@@ -43,7 +43,9 @@ public class ContextUsageEstimator {
         Map<String, Integer> categories = new LinkedHashMap<>();
         categories.put("systemPrompt", estimateTokens(systemPrompt));
         categories.put("toolDefinitions", estimateTokens(serialize(tools)));
+        categories.put("projectContext", estimateTokens(promptContext.projectContext()));
         categories.put("workspaceMemory", estimateTokens(promptContext.workspaceMemory()));
+        categories.put("compactedContext", estimateTokens(promptContext.compactedContext()));
         categories.put("skillsAndInstructions", estimateTokens(promptContext.skillsAndInstructions()));
         categories.put("conversationMessages", estimateTokens(promptContext.fixedInstructions()));
         categories.put("toolResults", 0);
@@ -85,7 +87,9 @@ public class ContextUsageEstimator {
         }
         List<PreviewInput> inputs = List.of(
                 new PreviewInput("systemPrompt", systemPrompt),
+                new PreviewInput("projectContext", promptContext.projectContext()),
                 new PreviewInput("workspaceMemory", promptContext.workspaceMemory()),
+                new PreviewInput("compactedContext", promptContext.compactedContext()),
                 new PreviewInput("skillsAndInstructions", promptContext.skillsAndInstructions()),
                 new PreviewInput("toolDefinitions", serialize(tools)),
                 new PreviewInput("fixedInstructions", promptContext.fixedInstructions()),
@@ -119,16 +123,42 @@ public class ContextUsageEstimator {
     private record PreviewInput(String key, String content) {
     }
 
-    public record PromptContext(String workspaceMemory, String skillsAndInstructions, String fixedInstructions,
+    public record PromptContext(String projectContext, String workspaceMemory, String compactedContext,
+                                String skillsAndInstructions, String fixedInstructions,
                                 String initialContextMessage) {
+        public PromptContext(String workspaceMemory, String skillsAndInstructions, String fixedInstructions,
+                             String initialContextMessage) {
+            this("", workspaceMemory, "", skillsAndInstructions, fixedInstructions, initialContextMessage);
+        }
+
         public static PromptContext of(String projectRules, String memoryContext, String sessionContext,
                                        String recentRunLog, String checkpoint, String globalSkills,
                                        String mcpContext, String modePolicy, String languagePolicy,
                                        String initialContextMessage) {
-            String workspaceMemory = join(projectRules, memoryContext, sessionContext, recentRunLog, checkpoint);
+            TaggedSection workspaceSection = extractTaggedSection(sessionContext, "workspace_memory");
+            String projectContext = join(projectRules, workspaceSection.remaining());
+            String compactedContext = join(memoryContext, recentRunLog, checkpoint);
             String skillsAndInstructions = join(globalSkills, mcpContext);
-            return new PromptContext(workspaceMemory, skillsAndInstructions, join(modePolicy, languagePolicy),
-                    initialContextMessage);
+            return new PromptContext(projectContext, workspaceSection.section(), compactedContext,
+                    skillsAndInstructions, join(modePolicy, languagePolicy), initialContextMessage);
+        }
+
+        private static TaggedSection extractTaggedSection(String value, String tag) {
+            String source = value == null ? "" : value;
+            String opening = "<" + tag + ">";
+            String closing = "</" + tag + ">";
+            int start = source.indexOf(opening);
+            if (start < 0) {
+                return new TaggedSection("", source.trim());
+            }
+            int end = source.indexOf(closing, start + opening.length());
+            if (end < 0) {
+                return new TaggedSection("", source.trim());
+            }
+            int sectionEnd = end + closing.length();
+            String section = source.substring(start, sectionEnd).trim();
+            String remaining = (source.substring(0, start) + source.substring(sectionEnd)).trim();
+            return new TaggedSection(section, remaining);
         }
 
         private static String join(String... values) {
@@ -137,6 +167,9 @@ public class ContextUsageEstimator {
                 if (value != null && !value.isBlank()) builder.append(value);
             }
             return builder.toString();
+        }
+
+        private record TaggedSection(String section, String remaining) {
         }
     }
 }

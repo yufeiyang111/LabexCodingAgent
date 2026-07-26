@@ -21,7 +21,7 @@
           <TransitionGroup name="ftn-list" tag="div">
             <FileTreeNode v-for="child in children" :key="child.path" :node="child" :depth="depth + 1" :selected-path="selectedPath" :load-children="loadChildren" :show-actions="showActions" :refresh-key="refreshKey" @select="(p) => emit('select', p)" @newItem="(p, t) => emit('newItem', p, t)" @rename="(p, n) => emit('rename', p, n)" @delete="(p) => emit('delete', p)"/>
           </TransitionGroup>
-          <button v-if="nextOffset !== null" class="ftn-load-more" type="button" @click.stop="loadMore">????</button>
+          <button v-if="nextOffset !== null" class="ftn-load-more" type="button" @click.stop="loadMore">加载更多</button>
         </template>
       </div>
     </Transition>

@@ -56,6 +56,18 @@ public class CommandAuditService {
                 eventKey(approval, "execution-interrupted:" + safeToken(reasonCode)));
     }
 
+    /** Returns only the latest nonsecret execution metadata needed to restore an approval card after refresh. */
+    public CommandAuditEvent findLatestExecutionOutcome(String approvalId) {
+        if (approvalId == null || approvalId.isBlank()) {
+            return null;
+        }
+        return auditMapper.selectOne(new QueryWrapper<CommandAuditEvent>()
+                .eq("approval_id", approvalId)
+                .isNotNull("execution_status")
+                .orderByDesc("event_id")
+                .last("LIMIT 1"));
+    }
+
     private CommandAuditEvent record(CommandApproval approval, String eventType, String decision,
                                      String executionStatus, Integer exitCode, Long durationMs,
                                      String output, String idempotencyKey) {

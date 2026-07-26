@@ -238,6 +238,32 @@
                             ></div>
                           </Transition>
                         </div>
+                        <div
+                          v-else-if="item.type === 'context'"
+                          class="ai-context-management-card"
+                          :class="[`is-${item.data.status}`, `is-${item.data.phase}`]"
+                          role="status"
+                          aria-live="polite"
+                        >
+                          <div class="context-management-card-header">
+                            <span class="context-management-indicator" aria-hidden="true"></span>
+                            <strong>{{ contextManagementTitle(item.data) }}</strong>
+                            <span class="context-management-status">{{ contextManagementStatusText(item.data) }}</span>
+                            <button
+                              v-if="item.data.status === 'running' && item.data.taskId"
+                              class="context-management-cancel"
+                              type="button"
+                              @click.stop="cancelContextCompaction(item.data)"
+                            >&#21462;&#28040;&#21387;&#32553;</button>
+                          </div>
+                          <div class="context-management-card-meta">
+                            <span v-if="contextManagementStrategyText(item.data)">{{ contextManagementStrategyText(item.data) }}</span>
+                            <span v-if="item.data.tokensBefore !== null">{{ formatTokenCount(item.data.tokensBefore) }} Token</span>
+                            <span v-if="item.data.tokensAfter !== null">→ {{ formatTokenCount(item.data.tokensAfter) }} Token</span>
+                            <span v-if="item.data.releasedTokens > 0" class="context-management-released">释放 {{ formatTokenCount(item.data.releasedTokens) }} Token</span>
+                          </div>
+                          <p v-if="item.data.reason" class="context-management-reason">{{ item.data.reason }}</p>
+                        </div>
                         <ToolCallCard
                           v-else-if="item.type === 'tool'"
                           :call="item.data"
@@ -270,6 +296,15 @@
                       </div>
                       <!-- 流式内容 -->
                       <div v-else class="ai-msg-text markdown-rendered" v-html="renderMarkdown(msg.content)" @click="handleMarkdownClick"></div>
+                      <button
+                        v-if="msg.environmentBlocker && msg.taskId"
+                        type="button"
+                        class="ai-environment-retry"
+                        :disabled="msg.environmentRetrying"
+                        @click="retryEnvironmentTask(msg)"
+                      >
+                        {{ msg.environmentRetrying ? '\u6b63\u5728\u6062\u590d\u4efb\u52a1...' : '\u73af\u5883\u6062\u590d\u540e\u91cd\u8bd5' }}
+                      </button>
                       <!-- 消息时间戳 -->
                       <div v-if="msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</div>
                     </div>
@@ -748,16 +783,19 @@ import { useAgentStream } from '@/composables/useAgentStream'
 import { useThemeStore } from '@/stores/theme'
 import { loadWorkspaceResources } from '@/composables/workspaceInitialization'
 import { useConversationState } from '@/composables/useConversationState'
+import { createConversationSelectionGuard } from '@/composables/conversationSelectionGuard'
 import { useAgentInteraction } from '@/composables/useAgentInteraction'
 import { useChangeSetState } from '@/composables/useChangeSetState'
-import { reduceHistoryEvent } from '@/composables/agentHistoryReducer'
+import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
+import { normalizeSpecialMarkdownBlocks } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
 import 'highlight.js/styles/github.css'
 
 const route = useRoute()
 const router = useRouter()
 const themeStore = useThemeStore()
-const { stream: streamAgent, replay: replayAgent, stop: stopAgent } = useAgentStream()
+const conversationSelectionGuard = createConversationSelectionGuard()
+const { stream: streamAgent, replay: replayAgent, subscribe: subscribeAgent, disconnect: disconnectAgentStream, disconnectSubscription, stop: stopAgent } = useAgentStream()
 const MonacoEditor = defineAsyncComponent(() => import('@/components/MonacoEditor.vue'))
 const TerminalPanel = defineAsyncComponent(() => import('@/components/terminal/TerminalPanel.vue'))
 const TokenChart = defineAsyncComponent(() => import('@/components/cloud/TokenChart.vue'))
@@ -1058,6 +1096,7 @@ onMounted(async () => {
     projectName.value = d.projectName || '未命名项目'
     projectPath.value = d.workspacePath || d.path || ''
   } catch (e) { ElMessage.error('无法加载项目信息'); router.replace({ name: 'Projects' }); return }
+  const startupConversationSelection = conversationSelectionGuard.capture()
   const secondaryResources = loadWorkspaceResources([
     () => loadModelConfigs(),
     () => loadAgentExtensions(),
@@ -1065,8 +1104,11 @@ onMounted(async () => {
   ])
   await loadRoot()
   void secondaryResources.then(async () => {
-    if (conversations.value.length > 0) {
-      await selectConversation(conversations.value[0])
+    if (conversationSelectionGuard.isCurrent(startupConversationSelection)
+      && !currentAgentSession.value
+      && messages.value.length === 0
+      && conversations.value.length > 0) {
+      await selectConversation(conversations.value[0], { explicit: false })
     }
   })
 })
@@ -1442,7 +1484,7 @@ async function openFile(path) {
   fileContentDirty.value = false
   detectedLang.value = langMap[ext] || 'plaintext'
   if (file.truncated) {
-    ElMessage.warning(`??????????? ${Math.round(content.length / 1024)} KB?????`)
+    ElMessage.warning(`文件过大，仅加载前 ${Math.round(content.length / 1024)} KB 内容`)
   }
   editorReady.value = false
   await nextTick(); editorReady.value = true
@@ -1529,6 +1571,11 @@ async function exportProject() {
 async function sendMessage() {
   const q = agentInput.value.trim()
   if (!q || agentLoading.value) return
+  if (/^\/(compact|summarize)\s*$/i.test(q)) {
+    agentInput.value = ''
+    await compactCurrentConversation()
+    return
+  }
 
   // 检测是否以 / 开头，如果是则调用命令执行API
   let messageToSend = q
@@ -1622,10 +1669,10 @@ async function sendMessage() {
     })
   } catch (e) {
     if (e.name === 'AbortError') {
-      assistantMsg.content += '\n[???]'
+      assistantMsg.content += '\n[连接已中断]'
     } else {
       assistantMsg.error = e.message
-      assistantMsg.content = `??: ${e.message}`
+      assistantMsg.content = `错误：${e.message}`
     }
   } finally {
     flushThinkingDisplay(assistantMsg)
@@ -1637,21 +1684,10 @@ async function sendMessage() {
   }
 }
 
-function contextManagementEventText(type, data = {}) {
-  const before = Number.isFinite(data.tokensBefore) ? ` ${data.tokensBefore}` : ''
-  const after = Number.isFinite(data.tokensAfter) ? ` \u2192 ${data.tokensAfter}` : ''
-  switch (type) {
-    case 'COMPACTION_STARTED': return `\u6b63\u5728\u538b\u7f29\u4e0a\u4e0b\u6587${before}${after}`
-    case 'CONTEXT_PRUNED': return `\u5df2\u6e05\u7406\u65e7\u5de5\u5177\u8f93\u51fa${before}${after}`
-    case 'COMPACTION_COMPLETED': return `\u4e0a\u4e0b\u6587\u538b\u7f29\u5b8c\u6210${before}${after}`
-    case 'COMPACTION_FAILED': return '\u6a21\u578b\u538b\u7f29\u672a\u6210\u529f\uff0c\u5df2\u5c1d\u8bd5\u5b89\u5168\u56de\u9000'
-    default: return ''
-  }
-}
-
 function handleAgentEvent(event, assistantMsg) {
   const type = event.type
   const data = event.data
+  saveTaskEventCursor(data?.taskId || assistantMsg?.taskId, event.eventId)
   switch (type) {
     case 'SESSION':
       currentAgentSession.value = data
@@ -1688,14 +1724,33 @@ function handleAgentEvent(event, assistantMsg) {
         assistantMsg.thinking = ''
         assistantMsg._thinkingDisplay = ''
       }
-      assistantMsg.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+      assistantMsg.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', toolCallId: data.toolCallId || '', startedAt: data.startedAt || Date.now(), execution: { phase: 'tool_delegate', elapsedMs: 0 }, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
       scheduleAgentRender()
       break
+    case 'TOOL_EXECUTION_STARTED':
+    case 'TOOL_PHASE_CHANGED':
+    case 'TOOL_EXECUTION_COMPLETED':
+    case 'TOOL_EXECUTION_FAILED':
+    case 'TOOL_TIMED_OUT': {
+      const toolCall = assistantMsg.toolCalls.find(call => call.toolCallId && call.toolCallId === data.toolCallId)
+        || assistantMsg.toolCalls.at(-1)
+      if (toolCall) {
+        toolCall.execution = { phase: data.phase || 'tool_delegate', elapsedMs: data.elapsedMs || 0,
+          delegateMs: data.delegateMs || 0, beforeSnapshotMs: data.beforeSnapshotMs || 0,
+          afterSnapshotMs: data.afterSnapshotMs || 0, snapshotDiffMs: data.snapshotDiffMs || 0,
+          postEditMs: data.postEditMs || 0, contextMs: data.contextMs || 0, error: data.error || '' }
+        if (type === 'TOOL_EXECUTION_FAILED' || type === 'TOOL_TIMED_OUT') toolCall.status = 'error'
+      }
+      scheduleAgentRender()
+      break
+    }
     case 'OBSERVE':
       if (assistantMsg.toolCalls.length > 0) {
         const last = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1]
         last.result = data.result || data.content
         last.status = data.success ? 'completed' : 'error'
+        last.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
+          truncated: data.modelProjectionTruncated === true }
         if (data.diff) {
           last.hasDiff = true
           trackFileChange(data, last)
@@ -1708,6 +1763,16 @@ function handleAgentEvent(event, assistantMsg) {
       break
     case 'COMMAND_APPROVAL_REQUIRED':
       attachCommandApproval(assistantMsg, data)
+      break
+    case 'COMMAND_APPROVAL_DECIDED':
+    case 'COMMAND_APPROVAL_REJECTED':
+    case 'COMMAND_APPROVAL_EXPIRED':
+    case 'COMMAND_EXECUTION_STARTED':
+    case 'COMMAND_EXECUTION_COMPLETED':
+    case 'COMMAND_EXECUTION_FAILED':
+    case 'COMMAND_EXECUTION_INTERRUPTED':
+      updateCommandApprovalLifecycle(assistantMsg, type, data)
+      scheduleAgentRender()
       break
     case 'PERMISSION_ASK':
       {
@@ -1732,6 +1797,17 @@ function handleAgentEvent(event, assistantMsg) {
     case 'USER_QUESTION':
       attachUserQuestion(assistantMsg, data)
       break
+    case 'WORKSPACE_WAITING':
+      assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+      assistantMsg.workspaceWaiting = data
+      break
+    case 'ENVIRONMENT_BLOCKED':
+      assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+      assistantMsg.environmentBlocker = data
+      assistantMsg.content = data.detail || '\u4f9d\u8d56\u73af\u5883\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u6062\u590d\u540e\u91cd\u8bd5\u3002'
+      assistantMsg.isStreaming = false
+      stopMessageTimer(assistantMsg)
+      break
     case 'PLAN_UPDATE':
       assistantMsg.plan = data.summary || data.plan || null
       assistantMsg.planJson = data.planJson || null
@@ -1743,22 +1819,44 @@ function handleAgentEvent(event, assistantMsg) {
     case 'FINAL':
       if (data.content && !assistantMsg.error) assistantMsg.content = data.content
       break
+    case 'TASK_PAUSED':
+      assistantMsg.waitingForCommandApproval = data.reason === 'command_approval'
+      assistantMsg.isStreaming = false
+      stopMessageTimer(assistantMsg)
+      agentLoading.value = false
+      logTaskRecovery('TASK_PAUSED', {
+        taskId: data.taskId || assistantMsg.taskId,
+        taskStatus: data.taskStatus || 'waiting_approval',
+        reason: data.reason || '',
+        resumeAgentLoop: data.resumeAgentLoop === true
+      })
+      break
     case 'DONE':
       flushThinkingDisplay(assistantMsg)
       assistantMsg.isStreaming = false
       stopMessageTimer(assistantMsg)
+      agentLoading.value = false
+      if (data.waitingForApproval) {
+        assistantMsg.waitingForCommandApproval = true
+        logTaskRecovery('TASK_WAITING_APPROVAL', {
+          taskId: data.taskId || assistantMsg.taskId,
+          taskStatus: data.taskStatus || 'waiting_approval',
+          resumeAgentLoop: data.resumeAgentLoop === true
+        })
+      }
       break
     case 'CONTEXT_STATUS':
       contextUsageStatus.value = data
       break
     case 'COMPACTION_STARTED':
+    case 'COMPACTION_PROGRESS':
     case 'CONTEXT_PRUNED':
     case 'COMPACTION_COMPLETED':
-    case 'COMPACTION_FAILED': {
-      const content = contextManagementEventText(type, data)
-      if (content) assistantMsg.thinkingBlocks.push({ content, summary: '\u4e0a\u4e0b\u6587\u7ba1\u7406', iteration: 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+    case 'COMPACTION_FAILED':
+    case 'COMPACTION_CANCELLED':
+      reduceContextManagementEvent(type, data, assistantMsg)
+      scheduleAgentRender()
       break
-    }
     case 'TOKEN_USAGE':
       tokenUsage.value.promptTokens += (data.promptTokens || 0)
       tokenUsage.value.completionTokens += (data.completionTokens || 0)
@@ -1815,6 +1913,203 @@ function isTerminalTask(task) {
   return ['completed', 'failed', 'cancelled'].includes(String(task?.status || '').toLowerCase())
 }
 
+let taskSubscriptionGeneration = 0
+let taskRecoveryGeneration = 0
+
+function logTaskRecovery(event, details = {}) {
+  console.info('[AgentTaskRecovery]', event, {
+    projectId: projectId.value,
+    ...details
+  })
+}
+
+function taskCursorKey(taskId) {
+  return `labex-agent:task-event-cursor:${projectId.value}:${taskId}`
+}
+
+function taskEventCursor(taskId) {
+  if (!taskId || typeof sessionStorage === 'undefined') return null
+  return sessionStorage.getItem(taskCursorKey(taskId))
+}
+
+function saveTaskEventCursor(taskId, eventId) {
+  if (!taskId || eventId == null || typeof sessionStorage === 'undefined') return
+  sessionStorage.setItem(taskCursorKey(taskId), String(eventId))
+}
+
+function clearTaskEventCursor(taskId) {
+  if (!taskId || typeof sessionStorage === 'undefined') return
+  sessionStorage.removeItem(taskCursorKey(taskId))
+}
+
+function sequenceNumber(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+}
+
+function createRecoveredAssistantMessage(task) {
+  return {
+    role: 'assistant',
+    content: '',
+    thinking: task.currentStep || task.summary || '正在恢复 Agent 任务',
+    _thinkingDisplay: task.currentStep || task.summary || '正在恢复 Agent 任务',
+    _thinkingTimer: null,
+    thinkingBlocks: [],
+    toolCalls: [],
+    plan: null,
+    planJson: null,
+    isStreaming: true,
+    error: null,
+    _nextOrder: 0,
+    timestamp: Date.now(),
+    taskId: task.taskId,
+    timing: createMessageTiming()
+  }
+}
+
+function assistantMessageForTask(task) {
+  for (let index = messages.value.length - 1; index >= 0; index--) {
+    const message = messages.value[index]
+    if (message?.role === 'assistant' && Number(message.taskId) === Number(task.taskId)) return message
+  }
+  const message = createRecoveredAssistantMessage(task)
+  messages.value.push(message)
+  return message
+}
+
+async function recoverActiveTaskForConversation(conversationId) {
+  if (!conversationId || !projectId.value) return false
+  const recoveryGeneration = ++taskRecoveryGeneration
+  taskSubscriptionGeneration++
+  logTaskRecovery('ACTIVE_TASK_RECOVERY_STARTED', { conversationId, recoveryGeneration })
+  disconnectSubscription()
+  const response = await projectApi.agentActiveTask(projectId.value, conversationId)
+  if (recoveryGeneration !== taskRecoveryGeneration
+    || currentAgentSession.value?.conversationId !== conversationId) {
+    logTaskRecovery('ACTIVE_TASK_RECOVERY_STALE_RESPONSE', { conversationId, recoveryGeneration })
+    return false
+  }
+  const task = response?.data
+  if (!task?.taskId || isTerminalTask(task)) {
+    logTaskRecovery('ACTIVE_TASK_RECOVERY_NONE', { conversationId, status: task?.status || 'none' })
+    return false
+  }
+
+  logTaskRecovery('ACTIVE_TASK_RECOVERY_FOUND', {
+    conversationId,
+    taskId: task.taskId,
+    status: task.status,
+    lastEventSequence: task.lastEventSequence || 0
+  })
+  currentAgentSession.value = {
+    conversationId: task.conversationId,
+    sessionId: task.sessionId
+  }
+  const assistantMsg = assistantMessageForTask(task)
+  assistantMsg.taskId = task.taskId
+  reconcileRecoveredCommandApproval(assistantMsg, task)
+  const waitingForCommandApproval = String(task.status || '').toLowerCase() === 'waiting_approval'
+  assistantMsg.isStreaming = !waitingForCommandApproval
+  if (waitingForCommandApproval) stopMessageTimer(assistantMsg)
+  if (assistantMsg.timing) assistantMsg.timing.taskId = task.taskId
+  agentLoading.value = !waitingForCommandApproval
+  void subscribeToTaskEvents(task, assistantMsg)
+  return true
+}
+
+async function subscribeToTaskEvents(initialTask, assistantMsg) {
+  let task = initialTask
+  const generation = ++taskSubscriptionGeneration
+  try {
+    while (generation === taskSubscriptionGeneration && task?.taskId && !isTerminalTask(task)) {
+      const storedCursor = taskEventCursor(task.taskId)
+      const cursor = storedCursor == null
+        ? sequenceNumber(task.lastEventSequence)
+        : sequenceNumber(storedCursor)
+      logTaskRecovery('TASK_EVENT_SUBSCRIBE_STARTED', {
+        taskId: task.taskId,
+        conversationId: task.conversationId,
+        afterSequence: cursor,
+        cursorSource: storedCursor == null ? 'task_snapshot' : 'session_storage'
+      })
+      try {
+        await subscribeAgent(projectId.value, task.taskId, {
+          lastEventId: String(cursor),
+          onEvent: event => {
+            saveTaskEventCursor(task.taskId, event.eventId)
+            logTaskRecovery('TASK_EVENT_RECEIVED', {
+              taskId: task.taskId,
+              eventId: event.eventId || null,
+              eventType: event.type || 'unknown'
+            })
+            handleAgentEvent(event, assistantMsg)
+          }
+        })
+        logTaskRecovery('TASK_EVENT_SUBSCRIBE_ENDED', { taskId: task.taskId })
+      } catch (error) {
+        if (error?.name === 'AbortError' || generation !== taskSubscriptionGeneration) {
+          logTaskRecovery('TASK_EVENT_SUBSCRIBE_ABORTED', { taskId: task.taskId })
+          return
+        }
+        logTaskRecovery('TASK_EVENT_SUBSCRIBE_DISCONNECTED', {
+          taskId: task.taskId,
+          errorType: error?.name || 'Error'
+        })
+        console.warn('Agent task subscription disconnected; reconnecting from durable cursor:', error)
+      }
+      if (generation !== taskSubscriptionGeneration) return
+
+      const response = await projectApi.agentActiveTask(projectId.value, task.conversationId)
+      task = response?.data || null
+      if (!task || isTerminalTask(task)) {
+        logTaskRecovery('TASK_EVENT_SUBSCRIBE_TERMINAL', {
+          taskId: initialTask.taskId,
+          status: task?.status || 'not_found'
+        })
+        assistantMsg.isStreaming = false
+        stopMessageTimer(assistantMsg)
+        clearTaskEventCursor(initialTask.taskId)
+        await syncTaskTiming(assistantMsg)
+        break
+      }
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+  } catch (error) {
+    if (generation === taskSubscriptionGeneration) {
+      logTaskRecovery('TASK_EVENT_SUBSCRIBE_FAILED', {
+        taskId: initialTask?.taskId || null,
+        errorType: error?.name || 'Error'
+      })
+      assistantMsg.error = '恢复 Agent 事件流失败：' + (error?.message || '未知错误')
+      if (!assistantMsg.content) assistantMsg.content = assistantMsg.error
+      assistantMsg.isStreaming = false
+      stopMessageTimer(assistantMsg)
+    }
+  } finally {
+    if (generation === taskSubscriptionGeneration) {
+      agentLoading.value = false
+      await nextTick()
+      scrollDown()
+    }
+  }
+}
+
+async function resumeTaskEventSubscription(taskId, assistantMsg, conversationId = currentAgentSession.value?.conversationId) {
+  logTaskRecovery('TASK_EVENT_RESUME_REQUESTED', {
+    taskId,
+    conversationId: conversationId || null
+  })
+  const response = await projectApi.agentActiveTask(projectId.value, conversationId)
+  const task = response?.data
+  if (!task || Number(task.taskId) !== Number(taskId)) {
+    throw new Error('Agent task is no longer active')
+  }
+  assistantMsg.taskId = task.taskId
+  assistantMsg.isStreaming = true
+  agentLoading.value = true
+  void subscribeToTaskEvents(task, assistantMsg)
+}
+
 function applyTaskTiming(message, task) {
   if (!message || !task) return
   const existing = message.timing || createMessageTiming()
@@ -1862,18 +2157,122 @@ async function syncConversationTaskTimings(conversationId) {
   }
 }
 
+function commandApprovalToolCall(message, approvalId) {
+  if (!message || !approvalId) return null
+  return message.toolCalls?.find(call => call?.commandApproval?.approvalId === approvalId) || null
+}
+
+function executionResultText(data, fallback) {
+  const duration = Number(data?.durationMs)
+  const durationText = Number.isFinite(duration) && duration >= 0 ? ` · ${duration} ms` : ''
+  const exitCode = data?.exitCode === '' || data?.exitCode == null ? '' : ` · exit code ${data.exitCode}`
+  return `${fallback}${durationText}${exitCode}`
+}
+
+function updateCommandApprovalLifecycle(message, type, data = {}) {
+  const call = commandApprovalToolCall(message, data.approvalId)
+  if (!call) return
+  const decision = String(data.decision || '').toLowerCase()
+  if (type === 'COMMAND_APPROVAL_DECIDED') {
+    if (decision === 'rejected' || decision === 'expired') {
+      call.status = 'error'
+      call.result = decision === 'expired' ? '批准请求已过期，命令未执行' : '已拒绝命令，命令未执行'
+    } else {
+      call.status = 'running'
+      call.result = '批准已记录，准备执行命令'
+    }
+    return
+  }
+  if (type === 'COMMAND_APPROVAL_REJECTED' || type === 'COMMAND_APPROVAL_EXPIRED') {
+    call.status = 'error'
+    call.result = type === 'COMMAND_APPROVAL_EXPIRED' ? '批准请求已过期，命令未执行' : '已拒绝命令，命令未执行'
+    return
+  }
+  if (type === 'COMMAND_EXECUTION_STARTED') {
+    call.status = 'running'
+    call.result = '命令正在执行...'
+    return
+  }
+  if (type === 'COMMAND_EXECUTION_COMPLETED') {
+    call.status = 'completed'
+    call.result = executionResultText(data, '命令执行完成')
+    return
+  }
+  if (type === 'COMMAND_EXECUTION_FAILED') {
+    call.status = 'error'
+    call.result = executionResultText(data, '命令执行失败')
+    return
+  }
+  if (type === 'COMMAND_EXECUTION_INTERRUPTED') {
+    call.status = 'error'
+    call.result = '命令执行已中断'
+  }
+}
+
+function reconcileRecoveredCommandApproval(message, task) {
+  const approval = task?.commandApproval
+  if (!message || !approval?.approvalId) return
+  message.toolCalls = message.toolCalls || []
+  const taskStatus = String(task?.status || '').toLowerCase()
+  const approvalStatus = String(approval.status || '').toLowerCase()
+  message.toolCalls.forEach(call => {
+    const historicalApprovalId = call?.commandApproval?.approvalId
+    if (historicalApprovalId && historicalApprovalId !== approval.approvalId && call.status === 'waiting_approval') {
+      call.status = 'error'
+      call.result = '旧批准请求已失效，命令未执行'
+    }
+  })
+  let call = commandApprovalToolCall(message, approval.approvalId)
+  if (!call && approvalStatus === 'pending' && taskStatus === 'waiting_approval') {
+    attachCommandApproval(message, approval)
+    call = commandApprovalToolCall(message, approval.approvalId)
+  }
+  if (!call) return
+  call.commandApproval = { ...call.commandApproval, ...approval }
+  call.summary = approval.displayCommand || call.summary
+  if (approvalStatus === 'pending' && taskStatus === 'waiting_approval') {
+    call.status = 'waiting_approval'
+    call.result = null
+    return
+  }
+  if (approval.executionStatus === 'completed') {
+    updateCommandApprovalLifecycle(message, 'COMMAND_EXECUTION_COMPLETED', approval)
+    return
+  }
+  if (approval.executionStatus === 'failed' || approval.executionStatus === 'interrupted') {
+    updateCommandApprovalLifecycle(message,
+      approval.executionStatus === 'interrupted' ? 'COMMAND_EXECUTION_INTERRUPTED' : 'COMMAND_EXECUTION_FAILED', approval)
+    return
+  }
+  if (approvalStatus === 'rejected' || approvalStatus === 'expired') {
+    updateCommandApprovalLifecycle(message,
+      approvalStatus === 'expired' ? 'COMMAND_APPROVAL_EXPIRED' : 'COMMAND_APPROVAL_REJECTED', approval)
+    return
+  }
+  if (approvalStatus === 'approved' || approvalStatus === 'consumed') {
+    call.status = 'running'
+    call.result = '命令已批准，正在恢复执行'
+  }
+}
+
 function attachCommandApproval(msg, data) {
-  if (!msg || !data?.approvalId) return
+  if (!msg || !data?.approvalId) return null
   msg.toolCalls = msg.toolCalls || []
+  const existing = commandApprovalToolCall(msg, data.approvalId)
+  if (existing) {
+    existing.commandApproval = { ...existing.commandApproval, ...data }
+    existing.summary = data.displayCommand || existing.summary
+    return existing
+  }
   const last = msg.toolCalls[msg.toolCalls.length - 1]
   const summary = data.displayCommand || '命令需要一次性批准'
   if (last && last.status === 'running' && last.name === data.tool) {
     last.status = 'waiting_approval'
     last.commandApproval = data
     last.summary = summary
-    return
+    return last
   }
-  msg.toolCalls.push({
+  const call = {
     name: data.tool || 'bash',
     args: { command: '<redacted; approval required>' },
     summary,
@@ -1881,7 +2280,9 @@ function attachCommandApproval(msg, data) {
     status: 'waiting_approval',
     commandApproval: data,
     _order: (msg._nextOrder = (msg._nextOrder || 0) + 1)
-  })
+  }
+  msg.toolCalls.push(call)
+  return call
 }
 
 function attachUserQuestion(msg, data) {
@@ -1911,12 +2312,27 @@ async function handleCommandApproval(payload) {
   if (!approval?.approvalId) return
 
   const call = payload.call
+  if (call._commandApprovalInFlight) {
+    logTaskRecovery('COMMAND_APPROVAL_DUPLICATE_IGNORED', {
+      taskId: approval.taskId,
+      approvalId: approval.approvalId,
+      action: payload.action
+    })
+    return
+  }
+  const decisionStartedAt = performance.now()
+  call._commandApprovalInFlight = true
+  logTaskRecovery('COMMAND_APPROVAL_DECISION_SUBMITTED', {
+    taskId: approval.taskId,
+    approvalId: approval.approvalId,
+    action: payload.action
+  })
   if (payload.action === 'reject') {
     call.status = 'error'
-    call.result = '已拒绝本次命令执行'
+    call.result = '正在拒绝命令...'
   } else {
     call.status = 'running'
-    call.result = '已批准，正在执行已保存的单次命令...'
+    call.result = '正在批准命令...'
   }
 
   try {
@@ -1925,18 +2341,26 @@ async function handleCommandApproval(payload) {
       decisionIdempotencyKey: call._commandDecisionIdempotencyKey ||
         (call._commandDecisionIdempotencyKey = crypto.randomUUID())
     })
+    logTaskRecovery('COMMAND_APPROVAL_DECISION_RESULT', {
+      taskId: approval.taskId,
+      approvalId: approval.approvalId,
+      status: decision?.data?.status || '',
+      resumeAgentLoop: decision?.data?.resumeAgentLoop === true,
+      durationMs: Math.round(performance.now() - decisionStartedAt)
+    })
     if (decision?.data?.approvalUnavailable) {
       call.status = 'error'
-      call.result = '命令批准不可用或已失效'
+      call.result = '批准请求不可用或已被处理'
       return
     }
     if (payload.action === 'reject') {
+      call.status = 'error'
+      call.result = '已拒绝命令，命令未执行'
       if (decision?.data?.resumeAgentLoop) {
-        call.status = 'running'
-        call.result = '????????Agent ???????????...'
         const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
         const taskId = approval.taskId || assistantMsg?.taskId
         if (assistantMsg && taskId) {
+          assistantMsg.waitingForCommandApproval = false
           assistantMsg.isStreaming = true
           agentLoading.value = true
           void replayResumedAgent(taskId, assistantMsg)
@@ -1945,66 +2369,91 @@ async function handleCommandApproval(payload) {
       return
     }
 
+    const executionStartedAt = performance.now()
+    logTaskRecovery('COMMAND_APPROVAL_EXECUTION_REQUESTED', {
+      taskId: approval.taskId,
+      approvalId: approval.approvalId
+    })
     const execution = await projectApi.agentExecuteCommandApproval(projectId.value, approval.approvalId)
-    if (execution?.data?.approvalUnavailable) {
+    const executionData = execution?.data || {}
+    logTaskRecovery('COMMAND_APPROVAL_EXECUTION_RESULT', {
+      taskId: approval.taskId,
+      approvalId: approval.approvalId,
+      status: executionData.status || '',
+      executionStatus: executionData.executionStatus || '',
+      commandDurationMs: executionData.durationMs ?? null,
+      httpDurationMs: Math.round(performance.now() - executionStartedAt),
+      resumeAgentLoop: executionData.resumeAgentLoop === true
+    })
+    if (executionData.approvalUnavailable) {
       call.status = 'error'
-      call.result = '命令执行不可用、已失效或已执行'
+      call.result = '批准请求不可用或已被处理'
       return
     }
-    const commandStatus = execution?.data?.status
-    if (commandStatus === 'resuming') {
+    const executionStatus = executionData.executionStatus ||
+      (executionData.status === 'completed' ? 'completed' : executionData.status === 'failed' ? 'failed' : '')
+    if (executionStatus === 'completed' || executionStatus === 'failed') {
+      call.status = executionStatus === 'completed' ? 'completed' : 'error'
+      call.result = executionResultText(executionData,
+        executionStatus === 'completed' ? '命令执行完成' : '命令执行失败')
+      if (executionData.output) call.result += `
+
+${executionData.output}`
+    } else {
       call.status = 'running'
-      call.result = (execution?.data?.output || '?????') + '?Agent ????????????...'
+      call.result = '命令已批准，等待执行结果'
+    }
+    if (executionData.resumeAgentLoop) {
       const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
       const taskId = approval.taskId || assistantMsg?.taskId
       if (assistantMsg && taskId) {
+        assistantMsg.waitingForCommandApproval = false
         assistantMsg.isStreaming = true
         agentLoading.value = true
         void replayResumedAgent(taskId, assistantMsg)
       }
-    } else {
-      call.status = commandStatus === 'completed' ? 'completed' : 'error'
-      call.result = execution?.data?.output || (call.status === 'completed' ? '?????' : '??????')
     }
   } catch (error) {
     call.status = 'error'
-    call.result = '命令批准提交失败：' + (error?.response?.data?.message || error?.message || '未知错误')
+    call.result = '命令审批失败：' + (error?.response?.data?.message || error?.message || '未知错误')
+  } finally {
+    call._commandApprovalInFlight = false
+  }
+}
+
+async function retryEnvironmentTask(assistantMsg) {
+  const taskId = assistantMsg?.taskId
+  if (!taskId || assistantMsg.environmentRetrying) return
+  assistantMsg.environmentRetrying = true
+  try {
+    await projectApi.agentRetryEnvironment(projectId.value, taskId)
+    assistantMsg.environmentBlocker = null
+    assistantMsg.workspaceWaiting = null
+    assistantMsg.error = null
+    assistantMsg.isStreaming = true
+    agentLoading.value = true
+    await replayResumedAgent(taskId, assistantMsg)
+  } catch (error) {
+    const message = error?.response?.data?.message || error?.message || '\u91cd\u8bd5\u4efb\u52a1\u5931\u8d25'
+    assistantMsg.error = message
+    assistantMsg.environmentBlocker = assistantMsg.environmentBlocker || {}
+    assistantMsg.environmentBlocker.detail = message
+    ElMessage.error(message)
+  } finally {
+    assistantMsg.environmentRetrying = false
   }
 }
 
 async function replayResumedAgent(taskId, assistantMsg) {
   try {
-    // The original command-approval stream intentionally ended while awaiting consent.
-    // Poll durable events until the resumed run emits DONE or its persisted task reaches a terminal state.
-    // Do not impose a wall-clock limit here: command execution and the first resumed model call can exceed 20 seconds.
-    while (assistantMsg.isStreaming) {
-      await replayAgent(projectId.value, taskId, {
-        onEvent: event => handleAgentEvent(event, assistantMsg)
-      })
-      if (!assistantMsg.isStreaming) break
-
-      const task = (await fetchAgentTasks()).find(item => Number(item.taskId) === Number(taskId))
-      if (task) {
-        applyTaskTiming(assistantMsg, task)
-        if (isTerminalTask(task)) {
-          assistantMsg.isStreaming = false
-          stopMessageTimer(assistantMsg)
-          break
-        }
-      }
-      await new Promise(resolve => setTimeout(resolve, 500))
-    }
+    logTaskRecovery('TASK_EVENT_RESUME_WAITING', { taskId })
+    await resumeTaskEventSubscription(taskId, assistantMsg)
   } catch (error) {
     assistantMsg.error = '恢复 Agent 任务失败：' + (error?.message || '未知错误')
     if (!assistantMsg.content) assistantMsg.content = assistantMsg.error
-  } finally {
-    if (assistantMsg.isStreaming) {
-      assistantMsg.isStreaming = false
-      stopMessageTimer(assistantMsg)
-    }
+    assistantMsg.isStreaming = false
+    stopMessageTimer(assistantMsg)
     agentLoading.value = false
-    await nextTick()
-    scrollDown()
   }
 }
 
@@ -2352,11 +2801,21 @@ function clearMessages() {
 }
 
 function createNewSession() {
+  conversationSelectionGuard.invalidate()
+  taskSubscriptionGeneration++
+  taskRecoveryGeneration++
+  disconnectAgentStream()
   showSessions.value = false
+  showContextUsageDialog.value = false
+  contextUsageStatus.value = null
+  nextContextPreview.value = null
+  nextContextPreviewLoading.value = false
+  selectedSessionIdx.value = -1
   resetConversation()
 }
 
-async function selectConversation(conversation) {
+async function selectConversation(conversation, { explicit = true } = {}) {
+  if (explicit) conversationSelectionGuard.invalidate()
   if (!conversation?.conversationId || currentAgentSession.value?.conversationId === conversation.conversationId) {
     return false
   }
@@ -2366,6 +2825,7 @@ async function selectConversation(conversation) {
     if (loaded) {
       await syncConversationTaskTimings(conversation.conversationId)
       await loadContextUsageStatus(conversation.conversationId)
+      void recoverActiveTaskForConversation(conversation.conversationId)
     }
     return loaded
   } catch (error) {
@@ -2380,6 +2840,7 @@ async function loadConversationMessages(conversationId) {
     if (loaded) {
       await syncConversationTaskTimings(conversationId)
       await loadContextUsageStatus(conversationId)
+      void recoverActiveTaskForConversation(conversationId)
     }
     return loaded
   } catch (error) {
@@ -2399,6 +2860,7 @@ async function loadNextContextPreview() {
   const conversationId = currentAgentSession.value?.conversationId
   if (!conversationId || !projectId.value || nextContextPreviewLoading.value) return
 
+  const selectionGeneration = conversationSelectionGuard.capture()
   nextContextPreviewLoading.value = true
   try {
     const response = await projectApi.agentNextContextPreview(projectId.value, conversationId, {
@@ -2407,8 +2869,12 @@ async function loadNextContextPreview() {
       agentMode: agentMode.value,
       draftMessage: agentInput.value.trim()
     })
+    if (!conversationSelectionGuard.isCurrent(selectionGeneration)
+      || currentAgentSession.value?.conversationId !== conversationId) return
     nextContextPreview.value = response.data || null
   } catch (error) {
+    if (!conversationSelectionGuard.isCurrent(selectionGeneration)
+      || currentAgentSession.value?.conversationId !== conversationId) return
     nextContextPreview.value = null
     ElMessage.error('\u751f\u6210\u4e0b\u4e00\u6b21\u8bf7\u6c42\u9884\u6d4b\u5931\u8d25: ' + (error?.response?.data?.message || error?.message || '\u672a\u77e5\u9519\u8bef'))
   } finally {
@@ -2423,8 +2889,10 @@ async function loadContextUsageStatus(conversationId) {
   }
   try {
     const response = await projectApi.agentContextStatus(projectId.value, conversationId)
+    if (currentAgentSession.value?.conversationId !== conversationId) return
     contextUsageStatus.value = resolveContextUsageStatus(contextUsageStatus.value, response.data, conversationId)
   } catch (error) {
+    if (currentAgentSession.value?.conversationId !== conversationId) return
     contextUsageStatus.value = resolveContextUsageStatus(contextUsageStatus.value, null, conversationId)
   }
 }
@@ -2469,18 +2937,76 @@ async function forkCurrentConversation() {
   await forkConversation(conversation || { conversationId: currentAgentSession.value.conversationId })
 }
 
+function contextManagementMessage() {
+  const existing = [...messages.value].reverse().find(message => message.role === 'assistant')
+  if (existing) return existing
+  const message = { role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', thinkingBlocks: [], toolCalls: [], contextManagementEvents: [], isStreaming: false, _nextOrder: 0, timestamp: Date.now() }
+  messages.value.push(message)
+  return message
+}
+
 async function compactConversation(conversation) {
+  if (!conversation?.conversationId) {
+    ElMessage.error('缺少会话 ID，无法压缩上下文')
+    return false
+  }
+  if (agentLoading.value) {
+    ElMessage.info('Agent 任务运行中，请等当前任务结束后再压缩')
+    return false
+  }
+
+  const message = contextManagementMessage()
   try {
     const result = await compactConversationState(conversation, selectedModelConfigId.value)
     if (!result.success) {
-      ElMessage.error(result.message)
+      reduceContextManagementEvent('COMPACTION_FAILED', {
+        strategy: 'manual',
+        reason: result.message || '手动压缩失败'
+      }, message)
+      ElMessage.error(result.message || '手动压缩失败')
       return false
     }
-    ElMessage.success('\u4e0a\u4e0b\u6587\u5df2\u538b\u7f29\uff0c\u540e\u7eed\u5bf9\u8bdd\u4f1a\u643a\u5e26\u6458\u8981')
+    if (!result.taskId) {
+      const reason = '压缩任务未返回任务 ID'
+      reduceContextManagementEvent('COMPACTION_FAILED', { strategy: 'manual', reason }, message)
+      ElMessage.error(reason)
+      return false
+    }
+
+    const task = {
+      taskId: result.taskId,
+      conversationId: conversation.conversationId,
+      status: result.status || 'queued',
+      lastEventSequence: 0
+    }
+    reduceContextManagementEvent('COMPACTION_STARTED', {
+      taskId: result.taskId,
+      sessionId: result.sessionId,
+      strategy: 'manual'
+    }, message)
+    agentLoading.value = true
+    void subscribeToTaskEvents(task, message)
+    ElMessage.success('压缩任务已提交，完成状态会显示在时间线中')
     return true
   } catch (error) {
-    ElMessage.error('\u538b\u7f29\u5931\u8d25\uff1a' + (error?.response?.data?.message || error?.message || '\u672a\u77e5\u9519\u8bef'))
+    const reason = error?.response?.data?.message || error?.message || '未知错误'
+    reduceContextManagementEvent('COMPACTION_FAILED', { strategy: 'manual', reason }, message)
+    ElMessage.error('压缩失败：' + reason)
     return false
+  } finally {
+    scheduleAgentRender()
+  }
+}
+
+async function cancelContextCompaction(event) {
+  if (!event?.taskId) return
+  try {
+    event.cancelRequested = true
+    await projectApi.agentInterrupt(projectId.value, event.sessionId || '', event.taskId)
+    ElMessage.info('\u5df2\u8bf7\u6c42\u53d6\u6d88\u4e0a\u4e0b\u6587\u538b\u7f29')
+  } catch (error) {
+    event.cancelRequested = false
+    ElMessage.error('\u53d6\u6d88\u538b\u7f29\u5931\u8d25\uff1a' + (error?.response?.data?.message || error?.message || '\u672a\u77e5\u9519\u8bef'))
   }
 }
 
@@ -2502,11 +3028,43 @@ async function deleteConversation(conversation) {
   }
 }
 
+function contextManagementTitle(event) {
+  if (event.phase === 'pruned') return '已清理历史工具结果'
+  if (event.status === 'running') return '正在压缩上下文'
+  if (event.status === 'warning') return '上下文压缩正在安全回退'
+  if (event.phase === 'fallback') return '上下文压缩完成（安全回退）'
+  return '上下文压缩完成'
+}
+
+function contextManagementStatusText(event) {
+  if (event.status === 'running') return '处理中'
+  if (event.status === 'warning') return '回退中'
+  return '已完成'
+}
+
+function contextManagementStrategyText(event) {
+  const labels = {
+    manual: '手动压缩',
+    manual_model: '手动模型摘要',
+    manual_deterministic_fallback: '手动安全回退',
+    proactive: '自动触发',
+    tool_result_prune: '工具结果裁剪',
+    model: '模型摘要',
+    deterministic_fallback: '确定性安全回退'
+  }
+  return labels[event.strategy] || ''
+}
+
 function getMergedItems(msg) {
   const items = []
   if (msg.thinkingBlocks) {
     for (const tb of msg.thinkingBlocks) {
       items.push({ type: 'thinking', data: tb, _order: tb._order || 0 })
+    }
+  }
+  if (msg.contextManagementEvents) {
+    for (const event of msg.contextManagementEvents) {
+      items.push({ type: 'context', data: event, _order: event._order || 0 })
     }
   }
   if (msg.toolCalls) {
@@ -2783,7 +3341,7 @@ function copyMessage(content) { navigator.clipboard?.writeText(content); ElMessa
 function insertToEditor(content) { ElMessage.success('代码已插入编辑器') }
 function renderMarkdown(text) {
   if (!text) return ''
-  const rawHtml = marked.parse(text, { gfm: true, breaks: true, silent: true })
+  const rawHtml = marked.parse(normalizeSpecialMarkdownBlocks(text), { gfm: true, breaks: true, silent: true })
   return enhanceMarkdownHtml(sanitizeMarkdownHtml(String(rawHtml || '')))
 }
 
@@ -3250,6 +3808,89 @@ function startResize(e) {
 .ws-btn-sm { padding: 5px 10px; font-size: 12px; }
 .ws-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+
+/* 上下文压缩状态卡片 */
+.ai-context-management-card {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ai-border-strong);
+  border-left: 3px solid #3b82f6;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ai-bg-secondary) 88%, #3b82f6 12%);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+}
+.context-management-card-header,
+.context-management-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.context-management-card-header {
+  color: var(--ai-text);
+  font-size: 12.5px;
+}
+.context-management-status {
+  margin-left: auto;
+  color: var(--ai-text-muted);
+  font-size: 11px;
+}
+.context-management-cancel {
+  margin-left: auto;
+  border: 1px solid var(--ai-border-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ai-text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 22px;
+  padding: 0 7px;
+}
+.context-management-cancel:hover { color: #dc2626; border-color: #fca5a5; background: #fef2f2; }
+
+.context-management-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
+}
+.ai-context-management-card.is-running .context-management-indicator {
+  background: #3b82f6;
+  animation: context-management-pulse 1.25s ease-in-out infinite;
+}
+.ai-context-management-card.is-warning {
+  border-left-color: #f59e0b;
+  background: color-mix(in srgb, var(--ai-bg-secondary) 88%, #f59e0b 12%);
+}
+.ai-context-management-card.is-warning .context-management-indicator {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
+}
+.context-management-card-meta {
+  margin-top: 7px;
+  color: var(--ai-text-muted);
+  font-size: 11.5px;
+}
+.context-management-card-meta span:not(:last-child)::after {
+  margin-left: 7px;
+  color: var(--ai-text-faint);
+  content: '\00b7';
+}
+.context-management-released {
+  color: #059669;
+  font-weight: 700;
+}
+.context-management-reason {
+  margin: 7px 0 0;
+  color: var(--ai-text-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+@keyframes context-management-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12); transform: scale(1); }
+  50% { box-shadow: 0 0 0 7px rgba(59, 130, 246, 0); transform: scale(1.08); }
+}
 
 /* ===== Command Palette ===== */
 .command-palette {
@@ -3952,204 +4593,22 @@ function startResize(e) {
   line-height: 1.35;
 }
 .ai-msg-text h1 { font-size: 16px; }
-.ai-msg-text h2 { font-size: 15px; }
-.ai-msg-text h3 { font-size: 14px; }
-.ai-msg-text h4 { font-size: 13px; }
-.ai-msg-text code {
-  background: var(--ai-inline-code-bg);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-family: 'JetBrains Mono', monospace;
-  color: var(--ai-inline-code-text);
-  border: 1px solid var(--ai-inline-code-border);
-}
-.ai-msg-text pre {
-  background: var(--ai-code-bg);
-  color: var(--ai-code-text);
-  padding: 14px 16px;
-  border-radius: 0;
-  overflow-x: auto;
-  font-size: 12px;
-  font-family: 'JetBrains Mono', monospace;
-  margin: 0;
-  line-height: 1.6;
-  border: none;
-}
-.ai-msg-text pre code {
-  background: transparent;
-  padding: 0;
-  color: inherit;
-  border: none;
-}
-/* Code block container */
-.ai-msg-text .code-block {
-  margin: 10px 0;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid #334155;
-  max-width: 100%;
-  background: var(--ai-code-bg);
-}
-.ai-msg-text .code-block pre {
-  margin: 0;
-  border: none;
-  border-radius: 0;
-}
-.ai-msg-text .code-block-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px 10px;
-  background: #111827;
-  border-bottom: 1px solid #334155;
-}
-.ai-msg-text .code-lang {
-  font-size: 10px;
-  color: #94a3b8;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-family: 'JetBrains Mono', monospace;
-}
-.ai-msg-text .code-copy-btn {
-  border: 1px solid #475569;
-  background: #1f2937;
-  color: #cbd5e1;
-  border-radius: 5px;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.ai-msg-text .code-copy-btn:hover {
-  background: #334155;
-  color: #fff;
-}
-/* Inline code */
-.ai-msg-text .inline-code {
-  background: var(--ai-inline-code-bg);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-family: 'JetBrains Mono', monospace;
-  color: var(--ai-inline-code-text);
-  border: 1px solid var(--ai-inline-code-border);
-}
-/* Links */
-.ai-msg-text .msg-link {
-  color: var(--ai-accent-hover);
-  text-decoration: none;
-  border-bottom: 1px solid #93c5fd;
-  transition: all 0.15s;
-  overflow-wrap: anywhere;
-}
-.ai-msg-text .msg-link:hover {
-  color: #1d4ed8;
-  border-bottom-color: #1d4ed8;
-}
-/* Lists */
-.ai-msg-text .msg-list {
-  margin: 6px 0;
-  padding-left: 22px;
-  list-style: none;
-}
-.ai-msg-text .ul-item::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  background: var(--ai-accent);
-  border-radius: 50%;
-  margin-right: 8px;
-  vertical-align: middle;
-}
-.ai-msg-text .ol-item {
-  counter-increment: ol-counter;
-}
-.ai-msg-text ol.msg-list {
-  counter-reset: ol-counter;
-}
-.ai-msg-text .ol-item::before {
-  content: counter(ol-counter) '.';
-  color: var(--ai-accent);
-  font-weight: 600;
-  margin-right: 6px;
-  font-size: 12px;
-}
-.ai-msg-text .msg-list li {
-  margin: 4px 0;
-  line-height: 1.7;
-}
-/* Blockquote */
-.ai-msg-text blockquote {
-  margin: 8px 0;
-  padding: 8px 14px;
-  border-left: 3px solid var(--ai-purple);
-  background: var(--ai-purple-bg);
-  border-radius: 0 6px 6px 0;
-  color: var(--ai-text-muted);
-  font-style: italic;
-}
-/* Table */
-.ai-msg-text .msg-table-wrap {
-  margin: 12px -18px;
-  border-radius: 0;
-  overflow: hidden;
-  border-top: 1px solid #d0d7de;
-  border-bottom: 1px solid #d0d7de;
-  max-width: calc(100% + 36px);
-}
-.ai-msg-text .msg-table-header {
-  padding: 4px 14px;
-  background: #f5f5f5;
-  border-bottom: 1px solid #d0d7de;
-}
-.ai-msg-text .msg-table-tag {
-  font-size: 11px;
-  color: #888;
-  font-weight: 600;
-}
-.ai-msg-text .msg-table-scroll { overflow-x: auto; }
-.ai-msg-text .msg-table {
-  width: 100%;
-  min-width: 400px;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-.ai-msg-text .msg-table th,
-.ai-msg-text .msg-table td {
-  padding: 8px 12px;
-  border: 1px solid var(--ai-border-strong);
-  text-align: left;
-}
-.ai-msg-text .msg-table th {
-  background: var(--ai-bg-tertiary);
-  font-weight: 600;
-  color: var(--ai-text);
-  white-space: nowrap;
-}
-.ai-msg-text .msg-table td {
-  color: var(--ai-text-secondary);
-  word-break: break-word;
-}
-.ai-msg-text .msg-table tr:nth-child(even) td {
-  background: #f8f9fa;
-}
-.ai-msg-text .msg-table tr:hover td {
-  background: #eef2ff;
-}
-/* Horizontal rule */
-.ai-msg-text .msg-hr {
+
+/* ===== Markdown-rendered HTML (v-html content) =====
+   These rules style the elements produced by renderMarkdown/processMarkdown.
+   They live here in <style scoped> so they carry [data-v-xxx] and outrank
+   any future unscoped .markdown-rendered overrides. */
+.markdown-rendered :deep(.msg-hr) {
   border: none;
   border-top: 1px solid var(--ai-border-strong);
-  margin: 12px 0;
+  margin: 14px 0;
 }
-/* Headings with bottom border */
-.ai-msg-text h2 { font-size: 15px; border-bottom: 1px solid var(--ai-border-strong); padding-bottom: 4px; }
-.ai-msg-text h3 { font-size: 14px; }
-.ai-msg-text h4 { font-size: 13px; }
-.ai-msg-text h5 { font-size: 12.5px; font-weight: 600; color: var(--ai-text-secondary); margin: 8px 0 4px; }
+.markdown-rendered :deep(h5) {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ai-text-secondary);
+  margin: 10px 0 4px;
+}
 
 /* Thinking Block */
 .ai-thinking-block {
@@ -4287,6 +4746,17 @@ function startResize(e) {
 }
 
 /* 消息时间戳 */
+.ai-environment-retry {
+  margin-top: 10px;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #92400e;
+  background: #fffbeb;
+  cursor: pointer;
+}
+.ai-environment-retry:disabled { opacity: .6; cursor: wait; }
+
 .ai-msg-time {
   font-size: 10px;
   color: var(--ai-text-faint);
@@ -5852,21 +6322,59 @@ function startResize(e) {
   margin: 14px 0 8px;
 }
 .markdown-rendered :deep(h2) {
-  font-size: 16px;
-  margin: 14px 0 8px;
-  padding-bottom: 5px;
+  font-size: 16.5px;
+  margin: 18px 0 10px;
+  padding: 6px 0 6px 12px;
   border-bottom: 1px solid var(--ai-border-strong);
+  border-left: 3px solid var(--ai-accent);
+  background: linear-gradient(90deg, var(--ai-accent-bg) 0%, transparent 70%);
 }
 .markdown-rendered :deep(h3) {
   font-size: 14.5px;
-  margin: 12px 0 6px;
+  margin: 14px 0 6px;
+  padding-left: 10px;
+  border-left: 3px solid var(--ai-border-strong);
+  color: var(--ai-text);
 }
 .markdown-rendered :deep(ul),
 .markdown-rendered :deep(ol) {
   margin: 8px 0;
   padding-left: 22px;
+  line-height: 1.7;
 }
-.markdown-rendered :deep(li) {
+.markdown-rendered :deep(ul) {
+  list-style: none;
+}
+.markdown-rendered :deep(ul > li) {
+  position: relative;
+  padding-left: 4px;
+  margin: 4px 0;
+}
+.markdown-rendered :deep(ul > li::before) {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: 0.7em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ai-accent);
+  opacity: 0.85;
+}
+.markdown-rendered :deep(ol > li) {
+  margin: 4px 0;
+  padding-left: 4px;
+}
+.markdown-rendered :deep(ol > li::marker) {
+  color: var(--ai-accent);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.markdown-rendered :deep(li > p) {
+  margin: 2px 0;
+}
+.markdown-rendered :deep(li > ul),
+.markdown-rendered :deep(li > ol) {
   margin: 4px 0;
 }
 .markdown-rendered :deep(code:not(pre code)) {
@@ -5880,49 +6388,66 @@ function startResize(e) {
 }
 .markdown-rendered :deep(.code-block) {
   margin: 12px 0;
-  border: none;
+  border: 1px solid var(--ai-border-strong);
   border-radius: 9px;
   overflow: hidden;
   background: var(--ai-bg-secondary);
-  box-shadow: none;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.04);
 }
 .markdown-rendered :deep(.code-block-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 32px;
-  padding: 8px 12px 0 16px;
-  background: transparent;
-  border-bottom: none;
+  gap: 10px;
+  min-height: 34px;
+  padding: 6px 8px 6px 12px;
+  background: linear-gradient(180deg, var(--ai-bg-tertiary) 0%, var(--ai-bg-secondary) 100%);
+  border-bottom: 1px solid var(--ai-border-strong);
 }
 .markdown-rendered :deep(.code-lang) {
-  color: var(--ai-text-faint);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  color: var(--ai-accent);
+  background: var(--ai-accent-bg);
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 18%, transparent);
+  border-radius: 999px;
   font-family: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: normal;
-  text-transform: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
 }
-.markdown-rendered :deep(.code-copy-btn),
-.markdown-rendered :deep(.table-copy-btn) {
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ai-text-faint);
+.markdown-rendered :deep(.code-copy-btn) {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  background: var(--ai-bg);
+  color: var(--ai-text-muted);
+  border: 1px solid var(--ai-border);
+  border-radius: 7px;
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   transition: all 0.15s;
 }
-.markdown-rendered :deep(.code-copy-btn:hover),
-.markdown-rendered :deep(.table-copy-btn:hover) {
-  background: var(--ai-bg-tertiary);
-  color: var(--ai-text-secondary);
+.markdown-rendered :deep(.code-copy-btn:hover) {
+  background: var(--ai-accent-bg);
+  color: var(--ai-accent);
+  border-color: color-mix(in srgb, var(--ai-accent) 28%, transparent);
+}
+.markdown-rendered :deep(.table-copy-btn) {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  background: var(--ai-bg);
+  color: var(--ai-text-muted);
+  border: 1px solid var(--ai-border);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  transition: all 0.15s;
 }
 .markdown-rendered :deep(pre) {
   margin: 0;
@@ -5943,48 +6468,89 @@ function startResize(e) {
   color: inherit;
 }
 .markdown-rendered :deep(.msg-table-wrap) {
-  margin: 12px 0;
+  margin: 14px 0 16px;
   overflow: hidden;
   border: 1px solid var(--ai-border-strong);
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--ai-bg);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.04);
 }
 .markdown-rendered :deep(.msg-table-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 32px;
-  padding: 0 10px 0 12px;
+  min-height: 36px;
+  padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--ai-border-strong);
-  background: var(--ai-bg-tertiary);
+  background: linear-gradient(180deg, var(--ai-bg-tertiary) 0%, var(--ai-bg) 100%);
 }
 .markdown-rendered :deep(.msg-table-tag) {
-  color: var(--ai-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  color: var(--ai-accent);
   font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.02em;
+  background: var(--ai-accent-bg);
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 18%, transparent);
+  border-radius: 999px;
+}
+.markdown-rendered :deep(.msg-table-tag)::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
 }
 .markdown-rendered :deep(.table-copy-btn) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
   background: var(--ai-bg);
   color: var(--ai-text-muted);
+  border: 1px solid var(--ai-border);
+  border-radius: 7px;
 }
 .markdown-rendered :deep(.table-copy-btn:hover) {
   background: var(--ai-accent-bg);
   color: var(--ai-accent);
+  border-color: color-mix(in srgb, var(--ai-accent) 28%, transparent);
 }
 .markdown-rendered :deep(.msg-table-scroll) {
   overflow-x: auto;
+  /* Edge fade to signal horizontal overflow */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ai-text-faint) 60%, transparent) transparent;
+}
+.markdown-rendered :deep(.msg-table-scroll)::-webkit-scrollbar {
+  height: 8px;
+}
+.markdown-rendered :deep(.msg-table-scroll)::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ai-text-faint) 50%, transparent);
+  border-radius: 4px;
+}
+.markdown-rendered :deep(.msg-table-scroll)::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ai-text-muted) 70%, transparent);
 }
 .markdown-rendered :deep(table.msg-table) {
   width: 100%;
-  min-width: 420px;
+  min-width: 380px;
   border-collapse: separate;
   border-spacing: 0;
-  font-size: 12.5px;
+  font-size: 13px;
+  line-height: 1.55;
+  table-layout: auto;
 }
 .markdown-rendered :deep(.msg-table th),
 .markdown-rendered :deep(.msg-table td) {
-  padding: 9px 12px;
+  padding: 11px 14px;
   border-right: 1px solid var(--ai-border);
   border-bottom: 1px solid var(--ai-border);
   text-align: left;
@@ -5994,10 +6560,47 @@ function startResize(e) {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--ai-bg-secondary);
+  background: linear-gradient(180deg, var(--ai-bg-secondary) 0%, var(--ai-bg-tertiary) 100%);
   color: var(--ai-text);
   font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
   white-space: nowrap;
+  box-shadow: inset 0 -1px 0 var(--ai-border-strong);
+}
+.markdown-rendered :deep(.msg-table th:first-child) {
+  border-top-left-radius: 0;
+}
+.markdown-rendered :deep(.msg-table th:last-child) {
+  border-top-right-radius: 0;
+}
+.markdown-rendered :deep(.msg-table tbody tr td:first-child) {
+  font-weight: 600;
+  color: var(--ai-text);
+}
+.markdown-rendered :deep(.msg-table tbody tr td:first-child) {
+  position: relative;
+}
+.markdown-rendered :deep(.msg-table tbody tr td:first-child)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--ai-accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.markdown-rendered :deep(.msg-table tbody tr:hover td:first-child)::before {
+  opacity: 1;
+}
+.markdown-rendered :deep(.msg-table tbody tr) {
+  transition: background 0.12s;
+}
+.markdown-rendered :deep(.msg-table tbody tr:hover td) {
+  background: var(--ai-accent-bg);
 }
 .markdown-rendered :deep(.msg-table tr:last-child td) {
   border-bottom: 0;
@@ -6007,33 +6610,77 @@ function startResize(e) {
   border-right: 0;
 }
 .markdown-rendered :deep(.msg-table tr:nth-child(even) td) {
-  background: rgba(148, 163, 184, 0.06);
+  background: rgba(148, 163, 184, 0.05);
 }
-.markdown-rendered :deep(blockquote) {
+.markdown-rendered :deep(.msg-table tr:nth-child(even):hover td) {
+  background: var(--ai-accent-bg);
+}
+.markdown-rendered :deep(blockquote:not(.msg-callout)) {
+  position: relative;
   margin: 10px 0;
-  padding: 9px 12px;
+  padding: 10px 14px 10px 18px;
   border-left: 3px solid var(--ai-accent);
   border-radius: 8px;
   background: var(--ai-accent-bg);
   color: var(--ai-text-muted);
+  font-style: italic;
+  line-height: 1.7;
+}
+.markdown-rendered :deep(blockquote:not(.msg-callout))::before {
+  content: '\201C';
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  color: var(--ai-accent);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 22px;
+  line-height: 1;
+  opacity: 0.55;
+  pointer-events: none;
 }
 .markdown-rendered :deep(.msg-callout) {
+  position: relative;
+  margin: 12px 0;
+  padding: 12px 14px 12px 16px;
   border: 1px solid var(--ai-border-strong);
   border-left-width: 4px;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+  border-radius: 9px;
+  background: var(--ai-bg-secondary);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.04);
+  color: var(--ai-text-muted);
+  line-height: 1.65;
 }
 .markdown-rendered :deep(.msg-callout-title) {
-  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
   color: var(--ai-text);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
-.markdown-rendered :deep(.msg-callout-note) { border-left-color: #3b82f6; background: #eff6ff; }
-.markdown-rendered :deep(.msg-callout-tip) { border-left-color: #10b981; background: #ecfdf5; }
-.markdown-rendered :deep(.msg-callout-success) { border-left-color: #22c55e; background: #f0fdf4; }
-.markdown-rendered :deep(.msg-callout-warning) { border-left-color: #f59e0b; background: #fffbeb; }
-.markdown-rendered :deep(.msg-callout-important) { border-left-color: #8b5cf6; background: #f5f3ff; }
-.markdown-rendered :deep(.msg-callout-error) { border-left-color: #ef4444; background: #fef2f2; }
+.markdown-rendered :deep(.msg-callout-title::before) {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+.markdown-rendered :deep(.msg-callout-note) { border-left-color: #3b82f6; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #3b82f6 14%); }
+.markdown-rendered :deep(.msg-callout-note) .msg-callout-title { color: #2563eb; }
+.markdown-rendered :deep(.msg-callout-tip) { border-left-color: #10b981; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #10b981 14%); }
+.markdown-rendered :deep(.msg-callout-tip) .msg-callout-title { color: #047857; }
+.markdown-rendered :deep(.msg-callout-success) { border-left-color: #22c55e; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #22c55e 14%); }
+.markdown-rendered :deep(.msg-callout-success) .msg-callout-title { color: #15803d; }
+.markdown-rendered :deep(.msg-callout-warning) { border-left-color: #f59e0b; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #f59e0b 14%); }
+.markdown-rendered :deep(.msg-callout-warning) .msg-callout-title { color: #b45309; }
+.markdown-rendered :deep(.msg-callout-important) { border-left-color: #8b5cf6; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #8b5cf6 14%); }
+.markdown-rendered :deep(.msg-callout-important) .msg-callout-title { color: #6d28d9; }
+.markdown-rendered :deep(.msg-callout-error) { border-left-color: #ef4444; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #ef4444 14%); }
+.markdown-rendered :deep(.msg-callout-error) .msg-callout-title { color: #b91c1c; }
+.markdown-rendered :deep(.msg-callout p:last-child) { margin-bottom: 0; }
 
 /* Modern thinking timeline */
 .ai-thinking-block {

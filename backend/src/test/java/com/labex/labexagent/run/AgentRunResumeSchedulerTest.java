@@ -2,6 +2,7 @@ package com.labex.labexagent.run;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -29,7 +30,7 @@ class AgentRunResumeSchedulerTest {
         ArgumentCaptor<AgentStreamRequest> request = ArgumentCaptor.forClass(AgentStreamRequest.class);
         assertThat(scheduled).isTrue();
         verify(tasks).updateTask(eq(71L), eq("running"), eq("Resuming after user response"), eq("A persisted user response is ready"));
-        verify(engine).resume(eq(7), eq(12), request.capture(), eq(71L));
+        verify(engine).resume(eq(7), eq(12), request.capture(), eq(71L), eq(true));
         assertThat(request.getValue().getConversationId()).isEqualTo("conversation-1");
         assertThat(request.getValue().getSessionId()).isEqualTo("session-1");
         assertThat(request.getValue().getResumeTaskId()).isEqualTo(71L);
@@ -46,7 +47,22 @@ class AgentRunResumeSchedulerTest {
         boolean scheduled = scheduler.resumeIfWaiting(interaction(71L, "question", "cancelled"));
 
         assertThat(scheduled).isTrue();
-        verify(engine).resume(eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class), eq(71L));
+        verify(engine).resume(eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class), eq(71L), eq(true));
+    }
+
+    @Test
+    void marksTheTaskFailedWhenAResolvedInteractionCannotBeQueued() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task(71L, "waiting_user"));
+        doThrow(new IllegalStateException("queue full")).when(engine)
+                .resume(eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class), eq(71L), eq(true));
+        AgentRunResumeScheduler scheduler = new AgentRunResumeScheduler(tasks, engine);
+
+        boolean scheduled = scheduler.resumeIfWaiting(questionAnswer(71L));
+
+        assertThat(scheduled).isFalse();
+        verify(tasks).updateTask(71L, "failed", "Unable to resume after user response", "queue full");
     }
 
     @Test
@@ -59,7 +75,7 @@ class AgentRunResumeSchedulerTest {
         boolean scheduled = scheduler.resumeIfWaiting(interaction(71L, "permission", "approved"));
 
         assertThat(scheduled).isTrue();
-        verify(engine).resume(eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class), eq(71L));
+        verify(engine).resume(eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class), eq(71L), eq(true));
     }
 
     private AgentTask task(Long taskId, String status) {

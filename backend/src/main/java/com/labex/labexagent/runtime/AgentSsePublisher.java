@@ -11,12 +11,18 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class AgentSsePublisher {
     private static final Gson GSON = new Gson();
     private final SseEmitter emitter;
+    private final TransientEventListener transientEventListener;
     private AgentRunLifecycleService lifecycleService;
     private Long taskId;
     private boolean connectionClosed;
 
     public AgentSsePublisher(SseEmitter emitter) {
+        this(emitter, null);
+    }
+
+    public AgentSsePublisher(SseEmitter emitter, TransientEventListener transientEventListener) {
         this.emitter = emitter;
+        this.transientEventListener = transientEventListener;
     }
 
     public void bindRun(AgentRunLifecycleService lifecycleService, Long taskId) {
@@ -48,6 +54,13 @@ public class AgentSsePublisher {
     }
 
     public void sendTransient(String type, Object data) throws IOException {
+        if (this.transientEventListener != null && this.taskId != null) {
+            try {
+                this.transientEventListener.publish(this.taskId, type, data);
+            } catch (RuntimeException ignored) {
+                // A secondary observer must never disrupt the primary Agent stream.
+            }
+        }
         if (this.connectionClosed) {
             return;
         }
@@ -57,6 +70,11 @@ public class AgentSsePublisher {
             this.connectionClosed = true;
             throw e;
         }
+    }
+
+    @FunctionalInterface
+    public interface TransientEventListener {
+        void publish(Long taskId, String type, Object data);
     }
 
     public void send(Long sequenceNumber, String type, Object data) throws IOException {

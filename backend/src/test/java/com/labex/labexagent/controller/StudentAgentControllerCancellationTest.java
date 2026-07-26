@@ -28,15 +28,20 @@ class StudentAgentControllerCancellationTest {
     @Test
     void interruptMarksAnOwnedActiveTaskAsCancelling() {
         AgentCancellationRegistry registry = new AgentCancellationRegistry();
-        registry.register("session-5", 7, 12, 49L);
+        AgentCancellationRegistry.ActiveRun run = registry.register("session-5", 7, 12, 49L);
         AgentTaskService taskService = mock(AgentTaskService.class);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            assertFalse(run.isCancellationRequested());
+            return true;
+        }).when(taskService).requestCancellation(eq(49L), any(), any());
         StudentAgentController controller = controller(registry, taskService);
 
         Result<Void> result = controller.interrupt(12, Map.of("sessionId", "session-5"), authentication(7));
 
         assertTrue(result.isSuccess());
         verify(taskService).requestCancellation(eq(49L), any(), any());
-        verify(taskService, never()).cancelScheduledRetry(any(), any(), any());
+        assertTrue(run.isCancellationRequested());
+        verify(taskService, never()).cancelInactiveRun(any(), any(), any());
     }
 
     @Test
@@ -48,7 +53,7 @@ class StudentAgentControllerCancellationTest {
         Result<Void> result = controller.interrupt(12, Map.of("taskId", "49"), authentication(7));
 
         assertTrue(result.isSuccess());
-        verify(taskService).cancelScheduledRetry(7, 12, 49L);
+        verify(taskService).cancelInactiveRun(7, 12, 49L);
         verify(taskService, never()).requestCancellation(any(), any(), any());
     }
 
@@ -60,7 +65,7 @@ class StudentAgentControllerCancellationTest {
         Result<Void> result = controller.interrupt(12, Map.of("taskId", "not-a-number"), authentication(7));
 
         assertTrue(result.isSuccess());
-        verify(taskService, never()).cancelScheduledRetry(any(), any(), any());
+        verify(taskService, never()).cancelInactiveRun(any(), any(), any());
     }
 
     @Test

@@ -19,6 +19,23 @@ class GitSnapshotServiceTreeSnapshotTest {
     Path workspace;
 
     @Test
+    void pathScopedCaptureDoesNotPersistASharedWorkspaceIndex() throws Exception {
+        Files.createDirectories(workspace.resolve("src"));
+        Files.writeString(workspace.resolve("src/Main.java"), "class Main {}\n");
+        StudentProject project = project();
+        GitSnapshotService snapshots = new GitSnapshotService();
+
+        GitSnapshotService.Snapshot before = capturePaths(snapshots, project, "before", List.of("src/Main.java"));
+        Files.writeString(workspace.resolve("src/Main.java"), "class Main { int value; }\n");
+        GitSnapshotService.Snapshot after = capturePaths(snapshots, project, "after", List.of("src/Main.java"));
+
+        assertTrue(before.available());
+        assertTrue(after.available());
+        assertFalse(Files.exists(workspace.resolve(".labex/git-snapshots/index")),
+                "path-scoped captures must not retain a shared index that can accumulate generated workspace files");
+    }
+
+    @Test
     void pathScopedCaptureUsesTreeRefsAndDoesNotTrackUnrelatedFiles() throws Exception {
         Files.createDirectories(workspace.resolve("src"));
         Files.writeString(workspace.resolve("src/Main.java"), "class Main {}\n");

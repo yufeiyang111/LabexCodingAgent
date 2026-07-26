@@ -1,25 +1,137 @@
-﻿function nextOrder(message) {
+function nextOrder(message) {
   message._nextOrder = (message._nextOrder || 0) + 1
   return message._nextOrder
 }
 
-function contextManagementText(type, data = {}) {
-  const before = Number.isFinite(data.tokensBefore) ? ` ${data.tokensBefore}` : ''
-  const after = Number.isFinite(data.tokensAfter) ? ` \u2192 ${data.tokensAfter}` : ''
-  switch (type) {
-    case 'COMPACTION_STARTED': return `\u6b63\u5728\u538b\u7f29\u4e0a\u4e0b\u6587${before}${after}`
-    case 'CONTEXT_PRUNED': return `\u5df2\u6e05\u7406\u65e7\u5de5\u5177\u8f93\u51fa${before}${after}`
-    case 'COMPACTION_COMPLETED': return `\u4e0a\u4e0b\u6587\u538b\u7f29\u5b8c\u6210${before}${after}`
-    case 'COMPACTION_FAILED': return `\u6a21\u578b\u538b\u7f29\u672a\u6210\u529f\uff0c\u5df2\u5c1d\u8bd5\u5b89\u5168\u56de\u9000`
-    default: return ''
-  }
+function normalizedToken(value) {
+  return Number.isFinite(value) ? value : null
 }
 
-function appendContextManagementEvent(message, type, data) {
-  const content = contextManagementText(type, data)
-  if (!content) return
-  message.thinkingBlocks = message.thinkingBlocks || []
-  message.thinkingBlocks.push({ content, summary: '\u4e0a\u4e0b\u6587\u7ba1\u7406', _open: false, _order: nextOrder(message) })
+function contextManagementEvents(message) {
+  message.contextManagementEvents = message.contextManagementEvents || []
+  return message.contextManagementEvents
+}
+
+function latestPendingContextManagementEvent(message, taskId = null) {
+  const events = contextManagementEvents(message)
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (taskId != null && String(event.taskId ?? '') !== String(taskId)) continue
+    if ((event.phase === 'compacting' || event.phase === 'fallback') && (event.status === 'running' || event.status === 'warning')) return event
+  }
+  return null
+}
+
+function withContextTask(values, taskId) {
+  return taskId == null ? values : { ...values, taskId }
+}
+
+function releasedTokens(tokensBefore, tokensAfter) {
+  return Number.isFinite(tokensBefore) && Number.isFinite(tokensAfter)
+    ? Math.max(0, tokensBefore - tokensAfter)
+    : null
+}
+
+function createContextManagementEvent(message, values) {
+  const event = { kind: 'context-management', _order: nextOrder(message), ...values }
+  contextManagementEvents(message).push(event)
+  return event
+}
+
+/**
+ * 将实时 SSE 与历史回放的上下文管理事件归并为可更新的时间线状态。
+ */
+export function reduceContextManagementEvent(type, data = {}, message) {
+  const tokensBefore = normalizedToken(data.tokensBefore)
+  const tokensAfter = normalizedToken(data.tokensAfter)
+  const strategy = typeof data.strategy === 'string' ? data.strategy : ''
+  const taskId = data.taskId ?? null
+  const sessionId = data.sessionId ?? null
+
+  switch (type) {
+    case 'COMPACTION_STARTED': {
+      const pending = taskId == null ? null : latestPendingContextManagementEvent(message, taskId)
+      if (pending) {
+        pending.strategy = strategy || pending.strategy
+        pending.tokensBefore = tokensBefore ?? pending.tokensBefore
+        pending.tokensAfter = tokensAfter ?? pending.tokensAfter
+        if (sessionId) pending.sessionId = sessionId
+      } else {
+        createContextManagementEvent(message, withContextTask({
+          phase: 'compacting', status: 'running', strategy, tokensBefore, tokensAfter,
+          releasedTokens: null, reason: '', ...(sessionId ? { sessionId } : {})
+        }, taskId))
+      }
+      return true
+    }
+    case 'COMPACTION_PROGRESS': {
+      const pending = latestPendingContextManagementEvent(message, taskId)
+      if (pending) {
+        pending.progress = typeof data.phase === 'string' ? data.phase : pending.progress || ''
+        if (sessionId) pending.sessionId = sessionId
+      }
+      return true
+    }
+    case 'COMPACTION_CANCELLED': {
+      const pending = latestPendingContextManagementEvent(message, taskId)
+      const reason = typeof data.reason === 'string' ? data.reason : ''
+      if (pending) {
+        pending.status = 'cancelled'
+        pending.phase = 'cancelled'
+        pending.reason = reason
+      } else {
+        createContextManagementEvent(message, withContextTask({
+          phase: 'cancelled', status: 'cancelled', strategy, tokensBefore, tokensAfter,
+          releasedTokens: null, reason, ...(sessionId ? { sessionId } : {})
+        }, taskId))
+      }
+      return true
+    }
+    case 'CONTEXT_PRUNED':
+      createContextManagementEvent(message, withContextTask({
+        phase: 'pruned', status: 'completed', strategy, tokensBefore, tokensAfter,
+        releasedTokens: releasedTokens(tokensBefore, tokensAfter), reason: ''
+      }, taskId))
+      return true
+    case 'COMPACTION_FAILED': {
+      const pending = latestPendingContextManagementEvent(message, taskId)
+      const reason = typeof data.reason === 'string' ? data.reason : ''
+      if (pending) {
+        pending.status = 'warning'
+        pending.phase = 'fallback'
+        pending.strategy = strategy || pending.strategy
+        pending.tokensBefore = tokensBefore ?? pending.tokensBefore
+        pending.tokensAfter = tokensAfter ?? pending.tokensAfter
+        pending.releasedTokens = releasedTokens(pending.tokensBefore, pending.tokensAfter)
+        pending.reason = reason
+      } else {
+        createContextManagementEvent(message, withContextTask({
+          phase: 'fallback', status: 'warning', strategy, tokensBefore, tokensAfter,
+          releasedTokens: releasedTokens(tokensBefore, tokensAfter), reason
+        }, taskId))
+      }
+      return true
+    }
+    case 'COMPACTION_COMPLETED': {
+      const pending = latestPendingContextManagementEvent(message, taskId)
+      if (pending) {
+        pending.status = 'completed'
+        pending.phase = pending.phase === 'fallback' || strategy.includes('fallback') ? 'fallback' : 'compacting'
+        pending.strategy = strategy || pending.strategy
+        pending.tokensBefore = tokensBefore ?? pending.tokensBefore
+        pending.tokensAfter = tokensAfter ?? pending.tokensAfter
+        pending.releasedTokens = releasedTokens(pending.tokensBefore, pending.tokensAfter)
+      } else {
+        createContextManagementEvent(message, withContextTask({
+          phase: strategy.includes('fallback') ? 'fallback' : 'compacting', status: 'completed', strategy,
+          tokensBefore, tokensAfter, releasedTokens: releasedTokens(tokensBefore, tokensAfter), reason: ''
+        }, taskId))
+      }
+      return true
+    }
+    default:
+      return false
+  }
 }
 
 export function reduceHistoryEvent(type, data, message, callbacks = {}) {
@@ -55,13 +167,31 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
         message.thinking = ''
       }
       message.toolCalls = message.toolCalls || []
-      message.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', _order: nextOrder(message) })
+      message.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', toolCallId: data.toolCallId || '', startedAt: data.startedAt || Date.now(), execution: { phase: 'tool_delegate', elapsedMs: 0 }, _order: nextOrder(message) })
       break
+    case 'TOOL_EXECUTION_STARTED':
+    case 'TOOL_PHASE_CHANGED':
+    case 'TOOL_EXECUTION_COMPLETED':
+    case 'TOOL_EXECUTION_FAILED':
+    case 'TOOL_TIMED_OUT': {
+      const toolCall = message.toolCalls?.find(call => call.toolCallId && call.toolCallId === data.toolCallId)
+        || message.toolCalls?.at(-1)
+      if (toolCall) {
+        toolCall.execution = { phase: data.phase || 'tool_delegate', elapsedMs: data.elapsedMs || 0,
+          delegateMs: data.delegateMs || 0, beforeSnapshotMs: data.beforeSnapshotMs || 0,
+          afterSnapshotMs: data.afterSnapshotMs || 0, snapshotDiffMs: data.snapshotDiffMs || 0,
+          postEditMs: data.postEditMs || 0, contextMs: data.contextMs || 0, error: data.error || '' }
+        if (type === 'TOOL_EXECUTION_FAILED' || type === 'TOOL_TIMED_OUT') toolCall.status = 'error'
+      }
+      break
+    }
     case 'OBSERVE': {
       const toolCall = message.toolCalls?.at(-1)
       if (toolCall) {
         toolCall.result = data.result || data.content
         toolCall.status = data.success !== false ? 'completed' : 'error'
+        toolCall.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
+          truncated: data.modelProjectionTruncated === true }
       }
       if (data.pendingChangeId) callbacks.onPendingChange?.()
       break
@@ -111,6 +241,14 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       break
     }
     case 'USER_QUESTION': callbacks.onUserQuestion?.(message, data); break
+    case 'WORKSPACE_WAITING':
+      message.taskId = data.taskId || message.taskId || null
+      message.workspaceWaiting = data
+      break
+    case 'ENVIRONMENT_BLOCKED':
+      message.taskId = data.taskId || message.taskId || null
+      message.environmentBlocker = data
+      break
     case 'PLAN_UPDATE': message.plan = data.summary || data.plan || null; message.planJson = data.planJson || null; break
     case 'FINAL_DELTA': message.content += data.delta || ''; break
     case 'FINAL': if (data.content && !message.error) message.content = data.content; break
@@ -121,6 +259,10 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'COMPACTION_STARTED':
     case 'CONTEXT_PRUNED':
     case 'COMPACTION_COMPLETED':
-    case 'COMPACTION_FAILED': appendContextManagementEvent(message, type, data); break
+    case 'COMPACTION_FAILED':
+    case 'COMPACTION_PROGRESS':
+    case 'COMPACTION_CANCELLED':
+      reduceContextManagementEvent(type, data, message)
+      break
   }
 }

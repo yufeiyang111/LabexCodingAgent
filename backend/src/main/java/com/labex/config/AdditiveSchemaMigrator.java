@@ -77,6 +77,7 @@ public class AdditiveSchemaMigrator {
                 addColumnIfMissing(metadata, catalog, column);
             }
             createCommandAuditTableIfMissing(metadata, catalog);
+            createProjectCheckoutLeaseTableIfMissing(metadata, catalog);
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_retry_due", "status, next_retry_at");
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_execution_lease", "execution_lease_expires_at");
             addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_conv_project_updated", "student_id, project_id, status, update_time");
@@ -103,6 +104,37 @@ public class AdditiveSchemaMigrator {
             if (sql.getErrorCode()==1061 || message.contains("duplicate key name") || message.contains("already exists")) return true;
         }
         return false;
+    }
+
+    private void createProjectCheckoutLeaseTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (tableExists(metadata, catalog, "t_agent_project_checkout_lease")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_agent_project_checkout_lease (
+                    checkout_key CHAR(64) NOT NULL PRIMARY KEY,
+                    project_id INT NOT NULL,
+                    workspace_path VARCHAR(2048) NOT NULL,
+                    task_id BIGINT NOT NULL,
+                    lease_owner VARCHAR(128) NOT NULL,
+                    lease_epoch BIGINT NOT NULL DEFAULT 1,
+                    lease_expires_at DATETIME(3) NOT NULL,
+                    heartbeat_at DATETIME(3) NOT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_agent_checkout_lease_expiry (lease_expires_at),
+                    INDEX idx_agent_checkout_lease_task (task_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && tableExists(metadata, catalog, "t_agent_project_checkout_lease")) {
+                log.info("Project checkout lease table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
     }
 
     private void createCommandAuditTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {

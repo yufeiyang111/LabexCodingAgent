@@ -26,6 +26,7 @@ import com.labex.labexagent.permission.PermissionService;
 import com.labex.labexagent.service.AgentConversationService;
 import com.labex.labexagent.service.AgentInteractionService;
 import com.labex.labexagent.service.AgentTaskService;
+import com.labex.labexagent.service.ManualCompactionTaskRunner;
 import com.labex.labexagent.service.TokenTracker;
 import com.labex.service.StudentProjectService;
 import java.util.LinkedHashMap;
@@ -65,6 +66,9 @@ public class StudentAgentController {
     private final AgentApprovedCommandExecutor approvedCommandExecutor;
     private final StudentProjectService studentProjectService;
     private final CommandApprovalOrchestrator commandApprovalOrchestrator;
+
+    @Autowired(required = false)
+    private ManualCompactionTaskRunner manualCompactionTaskRunner;
 
     public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService) {
         this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService,
@@ -160,14 +164,12 @@ public class StudentAgentController {
             } else if (rawModelConfigId instanceof String value && !value.isBlank()) {
                 modelConfigId = Integer.valueOf(value);
             }
-            AgentConversationService.ManualCompactionResult result = this.conversationService
-                    .compactConversation(studentId, projectId, conversationId, modelConfigId);
-            return Result.success(Map.of(
-                    "summary", result.summary(),
-                    "strategy", result.strategy(),
-                    "deterministicFallback", result.deterministicFallback(),
-                    "stats", this.conversationService.getMemoryStats(studentId, projectId, conversationId)
-            ));
+            if (this.manualCompactionTaskRunner == null) {
+                throw new IllegalStateException("Manual compaction runner is unavailable");
+            }
+            var task = this.manualCompactionTaskRunner.start(studentId, projectId, conversationId, modelConfigId);
+            return Result.success(Map.of("taskId", task.getTaskId(), "status", task.getStatus(),
+                    "conversationId", conversationId, "sessionId", task.getSessionId()));
         } catch (Exception e) {
             return Result.error(e.getMessage());
         }
@@ -250,28 +252,56 @@ public class StudentAgentController {
 
     @PostMapping(value={"/interrupt"})
     public Result<Void> interrupt(@PathVariable Integer projectId, @RequestBody Map<String, String> request, Authentication auth) {
-        AgentCancellationRegistry.CancellationResult result = this.cancellationRegistry.cancel(
+        AgentCancellationRegistry.CancellationTarget target = this.cancellationRegistry.findCancellationTarget(
                 request == null ? null : request.get("sessionId"),
                 this.getStudentId(auth),
                 projectId);
-        if (result.status() == AgentCancellationRegistry.CancellationStatus.FORBIDDEN) {
+        if (target.status() == AgentCancellationRegistry.CancellationStatus.FORBIDDEN) {
             return Result.error("Agent session is not active for this project");
         }
-        if (result.status() == AgentCancellationRegistry.CancellationStatus.REQUESTED && result.taskId() != null) {
-            if (this.subagentService != null) this.subagentService.cancelActiveForTask(result.taskId());
-            this.taskService.requestCancellation(
-                    result.taskId(),
+        if (target.activeRun() != null && target.taskId() != null) {
+            boolean persisted = this.taskService.requestCancellation(
+                    target.taskId(),
                     "Cancellation requested",
                     "User requested cancellation");
-        } else if (result.status() == AgentCancellationRegistry.CancellationStatus.NOT_FOUND && request != null) {
+            if (persisted) {
+                if (this.subagentService != null) this.subagentService.cancelActiveForTask(target.taskId());
+                this.cancellationRegistry.signalCancellation(target);
+            }
+        } else if (target.status() == AgentCancellationRegistry.CancellationStatus.NOT_FOUND && request != null) {
             try {
                 Long taskId = Long.valueOf(request.get("taskId"));
-                this.taskService.cancelScheduledRetry(this.getStudentId(auth), projectId, taskId);
+                this.taskService.cancelInactiveRun(this.getStudentId(auth), projectId, taskId);
             } catch (NumberFormatException ignored) {
                 // An in-memory session can be absent and a task id is optional for this endpoint.
             }
         }
         return Result.success(null);
+    }
+
+    @PostMapping(value = {"/tasks/{taskId}/retry-environment"})
+    public Result<Map<String, Object>> retryEnvironmentBlockedTask(@PathVariable Integer projectId,
+                                                                    @PathVariable Long taskId,
+                                                                    Authentication auth) {
+        try {
+            Integer studentId = this.getStudentId(auth);
+            com.labex.entity.AgentTask task = this.taskService.getOwnedTask(studentId, projectId, taskId);
+            if (task == null) return Result.error("Agent task not found");
+            if (!this.taskService.beginEnvironmentResume(taskId)) {
+                return Result.error("Agent task is not waiting for environment recovery");
+            }
+            AgentStreamRequest request = new AgentStreamRequest();
+            request.setSessionId(task.getSessionId());
+            request.setConversationId(task.getConversationId());
+            request.setMode(task.getMode());
+            request.setResumeTaskId(taskId);
+            request.setMessage("Continue the existing task. The user indicated the dependency environment is restored. "
+                    + "Re-run only the previously blocked verification and reassess the workspace before modifying files.");
+            this.agentLoopEngine.resume(studentId, projectId, request, taskId, true);
+            return Result.success(Map.of("taskId", taskId, "status", "queued"));
+        } catch (Exception exception) {
+            return Result.error(exception.getMessage());
+        }
     }
 
     @GetMapping(value={"/conversations/{conversationId}/context-preview"})
@@ -437,7 +467,7 @@ public class StudentAgentController {
             if (commandApprovalOrchestrator != null) {
                 CommandApprovalOrchestrator.DecisionResult result = commandApprovalOrchestrator.decide(
                         getStudentId(auth), projectId, approvalId, approve, request.getDecisionIdempotencyKey());
-                return result.available() ? Result.success(commandApprovalView(result.approval())) : commandApprovalUnavailable();
+                return result.available() ? Result.success(commandApprovalView(result.approval(), result.resumeAgentLoop())) : commandApprovalUnavailable();
             }
             Integer studentId = getStudentId(auth);
             CommandApproval approval = commandApprovalService.findOwned(studentId, projectId, approvalId);
@@ -446,7 +476,8 @@ public class StudentAgentController {
             }
             CommandApproval decided = commandApprovalService.decide(studentId, projectId, approvalId, approve,
                     request.getDecisionIdempotencyKey());
-            return Result.success(commandApprovalView(decided));
+            return Result.success(commandApprovalView(decided,
+                    "rejected".equals(decided.getStatus()) || "expired".equals(decided.getStatus())));
         } catch (Exception ignored) {
             return commandApprovalUnavailable();
         }
@@ -466,7 +497,9 @@ public class StudentAgentController {
                 Map<String, Object> response = new LinkedHashMap<>();
                 response.put("approvalId", execution.approval().getApprovalId());
                 response.put("status", execution.status());
+                response.put("executionStatus", execution.result().succeeded() ? "completed" : "failed");
                 response.put("exitCode", execution.result().exitCode() == null ? "" : execution.result().exitCode());
+                response.put("durationMs", execution.result().durationMs());
                 response.put("output", CommandRedactor.redact(execution.result().output()));
                 response.put("resumeAgentLoop", "resuming".equals(execution.status()));
                 return Result.success(response);
@@ -515,13 +548,13 @@ public class StudentAgentController {
         return Result.success(Map.of("approvalUnavailable", true, "message", "Command approval is unavailable"));
     }
 
-    private Map<String, Object> commandApprovalView(CommandApproval approval) {
+    private Map<String, Object> commandApprovalView(CommandApproval approval, boolean resumeAgentLoop) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("approvalId", approval.getApprovalId());
         response.put("status", approval.getStatus());
         response.put("expiresTime", approval.getExpiresTime() == null ? "" : approval.getExpiresTime().toString());
         response.put("displayCommand", approval.getDisplayCommand());
-        response.put("resumeAgentLoop", "rejected".equals(approval.getStatus()) || "expired".equals(approval.getStatus()));
+        response.put("resumeAgentLoop", resumeAgentLoop);
         return response;
     }
 

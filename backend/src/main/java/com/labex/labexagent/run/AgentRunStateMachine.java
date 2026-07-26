@@ -27,15 +27,18 @@ public final class AgentRunStateMachine {
                 AgentRunState.PREPARING,
                 AgentRunState.RECOVERING,
                 AgentRunState.CANCELLING,
-                AgentRunState.FAILED));
+                AgentRunState.FAILED,
+                AgentRunState.WAITING_WORKSPACE));
         transitions.put(AgentRunState.PREPARING, EnumSet.of(
                 AgentRunState.RUNNING,
                 AgentRunState.RECOVERING,
                 AgentRunState.CANCELLING,
-                AgentRunState.FAILED));
+                AgentRunState.FAILED,
+                AgentRunState.WAITING_WORKSPACE));
         transitions.put(AgentRunState.RUNNING, EnumSet.of(
                 AgentRunState.WAITING_APPROVAL,
                 AgentRunState.WAITING_USER,
+                AgentRunState.WAITING_ENVIRONMENT,
                 AgentRunState.RETRYING,
                 AgentRunState.RECOVERING,
                 AgentRunState.CANCELLING,
@@ -49,8 +52,12 @@ public final class AgentRunStateMachine {
                 AgentRunState.RUNNING,
                 AgentRunState.CANCELLING,
                 AgentRunState.FAILED));
+        transitions.put(AgentRunState.WAITING_WORKSPACE, EnumSet.of(
+                AgentRunState.QUEUED, AgentRunState.CANCELLING, AgentRunState.FAILED));
+        transitions.put(AgentRunState.WAITING_ENVIRONMENT, EnumSet.of(
+                AgentRunState.QUEUED, AgentRunState.CANCELLING, AgentRunState.FAILED));
         transitions.put(AgentRunState.RECOVERING, EnumSet.of(
-                AgentRunState.RUNNING, AgentRunState.CANCELLING, AgentRunState.FAILED));
+                AgentRunState.RUNNING, AgentRunState.WAITING_WORKSPACE, AgentRunState.CANCELLING, AgentRunState.FAILED));
         transitions.put(AgentRunState.RETRYING, EnumSet.of(
                 AgentRunState.RUNNING,
                 AgentRunState.RECOVERING,

@@ -22,8 +22,10 @@ export const projectApi = {
   runCommand(projectId, data) {
     return request.post('/student/projects/' + projectId + '/agent/commands', data)
   },
-  agentInterrupt(projectId, sessionId) {
-    return request.post('/student/projects/' + projectId + '/agent/interrupt', { sessionId })
+  agentInterrupt(projectId, sessionId, taskId = null) {
+    const payload = { sessionId }
+    if (taskId != null) payload.taskId = taskId
+    return request.post('/student/projects/' + projectId + '/agent/interrupt', payload)
   },
   agentConversations(projectId) {
     return request.get('/student/projects/' + projectId + '/agent/conversations')
@@ -69,6 +71,12 @@ export const projectApi = {
   },
   agentTasks(projectId) {
     return request.get('/student/projects/' + projectId + '/agent/tasks')
+  },
+  agentActiveTask(projectId, conversationId) {
+    return request.get('/student/projects/' + projectId + '/agent/conversations/' + encodeURIComponent(conversationId) + '/active-task')
+  },
+  agentRetryEnvironment(projectId, taskId) {
+    return request.post('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId) + '/retry-environment')
   },
   terminalRun(projectId, command, timeoutSeconds) {
     return request.post('/student/projects/' + projectId + '/terminal/run', { command, timeoutSeconds: timeoutSeconds || 60 })

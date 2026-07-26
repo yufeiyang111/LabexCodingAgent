@@ -20,9 +20,13 @@ import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentTaskEventSubscriptionService;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunLeaseHeartbeatService;
+import com.labex.labexagent.run.EnvironmentBlockerClassifier;
 import com.labex.labexagent.workspace.WorkspaceLeaseService;
+import com.labex.labexagent.workspace.ProjectCheckoutLeaseService;
+import com.labex.labexagent.workspace.ProjectCheckoutLeaseHeartbeatService;
 import com.labex.labexagent.run.BackgroundRunWorkspaceResolver;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.runtime.AgentContext;
@@ -76,6 +80,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.atomic.AtomicReference;
@@ -114,6 +119,14 @@ public class AgentLoopEngine {
             new SynchronousQueue<>(),
             new ProviderStreamThreadFactory(),
             new ThreadPoolExecutor.AbortPolicy());
+    private static final ThreadPoolExecutor TOOL_EXECUTION_EXECUTOR = new ThreadPoolExecutor(
+            0,
+            32,
+            30L,
+            TimeUnit.SECONDS,
+            new SynchronousQueue<>(),
+            new ToolExecutionThreadFactory(),
+            new ThreadPoolExecutor.AbortPolicy());
     private static final long PROVIDER_FIRST_EVENT_TIMEOUT_MS = 45_000L;
     private final StudentProjectService studentProjectService;
     private final ToolRegistry toolRegistry;
@@ -142,9 +155,13 @@ public class AgentLoopEngine {
     private final ContextUsageRegistry contextUsageRegistry;
     private final CompactionAgent compactionAgent;
     private final CommandClassifier commandClassifier;
+    private final AgentCheckpointStore checkpointStore = new AgentCheckpointStore();
     private AgentRunExecutionLeaseService executionLeaseService;
     private AgentRunLeaseHeartbeatService leaseHeartbeatService;
     private WorkspaceLeaseService workspaceLeaseService;
+    private ProjectCheckoutLeaseService projectCheckoutLeaseService;
+    private ProjectCheckoutLeaseHeartbeatService projectCheckoutLeaseHeartbeatService;
+    private AgentTaskEventSubscriptionService taskEventSubscriptionService;
 
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService) {
         this(s, t, c, cr, mm, oc, r, cs, ts, pf, mcs, tt, skillService, mcpServerService,
@@ -197,8 +214,20 @@ public class AgentLoopEngine {
     }
 
     @Autowired(required = false)
+    void setTaskEventSubscriptionService(AgentTaskEventSubscriptionService taskEventSubscriptionService) {
+        this.taskEventSubscriptionService = taskEventSubscriptionService;
+    }
+
+    @Autowired(required = false)
     void setWorkspaceLeaseService(WorkspaceLeaseService workspaceLeaseService) {
         this.workspaceLeaseService = workspaceLeaseService;
+    }
+
+    @Autowired(required = false)
+    void setProjectCheckoutLeaseServices(ProjectCheckoutLeaseService projectCheckoutLeaseService,
+                                         ProjectCheckoutLeaseHeartbeatService projectCheckoutLeaseHeartbeatService) {
+        this.projectCheckoutLeaseService = projectCheckoutLeaseService;
+        this.projectCheckoutLeaseHeartbeatService = projectCheckoutLeaseHeartbeatService;
     }
 
     public SseEmitter start(Integer studentId, Integer projectId, AgentStreamRequest request) {
@@ -277,7 +306,7 @@ public class AgentLoopEngine {
             throw new IllegalArgumentException("Preview model config not found or disabled");
         }
 
-        String mode = this.normalizePreviewMode(requestedMode);
+        String mode = AgentMode.normalize(requestedMode);
         String draft = draftedUserMessage == null ? "" : draftedUserMessage.trim();
         boolean draftedMessageIncluded = !draft.isBlank();
         String memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conversationId);
@@ -296,8 +325,8 @@ public class AgentLoopEngine {
         String projectIndex = this.readProjectIndex(studentId, projectId);
         AgentContextOrchestrator.ContextBundle contextBundle = this.contextOrchestrator.buildInitialBundle(
                 project, activePath, activeFileContent, toolDefinitions, draft, projectIndex, false, previewContext);
-        String recentRunLog = this.readLatestRunLog(project, null);
-        String checkpoint = this.readAgentCheckpoint(project);
+        String recentRunLog = "";
+        String checkpoint = "";
         String globalSkills = this.skillService.buildPromptContext(studentId);
         String mcpContext = this.mcpServerService.buildPromptContext(studentId);
         String modePolicy = this.buildModePolicy(mode);
@@ -325,14 +354,6 @@ public class AgentLoopEngine {
                 modelConfig.getContextWindowTokens(), systemPrompt, tools, promptContext, messages, previewMetadata);
     }
 
-    private String normalizePreviewMode(String requestedMode) {
-        if ("plan".equals(requestedMode) || "explore".equals(requestedMode)
-                || "build".equals(requestedMode) || "agent".equals(requestedMode)) {
-            return requestedMode;
-        }
-        return "build";
-    }
-
     private static class AgentThreadFactory implements ThreadFactory {
         private int index = 1;
 
@@ -353,13 +374,33 @@ public class AgentLoopEngine {
         }
     }
 
+    private static class ToolExecutionThreadFactory implements ThreadFactory {
+        private int index = 1;
+
+        public synchronized Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "labex-tool-execution-" + index++);
+            thread.setDaemon(true);
+            return thread;
+        }
+    }
+
+    private static class ToolExecutionTimedOutException extends Exception {
+        private final long budgetMs;
+
+        private ToolExecutionTimedOutException(String toolName, long budgetMs) {
+            super("Tool '" + toolName + "' exceeded its execution budget of " + budgetMs + " ms");
+            this.budgetMs = budgetMs;
+        }
+    }
+
     /*
      * Enabled aggressive block sorting
      * Enabled unnecessary exception pruning
      * Enabled aggressive exception aggregation
      */
     private void runLoop(Integer studentId, Integer projectId, AgentStreamRequest request, SseEmitter emitter) {
-        AgentSsePublisher sse = new AgentSsePublisher(emitter);
+        AgentSsePublisher sse = new AgentSsePublisher(emitter,
+                this.taskEventSubscriptionService == null ? null : this.taskEventSubscriptionService::publishTransient);
         AgentConversation conv = null;
         AgentTask task = null;
         AgentContext ctx = null;
@@ -370,6 +411,7 @@ public class AgentLoopEngine {
         String visibleLanguage = "en";
         AgentCancellationRegistry.ActiveRun activeCancellation = null;
         AgentRunExecutionLeaseService.ExecutionLease executionLease = null;
+        ProjectCheckoutLeaseService.CheckoutLease checkoutLease = null;
         CancellationToken cancellationToken = CancellationToken.none();
         try {
             AgentModelConfig modelConfig = this.modelConfigService.resolveForStudent(studentId, request.getModelConfigId());
@@ -400,13 +442,13 @@ public class AgentLoopEngine {
                 if (conv == null) {
                     throw new IllegalArgumentException("Suspended agent conversation not found");
                 }
-                mode = task.getMode() == null || task.getMode().isBlank() ? "agent" : task.getMode();
+                mode = AgentMode.normalize(task.getMode());
                 request.setConversationId(conv.getConversationId());
                 request.setSessionId(task.getSessionId());
                 memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
                 visibleLanguage = this.visibleLanguage(request.getMessage(), memoryContext);
             } else {
-                mode = request.getMode() != null ? request.getMode() : "agent";
+                mode = AgentMode.normalize(request.getMode());
                 conv = this.conversationService.ensureConversation(studentId, project, request.getConversationId(), mode,
                         request.getMessage(), modelConfig);
                 request.setConversationId(conv.getConversationId());
@@ -421,10 +463,21 @@ public class AgentLoopEngine {
                     throw new IllegalStateException("Agent run is already owned by another active worker");
                 }
             }
-            this.taskService.startTiming(task.getTaskId());
             if (this.runLifecycleService != null) {
                 sse.bindRun(this.runLifecycleService, task.getTaskId());
             }
+            if (this.projectCheckoutLeaseService != null) {
+                Path checkoutWorkspace = this.checkoutWorkspace(project, task);
+                ProjectCheckoutLeaseService.AcquireResult admission = this.projectCheckoutLeaseService.acquire(
+                        task.getTaskId(), project.getProjectId(), checkoutWorkspace);
+                if (!admission.acquired()) {
+                    this.waitForProjectCheckout(sse, conv, task, project, request, runLog, checkoutWorkspace, admission,
+                            visibleLanguage, emitter);
+                    return;
+                }
+                checkoutLease = admission.lease();
+            }
+            this.taskService.startTiming(task.getTaskId());
             this.sendEvent(sse, conv, "SESSION", Map.of(
                     "sessionId", request.getSessionId(),
                     "conversationId", conv.getConversationId(),
@@ -442,7 +495,7 @@ public class AgentLoopEngine {
             if (resumedRun && "recovering".equalsIgnoreCase(task.getStatus())) {
                 this.taskService.updateTask(task.getTaskId(), "running", "Recovered execution", "Execution resumed after lease takeover");
             }
-            if (!resumedRun) {
+            if (!resumedRun || (resumedRun && "queued".equalsIgnoreCase(task.getStatus()))) {
                 this.taskService.updateTask(
                         task.getTaskId(),
                         "preparing",
@@ -455,12 +508,23 @@ public class AgentLoopEngine {
             if (executionLease != null && this.leaseHeartbeatService != null) {
                 this.leaseHeartbeatService.track(executionLease, request.getSessionId());
             }
-            ctx = AgentContext.create((String)request.getSessionId(), (Integer)studentId, (StudentProject)project, (String)conv.getConversationId(), (Long)task.getTaskId());
+            if (checkoutLease != null && this.projectCheckoutLeaseHeartbeatService != null) {
+                this.projectCheckoutLeaseHeartbeatService.track(checkoutLease, request.getSessionId());
+            }
+            java.util.Optional<AgentCheckpointStore.Snapshot> resumedCheckpoint = java.util.Optional.empty();
+            ctx = AgentContext.create(request.getSessionId(), studentId, project, conv.getConversationId(), task.getTaskId());
             this.applyBackgroundWorkspace(ctx, project, task);
             ctx.setCancellationToken(cancellationToken);
             ctx.setModelConfigId(modelConfig.getConfigId());
             ctx.setMode(mode);
-            ctx.setStage("intake");
+            if (resumedRun) {
+                resumedCheckpoint = this.checkpointStore.load(project, conv.getConversationId(), task.getTaskId());
+                if (resumedCheckpoint.isPresent()) {
+                    resumedCheckpoint.get().restoreInto(ctx);
+                }
+            } else {
+                ctx.setStage("intake");
+            }
             this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Iteration limit: `" + DEFAULT_MAX_ITERATIONS + "`\n");
             long contextBuildStartedAt = System.nanoTime();
             String toolDefinitions = this.buildToolDefinitions(mode);
@@ -475,8 +539,8 @@ public class AgentLoopEngine {
             String projectIndex = this.readProjectIndex(studentId, projectId);
             AgentContextOrchestrator.ContextBundle contextBundle = this.contextOrchestrator.buildInitialBundle(project, request.getActivePath(), activeFileContent, toolDefinitions, request.getMessage(), projectIndex, false, ctx);
             String sessionContext = contextBundle.content();
-            String recentRunLog = this.readLatestRunLog(project, runLog);
-            String checkpoint = this.readAgentCheckpoint(project);
+            String recentRunLog = "";
+            String checkpoint = resumedCheckpoint.map(this.checkpointStore::renderForPrompt).orElse("");
             String globalSkills = this.skillService.buildPromptContext(studentId);
             String mcpContext = this.mcpServerService.buildPromptContext(studentId);
             String modePolicy = this.buildModePolicy(mode);
@@ -607,7 +671,13 @@ public class AgentLoopEngine {
                                         if (modelThinking.isBlank()) {
                                             this.sendThought(sse, conv, i, this.visibleActionSummary(tn, publicArgs, visibleLanguage), this.buildToolThought(tn, publicArgs, false, visibleLanguage), task.getTaskId());
                                         }
-                                        this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", tn, "arguments", publicArgs, "summary", this.visibleActionSummary(tn, publicArgs, visibleLanguage), "content", this.visibleActionDetail(tn, publicArgs, visibleLanguage), "taskId", task.getTaskId()));
+                                        String toolCallId = this.nativeToolCallId(lr);
+                                        if (toolCallId == null) {
+                                            this.stopForMissingToolCallIdentity(sse, conv, task, project, request, ctx,
+                                                    runLog, i, tn, visibleLanguage, emitter);
+                                            return;
+                                        }
+                                        this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", tn, "arguments", publicArgs, "summary", this.visibleActionSummary(tn, publicArgs, visibleLanguage), "content", this.visibleActionDetail(tn, publicArgs, visibleLanguage), "taskId", task.getTaskId(), "toolCallId", toolCallId));
                                         String toolSignature = tn + ":" + this.toolTarget(this.safeTool(tn), ta);
                                         recentToolCalls.add(toolSignature);
                                         if (recentToolCalls.size() > 5) recentToolCalls.remove(0);
@@ -632,13 +702,15 @@ public class AgentLoopEngine {
                                             sameToolCount = 0;
                                             lastToolSignature = toolSignature;
                                         }
-                                        String toolCallId = this.nativeToolCallId(lr);
-                                        if (toolCallId == null) {
-                                            this.stopForMissingToolCallIdentity(sse, conv, task, project, request, ctx,
-                                                    runLog, i, tn, visibleLanguage, emitter);
+                                        ToolResult res = this.execTool(tn, ta, ctx, sse, conv, visibleLanguage, toolCallId, runLog);
+                                        Optional<EnvironmentBlockerClassifier.Blocker> environmentBlocker =
+                                                EnvironmentBlockerClassifier.classify(tn, res);
+                                        if (environmentBlocker.isPresent()) {
+                                            this.appendToolResult(runLog, res);
+                                            this.stopForEnvironmentBlocker(sse, conv, task, project, request, ctx, runLog, i, tn,
+                                                    res, environmentBlocker.get(), visibleLanguage, emitter);
                                             return;
                                         }
-                                        ToolResult res = this.execTool(tn, ta, ctx, sse, conv, visibleLanguage, toolCallId, runLog);
                                         if (res.isApprovalRequired()) {
                                             this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, tn, res, visibleLanguage, emitter);
                                             return;
@@ -654,11 +726,11 @@ public class AgentLoopEngine {
                                             boolean waitingForPermission = "permission".equals(res.getInteractionType());
                                             String waitingState = waitingForPermission ? "waiting_approval" : "waiting_user";
                                             String waitingTitle = waitingForPermission
-                                                    ? this.localText(visibleLanguage, "??????", "Awaiting approval")
-                                                    : this.localText(visibleLanguage, "??????", "Awaiting user input");
+                                                    ? this.localText(visibleLanguage, "等待用户批准", "Awaiting approval")
+                                                    : this.localText(visibleLanguage, "等待用户输入", "Awaiting user input");
                                             String waitingDetail = waitingForPermission
-                                                    ? this.localText(visibleLanguage, "??????????????", "User approval is required before execution can continue.")
-                                                    : this.localText(visibleLanguage, "????????????????", "User input is required before execution can continue.");
+                                                    ? this.localText(visibleLanguage, "继续执行前需要用户批准。", "User approval is required before execution can continue.")
+                                                    : this.localText(visibleLanguage, "继续执行前需要用户输入。", "User input is required before execution can continue.");
                                             this.taskService.updateTask(task.getTaskId(), waitingState, waitingTitle, waitingDetail);
                                             this.appendRunLog(runLog, "\n- Durable user interaction pending: type=`" + this.safeLogText(res.getInteractionType())
                                                     + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
@@ -692,8 +764,8 @@ public class AgentLoopEngine {
                                     if (modelThinkingFromLr == null || modelThinkingFromLr.isBlank()) {
                                         this.sendThought(sse, conv, i, this.visibleActionSummary(invTool, publicArgs, visibleLanguage), this.buildToolThought(invTool, publicArgs, true, visibleLanguage), task.getTaskId());
                                     }
-                                    this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", invTool, "arguments", publicArgs, "summary", this.visibleActionSummary(invTool, publicArgs, visibleLanguage), "content", this.visibleActionDetail(invTool, publicArgs, visibleLanguage), "taskId", task.getTaskId()));
                                     String recoveredToolCallId = this.recoveredToolCallId(ctx, i, invTool, parsedArgs);
+                                    this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", invTool, "arguments", publicArgs, "summary", this.visibleActionSummary(invTool, publicArgs, visibleLanguage), "content", this.visibleActionDetail(invTool, publicArgs, visibleLanguage), "taskId", task.getTaskId(), "toolCallId", recoveredToolCallId));
                                     ToolResult res = this.execTool(invTool, parsedArgs, ctx, sse, conv, visibleLanguage, recoveredToolCallId, runLog);
                                     if (res.isApprovalRequired()) {
                                         this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, invTool, res, visibleLanguage, emitter);
@@ -803,9 +875,9 @@ public class AgentLoopEngine {
                             this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
                                     sysPrompt, tools, contextPrompt, msgs, overflowStrategy);
                             if (!hasContextCompactionProgress(tokensBeforeCompaction, tokensAfterCompaction)) {
-                                String modelFailTitle = this.localText(visibleLanguage, "???????", "Context window exceeded");
+                                String modelFailTitle = this.localText(visibleLanguage, "上下文窗口超限", "Context window exceeded");
                                 String modelFailReason = this.localText(visibleLanguage,
-                                        "??????????????????????????????????????????????????????????",
+                                        "当前请求超过模型上下文窗口，且剩余会话无法继续压缩。已停止重复请求；请使用更大上下文模型或新建会话。",
                                         "The request exceeds the model context window and the remaining conversation cannot be reduced further. Repeated requests were stopped; use a model with a larger context window or start a new conversation.");
                                 this.appendRunLog(runLog, "\n### Context overflow could not be reduced\n\n- estimated_tokens_before: " + tokensBeforeCompaction + "\n- estimated_tokens_after: " + tokensAfterCompaction + "\n");
                                 this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
@@ -823,9 +895,9 @@ public class AgentLoopEngine {
                             break block19;
                         }
                         if (this.isModelTimeoutError(errMsg)) {
-                            String modelFailTitle = this.localText(visibleLanguage, "??????", "Model response timed out");
+                            String modelFailTitle = this.localText(visibleLanguage, "模型响应超时", "Model response timed out");
                             String modelFailReason = this.localText(visibleLanguage,
-                                    "?????????????????????????????????????????????",
+                                    "模型服务未及时返回首个响应，本次运行已停止。请检查模型服务、代理配置或更换模型。",
                                     "The model service did not return an initial response in time, so this run was stopped. Check the provider, proxy, or try another model.");
                             this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
                             this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
@@ -917,6 +989,12 @@ public class AgentLoopEngine {
                 if (task != null) {
                     this.diffService.awaitDeferredSnapshots(task.getTaskId(), "agent_terminal_cleanup");
                 }
+                if (checkoutLease != null && this.projectCheckoutLeaseHeartbeatService != null) {
+                    this.projectCheckoutLeaseHeartbeatService.untrack(checkoutLease);
+                }
+                if (checkoutLease != null && this.projectCheckoutLeaseService != null) {
+                    this.projectCheckoutLeaseService.release(checkoutLease);
+                }
                 if (executionLease != null && this.leaseHeartbeatService != null) {
                     this.leaseHeartbeatService.untrack(executionLease);
                 }
@@ -933,6 +1011,73 @@ public class AgentLoopEngine {
                 this.cancellationRegistry.complete(activeCancellation);
             }
         }
+    }
+
+    private Path checkoutWorkspace(StudentProject project, AgentTask task) {
+        Path projectWorkspace = ProjectWorkspace.paths(project).workspaceRoot();
+        if (task == null || task.getBackgroundWorktree() == null || task.getBackgroundWorktree().isBlank()) {
+            return projectWorkspace;
+        }
+        return BackgroundRunWorkspaceResolver.resolve(projectWorkspace, task.getBackgroundWorktree());
+    }
+
+    private void stopForEnvironmentBlocker(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
+                                            StudentProject project, AgentStreamRequest request, AgentContext ctx,
+                                            Path runLog, int iteration, String toolName, ToolResult result,
+                                            EnvironmentBlockerClassifier.Blocker blocker, String visibleLanguage,
+                                            SseEmitter emitter) throws Exception {
+        String summary = this.localText(visibleLanguage, "\u7b49\u5f85\u73af\u5883\u6062\u590d", "Waiting for environment recovery");
+        String detail = this.localText(visibleLanguage,
+                "\u68c0\u6d4b\u5230\u5916\u90e8\u4f9d\u8d56\u73af\u5883\u6545\u969c\uff08" + blocker.code()
+                        + "\uff09\uff0c\u4efb\u52a1\u5df2\u6682\u505c\u3002\u8bf7\u6062\u590d DNS \u6216\u7f51\u7edc\u540e\u624b\u52a8\u91cd\u8bd5\uff1b\u4e0d\u4f1a\u4fee\u6539\u9879\u76ee\u4f9d\u8d56\u914d\u7f6e\u6765\u63a9\u76d6\u8be5\u95ee\u9898\u3002",
+                "An external dependency environment failure (" + blocker.code()
+                        + ") was detected. The task was paused. Restore DNS or network access and retry manually; project dependency configuration was not modified to mask the failure.");
+        this.taskService.waitForEnvironment(task.getTaskId(), summary, detail, blocker.code());
+        this.appendRunLog(runLog, "\n- Environment blocked: code=`" + this.safeLogText(blocker.code())
+                + "`, tool=`" + this.safeLogText(toolName) + "`\n");
+        LinkedHashMap<String, Object> event = new LinkedHashMap<>();
+        event.put("taskId", task.getTaskId());
+        event.put("tool", toolName);
+        event.put("blockerCode", blocker.code());
+        event.put("detail", blocker.detail());
+        event.put("manualRetryRequired", true);
+        event.put("result", this.compactToolResultForCheckpoint(toolName, result));
+        this.sendEvent(sse, conv, "ENVIRONMENT_BLOCKED", event);
+        this.writeAgentCheckpoint(project, request, task, ctx, "waiting_environment", detail, toolName,
+                this.compactToolResultForCheckpoint(toolName, result), runLog);
+        this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
+        this.sendEvent(sse, conv, "DONE", Map.of(
+                "message", summary,
+                "iterations", iteration,
+                "taskId", task.getTaskId(),
+                "taskStatus", "waiting_approval",
+                "waitingForApproval", true,
+                "resumeAgentLoop", true));
+        emitter.complete();
+    }
+
+    private void waitForProjectCheckout(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
+                                         StudentProject project, AgentStreamRequest request, Path runLog, Path workspace,
+                                         ProjectCheckoutLeaseService.AcquireResult admission,
+                                         String visibleLanguage, SseEmitter emitter) throws Exception {
+        String summary = this.localText(visibleLanguage, "\u7b49\u5f85\u9879\u76ee\u5de5\u4f5c\u533a", "Waiting for project workspace");
+        String detail = this.localText(visibleLanguage,
+                "\u53e6\u4e00\u4e2a Agent \u4efb\u52a1\u6b63\u5728\u4f7f\u7528\u540c\u4e00\u5de5\u4f5c\u533a\uff1b\u672c\u4efb\u52a1\u5c1a\u672a\u8c03\u7528\u6a21\u578b\uff0c\u5df2\u6392\u961f\u5e76\u4f1a\u5728\u5de5\u4f5c\u533a\u53ef\u7528\u540e\u6062\u590d\u3002",
+                "Another Agent task is using this checkout. This task has not called the model; it was queued and will resume when the checkout is available.");
+        this.taskService.waitForWorkspace(task.getTaskId(), summary, detail, admission.blockingTaskId());
+        this.appendRunLog(runLog, "\n- Workspace admission deferred. checkout=`"
+                + this.safeLogText(String.valueOf(workspace)) + "`, blockingTaskId=`"
+                + this.safeLogText(String.valueOf(admission.blockingTaskId())) + "`\n");
+        LinkedHashMap<String, Object> event = new LinkedHashMap<>();
+        event.put("taskId", task.getTaskId());
+        event.put("workspace", String.valueOf(workspace));
+        event.put("blockingTaskId", admission.blockingTaskId() == null ? "" : admission.blockingTaskId());
+        event.put("resumeAutomatically", true);
+        event.put("message", detail);
+        this.sendEvent(sse, conv, "WORKSPACE_WAITING", event);
+        this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
+        this.sendEvent(sse, conv, "DONE", Map.of("message", summary));
+        emitter.complete();
     }
 
     void reportStartupFailure(AgentSsePublisher sse, String visibleLanguage, Exception failure) {
@@ -1039,7 +1184,7 @@ public class AgentLoopEngine {
                             askRule != null ? askRule.getPattern() : "*"
                     );
                     return ToolResult.interactionRequired(
-                            this.localText(visibleLanguage, "?????????", "Waiting for user approval."),
+                            this.localText(visibleLanguage, "正在等待用户批准。", "Waiting for user approval."),
                             approval.getRequestId(),
                             "permission");
                 case ALLOW:
@@ -1059,15 +1204,20 @@ public class AgentLoopEngine {
         long metricsElapsedMs = 0L;
         String phase = "tool_delegate";
         this.appendToolExecutionStart(runLog, ctx, name, toolCallId, args);
+        this.sendToolExecutionEvent(sse, conv, "TOOL_EXECUTION_STARTED", ctx, name, toolCallId,
+                "tool_delegate", 0L, Map.of());
         log.info("AGENT_TOOL_EXEC_START taskId={} projectId={} conversationId={} tool={} toolCallId={} argsChars={}",
                 ctx.getTaskId(), ctx.getProject().getProjectId(), ctx.getConversationId(), name, toolCallId,
                 args == null ? 0 : args.toString().length());
         try {
+            this.diffService.clearLastApplyTelemetry();
             this.diffService.awaitDeferredSnapshots(ctx.getTaskId(), "before_tool:" + this.safeTool(name));
             GitSnapshotService.Snapshot beforeSnapshot = null;
             boolean snapshotCommand = this.shouldSnapshotCommandTool(name);
             if (snapshotCommand) {
                 phase = "snapshot_before_command";
+                this.sendToolExecutionEvent(sse, conv, "TOOL_PHASE_CHANGED", ctx, name, toolCallId,
+                        phase, elapsedMs(totalStartedNanos), Map.of());
                 long snapshotStartedNanos = System.nanoTime();
                 beforeSnapshot = this.gitSnapshotService.capture(ctx.getProject(), "before " + name + " task " + ctx.getTaskId());
                 beforeSnapshotElapsedMs = elapsedMs(snapshotStartedNanos);
@@ -1075,20 +1225,30 @@ public class AgentLoopEngine {
 
             phase = "tool_delegate";
             long delegateStartedNanos = System.nanoTime();
-            ToolResult result = t.execute(ctx, args);
+            ToolResult result = this.executeToolWithBudget(t, ctx, args, name);
             delegateElapsedMs = elapsedMs(delegateStartedNanos);
+            DiffService.ApplyTelemetry diffTelemetry = this.diffService.consumeLastApplyTelemetry();
+            if (!diffTelemetry.timingMs().isEmpty()) {
+                log.info("AGENT_TOOL_DIFF_TELEMETRY taskId={} projectId={} tool={} phase={} timings={}",
+                        ctx.getTaskId(), ctx.getProject().getProjectId(), name, diffTelemetry.phase(), diffTelemetry.timingMs());
+                this.appendDiffApplyTelemetry(runLog, diffTelemetry);
+            }
             if (result.isSuccess() && result.getPendingChangeId() != null && !result.getPendingChangeId().isBlank()) {
                 this.diffService.scheduleDeferredSnapshot(result.getPendingChangeId());
             }
 
             if (shouldRecordSnapshotDiff(snapshotCommand, result)) {
                 phase = "snapshot_after_command";
+                this.sendToolExecutionEvent(sse, conv, "TOOL_PHASE_CHANGED", ctx, name, toolCallId,
+                        phase, elapsedMs(totalStartedNanos), Map.of());
                 long snapshotStartedNanos = System.nanoTime();
                 GitSnapshotService.Snapshot afterSnapshot = this.gitSnapshotService.capture(ctx.getProject(),
                         "after " + name + " task " + ctx.getTaskId());
                 afterSnapshotElapsedMs = elapsedMs(snapshotStartedNanos);
 
                 phase = "record_snapshot_diff";
+                this.sendToolExecutionEvent(sse, conv, "TOOL_PHASE_CHANGED", ctx, name, toolCallId,
+                        phase, elapsedMs(totalStartedNanos), Map.of());
                 long diffStartedNanos = System.nanoTime();
                 List<PendingChange> changes = this.diffService.recordSnapshotDiff(ctx.getStudentId(), ctx.getProject(),
                         ctx.getConversationId(), ctx.getTaskId(), name, beforeSnapshot, afterSnapshot);
@@ -1099,6 +1259,8 @@ public class AgentLoopEngine {
             }
 
             phase = "post_edit_hook";
+            this.sendToolExecutionEvent(sse, conv, "TOOL_PHASE_CHANGED", ctx, name, toolCallId,
+                    phase, elapsedMs(totalStartedNanos), Map.of());
             long postEditStartedNanos = System.nanoTime();
             AgentPostEditHookService.HookReport hookReport = this.postEditHookService.afterTool(ctx, name, args, result);
             postEditElapsedMs = elapsedMs(postEditStartedNanos);
@@ -1107,11 +1269,15 @@ public class AgentLoopEngine {
             }
 
             phase = "context_orchestration";
+            this.sendToolExecutionEvent(sse, conv, "TOOL_PHASE_CHANGED", ctx, name, toolCallId,
+                    phase, elapsedMs(totalStartedNanos), Map.of());
             long contextStartedNanos = System.nanoTime();
             this.contextOrchestrator.afterTool(ctx, name, args, result);
             contextElapsedMs = elapsedMs(contextStartedNanos);
 
             phase = "metrics_persistence";
+            this.sendToolExecutionEvent(sse, conv, "TOOL_PHASE_CHANGED", ctx, name, toolCallId,
+                    phase, elapsedMs(totalStartedNanos), Map.of());
             long metricsStartedNanos = System.nanoTime();
             this.metricsService.recordTool(ctx, name, args, result, elapsedMs(totalStartedNanos), hookReport);
             metricsElapsedMs = elapsedMs(metricsStartedNanos);
@@ -1123,7 +1289,27 @@ public class AgentLoopEngine {
             this.appendToolExecutionComplete(runLog, name, toolCallId, result, totalElapsedMs, delegateElapsedMs,
                     beforeSnapshotElapsedMs, afterSnapshotElapsedMs, snapshotDiffElapsedMs, postEditElapsedMs,
                     contextElapsedMs, metricsElapsedMs);
+            this.sendToolExecutionEvent(sse, conv, "TOOL_EXECUTION_COMPLETED", ctx, name, toolCallId, phase,
+                    totalElapsedMs, toolTimingPayload(delegateElapsedMs, beforeSnapshotElapsedMs, afterSnapshotElapsedMs,
+                            snapshotDiffElapsedMs, postEditElapsedMs, contextElapsedMs));
             return result;
+        }
+        catch (ToolExecutionTimedOutException timeout) {
+            long totalElapsedMs = elapsedMs(totalStartedNanos);
+            ToolResult failed = ToolResult.failed(this.localText(visibleLanguage,
+                    "\u5de5\u5177\u6267\u884c\u8d85\u65f6\uff08\u9884\u7b97 " + timeout.budgetMs + " ms\uff09\uff0c\u5df2\u8bf7\u6c42\u505c\u6b62\u6267\u884c\u3002",
+                    "Tool execution timed out after " + timeout.budgetMs + " ms; cancellation was requested."));
+            LinkedHashMap<String, Object> timing = toolTimingPayload(delegateElapsedMs, beforeSnapshotElapsedMs,
+                    afterSnapshotElapsedMs, snapshotDiffElapsedMs, postEditElapsedMs, contextElapsedMs);
+            timing.put("timedOut", true);
+            timing.put("budgetMs", timeout.budgetMs);
+            timing.put("error", timeout.getMessage());
+            this.appendToolExecutionFailed(runLog, name, toolCallId, phase, totalElapsedMs, timeout);
+            this.sendToolExecutionEvent(sse, conv, "TOOL_TIMED_OUT", ctx, name, toolCallId, phase,
+                    totalElapsedMs, timing);
+            this.contextOrchestrator.afterTool(ctx, name, args, failed);
+            this.metricsService.recordTool(ctx, name, args, failed, totalElapsedMs, AgentPostEditHookService.HookReport.empty());
+            return failed;
         }
         catch (Exception e) {
             long totalElapsedMs = elapsedMs(totalStartedNanos);
@@ -1133,20 +1319,76 @@ public class AgentLoopEngine {
                     postEditElapsedMs, contextElapsedMs, metricsElapsedMs, e.getClass().getSimpleName(), e.getMessage());
             ToolResult failed = ToolResult.failed((String)e.getMessage());
             this.appendToolExecutionFailed(runLog, name, toolCallId, phase, totalElapsedMs, e);
+            LinkedHashMap<String, Object> timing = toolTimingPayload(delegateElapsedMs, beforeSnapshotElapsedMs,
+                    afterSnapshotElapsedMs, snapshotDiffElapsedMs, postEditElapsedMs, contextElapsedMs);
+            timing.put("error", this.limitForThought(e.getMessage(), 240));
+            this.sendToolExecutionEvent(sse, conv, "TOOL_EXECUTION_FAILED", ctx, name, toolCallId, phase,
+                    totalElapsedMs, timing);
             this.contextOrchestrator.afterTool(ctx, name, args, failed);
             this.metricsService.recordTool(ctx, name, args, failed, totalElapsedMs, AgentPostEditHookService.HookReport.empty());
             return failed;
         }
     }
 
+    private ToolResult executeToolWithBudget(AgentTool tool, AgentContext context, JsonObject arguments,
+                                              String toolName) throws Exception {
+        long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments);
+        Future<ToolResult> future = TOOL_EXECUTION_EXECUTOR.submit(() -> tool.execute(context, arguments));
+        try {
+            return future.get(budgetMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException timeout) {
+            future.cancel(true);
+            throw new ToolExecutionTimedOutException(this.safeTool(toolName), budgetMs);
+        } catch (InterruptedException interrupted) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        } catch (ExecutionException executionFailure) {
+            Throwable cause = executionFailure.getCause();
+            if (cause instanceof Exception exception) throw exception;
+            if (cause instanceof Error error) throw error;
+            throw new IllegalStateException("Tool execution failed", cause);
+        }
+    }
+
+    private LinkedHashMap<String, Object> toolTimingPayload(long delegateMs, long beforeSnapshotMs,
+                                                              long afterSnapshotMs, long snapshotDiffMs,
+                                                              long postEditMs, long contextMs) {
+        LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+        payload.put("delegateMs", delegateMs);
+        payload.put("beforeSnapshotMs", beforeSnapshotMs);
+        payload.put("afterSnapshotMs", afterSnapshotMs);
+        payload.put("snapshotDiffMs", snapshotDiffMs);
+        payload.put("postEditMs", postEditMs);
+        payload.put("contextMs", contextMs);
+        return payload;
+    }
+
+    private void sendToolExecutionEvent(AgentSsePublisher sse, AgentConversation conv, String type,
+                                        AgentContext ctx, String tool, String toolCallId, String phase,
+                                        long elapsedMs, Map<String, Object> details) {
+        try {
+            LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+            payload.put("taskId", ctx.getTaskId());
+            payload.put("tool", this.safeTool(tool));
+            payload.put("toolCallId", toolCallId == null ? "" : toolCallId);
+            payload.put("phase", phase);
+            payload.put("elapsedMs", elapsedMs);
+            if (details != null) payload.putAll(details);
+            this.sendEvent(sse, conv, type, payload);
+        } catch (Exception eventFailure) {
+            log.warn("Unable to publish tool execution event tool={} type={}: {}", tool, type, eventFailure.getMessage());
+        }
+    }
+
     private ToolResult askUserQuestion(JsonObject args, AgentContext ctx, AgentSsePublisher sse, AgentConversation conv, String visibleLanguage) {
         String question = ToolSupport.stringArg(args, "question", "").trim();
         if (question.isBlank()) {
-            return ToolResult.failed(this.localText(visibleLanguage, "question ??????", "question is required"));
+            return ToolResult.failed(this.localText(visibleLanguage, "question 参数不能为空", "question is required"));
         }
         String summary = ToolSupport.stringArg(args, "summary", "").trim();
         if (summary.isBlank()) {
-            summary = this.localText(visibleLanguage, "??????", "Waiting for user input");
+            summary = this.localText(visibleLanguage, "等待用户输入", "Waiting for user input");
         }
         try {
             List<String> options = this.questionOptions(args);
@@ -1173,11 +1415,11 @@ public class AgentLoopEngine {
             data.put("createdAt", request.createdAt());
             this.sendEvent(sse, conv, "USER_QUESTION", data);
             return ToolResult.interactionRequired(
-                    this.localText(visibleLanguage, "?????????", "Waiting for user input."),
+                    this.localText(visibleLanguage, "正在等待用户输入。", "Waiting for user input."),
                     request.requestId(),
                     "question");
         } catch (Exception e) {
-            return ToolResult.failed(this.localText(visibleLanguage, "???????" + e.getMessage(), "User question failed: " + e.getMessage()));
+            return ToolResult.failed(this.localText(visibleLanguage, "用户问题处理失败：" + e.getMessage(), "User question failed: " + e.getMessage()));
         }
     }
 
@@ -1358,8 +1600,10 @@ public class AgentLoopEngine {
 
     private CommandClassification commandClassification(String toolName, JsonObject args, AgentContext context) {
         String command;
+        String workingDirectory = ".";
         if ("run_tests".equals(toolName)) {
             command = TestCommandResolver.canonicalCommand(context.getWorkspaceRoot());
+            workingDirectory = commandWorkingDirectory(toolName, context.getWorkspaceRoot());
         } else {
             command = this.permissionInput(toolName, args);
         }
@@ -1368,7 +1612,28 @@ public class AgentLoopEngine {
         }
         int timeout = this.commandTimeout(toolName, args);
         return this.commandClassifier.classify(new CommandRequest(
-                command, "direct", ".", timeout, false, false, "agent-worker"));
+                command, "direct", workingDirectory, timeout, false, false, "agent-worker"));
+    }
+
+    /**
+     * Keeps the approval capability bound to the exact directory selected by the fixed test resolver.
+     * A caller cannot supply this value, and a resolved path outside the workspace is never persisted.
+     */
+    static String commandWorkingDirectory(String toolName, Path workspaceRoot) {
+        if (!"run_tests".equals(toolName) || workspaceRoot == null) {
+            return ".";
+        }
+        TestCommandResolver.ResolvedTestCommand resolved = TestCommandResolver.resolveProject(workspaceRoot);
+        if (resolved.workingDirectory() == null || resolved.command().isEmpty()) {
+            return ".";
+        }
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        Path workingDirectory = resolved.workingDirectory().toAbsolutePath().normalize();
+        if (!workingDirectory.startsWith(root)) {
+            return ".";
+        }
+        String relative = root.relativize(workingDirectory).toString().replace('\\', '/');
+        return relative.isBlank() ? "." : relative;
     }
 
     private int commandTimeout(String toolName, JsonObject args) {
@@ -1462,9 +1727,9 @@ public class AgentLoopEngine {
                 "The command is stored safely and will execute at most once after approval; its result will resume the current Agent task as durable context.");
         this.taskService.updateTask(task.getTaskId(), "waiting_approval", summary, detail);
         String publicDisplay = CommandRedactor.redact(displayCommand);
-        this.appendRunLog(runLog, "\n- Awaiting command approval: approvalId=`"
-                + this.safeLogText(result.getApprovalId()) + "`, display=`"
-                + this.safeLogText(publicDisplay) + "`\n");
+        this.appendRunLog(runLog, "\n## Command approval state\n\n- Task status: `waiting_approval`\n- Approval ID: `"
+                + this.safeLogText(result.getApprovalId()) + "`\n- Display: `"
+                + this.safeLogText(publicDisplay) + "`\n- Original SSE: `completed while task remains durable`\n- Continuation: `approval decision -> one-time execution -> same task resume`\n");
         LinkedHashMap<String, Object> event = new LinkedHashMap<>();
         event.put("approvalId", result.getApprovalId());
         event.put("taskId", task.getTaskId());
@@ -1476,10 +1741,17 @@ public class AgentLoopEngine {
         event.put("expiresTime", result.getApprovalExpiresTime());
         event.put("resumeAgentLoop", true);
         this.sendEvent(sse, conv, "COMMAND_APPROVAL_REQUIRED", event);
+        this.sendEvent(sse, conv, "TASK_PAUSED", Map.of(
+                "taskId", task.getTaskId(),
+                "taskStatus", "waiting_approval",
+                "reason", "command_approval",
+                "message", summary,
+                "detail", detail,
+                "resumeAgentLoop", true));
         this.writeAgentCheckpoint(project, request, task, ctx, "waiting_approval", detail, toolName,
                 "approvalId=" + result.getApprovalId() + "; displayCommand=" + publicDisplay, runLog);
-        this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
-        this.sendEvent(sse, conv, "DONE", Map.of("message", summary, "iterations", iteration));
+        // The request transport closes here, but the durable task is paused rather than terminal.
+        // Do not send FINAL/DONE: those events are rendered as a completed conversation by the client.
         emitter.complete();
     }
 
@@ -1500,11 +1772,16 @@ public class AgentLoopEngine {
         if (r == null) {
             r = ToolResult.failed("Tool returned no result");
         }
-        String content = this.contextManager.summarizeObservation(tn, r.getContent(), r.isSuccess());
+        String rawResult = r.getContent() == null ? "" : r.getContent();
+        String content = this.contextManager.summarizeObservation(tn, rawResult, r.isSuccess());
+        String modelProjection = this.compactToolResultForModel(tn, r);
         o.put("iteration", i);
         o.put("tool", tn);
         o.put("success", r.isSuccess());
         o.put("content", content);
+        o.put("resultChars", rawResult.length());
+        o.put("modelProjectionChars", modelProjection.length());
+        o.put("modelProjectionTruncated", modelProjection.length() < rawResult.length());
         if ("create_plan".equals(tn) || "plan".equals(tn)) {
             o.put("plan", content);
         }
@@ -1548,8 +1825,8 @@ public class AgentLoopEngine {
         return lower.contains("read timed out")
                 || lower.contains("response timed out")
                 || lower.contains("model service timed out")
-                || lower.contains("????????")
-                || lower.contains("??????");
+                || lower.contains("读取超时")
+                || lower.contains("响应超时");
     }
 
     private boolean isRecoverableModelError(String message) {
@@ -1595,7 +1872,7 @@ public class AgentLoopEngine {
                             LinkedHashMap<String, Object> start = new LinkedHashMap<>();
                             start.put("messageId", thinkMsgId);
                             start.put("iteration", iteration);
-                            start.put("summary", this.localText(visibleLanguage, "????", "Analyzing problem"));
+                            start.put("summary", this.localText(visibleLanguage, "分析问题", "Analyzing problem"));
                             start.put("taskId", taskId);
                             sse.send("THINK_START", start);
                             thinkingStarted[0] = true;
@@ -2517,6 +2794,11 @@ public class AgentLoopEngine {
                 + "- Current phase: `tool_delegate`\n");
     }
 
+    private void appendDiffApplyTelemetry(Path path, DiffService.ApplyTelemetry telemetry) {
+        this.appendRunLog(path, "\n#### Diff apply telemetry\n\n- Phase: `"
+                + this.safeLogText(telemetry.phase()) + "`\n- Timing ms: `" + telemetry.timingMs() + "`\n");
+    }
+
     private void appendToolExecutionComplete(Path path, String toolName, String toolCallId, ToolResult result,
                                              long totalMs, long delegateMs, long beforeSnapshotMs,
                                              long afterSnapshotMs, long snapshotDiffMs, long postEditMs,
@@ -2761,38 +3043,13 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
         }
     }
 
-    private String readAgentCheckpoint(StudentProject project) {
-        if (project == null) {
-            return "";
-        }
+    private void writeAgentCheckpoint(StudentProject project, AgentStreamRequest request, AgentTask task,
+                                      AgentContext context, String status, String note, String lastTool,
+                                      String lastResult, Path runLog) {
         try {
-            Path path = ProjectWorkspace.paths(project).resolveForCreate(".labex/agent-checkpoint.md");
-            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-                return "";
-            }
-            return this.limitForContext(Files.readString(path, StandardCharsets.UTF_8), 8000);
-        }
-        catch (Exception e) {
-            log.warn("Unable to read agent checkpoint: {}", e.getMessage());
-            return "";
-        }
-    }
-
-    private void writeAgentCheckpoint(StudentProject project, AgentStreamRequest request, AgentTask task, AgentContext ctx, String status, String note, String lastTool, String lastResult, Path runLog) {
-        if (project == null || request == null) {
-            return;
-        }
-        try {
-            Path checkpoint = ProjectWorkspace.paths(project).resolveForCreate(".labex/agent-checkpoint.md");
-            Files.createDirectories(checkpoint.getParent());
-            String logRef = this.workspaceRelativeLogPath(project, runLog);
-            String plan = ctx == null ? "" : ctx.getPlanSummary();
-            String stage = ctx == null ? "intake" : ctx.getStage();
-            String content = "# LabexAgent Checkpoint\n\n- updated_at: `" + String.valueOf(LocalDateTime.now()) + "`\n- status: `" + this.safeLogText(status) + "`\n- stage: `" + this.safeLogText(stage) + "`\n- write_count: `" + (ctx == null ? 0 : ctx.getWriteCount()) + "`\n- verification_count: `" + (ctx == null ? 0 : ctx.getVerificationCount()) + "`\n- unverified_changes: `" + (ctx != null && ctx.hasUnverifiedChanges()) + "`\n- session_id: `" + this.safeLogText(request.getSessionId()) + "`\n- conversation_id: `" + this.safeLogText(request.getConversationId()) + "`\n- task_id: `" + String.valueOf(task == null ? "" : task.getTaskId()) + "`\n- user_request: " + this.safeLogText(this.limitForContext(request.getMessage(), 1200)).replace("\n", " ") + "\n- last_tool: `" + this.safeLogText(lastTool) + "`\n- run_log: `" + this.safeLogText(logRef) + "`\n\n## Resume Note\n\n" + this.safeLogText(note) + "\n\n## Current Plan\n\n" + (plan == null || plan.isBlank() ? "(no active plan recorded)" : this.safeLogText(plan)) + "\n\n## Last Result\n\n```text\n" + this.safeLogText(this.limitForContext(lastResult, 3000)) + "\n```\n\n## Resume Instruction\n\nWhen continuing this workspace, inspect the current files if needed, trust already successful tool steps, avoid repeating completed writes, and proceed from the first unfinished plan item.\n";
-            Files.writeString(checkpoint, content, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-        }
-        catch (Exception e) {
-            log.warn("Unable to write agent checkpoint: {}", e.getMessage());
+            this.checkpointStore.save(project, request, task, context, status, note, lastTool, lastResult, runLog);
+        } catch (Exception exception) {
+            log.warn("Unable to write task-scoped agent checkpoint: {}", exception.getMessage());
         }
     }
 
@@ -2817,42 +3074,6 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
      * Enabled unnecessary exception pruning
      * Enabled aggressive exception aggregation
      */
-    private String readLatestRunLog(StudentProject project, Path currentRunLog) {
-        if (project == null) {
-            return "";
-        }
-        try {
-            SecureWorkspacePath workspace = ProjectWorkspace.paths(project);
-            Path dir = workspace.resolveForCreate(".labex/agent-logs/placeholder.md").getParent();
-            if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) {
-                return "";
-            }
-            try (Stream<Path> stream = Files.list(dir);){
-                Optional<Path> latest = stream.filter(path -> !path.equals(currentRunLog))
-                        .filter(path -> path.getFileName().toString().endsWith(".md"))
-                        .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
-                        .max(Comparator.comparingLong(path -> {
-                    try {
-                        return Files.getLastModifiedTime(path, LinkOption.NOFOLLOW_LINKS).toMillis();
-                    }
-                    catch (IOException e) {
-                        return 0L;
-                    }
-                }));
-                if (latest.isEmpty()) {
-                    String string2 = "";
-                    return string2;
-                }
-                String string = this.limitForContext(Files.readString(latest.get(), StandardCharsets.UTF_8), 12000);
-                return string;
-            }
-        }
-        catch (Exception e) {
-            log.warn("Unable to read latest agent run log: {}", e.getMessage());
-            return "";
-        }
-    }
-
     private String limitForContext(String text, int max) {
         if (text == null || text.isBlank()) {
             return "";

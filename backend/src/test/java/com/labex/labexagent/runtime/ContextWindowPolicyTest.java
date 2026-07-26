@@ -19,7 +19,7 @@ class ContextWindowPolicyTest {
         assertFalse(policy.pruningEnabled());
         assertEquals(91_808, policy.inputCapacityTokens());
         assertEquals(8_192, policy.reservedTokens());
-        assertEquals(82_627, policy.softLimitTokens());
+        assertEquals(90_000, policy.softLimitTokens());
         assertEquals(2, policy.tailTurns());
         assertEquals(8_000, policy.preserveRecentTokens());
     }
@@ -38,7 +38,7 @@ class ContextWindowPolicyTest {
         assertFalse(policy.autoCompactionEnabled());
         assertTrue(policy.pruningEnabled());
         assertEquals(4_000, policy.reservedTokens());
-        assertEquals(28_000, policy.softLimitTokens());
+        assertEquals(32_000, policy.softLimitTokens());
         assertEquals(3, policy.tailTurns());
         assertEquals(3_500, policy.preserveRecentTokens());
     }
@@ -53,7 +53,28 @@ class ContextWindowPolicyTest {
 
         assertEquals(32_000, policy.inputCapacityTokens());
         assertEquals(2_000, policy.reservedTokens());
-        assertEquals(25_600, policy.softLimitTokens());
+        assertEquals(32_000, policy.softLimitTokens());
+    }
+
+    @Test
+    void triggersAtNinetyPercentOfTheTotalContextWindow() {
+        AgentModelConfig config = config(200_000, 8_192);
+        config.setCompactionThresholdPercent(90);
+
+        ContextWindowPolicy policy = ContextWindowPolicy.from(config).orElseThrow();
+
+        assertEquals(180_000, policy.softLimitTokens());
+    }
+
+    @Test
+    void keepsExplicitTotalWindowReserveAsASafetyCap() {
+        AgentModelConfig config = config(40_000, 4_000);
+        config.setCompactionThresholdPercent(90);
+        config.setCompactionReservedTokens(8_000);
+
+        ContextWindowPolicy policy = ContextWindowPolicy.from(config).orElseThrow();
+
+        assertEquals(32_000, policy.softLimitTokens());
     }
 
     @Test

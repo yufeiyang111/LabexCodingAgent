@@ -118,6 +118,21 @@ CREATE TABLE IF NOT EXISTS t_agent_task (
     INDEX idx_task_execution_lease (execution_lease_expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS t_agent_project_checkout_lease (
+    checkout_key CHAR(64) NOT NULL PRIMARY KEY,
+    project_id INT NOT NULL,
+    workspace_path VARCHAR(2048) NOT NULL,
+    task_id BIGINT NOT NULL,
+    lease_owner VARCHAR(128) NOT NULL,
+    lease_epoch BIGINT NOT NULL DEFAULT 1,
+    lease_expires_at DATETIME(3) NOT NULL,
+    heartbeat_at DATETIME(3) NOT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_agent_checkout_lease_expiry (lease_expires_at),
+    INDEX idx_agent_checkout_lease_task (task_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS t_agent_message (
     message_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     conversation_id VARCHAR(64) NOT NULL,

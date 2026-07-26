@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import test from 'node:test'
 import { reduceHistoryEvent } from './agentHistoryReducer.js'
 
@@ -54,13 +54,102 @@ test('preserves the task id from persisted session events for historical timing 
 })
 
 
-test('records persisted context-management status events in the thinking timeline', () => {
+test('records persisted context-management status events in a dedicated timeline', () => {
   const target = message()
   reduceHistoryEvent('COMPACTION_STARTED', { tokensBefore: 12000, tokensAfter: 12000 }, target)
   reduceHistoryEvent('CONTEXT_PRUNED', { tokensBefore: 12000, tokensAfter: 9000 }, target)
-  reduceHistoryEvent('COMPACTION_COMPLETED', { tokensBefore: 9000, tokensAfter: 3000 }, target)
+  reduceHistoryEvent('COMPACTION_COMPLETED', { tokensBefore: 12000, tokensAfter: 3000 }, target)
 
-  assert.equal(target.thinkingBlocks.length, 3)
-  assert.match(target.thinkingBlocks[0].content, /12000/)
-  assert.match(target.thinkingBlocks[2].content, /3000/)
+  assert.equal(target.thinkingBlocks.length, 0)
+  assert.equal(target.contextManagementEvents.length, 2)
+  assert.equal(target.contextManagementEvents[0].status, 'completed')
+  assert.equal(target.contextManagementEvents[0].releasedTokens, 9000)
+  assert.equal(target.contextManagementEvents[1].phase, 'pruned')
+  assert.equal(target.contextManagementEvents[1].releasedTokens, 3000)
+})
+
+
+test('records checkout and environment blockers without treating them as completed work', () => {
+  const target = message()
+
+  reduceHistoryEvent('WORKSPACE_WAITING', { taskId: 71, blockingTaskId: 59, resumeAutomatically: true }, target)
+  reduceHistoryEvent('ENVIRONMENT_BLOCKED', { taskId: 71, blockerCode: 'DNS_UNAVAILABLE', manualRetryRequired: true }, target)
+
+  assert.equal(target.taskId, 71)
+  assert.equal(target.workspaceWaiting.blockingTaskId, 59)
+  assert.equal(target.environmentBlocker.blockerCode, 'DNS_UNAVAILABLE')
+})
+
+test('shows compaction progress as one updateable context-management timeline item', () => {
+  const target = message()
+
+  reduceHistoryEvent('COMPACTION_STARTED', { strategy: 'proactive', tokensBefore: 40_500, tokensAfter: 40_500 }, target)
+  reduceHistoryEvent('COMPACTION_FAILED', { strategy: 'model', tokensBefore: 40_500, reason: '压缩模型不可用' }, target)
+  reduceHistoryEvent('COMPACTION_COMPLETED', { strategy: 'deterministic_fallback', tokensBefore: 40_500, tokensAfter: 14_400 }, target)
+
+  assert.equal(target.contextManagementEvents.length, 1)
+  assert.deepEqual(target.contextManagementEvents[0], {
+    kind: 'context-management',
+    phase: 'fallback',
+    status: 'completed',
+    strategy: 'deterministic_fallback',
+    tokensBefore: 40_500,
+    tokensAfter: 14_400,
+    releasedTokens: 26_100,
+    reason: '压缩模型不可用',
+    _order: 1
+  })
+})
+
+test('keeps concurrent compaction tasks isolated by task id', () => {
+  const target = message()
+
+  reduceHistoryEvent('COMPACTION_STARTED', { taskId: 71, strategy: 'manual' }, target)
+  reduceHistoryEvent('COMPACTION_STARTED', { taskId: 72, strategy: 'proactive' }, target)
+  reduceHistoryEvent('COMPACTION_COMPLETED', { taskId: 71, strategy: 'manual_model', tokensBefore: 10_000, tokensAfter: 4_000 }, target)
+
+  assert.equal(target.contextManagementEvents.length, 2)
+  assert.equal(target.contextManagementEvents[0].taskId, 71)
+  assert.equal(target.contextManagementEvents[0].status, 'completed')
+  assert.equal(target.contextManagementEvents[1].taskId, 72)
+  assert.equal(target.contextManagementEvents[1].status, 'running')
+})
+test('keeps a completed tool-result prune as a separate context-management item', () => {
+  const target = message()
+
+  reduceHistoryEvent('CONTEXT_PRUNED', { strategy: 'tool_result_prune', tokensBefore: 40_500, tokensAfter: 37_100 }, target)
+
+  assert.equal(target.contextManagementEvents.length, 1)
+  assert.equal(target.contextManagementEvents[0].phase, 'pruned')
+  assert.equal(target.contextManagementEvents[0].status, 'completed')
+  assert.equal(target.contextManagementEvents[0].releasedTokens, 3_400)
+})
+
+
+test('attaches lifecycle timings to the matching tool call id', () => {
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'run_tests', toolCallId: 'call-42', arguments: {} }, target)
+  reduceHistoryEvent('TOOL_EXECUTION_STARTED', { toolCallId: 'call-42', phase: 'tool_delegate' }, target)
+  reduceHistoryEvent('TOOL_EXECUTION_COMPLETED', {
+    toolCallId: 'call-42', phase: 'post_edit_hook', elapsedMs: 1840,
+    delegateMs: 1200, beforeSnapshotMs: 100, afterSnapshotMs: 50, snapshotDiffMs: 200, postEditMs: 150, contextMs: 140
+  }, target)
+
+  assert.equal(target.toolCalls[0].toolCallId, 'call-42')
+  assert.equal(target.toolCalls[0].execution.phase, 'post_edit_hook')
+  assert.equal(target.toolCalls[0].execution.elapsedMs, 1840)
+  assert.equal(target.toolCalls[0].execution.delegateMs, 1200)
+})
+
+
+test('marks a tool watchdog timeout as an errored tool call with the captured budget', () => {
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'mcp_call', toolCallId: 'call-timeout', arguments: {} }, target)
+  reduceHistoryEvent('TOOL_TIMED_OUT', {
+    toolCallId: 'call-timeout', phase: 'tool_delegate', elapsedMs: 90000, budgetMs: 90000, timedOut: true
+  }, target)
+
+  assert.equal(target.toolCalls[0].status, 'error')
+  assert.equal(target.toolCalls[0].execution.elapsedMs, 90000)
+  assert.equal(target.toolCalls[0].execution.phase, 'tool_delegate')
 })

@@ -1,18 +1,18 @@
-<template>
-  <form class="space-y-4" @submit.prevent="submit">
+﻿<template>
+  <form class="space-y-5" @submit.prevent="submit">
     <label class="grid gap-2">
-      <span class="text-sm font-medium text-[#1D1D1F]">Username</span>
-      <input v-model.trim="form.username" class="h-12 w-full rounded-xl border border-[#E5E5E5] bg-white px-4 text-[15px] text-[#1D1D1F] outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-[#8A8A8A] focus:border-[#1D1D1F] focus:ring-4 focus:ring-black/[0.04]" type="text" autocomplete="username" placeholder="Enter your username" />
+      <span class="text-sm font-medium text-[#4B4C45]">用户名</span>
+      <input v-model.trim="form.username" class="h-12 w-full rounded-[13px_11px_14px_12px] border border-[#CFC8BA] bg-[#F7F4EC] px-4 text-[15px] text-[#34352F] outline-none transition-[border-color,background-color,box-shadow] duration-200 placeholder:text-[#9B978C] focus:border-[#5D675B] focus:bg-[#FCFAF4] focus:ring-4 focus:ring-[#5D675B]/10" type="text" autocomplete="username" placeholder="请输入用户名" />
     </label>
     <label v-if="mode === 'register'" class="grid gap-2">
-      <span class="text-sm font-medium text-[#1D1D1F]">Display name <span class="font-normal text-[#8A8A8A]">(optional)</span></span>
-      <input v-model.trim="form.displayName" class="h-12 w-full rounded-xl border border-[#E5E5E5] bg-white px-4 text-[15px] text-[#1D1D1F] outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-[#8A8A8A] focus:border-[#1D1D1F] focus:ring-4 focus:ring-black/[0.04]" type="text" autocomplete="name" placeholder="Enter your display name" />
+      <span class="text-sm font-medium text-[#4B4C45]">显示名称 <span class="font-normal text-[#8B887E]">（可选）</span></span>
+      <input v-model.trim="form.displayName" class="h-12 w-full rounded-[13px_11px_14px_12px] border border-[#CFC8BA] bg-[#F7F4EC] px-4 text-[15px] text-[#34352F] outline-none transition-[border-color,background-color,box-shadow] duration-200 placeholder:text-[#9B978C] focus:border-[#5D675B] focus:bg-[#FCFAF4] focus:ring-4 focus:ring-[#5D675B]/10" type="text" autocomplete="name" placeholder="为工作间留下名字" />
     </label>
     <label class="grid gap-2">
-      <span class="text-sm font-medium text-[#1D1D1F]">Password</span>
-      <input v-model="form.password" class="h-12 w-full rounded-xl border border-[#E5E5E5] bg-white px-4 text-[15px] text-[#1D1D1F] outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-[#8A8A8A] focus:border-[#1D1D1F] focus:ring-4 focus:ring-black/[0.04]" type="password" :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" placeholder="Enter your password" />
+      <span class="text-sm font-medium text-[#4B4C45]">密码</span>
+      <input v-model="form.password" class="h-12 w-full rounded-[13px_11px_14px_12px] border border-[#CFC8BA] bg-[#F7F4EC] px-4 text-[15px] text-[#34352F] outline-none transition-[border-color,background-color,box-shadow] duration-200 placeholder:text-[#9B978C] focus:border-[#5D675B] focus:bg-[#FCFAF4] focus:ring-4 focus:ring-[#5D675B]/10" type="password" :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" placeholder="请输入密码" />
     </label>
-    <button class="mt-2 flex h-12 w-full items-center justify-center rounded-xl bg-[#1D1D1F] px-5 text-[15px] font-medium text-white transition-all duration-200 hover:-translate-y-px hover:bg-[#333333] hover:shadow-[0_6px_16px_rgba(0,0,0,0.12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1D1D1F] disabled:cursor-wait disabled:opacity-60 disabled:hover:translate-y-0" type="submit" :disabled="loading">{{ loading ? 'Please wait?' : mode === 'login' ? 'Log in' : 'Create account' }}</button>
+    <button class="mt-2 flex h-12 w-full items-center justify-center rounded-[14px_12px_15px_11px] border border-[#4E584D] bg-[#4E584D] px-5 text-[15px] font-medium text-[#FBF8F0] transition-[background-color,border-color,filter] duration-200 hover:border-[#596557] hover:bg-[#596557] hover:brightness-[1.02] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5D675B] disabled:cursor-wait disabled:opacity-60" type="submit" :disabled="loading">{{ loading ? '正在处理…' : mode === 'login' ? '进入工作间' : '创建工作间' }}</button>
   </form>
 </template>
 

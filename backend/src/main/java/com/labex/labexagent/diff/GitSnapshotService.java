@@ -68,27 +68,38 @@ public class GitSnapshotService {
             }
             Path gitDir = gitDir(root);
             init(root, gitDir);
+            Path captureIndex = pathScoped ? createEphemeralIndex(gitDir) : null;
+            try {
+                long stageStartedNanos = System.nanoTime();
+                if (pathScoped) {
+                    runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, pathScopedAddArgs(paths), captureIndex);
+                } else {
+                    runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS,
+                            buildArgs("add", "-A", "--", ".", excludedPathspecs()));
+                }
+                long stageElapsedMs = elapsedMs(stageStartedNanos);
 
-            long stageStartedNanos = System.nanoTime();
-            if (pathScoped) {
-                runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, pathScopedAddArgs(paths));
-            } else {
-                runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS,
-                        buildArgs("add", "-A", "--", ".", excludedPathspecs()));
-            }
-            long stageElapsedMs = elapsedMs(stageStartedNanos);
-
-            long writeTreeStartedNanos = System.nanoTime();
-            String ref = runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, List.of("write-tree")).output().trim();
+                long writeTreeStartedNanos = System.nanoTime();
+                String ref = runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, List.of("write-tree"), captureIndex).output().trim();
             if (ref.isBlank()) {
                 throw new IOException("git write-tree returned an empty tree ref");
             }
-            long writeTreeElapsedMs = elapsedMs(writeTreeStartedNanos);
-            Snapshot snapshot = Snapshot.available(ref, "tree");
-            log.info("GIT_SNAPSHOT_CAPTURE_COMPLETE projectId={} label={} scope={} pathCount={} state={} refPrefix={} stageMs={} writeTreeMs={} elapsedMs={}",
-                    projectId, safeLabel, scope, paths.size(), snapshot.status(), ref.substring(0, Math.min(12, ref.length())),
-                    stageElapsedMs, writeTreeElapsedMs, elapsedMs(startedNanos));
-            return snapshot;
+                long writeTreeElapsedMs = elapsedMs(writeTreeStartedNanos);
+                Snapshot snapshot = Snapshot.available(ref, "tree");
+                log.info("GIT_SNAPSHOT_CAPTURE_COMPLETE projectId={} label={} scope={} pathCount={} state={} refPrefix={} stageMs={} writeTreeMs={} elapsedMs={} indexMode={}",
+                        projectId, safeLabel, scope, paths.size(), snapshot.status(), ref.substring(0, Math.min(12, ref.length())),
+                        stageElapsedMs, writeTreeElapsedMs, elapsedMs(startedNanos),
+                        pathScoped ? "ephemeral" : "shared");
+                return snapshot;
+            } finally {
+                if (captureIndex != null) {
+                    try {
+                        Files.deleteIfExists(captureIndex);
+                    } catch (IOException cleanupFailure) {
+                        log.debug("Unable to remove ephemeral Git snapshot index: {}", cleanupFailure.getMessage());
+                    }
+                }
+            }
         } catch (Exception e) {
             log.warn("GIT_SNAPSHOT_CAPTURE_FAILED projectId={} label={} scope={} pathCount={} elapsedMs={} errorType={} error={}",
                     projectId, safeLabel, scope, paths.size(), elapsedMs(startedNanos),
@@ -314,7 +325,17 @@ public class GitSnapshotService {
         }
     }
 
+    private Path createEphemeralIndex(Path gitDir) throws IOException {
+        Path index = Files.createTempFile(gitDir, "index-path-", ".tmp");
+        Files.deleteIfExists(index);
+        return index;
+    }
+
     private CommandResult runGit(Path root, Path gitDir, int timeoutSeconds, List<String> args) throws IOException, InterruptedException {
+        return runGit(root, gitDir, timeoutSeconds, args, null);
+    }
+
+    private CommandResult runGit(Path root, Path gitDir, int timeoutSeconds, List<String> args, Path indexFile) throws IOException, InterruptedException {
         List<String> command = new ArrayList<>();
         command.add("git");
         command.add("--git-dir");
@@ -322,17 +343,24 @@ public class GitSnapshotService {
         command.add("--work-tree");
         command.add(root.toString());
         command.addAll(args);
-        return run(root, command, timeoutSeconds);
+        return run(root, command, timeoutSeconds, indexFile);
     }
 
     private CommandResult run(Path root, List<String> command, int timeoutSeconds) throws IOException, InterruptedException {
+        return run(root, command, timeoutSeconds, null);
+    }
+
+    private CommandResult run(Path root, List<String> command, int timeoutSeconds, Path indexFile) throws IOException, InterruptedException {
         long startedNanos = System.nanoTime();
         String operation = gitOperation(command);
         log.info("GIT_SNAPSHOT_COMMAND_START operation={} timeoutSeconds={}", operation, timeoutSeconds);
-        Process process = new ProcessBuilder(command)
+        ProcessBuilder builder = new ProcessBuilder(command)
                 .directory(root.toFile())
-                .redirectErrorStream(true)
-                .start();
+                .redirectErrorStream(true);
+        if (indexFile != null) {
+            builder.environment().put("GIT_INDEX_FILE", indexFile.toString());
+        }
+        Process process = builder.start();
         OutputCollector collector = new OutputCollector(process.getInputStream(), MAX_OUTPUT);
         Thread reader = new Thread(collector, "labex-git-snapshot-output");
         reader.setDaemon(true);

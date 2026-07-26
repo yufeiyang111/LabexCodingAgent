@@ -38,6 +38,6 @@ class AgentRunRetrySchedulerTest {
         int resumed = scheduler.resumeDueRetries(LocalDateTime.of(2026, 7, 23, 10, 0, 1));
 
         assertEquals(1, resumed);
-        verify(engine).resume(eq(7), eq(12), any(), eq(71L));
+        verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
     }
 }

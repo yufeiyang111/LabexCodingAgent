@@ -235,6 +235,68 @@ public class AgentTaskService {
         return finalized;
     }
 
+    /** Places a task behind the active task that owns the same project checkout. */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean waitForWorkspace(Long taskId, String currentStep, String summary, Long blockingTaskId) {
+        return waitForExternalCondition(taskId, AgentRunState.WAITING_WORKSPACE, "waiting_workspace",
+                "RUN_WORKSPACE_WAITING", currentStep, summary, Map.of(
+                        "blockingTaskId", blockingTaskId == null ? "" : String.valueOf(blockingTaskId)));
+    }
+
+    /** Persists an infrastructure blocker rather than letting the model reinterpret a network outage as a code defect. */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean waitForEnvironment(Long taskId, String currentStep, String summary, String blockerCode) {
+        return waitForExternalCondition(taskId, AgentRunState.WAITING_ENVIRONMENT, "waiting_environment",
+                "RUN_ENVIRONMENT_BLOCKED", currentStep, summary, Map.of(
+                        "blockerCode", blockerCode == null ? "UNKNOWN" : blockerCode));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public boolean beginWorkspaceResume(Long taskId) {
+        return resumeExternalCondition(taskId, AgentRunState.WAITING_WORKSPACE, "workspace-resume");
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public boolean beginEnvironmentResume(Long taskId) {
+        return resumeExternalCondition(taskId, AgentRunState.WAITING_ENVIRONMENT, "environment-resume");
+    }
+
+    private boolean waitForExternalCondition(Long taskId, AgentRunState waitingState, String persistedStatus,
+                                             String eventType, String currentStep, String summary,
+                                             Map<String, Object> extraPayload) {
+        if (taskId == null) return false;
+        if (this.lifecycleService == null) {
+            this.updateTask(taskId, persistedStatus, currentStep, summary);
+            return true;
+        }
+        AgentTask task = this.task(taskId);
+        if (task == null) return false;
+        AgentRunState current = this.runState(task.getStatus());
+        if (current == waitingState) return true;
+        if (current == null || this.isTerminalState(task.getStatus())) return false;
+        LocalDateTime now = LocalDateTime.now();
+        this.pauseTiming(taskId, now);
+        Map<String, Object> payload = new LinkedHashMap<>(this.taskUpdatePayload(persistedStatus, currentStep, summary));
+        payload.putAll(extraPayload);
+        return this.lifecycleService.transitionIfCurrent(taskId, current, waitingState, eventType, payload,
+                currentStep, summary, AgentRunTransitionKey.forTaskUpdate(taskId, persistedStatus, currentStep, summary));
+    }
+
+    private boolean resumeExternalCondition(Long taskId, AgentRunState waitingState, String operation) {
+        if (taskId == null) return false;
+        if (this.lifecycleService == null) {
+            this.updateTask(taskId, "queued", "Queued for resume", "External blocker cleared");
+            return true;
+        }
+        AgentTask task = this.task(taskId);
+        if (task == null || this.runState(task.getStatus()) != waitingState) return false;
+        return this.lifecycleService.transitionIfCurrent(taskId, waitingState, AgentRunState.QUEUED,
+                "RUN_" + operation.toUpperCase(java.util.Locale.ROOT).replace('-', '_'),
+                this.taskUpdatePayload("queued", "Queued for resume", "External blocker cleared"),
+                "Queued for resume", "External blocker cleared",
+                operation + "-" + taskId + "-" + longValueOrZero(task.getLastEventSequence()));
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ModelRetrySchedule scheduleModelRetry(Long taskId, int maximumAttempts, long delayMs, String reason) {
         if (taskId == null || this.lifecycleService == null) {
@@ -276,6 +338,21 @@ public class AgentTaskService {
         AgentTask task = getOwnedTask(studentId, projectId, taskId);
         return task != null && lifecycleService != null && lifecycleService.cancelScheduledRetry(taskId,
                 Map.of("studentId", studentId, "projectId", projectId), "retry-cancel-" + taskId);
+    }
+
+    /** Cancels a durable task that has no in-memory stream, including workspace/environment waits. */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean cancelInactiveRun(Integer studentId, Integer projectId, Long taskId) {
+        AgentTask task = getOwnedTask(studentId, projectId, taskId);
+        if (task == null) return false;
+        AgentRunState state = this.runState(task.getStatus());
+        if (state != AgentRunState.RETRYING && state != AgentRunState.WAITING_WORKSPACE
+                && state != AgentRunState.WAITING_ENVIRONMENT) {
+            return false;
+        }
+        String summary = "User cancelled inactive agent task";
+        return this.requestCancellation(taskId, "Cancellation requested", summary)
+                && this.finalizeCancellation(taskId, "Cancelled", summary);
     }
 
     public void startTiming(Long taskId) {
@@ -377,7 +454,8 @@ public class AgentTaskService {
     }
 
     private boolean isWaitingState(String status) {
-        return "waiting_approval".equalsIgnoreCase(status) || "waiting_user".equalsIgnoreCase(status);
+        return "waiting_approval".equalsIgnoreCase(status) || "waiting_user".equalsIgnoreCase(status)
+                || "waiting_workspace".equalsIgnoreCase(status) || "waiting_environment".equalsIgnoreCase(status);
     }
 
     private boolean isTerminalState(String status) {
@@ -388,6 +466,10 @@ public class AgentTaskService {
 
     private int valueOrZero(Integer value) {
         return value == null ? 0 : value;
+    }
+
+    private long longValueOrZero(Long value) {
+        return value == null ? 0L : value;
     }
 
     private long elapsedValue(Long elapsedMs) {
@@ -461,6 +543,20 @@ public class AgentTaskService {
 
     public List<AgentTask> listTasks(Integer studentId, Integer projectId) {
         return this.taskMapper.selectList(new LambdaQueryWrapper<AgentTask>().eq(AgentTask::getStudentId, studentId).eq(AgentTask::getProjectId, projectId).orderByDesc(AgentTask::getUpdateTime).last("LIMIT 30"));
+    }
+
+    /** Returns the newest non-terminal task for a conversation so a refreshed browser can reattach. */
+    public AgentTask findLatestActiveTask(Integer studentId, Integer projectId, String conversationId) {
+        if (studentId == null || projectId == null || conversationId == null || conversationId.isBlank()) {
+            return null;
+        }
+        return this.taskMapper.selectOne(new LambdaQueryWrapper<AgentTask>()
+                .eq(AgentTask::getStudentId, studentId)
+                .eq(AgentTask::getProjectId, projectId)
+                .eq(AgentTask::getConversationId, conversationId)
+                .notIn(AgentTask::getStatus, List.of("completed", "failed", "cancelled"))
+                .orderByDesc(AgentTask::getUpdateTime)
+                .last("LIMIT 1"));
     }
 
     public AgentTask getOwnedTask(Integer studentId, Integer projectId, Long taskId) {

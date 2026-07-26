@@ -39,6 +39,22 @@ class LabexSystemPromptTest {
                 .contains("This language rule overrides the English wording used elsewhere in this system prompt");
     }
 
+
+    @Test
+    void systemPromptRequestsSafeStructuredMarkdownForUserVisibleFinalOutput() {
+        StudentProject project = new StudentProject();
+        project.setProjectName("PromptWorkspace");
+        project.setWorkspacePath("D:/workspaces/prompt");
+        project.setStructureJson("{}");
+
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh");
+
+        assertThat(prompt)
+                .contains("Use GitHub-flavored Markdown only")
+                .contains("Use `:::note`, `:::tip`, `:::success`, `:::warning`, `:::important`, or `:::error`")
+                .contains("Do not emit raw HTML");
+    }
+
     @Test
     void systemPromptDoesNotInjectAnUnboundedPersistedProjectTree() {
         StudentProject project = new StudentProject();

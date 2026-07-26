@@ -34,8 +34,14 @@ public class AgentRunResumeScheduler {
                 "running",
                 "Resuming after user response",
                 "A persisted user response is ready");
-        agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId());
-        return true;
+        try {
+            agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true);
+            return true;
+        } catch (RuntimeException exception) {
+            taskService.updateTask(task.getTaskId(), "failed", "Unable to resume after user response",
+                    exception.getMessage() == null ? "Unable to enqueue Agent continuation" : exception.getMessage());
+            return false;
+        }
     }
 
     private boolean isResolvedForResume(AgentRunInteraction interaction) {

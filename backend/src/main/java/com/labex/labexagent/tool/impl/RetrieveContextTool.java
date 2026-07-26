@@ -42,13 +42,13 @@ implements AgentTool {
         IncrementalContextService.RetrievalResult retrieval = incrementalContextService.retrieve(
                 context.getProject(), query, List.of(), Math.max(1, Math.min(limit, 20)));
         if (retrieval.hits().isEmpty()) {
-            return ToolResult.ok("???? '" + query + "' ?????");
+            return ToolResult.ok("未找到与 '" + query + "' 相关的上下文。");
         }
-        StringBuilder output = new StringBuilder("???????? ")
-                .append(retrieval.elapsedMillis()).append("ms????? ")
-                .append(retrieval.indexStats().reusedFiles()).append(" ???\n");
+        StringBuilder output = new StringBuilder("上下文检索完成，耗时 ")
+                .append(retrieval.elapsedMillis()).append(" ms，复用索引文件 ")
+                .append(retrieval.indexStats().reusedFiles()).append(" 个。\n");
         for (IncrementalContextService.RetrievalHit hit : retrieval.hits()) {
-            output.append("\n??: ").append(hit.path())
+            output.append("\n文件：").append(hit.path())
                     .append(" score=").append(String.format(java.util.Locale.ROOT, "%.2f", hit.score()))
                     .append(" reasons=").append(String.join(", ", hit.reasons())).append("\n")
                     .append(hit.preview());

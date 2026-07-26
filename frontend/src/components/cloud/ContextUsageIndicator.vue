@@ -32,7 +32,7 @@ const showPopover = () => {
   opensLeft.value = Boolean(bounds && bounds.left + 286 > window.innerWidth - 12)
   expanded.value = true
 }
-const palette = { systemPrompt: '#5d86e8', toolDefinitions: '#68b9ee', workspaceMemory: '#8bd98a', skillsAndInstructions: '#e6ad70', conversationMessages: '#b079d3', toolResults: '#ce85c7' }
+const palette = { systemPrompt: '#5d86e8', toolDefinitions: '#68b9ee', projectContext: '#72c7b5', workspaceMemory: '#8bd98a', compactedContext: '#e58a6b', skillsAndInstructions: '#e6ad70', conversationMessages: '#b079d3', toolResults: '#ce85c7' }
 const hasSnapshot = computed(() => Boolean(props.status?.usedTokens > 0 || Object.keys(props.status?.categories || {}).length))
 const percent = computed(() => Number.isFinite(props.status?.usagePercent) ? props.status.usagePercent : null)
 const tone = computed(() => percent.value === null ? 'neutral' : percent.value >= 90 ? 'danger' : percent.value >= 70 ? 'warning' : 'normal')
