@@ -23,12 +23,18 @@ public class AgentRunLifecycleService {
     private final AgentTaskMapper taskMapper;
     private final AgentRunEventMapper eventMapper;
     private final AgentRunOutboxMapper outboxMapper;
+    private AgentRunPartService partService;
 
     public AgentRunLifecycleService(AgentTaskMapper taskMapper, AgentRunEventMapper eventMapper,
                                     AgentRunOutboxMapper outboxMapper) {
         this.taskMapper = taskMapper;
         this.eventMapper = eventMapper;
         this.outboxMapper = outboxMapper;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setPartService(AgentRunPartService partService) {
+        this.partService = partService;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -71,14 +77,15 @@ public class AgentRunLifecycleService {
 
     @Transactional(rollbackFor = Exception.class)
     public RecoveryClaim claimRecovery(Long taskId, AgentRunState expectedState, String owner, long leaseDurationMs) {
-        AgentTask task = taskMapper.selectById(taskId);
+        AgentTask task = taskMapper.selectByTaskIdForUpdate(taskId);
         if (task == null || AgentRunState.fromPersistedStatus(task.getStatus()) != expectedState) return null;
         LocalDateTime now = LocalDateTime.now(); long epoch = valueOrZero(task.getExecutionEpoch()) + 1L; LocalDateTime expires = now.plusNanos(Math.max(5_000L, leaseDurationMs) * 1_000_000L);
         String key = "recovery-takeover-" + taskId + "-" + epoch;
-        AgentRunEvent existing = eventMapper.selectOne(new LambdaQueryWrapper<AgentRunEvent>().eq(AgentRunEvent::getTaskId, taskId).eq(AgentRunEvent::getIdempotencyKey, key));
+        AgentRunEvent existing = findByIdempotencyKey(taskId, key);
         if (existing != null) return new RecoveryClaim(owner, epoch, expires);
         AgentRunStateMachine.requireTransition(expectedState, AgentRunState.RECOVERING);
-        long seq=valueOrZero(task.getLastEventSequence())+1L, version=valueOrZero(task.getRunVersion())+1L;
+        long seq = nextSequence(task);
+        long version = valueOrZero(task.getRunVersion()) + 1L;
         UpdateWrapper<AgentTask> update=new UpdateWrapper<AgentTask>().eq("task_id",taskId).eq("status",expectedState.persistedStatus()).eq("run_version",valueOrZero(task.getRunVersion()))
                 .and(w->w.isNull("execution_owner").or().isNull("execution_lease_expires_at").or().le("execution_lease_expires_at",now))
                 .set("status",AgentRunState.RECOVERING.persistedStatus()).set("last_event_sequence",seq).set("run_version",version).set("execution_owner",owner).set("execution_epoch",epoch).set("execution_lease_expires_at",expires).set("execution_heartbeat_at",now).set("current_step","Recovering after expired lease").set("summary","Recovery takeover claimed").set("update_time",now);
@@ -126,23 +133,24 @@ public class AgentRunLifecycleService {
         require(eventType, "eventType");
         require(idempotencyKey, "idempotencyKey");
 
-        AgentRunEvent existing = eventMapper.selectOne(new LambdaQueryWrapper<AgentRunEvent>()
-                .eq(AgentRunEvent::getTaskId, taskId)
-                .eq(AgentRunEvent::getIdempotencyKey, idempotencyKey));
-        if (expectedState == null && existing != null) {
-            return new TransitionResult(existing, false);
-        }
-
-        AgentTask task = taskMapper.selectById(taskId);
+        AgentTask task = taskMapper.selectByTaskIdForUpdate(taskId);
         if (task == null) {
             throw new IllegalArgumentException("Agent run not found: " + taskId);
         }
         AgentRunState currentState = AgentRunState.fromPersistedStatus(task.getStatus());
+        AgentRunEvent existing = findByIdempotencyKey(taskId, idempotencyKey);
+        if (existing != null) {
+            if (currentState == targetState) {
+                return new TransitionResult(existing, false);
+            }
+            if (expectedState != null) {
+                return null;
+            }
+            throw new IllegalStateException(
+                    "Agent run idempotency key was already used while the task is in a different state");
+        }
         if (expectedState != null && currentState != expectedState) {
             return null;
-        }
-        if (existing != null) {
-            return new TransitionResult(existing, false);
         }
 
         boolean stateChanged = currentState != targetState;
@@ -150,7 +158,7 @@ public class AgentRunLifecycleService {
             AgentRunStateMachine.requireTransition(currentState, targetState);
         }
 
-        long nextSequence = valueOrZero(task.getLastEventSequence()) + 1L;
+        long nextSequence = nextSequence(task);
         long expectedVersion = valueOrZero(task.getRunVersion());
         long nextVersion = expectedVersion + 1L;
         LocalDateTime now = LocalDateTime.now();
@@ -212,6 +220,7 @@ public class AgentRunLifecycleService {
         }
         task.setUpdateTime(now);
         persistOutbox(event, payload, now);
+        recordEventPartBestEffort(task.getTaskId(), event.getEventType(), payload, nextSequence);
         return new TransitionResult(event, stateChanged);
     }
 
@@ -221,19 +230,16 @@ public class AgentRunLifecycleService {
         require(eventType, "eventType");
         require(idempotencyKey, "idempotencyKey");
 
-        AgentRunEvent existing = eventMapper.selectOne(new LambdaQueryWrapper<AgentRunEvent>()
-                .eq(AgentRunEvent::getTaskId, taskId)
-                .eq(AgentRunEvent::getIdempotencyKey, idempotencyKey));
-        if (existing != null) {
-            return existing;
-        }
-
-        AgentTask task = taskMapper.selectById(taskId);
+        AgentTask task = taskMapper.selectByTaskIdForUpdate(taskId);
         if (task == null) {
             throw new IllegalArgumentException("Agent run not found: " + taskId);
         }
+        AgentRunEvent existing = findByIdempotencyKey(taskId, idempotencyKey);
+        if (existing != null) {
+            return existing;
+        }
         AgentRunState state = AgentRunState.fromPersistedStatus(task.getStatus());
-        long nextSequence = valueOrZero(task.getLastEventSequence()) + 1L;
+        long nextSequence = nextSequence(task);
         long expectedVersion = valueOrZero(task.getRunVersion());
         long nextVersion = expectedVersion + 1L;
         LocalDateTime now = LocalDateTime.now();
@@ -266,7 +272,17 @@ public class AgentRunLifecycleService {
         task.setRunVersion(nextVersion);
         task.setUpdateTime(now);
         persistOutbox(event, payload, now);
+        recordEventPartBestEffort(task.getTaskId(), event.getEventType(), payload, nextSequence);
         return event;
+    }
+
+    private void recordEventPartBestEffort(Long taskId, String eventType, Object payload, long sequence) {
+        if (partService == null) return;
+        try {
+            partService.recordEventPart(taskId, eventType, payload, sequence);
+        } catch (RuntimeException ignored) {
+            // Part 投影失败不能回滚已经持久化的生命周期事件。
+        }
     }
 
     private void persistOutbox(AgentRunEvent event, Object payload, LocalDateTime now) {
@@ -293,6 +309,18 @@ public class AgentRunLifecycleService {
         message.put("eventType", event.getEventType());
         message.put("payload", payload);
         return message;
+    }
+
+    private AgentRunEvent findByIdempotencyKey(Long taskId, String idempotencyKey) {
+        return eventMapper.selectOne(new LambdaQueryWrapper<AgentRunEvent>()
+                .eq(AgentRunEvent::getTaskId, taskId)
+                .eq(AgentRunEvent::getIdempotencyKey, idempotencyKey));
+    }
+
+    private long nextSequence(AgentTask task) {
+        long taskCursor = valueOrZero(task.getLastEventSequence());
+        long persistedMaximum = valueOrZero(eventMapper.selectMaxSequenceByTaskId(task.getTaskId()));
+        return Math.max(taskCursor, persistedMaximum) + 1L;
     }
 
     private long valueOrZero(Long value) {

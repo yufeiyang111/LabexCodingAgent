@@ -30,6 +30,20 @@ test('delegates user questions and token accounting while applying final output'
   assert.equal(target.content, 'final')
 })
 
+test('keeps a replayed question reply card waiting after its failed tool observation', () => {
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'question', toolCallId: 'q-call', arguments: {} }, target)
+  reduceHistoryEvent('USER_QUESTION', {
+    requestId: 'q-replay', question: 'Continue?', summary: 'Choose next step', options: ['Yes']
+  }, target)
+  target.toolCalls[0].status = 'waiting_user'
+  target.toolCalls[0].questionRequest = { requestId: 'q-replay', question: 'Continue?', options: ['Yes'] }
+  reduceHistoryEvent('OBSERVE', { success: false, content: 'Waiting for user input.' }, target)
+
+  assert.equal(target.toolCalls[0].status, 'waiting_user')
+  assert.equal(target.toolCalls[0].questionRequest.requestId, 'q-replay')
+})
+
 test('reconstructs one-time command approval and terminal execution state without loop resume', () => {
   const target = message()
   reduceHistoryEvent('TOOL_CALL', { tool: 'shell', arguments: { command: '<redacted>' }, summary: 'shell' }, target)
@@ -73,11 +87,12 @@ test('records checkout and environment blockers without treating them as complet
   const target = message()
 
   reduceHistoryEvent('WORKSPACE_WAITING', { taskId: 71, blockingTaskId: 59, resumeAutomatically: true }, target)
-  reduceHistoryEvent('ENVIRONMENT_BLOCKED', { taskId: 71, blockerCode: 'DNS_UNAVAILABLE', manualRetryRequired: true }, target)
+  reduceHistoryEvent('ENVIRONMENT_BLOCKED', { taskId: 71, blockerCode: 'DNS_UNAVAILABLE', detail: '网络不可用，请先恢复环境。', manualRetryRequired: true }, target)
 
   assert.equal(target.taskId, 71)
   assert.equal(target.workspaceWaiting.blockingTaskId, 59)
   assert.equal(target.environmentBlocker.blockerCode, 'DNS_UNAVAILABLE')
+  assert.equal(target.content, '网络不可用，请先恢复环境。')
 })
 
 test('shows compaction progress as one updateable context-management timeline item', () => {
@@ -152,4 +167,39 @@ test('marks a tool watchdog timeout as an errored tool call with the captured bu
   assert.equal(target.toolCalls[0].status, 'error')
   assert.equal(target.toolCalls[0].execution.elapsedMs, 90000)
   assert.equal(target.toolCalls[0].execution.phase, 'tool_delegate')
+})
+
+
+test('restores context limit blocker evidence from persisted history', () => {
+  const target = message()
+  const data = {
+    taskId: 81, reasonCode: 'static_context_exceeds_input_capacity',
+    message: 'Tool schemas exceed the current model capacity', remediation: ['Reduce tool schemas'],
+    budget: { staticTokens: 12000, reducibleTokens: 0, reservedOutputTokens: 4096 }
+  }
+
+  reduceHistoryEvent('CONTEXT_LIMIT_BLOCKED', data, target)
+
+  assert.equal(target.taskId, 81)
+  assert.deepEqual(target.contextLimitBlocker, data)
+  assert.equal(target.environmentBlocker.blockerCode, 'static_context_exceeds_input_capacity')
+})
+
+
+test('replays completion evidence card and terminal state', () => {
+  const target = message()
+  const evidence = { taskId: 91, changedFiles: [], successfulVerifications: [], failedVerifications: [], unresolvedRisks: [], satisfied: true }
+  reduceHistoryEvent('COMPLETION_EVIDENCE', evidence, target)
+  reduceHistoryEvent('RUN_STATE_COMPLETED', { taskId: 91, state: 'completed' }, target)
+  assert.deepEqual(target.completionEvidence, evidence)
+  assert.equal(target.runState, 'completed')
+})
+
+test('renders unavailable post-edit diagnostics as a warning instead of success', () => {
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'edit_file', arguments: {}, toolCallId: 'edit-1' }, target, {})
+  reduceHistoryEvent('OBSERVE', { success: true, result: 'edited\n[Post-edit hooks]\n- status=UNAVAILABLE' }, target, {})
+
+  assert.equal(target.toolCalls[0].status, 'warning')
+  assert.equal(target.toolCalls[0].verificationStatus, 'UNAVAILABLE')
 })

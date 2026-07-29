@@ -29,6 +29,7 @@ class CommandSecurityTest {
     @Test
     void blocksRestrictedShellSyntaxAndNetworkPaths() {
         assertBlocked("echo one | cat", CommandReasonCode.SHELL_OPERATOR);
+        assertBlockedWithHint("echo one | cat", CommandReasonCode.SHELL_OPERATOR, "\u8bf7\u62c6\u5206\u4e3a\u591a\u4e2a\u72ec\u7acb\u5de5\u5177\u8c03\u7528");
         assertBlocked("echo one; pwd", CommandReasonCode.SHELL_OPERATOR);
         assertBlocked("echo one && pwd", CommandReasonCode.SHELL_OPERATOR);
         assertBlocked("echo one || pwd", CommandReasonCode.SHELL_OPERATOR);
@@ -49,6 +50,7 @@ class CommandSecurityTest {
         assertBlocked("git fetch origin", CommandReasonCode.NETWORK_COMMAND);
         assertBlocked("npm install package", CommandReasonCode.NETWORK_COMMAND);
         assertRequiresApproval("npm test");
+        assertRequiresApproval("npm run build");
         assertBlocked("npm run arbitrary-script", CommandReasonCode.UNSUPPORTED_SYNTAX);
         assertBlocked("ping example.invalid", CommandReasonCode.NETWORK_COMMAND);
         assertBlocked("echobad", CommandReasonCode.UNKNOWN_CONTROL_CHARACTER);
@@ -116,5 +118,13 @@ class CommandSecurityTest {
         CommandClassification result = classifier.classify(request(command));
         assertEquals(CommandDecision.BLOCK, result.decision(), command);
         assertEquals(reasonCode, result.reasonCode(), command);
+    }
+
+    private void assertBlockedWithHint(String command, CommandReasonCode reasonCode, String hint) {
+        CommandClassification result = classifier.classify(request(command));
+        assertEquals(CommandDecision.BLOCK, result.decision(), command);
+        assertEquals(reasonCode, result.reasonCode(), command);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                CommandPolicyMessage.forReason(result.reasonCode()).contains(hint), command);
     }
 }

@@ -111,6 +111,7 @@ public class AgentContextOrchestrator {
         if (isReadTool(tool)) {
             if (isManualVerificationRead(context, tool, args, result)) {
                 context.incrementVerificationCount();
+                context.recordTrustedVerification("read_file");
                 context.markChangesVerified();
                 context.setStage("verify");
                 return;

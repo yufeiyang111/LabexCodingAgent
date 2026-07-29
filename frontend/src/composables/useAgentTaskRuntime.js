@@ -1,3 +1,5 @@
+import { upsertDurableToolCallState } from './agentToolCallState.js'
+import { applyRunMessageSnapshot, applyRunPartSnapshot } from './agentRunPartState.js'
 import { nextTick as vueNextTick } from 'vue'
 
 export function isTerminalAgentTask(task) {
@@ -58,6 +60,12 @@ export function useAgentTaskRuntime(options) {
     return !!conversationId && currentAgentSession.value?.conversationId === conversationId
   }
 
+  function ownsTaskIdentity(task) {
+    if (!task || !ownsConversation(task.conversationId)) return false
+    const activeSessionId = currentAgentSession.value?.sessionId
+    return !activeSessionId || !task.sessionId || activeSessionId === task.sessionId
+  }
+
   function recordTaskEventCursor(taskId, eventId) {
     cursors.save(taskId, eventId)
   }
@@ -66,6 +74,7 @@ export function useAgentTaskRuntime(options) {
     subscriptionGeneration++
     recoveryGeneration++
     disconnectSubscription()
+    agentLoading.value = false
   }
 
   function recoveredAssistantMessage(task) {
@@ -98,6 +107,38 @@ export function useAgentTaskRuntime(options) {
     return message
   }
 
+  function reconcileRecoveredToolCalls(message, task) {
+    if (!message) return
+    applyRunMessageSnapshot(message, task?.runMessages)
+    applyRunPartSnapshot(message, task?.parts)
+    if (Array.isArray(task?.toolCalls)) {
+      task.toolCalls.forEach(state => upsertDurableToolCallState(message, state))
+    }
+    const pending = task?.pendingInteraction
+    if (pending?.status === 'waiting' && pending.interactionType === 'question') {
+      const request = {
+        ...pending,
+        ...(pending.requestPayload || {}),
+        requestId: pending.requestId || pending.interactionId,
+        taskId: pending.taskId || task.taskId,
+        conversationId: pending.conversationId || task.conversationId,
+        sessionId: pending.sessionId || task.sessionId
+      }
+      let call = message.toolCalls?.find(item => item?.questionRequest?.requestId === request.requestId)
+      if (!call) call = [...(message.toolCalls || [])].reverse().find(item => item?.name === 'question')
+      if (!call) {
+        message.toolCalls ||= []
+        call = { name: 'question', args: request, summary: request.summary || '等待用户回答', result: null,
+          status: 'waiting_user', toolCallId: request.toolCallId || '', _order: (message._nextOrder = (message._nextOrder || 0) + 1) }
+        message.toolCalls.push(call)
+      }
+      call.status = 'waiting_user'
+      call.durableStatus = 'waiting_user'
+      call.questionRequest = request
+      call.summary = request.summary || call.summary || '等待用户回答'
+    }
+  }
+
   async function recoverActiveTaskForConversation(conversationId) {
     if (!conversationId || !projectId.value) return false
     const generation = ++recoveryGeneration
@@ -116,15 +157,21 @@ export function useAgentTaskRuntime(options) {
       return false
     }
 
-    currentAgentSession.value = { conversationId: task.conversationId, sessionId: task.sessionId }
+    currentAgentSession.value = {
+      conversationId: task.conversationId,
+      sessionId: task.sessionId
+    }
     const assistantMsg = assistantMessageForTask(task)
     assistantMsg.taskId = task.taskId
+    reconcileRecoveredToolCalls(assistantMsg, task)
     reconcileRecoveredCommandApproval(assistantMsg, task)
-    const waitingForCommandApproval = String(task.status || '').toLowerCase() === 'waiting_approval'
-    assistantMsg.isStreaming = !waitingForCommandApproval
-    if (waitingForCommandApproval) stopMessageTimer(assistantMsg)
+    const taskStatus = String(task.status || '').toLowerCase()
+    const waitingForCommandApproval = taskStatus === 'waiting_approval'
+    const waitingForEnvironment = taskStatus === 'waiting_environment'
+    assistantMsg.isStreaming = !waitingForCommandApproval && !waitingForEnvironment
+    if (waitingForCommandApproval || waitingForEnvironment) stopMessageTimer(assistantMsg)
     if (assistantMsg.timing) assistantMsg.timing.taskId = task.taskId
-    agentLoading.value = !waitingForCommandApproval
+    agentLoading.value = !waitingForCommandApproval && !waitingForEnvironment
     void subscribeToTaskEvents(task, assistantMsg)
     return true
   }
@@ -134,7 +181,7 @@ export function useAgentTaskRuntime(options) {
     const generation = ++subscriptionGeneration
     try {
       while (generation === subscriptionGeneration && task?.taskId && !isTerminalAgentTask(task)) {
-        if (!ownsConversation(task.conversationId)) return
+        if (!ownsTaskIdentity(task)) return
         const storedCursor = cursors.read(task.taskId)
         const cursor = storedCursor == null ? sequenceNumber(task.lastEventSequence) : sequenceNumber(storedCursor)
         log('TASK_EVENT_SUBSCRIBE_STARTED', {
@@ -147,7 +194,7 @@ export function useAgentTaskRuntime(options) {
           await subscribeAgent(projectId.value, task.taskId, {
             lastEventId: String(cursor),
             onEvent: event => {
-              if (generation !== subscriptionGeneration || !ownsConversation(task.conversationId)) return
+              if (generation !== subscriptionGeneration || !ownsTaskIdentity(task)) return
               cursors.save(task.taskId, event.eventId)
               handleAgentEvent(event, assistantMsg)
             }
@@ -156,10 +203,12 @@ export function useAgentTaskRuntime(options) {
           if (error?.name === 'AbortError' || generation !== subscriptionGeneration) return
           console.warn('Agent task subscription disconnected; reconnecting from durable cursor:', error)
         }
-        if (generation !== subscriptionGeneration || !ownsConversation(task.conversationId)) return
+        if (generation !== subscriptionGeneration || !ownsTaskIdentity(task)) return
 
         const active = (await api.agentActiveTask(projectId.value, task.conversationId))?.data || null
-        if (!active || isTerminalAgentTask(active) || Number(active.taskId) !== Number(initialTask.taskId)) {
+        if (!active || !ownsTaskIdentity(active) || isTerminalAgentTask(active)
+            || Number(active.taskId) !== Number(initialTask.taskId)
+            || (initialTask.sessionId && active.sessionId !== initialTask.sessionId)) {
           assistantMsg.isStreaming = false
           stopMessageTimer(assistantMsg)
           cursors.clear(initialTask.taskId)
@@ -187,7 +236,8 @@ export function useAgentTaskRuntime(options) {
 
   async function resumeTaskEventSubscription(taskId, assistantMsg, conversationId = currentAgentSession.value?.conversationId) {
     const task = (await api.agentActiveTask(projectId.value, conversationId))?.data
-    if (!task || Number(task.taskId) !== Number(taskId) || task.conversationId !== conversationId) {
+    if (!task || Number(task.taskId) !== Number(taskId) || task.conversationId !== conversationId
+        || (currentAgentSession.value?.sessionId && task.sessionId !== currentAgentSession.value.sessionId)) {
       throw new Error('Agent task is no longer active')
     }
     assistantMsg.taskId = task.taskId
@@ -244,6 +294,7 @@ export function useAgentTaskRuntime(options) {
   }
 
   return {
+    logTaskRecovery: log,
     recordTaskEventCursor,
     invalidate,
     recoverActiveTaskForConversation,

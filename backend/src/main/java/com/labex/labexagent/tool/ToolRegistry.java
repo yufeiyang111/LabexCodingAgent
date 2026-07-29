@@ -50,33 +50,43 @@ public class ToolRegistry {
         return this.tools.get(name);
     }
 
-    /** 获取所有工具定义（用于 build 模式） */
+    /** Tool definitions before capability filtering. */
     public Collection<ToolDefinition> definitions() {
         List<ToolDefinition> all = new ArrayList<>();
         this.tools.values().stream().map(AgentTool::definition).forEach(all::add);
         this.dynamicTools.values().stream().map(AgentTool::definition).forEach(all::add);
-        return all;
+        return List.copyOf(all);
     }
 
-    /** 按模式过滤工具定义（用于 plan/explore 模式） */
-    public Collection<ToolDefinition> definitionsForMode(String mode) {
-        if (!AgentMode.isSupported(mode)) {
-            return List.of();
-        }
+    /** Static tool definitions filtered by mode; dynamic MCP tools cannot bypass read-only modes. */
+    public Collection<ToolDefinition> staticDefinitionsForMode(String mode) {
+        if (!AgentMode.isSupported(mode)) return List.of();
         Set<String> allowed = MODE_ALLOWED_TOOLS.get(mode);
         if (allowed == null) {
-            return AgentMode.isUnrestricted(mode) ? definitions() : List.of();
+            return AgentMode.isUnrestricted(mode)
+                    ? this.tools.values().stream().map(AgentTool::definition).toList()
+                    : List.of();
         }
-        List<ToolDefinition> result = new ArrayList<>();
-        this.tools.values().stream()
-            .map(AgentTool::definition)
-            .filter(d -> allowed.contains(d.getName()))
-            .forEach(result::add);
-        // MCP 动态工具在 build 模式下全部可用
-        this.dynamicTools.values().stream()
-            .map(AgentTool::definition)
-            .forEach(result::add);
-        return result;
+        return this.tools.values().stream()
+                .map(AgentTool::definition)
+                .filter(definition -> allowed.contains(definition.getName()))
+                .toList();
+    }
+
+    /** Dynamic MCP schemas; ToolSelectionPolicy applies mode and capability filtering. */
+    public Collection<ToolDefinition> dynamicDefinitions() {
+        return this.dynamicTools.values().stream().map(AgentTool::definition).toList();
+    }
+
+    /** Compatibility API: dynamic tools are available only in unrestricted modes. */
+    public Collection<ToolDefinition> definitionsForMode(String mode) {
+        List<ToolDefinition> result = new ArrayList<>(staticDefinitionsForMode(mode));
+        if (AgentMode.isUnrestricted(mode)) {
+            dynamicDefinitions().stream()
+                    .sorted(Comparator.comparing(ToolDefinition::getName))
+                    .forEach(result::add);
+        }
+        return List.copyOf(result);
     }
 
     /** 检查某工具在某模式下是否允许使用 */

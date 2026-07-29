@@ -1,7 +1,12 @@
-﻿import { defineConfig } from 'vite'
+﻿import { fileURLToPath } from 'node:url'
+import { dirname, resolve } from 'node:path'
+import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
-import { resolve } from 'path'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const apiTarget = process.env.VITE_API_TARGET || 'http://localhost:8080'
+const frontendPort = Number.parseInt(process.env.ACCEPTANCE_FRONTEND_PORT || '3000', 10)
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
@@ -19,11 +24,11 @@ export default defineConfig({
     }
   },
   server: {
-    port: 3000,
+    port: Number.isInteger(frontendPort) && frontendPort > 0 ? frontendPort : 3000,
     host: '0.0.0.0',
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: apiTarget,
         changeOrigin: true,
         secure: false,
         ws: true

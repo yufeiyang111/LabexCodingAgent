@@ -23,6 +23,8 @@ public class AgentRunRecoveryService {
     private final AgentRunLifecycleService lifecycleService;
     private AgentRunExecutionLeaseService executionLeaseService;
     private AgentRunTakeoverScheduler takeoverScheduler;
+    private AgentRunPartService partService;
+    private AgentRunMessageService messageService;
 
     public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService) {
         this.taskMapper = taskMapper;
@@ -36,6 +38,12 @@ public class AgentRunRecoveryService {
 
     @Autowired(required = false)
     void setTakeoverScheduler(AgentRunTakeoverScheduler takeoverScheduler) { this.takeoverScheduler = takeoverScheduler; }
+
+    @Autowired(required = false)
+    void setRunParts(AgentRunPartService partService, AgentRunMessageService messageService) {
+        this.partService = partService;
+        this.messageService = messageService;
+    }
 
     @EventListener(ApplicationReadyEvent.class)
     public void recoverAfterStartup() {
@@ -72,6 +80,7 @@ public class AgentRunRecoveryService {
             return;
         }
         AgentRunState state = AgentRunState.fromPersistedStatus(task.getStatus());
+        sealInterruptedParts(task, state);
         if (takeoverScheduler != null && (state == AgentRunState.QUEUED || state == AgentRunState.PREPARING || state == AgentRunState.RUNNING) && takeoverScheduler.takeover(task)) return;
         int attempts = valueOrZero(task.getRecoveryAttempts()) + 1;
         task.setRecoveryAttempts(attempts);
@@ -124,6 +133,19 @@ public class AgentRunRecoveryService {
                 "Recovery required",
                 "Agent service restarted before the run could resume",
                 "recovery-" + task.getTaskId() + "-failed");
+    }
+
+    private void sealInterruptedParts(AgentTask task, AgentRunState state) {
+        String reason = "Agent service restarted before this model turn completed";
+        if (partService != null) {
+            partService.interruptOpenParts(task.getTaskId(), reason);
+        }
+        if (messageService != null) {
+            boolean waiting = state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER
+                    || state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT
+                    || state == AgentRunState.RETRYING;
+            messageService.markOpenMessages(task.getTaskId(), waiting ? "waiting" : "interrupted", reason);
+        }
     }
 
     private int valueOrZero(Integer value) {

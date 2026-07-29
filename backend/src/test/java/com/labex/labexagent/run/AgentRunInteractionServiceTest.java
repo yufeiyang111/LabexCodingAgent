@@ -66,6 +66,19 @@ class AgentRunInteractionServiceTest {
     }
 
     @Test
+    void findsTheLatestWaitingInteractionForTask() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction waiting = waitingInteraction();
+        when(mapper.selectOne(any())).thenReturn(waiting);
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        AgentRunInteraction found = service.findWaitingForTask(71L);
+
+        assertEquals(waiting, found);
+        verify(mapper).selectOne(any());
+    }
+
+    @Test
     void claimsAnExpiredWaitingInteractionExactlyOnce() {
         AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
         AgentRunInteraction waiting = waitingInteraction();

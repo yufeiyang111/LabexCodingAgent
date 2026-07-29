@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -17,6 +18,8 @@ import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentRunOutboxMapper;
 import com.labex.mapper.AgentTaskMapper;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -29,7 +32,7 @@ class AgentRunLifecycleServiceTest {
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
         AgentTask task = task(AgentRunState.QUEUED);
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
         when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
@@ -60,7 +63,7 @@ class AgentRunLifecycleServiceTest {
         AgentTask task = task(AgentRunState.RUNNING);
         task.setLastEventSequence(3L);
         task.setRunVersion(5L);
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
         when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
@@ -70,6 +73,8 @@ class AgentRunLifecycleServiceTest {
         }).when(eventMapper).insert(any(AgentRunEvent.class));
 
         AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        service.setPartService(parts);
         AgentRunEvent event = service.appendEvent(
                 71L,
                 "THINK",
@@ -83,6 +88,64 @@ class AgentRunLifecycleServiceTest {
         assertEquals(4L, task.getLastEventSequence());
         assertEquals(6L, task.getRunVersion());
         verify(outboxMapper).insert(any(AgentRunOutbox.class));
+        verify(parts).recordEventPart(eq(71L), eq("THINK"), any(), eq(4L));
+    }
+
+    @Test
+    void allocatesAfterThePersistedEventMaximumWhenTheTaskCursorIsStale() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RECOVERING);
+        task.setLastEventSequence(25L);
+        task.setRunVersion(25L);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(eventMapper.selectMaxSequenceByTaskId(71L)).thenReturn(26L);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(904L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        AgentRunEvent event = service.appendEvent(
+                71L,
+                "THINK",
+                Map.of("content", "Resume after restart"),
+                "task-71-think-after-restart");
+
+        assertEquals(27L, event.getSequenceNumber());
+        assertEquals(27L, task.getLastEventSequence());
+    }
+
+    @Test
+    void locksTheTaskBeforeReadingTheIdempotencyKey() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        List<String> calls = new ArrayList<>();
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenAnswer(invocation -> {
+            calls.add("task-lock");
+            return task;
+        });
+        when(eventMapper.selectOne(any())).thenAnswer(invocation -> {
+            calls.add("idempotency-read");
+            return null;
+        });
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(906L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        service.appendEvent(71L, "THINK", Map.of("content", "Inspecting"), "task-71-lock-order");
+
+        assertEquals(List.of("task-lock", "idempotency-read"), calls.subList(0, 2));
     }
 
     @Test
@@ -91,7 +154,7 @@ class AgentRunLifecycleServiceTest {
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
         AgentTask task = task(AgentRunState.QUEUED);
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
         when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
@@ -130,7 +193,7 @@ class AgentRunLifecycleServiceTest {
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
         AgentTask task = task(AgentRunState.RUNNING);
         java.time.LocalDateTime retryAt = java.time.LocalDateTime.of(2026, 7, 23, 10, 1);
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
         when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
@@ -159,7 +222,7 @@ class AgentRunLifecycleServiceTest {
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
         AgentTask task = task(AgentRunState.RETRYING);
         task.setNextRetryAt(java.time.LocalDateTime.of(2026, 7, 24, 15, 0));
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
         when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
@@ -188,7 +251,7 @@ class AgentRunLifecycleServiceTest {
         task.setExecutionEpoch(4L);
         task.setExecutionOwner("instance-old");
         task.setExecutionLeaseExpiresAt(java.time.LocalDateTime.now().minusSeconds(1));
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
         when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
@@ -225,7 +288,7 @@ class AgentRunLifecycleServiceTest {
         task.setExecutionEpoch(4L);
         task.setExecutionOwner("instance-other");
         task.setExecutionLeaseExpiresAt(java.time.LocalDateTime.now().plusSeconds(30));
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
         AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
@@ -247,6 +310,7 @@ class AgentRunLifecycleServiceTest {
         existing.setEventId(902L);
         existing.setState("preparing");
         existing.setSequenceNumber(1L);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task(AgentRunState.PREPARING));
         when(eventMapper.selectOne(any())).thenReturn(existing);
 
         AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
@@ -267,12 +331,41 @@ class AgentRunLifecycleServiceTest {
     }
 
     @Test
+    void doesNotReportHistoricIdempotencyAsAppliedWhenTheTaskIsStillInTheExpectedState() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.WAITING_USER);
+        AgentRunEvent historic = new AgentRunEvent();
+        historic.setEventId(907L);
+        historic.setState(AgentRunState.RECOVERING.persistedStatus());
+        historic.setIdempotencyKey("interaction-resume-duplicate");
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(historic);
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        boolean transitioned = service.transitionIfCurrent(
+                71L,
+                AgentRunState.WAITING_USER,
+                AgentRunState.RECOVERING,
+                "RUN_INTERACTION_RESUME_QUEUED",
+                Map.of(),
+                "Resuming after user response",
+                "A persisted user response is ready",
+                "interaction-resume-duplicate");
+
+        assertFalse(transitioned);
+        verify(taskMapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+    }
+
+    @Test
     void declinesAnExpectedStateTransitionWhenItsCompareAndSetLosesTheRace() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
         AgentTask task = task(AgentRunState.WAITING_USER);
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
 
@@ -298,7 +391,7 @@ class AgentRunLifecycleServiceTest {
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
         AgentTask task = task(AgentRunState.RUNNING);
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
 
@@ -317,7 +410,7 @@ class AgentRunLifecycleServiceTest {
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
         AgentTask task = task(AgentRunState.RUNNING);
-        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(null);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
         doAnswer(invocation -> {
@@ -337,7 +430,7 @@ class AgentRunLifecycleServiceTest {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
-        when(taskMapper.selectById(71L)).thenReturn(task(AgentRunState.QUEUED));
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task(AgentRunState.QUEUED));
         when(eventMapper.selectOne(any())).thenReturn(null);
         AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
 

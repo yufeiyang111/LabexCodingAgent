@@ -27,7 +27,7 @@ class AgentPostEditHookServiceTest {
     Path workspace;
 
     @Test
-    void capsDiagnosticsAndDoesNotCountUnavailableLspAsAnError() throws Exception {
+    void marksUnavailableLspAsBlockingVerificationRisk() throws Exception {
         for (int index = 1; index <= 4; index++) {
             Files.writeString(workspace.resolve("File" + index + ".java"), "class File" + index + " {}\n");
         }
@@ -44,7 +44,10 @@ class AgentPostEditHookServiceTest {
         assertEquals(4, report.changedFiles().size());
         assertTrue(report.content().contains("checked 3, skipped 1, unavailable 3, capped at 3"));
         assertTrue(report.content().contains("lsp unavailable (not installed)"));
-        assertFalse(report.content().contains("action_required"));
+        assertTrue(report.content().contains("status=UNAVAILABLE"));
+        assertTrue(report.content().contains("action_required"));
+        assertEquals(AgentPostEditHookService.VerificationStatus.UNAVAILABLE, report.status());
+        assertFalse(report.unresolvedRisks().isEmpty());
         verify(lsp, times(3)).diagnostics(any(), any());
     }
 
@@ -58,6 +61,7 @@ class AgentPostEditHookServiceTest {
 
         assertEquals(0, report.errorCount());
         assertTrue(report.content().contains("checked 0, skipped 1, unavailable 0"));
+        assertEquals(AgentPostEditHookService.VerificationStatus.SKIPPED, report.status());
         verify(lsp, times(0)).diagnostics(any(), any());
     }
 

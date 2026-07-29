@@ -6,6 +6,7 @@ const source = await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 
 const apiSource = await readFile(new URL('../api/index.js', import.meta.url), 'utf8')
 const streamSource = await readFile(new URL('../composables/useAgentStream.js', import.meta.url), 'utf8')
 const runtimeSource = await readFile(new URL('../composables/useAgentTaskRuntime.js', import.meta.url), 'utf8')
+const timelineSource = await readFile(new URL('../composables/useAgentEventTimeline.js', import.meta.url), 'utf8')
 
 test('workspace delegates active-task recovery to a conversation-scoped runtime', () => {
   assert.match(apiSource, /agentActiveTask\(projectId, conversationId\)/)
@@ -18,10 +19,12 @@ test('workspace delegates active-task recovery to a conversation-scoped runtime'
   assert.match(runtimeSource, /ownsConversation\(conversationId\)/)
   assert.match(runtimeSource, /void subscribeToTaskEvents\(task, assistantMsg\)/)
   assert.match(runtimeSource, /console\.info\('\[AgentTaskRecovery\]'/)
-  assert.match(source, /case 'TASK_PAUSED':/)
+  assert.match(timelineSource, /case 'TASK_PAUSED':/)
   assert.match(source, /call\._commandApprovalInFlight/)
   assert.match(source, /function reconcileRecoveredCommandApproval\(message, task\)/)
-  assert.match(source, /case 'COMMAND_EXECUTION_STARTED':/)
+  assert.match(timelineSource, /case 'COMMAND_EXECUTION_STARTED':/)
+  assert.match(source, /environmentBlocker\.retryable !== false/)
+
 })
 
 test('task recovery uses durable subscription cursors rather than replay polling', () => {

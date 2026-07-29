@@ -6,10 +6,13 @@ import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.service.AgentTaskService;
 import org.springframework.context.annotation.Lazy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AgentRunResumeScheduler {
+    private static final Logger log = LoggerFactory.getLogger(AgentRunResumeScheduler.class);
     private final AgentTaskService taskService;
     private final AgentLoopEngine agentLoopEngine;
 
@@ -20,23 +23,41 @@ public class AgentRunResumeScheduler {
 
     public boolean resumeIfWaiting(AgentRunInteraction interaction) {
         if (!isResolvedForResume(interaction)) {
+            log.info("AGENT_INTERACTION_RESUME_SKIPPED interactionId={} type={} status={}",
+                    interaction == null ? null : interaction.getInteractionId(),
+                    interaction == null ? null : interaction.getInteractionType(),
+                    interaction == null ? null : interaction.getStatus());
             return false;
         }
         AgentTask task = taskService.getOwnedTask(
                 interaction.getStudentId(), interaction.getProjectId(), interaction.getTaskId());
         if (task == null || !isWaiting(task)) {
+            log.info("AGENT_INTERACTION_RESUME_SKIPPED interactionId={} taskId={} taskStatus={}",
+                    interaction.getInteractionId(), interaction.getTaskId(), task == null ? null : task.getStatus());
             return false;
         }
 
         AgentStreamRequest request = continuationRequest(task, interaction);
         if (!taskService.beginInteractionResume(
                 task.getTaskId(),
+                interaction.getInteractionId(),
                 "Resuming after user response",
                 "A persisted user response is ready")) {
+            log.warn("AGENT_INTERACTION_RESUME_TRANSITION_REJECTED interactionId={} taskId={} taskStatus={}",
+                    interaction.getInteractionId(), task.getTaskId(), task.getStatus());
+            return false;
+        }
+        AgentTask resumedTask = taskService.getOwnedTask(
+                interaction.getStudentId(), interaction.getProjectId(), interaction.getTaskId());
+        if (resumedTask == null || !"recovering".equals(resumedTask.getStatus())) {
+            log.warn("AGENT_INTERACTION_RESUME_STATE_MISMATCH interactionId={} taskId={} resumedStatus={}",
+                    interaction.getInteractionId(), task.getTaskId(), resumedTask == null ? null : resumedTask.getStatus());
             return false;
         }
         try {
-            agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true);
+            log.info("AGENT_INTERACTION_RESUME_ENQUEUED interactionId={} taskId={} continuationChars={}",
+                    interaction.getInteractionId(), resumedTask.getTaskId(), request.getMessage() == null ? 0 : request.getMessage().length());
+            agentLoopEngine.resume(resumedTask.getStudentId(), resumedTask.getProjectId(), request, resumedTask.getTaskId(), true);
             return true;
         } catch (RuntimeException exception) {
             taskService.updateTask(task.getTaskId(), "failed", "Unable to resume after user response",
@@ -61,13 +82,7 @@ public class AgentRunResumeScheduler {
     }
 
     private AgentStreamRequest continuationRequest(AgentTask task, AgentRunInteraction interaction) {
-        AgentStreamRequest request = new AgentStreamRequest();
-        request.setSessionId(task.getSessionId());
-        request.setConversationId(task.getConversationId());
-        request.setMode(task.getMode());
-        request.setResumeTaskId(task.getTaskId());
-        request.setMessage("""
-                Continue the existing task from its durable conversation history.
+        String continuation = """
                 A pending user interaction has been resolved.
                 Interaction type: %s
                 Resolution status: %s
@@ -78,8 +93,8 @@ public class AgentRunResumeScheduler {
                 interaction.getInteractionType(),
                 interaction.getStatus(),
                 compact(interaction.getRequestPayload()),
-                compact(interaction.getResponsePayload())));
-        return request;
+                compact(interaction.getResponsePayload()));
+        return AgentRunContinuationRequestFactory.fromTask(task, continuation);
     }
 
     private String compact(String payload) {

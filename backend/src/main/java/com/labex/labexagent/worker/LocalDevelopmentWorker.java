@@ -2,6 +2,7 @@ package com.labex.labexagent.worker;
 
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
+import com.labex.labexagent.execution.ProcessCommandResolver;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.execution.ProcessExecutor;
 import com.labex.labexagent.runtime.CancellationToken;
@@ -61,7 +62,7 @@ public class LocalDevelopmentWorker implements SandboxWorker {
     public WorkerProcess startProcess(WorkerRunSpec run, ProcessExecutionRequest request) throws IOException {
         prepare(run);
         requireWorkspacePath(run, request.workingDirectory());
-        ProcessBuilder processBuilder = new ProcessBuilder(request.command())
+        ProcessBuilder processBuilder = new ProcessBuilder(ProcessCommandResolver.resolve(request.command()))
                 .directory(request.workingDirectory().toFile());
         processBuilder.environment().clear();
         processBuilder.environment().putAll(run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));

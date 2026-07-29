@@ -1,6 +1,16 @@
+import { upsertDurableToolCallState } from './agentToolCallState.js'
+
 function nextOrder(message) {
   message._nextOrder = (message._nextOrder || 0) + 1
   return message._nextOrder
+}
+
+function toolResultStatus(success, result) {
+  if (success === false) return 'error'
+  const text = String(result || '')
+  if (text.includes('status=FAIL')) return 'error'
+  if (text.includes('status=UNAVAILABLE')) return 'warning'
+  return 'completed'
 }
 
 function normalizedToken(value) {
@@ -151,6 +161,10 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message.thinking += data.delta || ''
       message._thinkingDisplay = message.thinking
       break
+    case 'THINK_SNAPSHOT':
+      message.thinking = data.content || message.thinking || ''
+      message._thinkingDisplay = message.thinking
+      break
     case 'THINK':
       if (data.content) {
         message.thinkingBlocks = message.thinkingBlocks || []
@@ -168,6 +182,9 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       }
       message.toolCalls = message.toolCalls || []
       message.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', toolCallId: data.toolCallId || '', startedAt: data.startedAt || Date.now(), execution: { phase: 'tool_delegate', elapsedMs: 0 }, _order: nextOrder(message) })
+      break
+    case 'TOOL_CALL_STATE':
+      upsertDurableToolCallState(message, data)
       break
     case 'TOOL_EXECUTION_STARTED':
     case 'TOOL_PHASE_CHANGED':
@@ -189,7 +206,9 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       const toolCall = message.toolCalls?.at(-1)
       if (toolCall) {
         toolCall.result = data.result || data.content
-        toolCall.status = data.success !== false ? 'completed' : 'error'
+        const preservesWaitingQuestion = toolCall.questionRequest && data.success === false
+        toolCall.status = preservesWaitingQuestion ? 'waiting_user' : toolResultStatus(data.success, toolCall.result)
+        toolCall.verificationStatus = toolCall.status === 'warning' ? 'UNAVAILABLE' : ''
         toolCall.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
           truncated: data.modelProjectionTruncated === true }
       }
@@ -248,8 +267,26 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'ENVIRONMENT_BLOCKED':
       message.taskId = data.taskId || message.taskId || null
       message.environmentBlocker = data
+      message.content = data.detail || data.message || message.content || '依赖环境暂时不可用，请恢复后重试。'
+      break
+    case 'CONTEXT_LIMIT_BLOCKED':
+      message.taskId = data.taskId || message.taskId || null
+      message.contextLimitBlocker = data
+      message.environmentBlocker = {
+        ...data,
+        blockerCode: data.reasonCode || 'CONTEXT_LIMIT_BLOCKED',
+        detail: data.message || '当前模型无法容纳本轮上下文。'
+      }
       break
     case 'PLAN_UPDATE': message.plan = data.summary || data.plan || null; message.planJson = data.planJson || null; break
+    case 'COMPLETION_EVIDENCE':
+      message.taskId = data.taskId || message.taskId || null
+      message.completionEvidence = data
+      break
+    case 'RUN_STATE_COMPLETED':
+      message.taskId = data.taskId || message.taskId || null
+      message.runState = data.state || 'completed'
+      break
     case 'FINAL_DELTA': message.content += data.delta || ''; break
     case 'FINAL': if (data.content && !message.error) message.content = data.content; break
     case 'ERROR': message.error = data.message; break

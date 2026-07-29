@@ -15,11 +15,20 @@ class TestCommandResolverTest {
     @Test
     void detectsAFrontendProjectInAnImmediateChildDirectory() throws Exception {
         Path frontend = Files.createDirectories(workspace.resolve("frontend"));
-        Files.writeString(frontend.resolve("package.json"), "{}");
+        Files.writeString(frontend.resolve("package.json"), "{\"scripts\":{\"build\":\"vite build\"}}");
 
         TestCommandResolver.ResolvedTestCommand resolved = TestCommandResolver.resolveProject(workspace);
 
         assertEquals(frontend, resolved.workingDirectory());
-        assertEquals(java.util.List.of("npm", "test"), resolved.command());
+        assertEquals(java.util.List.of("npm", "run", "build"), resolved.command());
+    }
+
+    @Test
+    void doesNotInventNpmTestWhenPackageHasNoVerificationScripts() throws Exception {
+        Files.writeString(workspace.resolve("package.json"), "{}");
+
+        TestCommandResolver.ResolvedTestCommand resolved = TestCommandResolver.resolveProject(workspace);
+
+        assertEquals(java.util.List.of(), resolved.command());
     }
 }

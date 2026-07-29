@@ -46,6 +46,17 @@ class AgentLoopEngineContextBudgetTest {
                 .anyMatch(content -> content.contains("[... pruned to save context")));
     }
 
+    @Test
+    void checksStaticAdmissionBeforeAnyContextCompactionProviderCall() throws Exception {
+        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));
+        int admission = source.indexOf("ContextAdmissionDecision preCompactionAdmission");
+        int management = source.indexOf("this.manageContextBeforeModel(", admission);
+        assertTrue(admission > 0);
+        assertTrue(management > admission);
+        assertTrue(source.substring(admission, management).contains("stopForContextLimit"));
+    }
+
     private void trim(List<Map<String, Object>> messages, OptionalInt budget) throws Exception {
         Method method = AgentLoopEngine.class.getDeclaredMethod(
                 "trimMessagesIfNeeded", List.class, String.class, OptionalInt.class);

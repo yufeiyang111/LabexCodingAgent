@@ -18,6 +18,7 @@ public final class ContextUsageSnapshot {
     private final List<ContextPreviewSection> previewSections;
     private final String previewSource;
     private final Map<String, Object> previewMetadata;
+    private ContextBudgetBreakdown budgetBreakdown;
     private final LocalDateTime updatedAt;
 
     public ContextUsageSnapshot(String conversationId, String sessionId, String provider, String model,
@@ -54,6 +55,11 @@ public final class ContextUsageSnapshot {
         this.updatedAt = LocalDateTime.now();
     }
 
+    public ContextUsageSnapshot withBudgetBreakdown(ContextBudgetBreakdown budgetBreakdown) {
+        this.budgetBreakdown = budgetBreakdown;
+        return this;
+    }
+
     public Map<String, Object> toPreviewPayload() {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("conversationId", conversationId);
@@ -80,6 +86,15 @@ public final class ContextUsageSnapshot {
         payload.put("usagePercent", usagePercent);
         payload.put("measurementSource", "ESTIMATED_CHARS");
         payload.put("categories", categories);
+        if (budgetBreakdown != null) {
+            payload.put("staticTokens", budgetBreakdown.staticTokens());
+            payload.put("reducibleTokens", budgetBreakdown.reducibleTokens());
+            payload.put("reservedOutputTokens", budgetBreakdown.reservedOutputTokens());
+            payload.put("inputCapacityTokens", budgetBreakdown.inputCapacityTokens());
+            payload.put("softLimitTokens", budgetBreakdown.softLimitTokens());
+            payload.put("staticCategories", budgetBreakdown.staticCategories());
+            payload.put("reducibleCategories", budgetBreakdown.reducibleCategories());
+        }
         payload.put("trimState", trimState);
         payload.put("updatedAt", updatedAt.toString());
         payload.put("previewSource", previewSource);

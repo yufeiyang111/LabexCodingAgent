@@ -16,6 +16,7 @@ import com.labex.labexagent.diff.DiffService;
 import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.ToolResult;
+import com.labex.labexagent.tool.FileContentFingerprint;
 import com.labex.labexagent.tool.ToolSupport;
 import com.labex.service.StudentProjectService;
 import java.nio.file.Files;
@@ -101,7 +102,8 @@ class EditFileToolTest {
         ToolResult result = tool.execute(context(), args("file_path", "Main.java", "old_string", "missing", "new_string", "new"));
 
         assertFalse(result.isSuccess());
-        assertEquals("未找到要替换的内容", result.getContent());
+        assertTrue(result.getContent().contains("OLD_STRING_NOT_FOUND"));
+        assertTrue(result.getContent().contains("请重新读取"));
         verifyNoInteractions(diffService);
     }
 
@@ -176,6 +178,41 @@ class EditFileToolTest {
         assertFalse(oversized.isSuccess());
         assertEquals("File content exceeds max_file_bytes=" + ToolSupport.MAX_TEXT_MUTATION_FILE_BYTES,
                 oversized.getContent());
+        verifyNoInteractions(diffService);
+    }
+
+    @Test
+    void rejectsEditWhenExpectedFileVersionIsStaleWithoutStaging() throws Exception {
+        DiffService diffService = mock(DiffService.class);
+        EditFileTool tool = tool(diffService);
+        String original = "old + unchanged";
+        Files.writeString(workspace.resolve("Main.java"), original);
+        String expectedSha256 = FileContentFingerprint.sha256(original);
+        Files.writeString(workspace.resolve("Main.java"), "changed externally");
+
+        ToolResult result = tool.execute(context(), args(
+                "file_path", "Main.java",
+                "old_string", "changed externally",
+                "new_string", "updated",
+                "expected_sha256", expectedSha256));
+
+        assertFalse(result.isSuccess());
+        assertTrue(result.getContent().contains("FILE_CHANGED_SINCE_READ"));
+        verifyNoInteractions(diffService);
+    }
+
+    @Test
+    void reportsMissingOldStringWithRecoveryGuidance() throws Exception {
+        DiffService diffService = mock(DiffService.class);
+        EditFileTool tool = tool(diffService);
+        Files.writeString(workspace.resolve("Main.java"), "class Main {}");
+
+        ToolResult result = tool.execute(context(), args(
+                "file_path", "Main.java", "old_string", "missing", "new_string", "new"));
+
+        assertFalse(result.isSuccess());
+        assertTrue(result.getContent().contains("OLD_STRING_NOT_FOUND"));
+        assertTrue(result.getContent().contains("\u8bf7\u91cd\u65b0\u8bfb\u53d6"));
         verifyNoInteractions(diffService);
     }
 

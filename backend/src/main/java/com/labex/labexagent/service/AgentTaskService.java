@@ -71,7 +71,16 @@ public class AgentTaskService {
     @Transactional(rollbackFor = Exception.class)
     public AgentTask createTask(Integer studentId, StudentProject project, String conversationId, String sessionId,
                                 String mode, String message, boolean backgroundRun, LocalDateTime submittedAt) {
-        Map<String, Object> payload = this.taskPayload(studentId, project, conversationId, sessionId, mode, message);
+        return createTask(studentId, project, conversationId, sessionId, mode, message, null, null,
+                backgroundRun, submittedAt);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AgentTask createTask(Integer studentId, StudentProject project, String conversationId, String sessionId,
+                                String mode, String message, String activePath, Integer modelConfigId,
+                                boolean backgroundRun, LocalDateTime submittedAt) {
+        Map<String, Object> payload = this.taskPayload(studentId, project, conversationId, sessionId, mode, message,
+                activePath, modelConfigId);
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime effectiveSubmittedAt = submittedAt == null ? now : submittedAt;
         AgentTask task = new AgentTask();
@@ -116,6 +125,13 @@ public class AgentTaskService {
 
     @Transactional(rollbackFor = Exception.class)
     public void updateTask(Long taskId, String status, String currentStep, String summary) {
+        this.updateTask(taskId, status, currentStep, summary,
+                AgentRunTransitionKey.forTaskUpdate(taskId, status, currentStep, summary));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void updateTask(Long taskId, String status, String currentStep, String summary,
+                           String idempotencyKey) {
         if (taskId == null) {
             return;
         }
@@ -132,7 +148,7 @@ public class AgentTaskService {
                     this.taskUpdatePayload(status, currentStep, summary),
                     currentStep,
                     summary,
-                    AgentRunTransitionKey.forTaskUpdate(taskId, status, currentStep, summary));
+                    idempotencyKey);
             if (this.isTerminalState(status)) {
                 this.finishTimingIfTerminal(taskId, now);
             }
@@ -240,8 +256,8 @@ public class AgentTaskService {
      * The run is not marked running until the worker actually owns all required leases.
      */
     @Transactional(rollbackFor = Exception.class)
-    public boolean beginInteractionResume(Long taskId, String currentStep, String summary) {
-        if (taskId == null) return false;
+    public boolean beginInteractionResume(Long taskId, String interactionId, String currentStep, String summary) {
+        if (taskId == null || interactionId == null || interactionId.isBlank()) return false;
         if (this.lifecycleService == null) {
             this.updateTask(taskId, "recovering", currentStep, summary);
             return true;
@@ -259,7 +275,7 @@ public class AgentTaskService {
                 this.taskUpdatePayload("recovering", currentStep, summary),
                 currentStep,
                 summary,
-                AgentRunTransitionKey.forTaskUpdate(taskId, "recovering", currentStep, summary));
+                AgentRunTransitionKey.forInteractionResume(taskId, interactionId));
     }
 
     /** Places a task behind the active task that owns the same project checkout. */
@@ -522,7 +538,8 @@ public class AgentTaskService {
     }
 
     private Map<String, Object> taskPayload(Integer studentId, StudentProject project, String conversationId,
-                                             String sessionId, String mode, String message) {
+                                             String sessionId, String mode, String message,
+                                             String activePath, Integer modelConfigId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("studentId", studentId);
         payload.put("projectId", project.getProjectId());
@@ -530,6 +547,8 @@ public class AgentTaskService {
         payload.put("sessionId", sessionId);
         payload.put("mode", mode);
         payload.put("message", message);
+        payload.put("activePath", activePath == null ? "" : activePath);
+        if (modelConfigId != null) payload.put("modelConfigId", modelConfigId);
         return payload;
     }
 

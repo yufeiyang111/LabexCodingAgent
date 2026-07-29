@@ -4,6 +4,7 @@ import com.labex.entity.StudentProject;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -21,12 +22,14 @@ public class AgentContext {
     private int currentPlanIndex;
     private String mode = "agent";
     private String stage = "intake";
+    private boolean environmentRecovery;
     private CancellationToken cancellationToken = CancellationToken.none();
     private boolean unverifiedChanges;
     private int writeCount;
     private int verificationCount;
     private Set<String> trustedVerificationSources = new LinkedHashSet<>();
     private Set<String> unverifiedChangeTargets = new LinkedHashSet<>();
+    private Set<String> selectedToolNames = Set.of();
 
     public boolean isPlanMode() {
         return "plan".equals(mode);
@@ -165,10 +168,29 @@ public class AgentContext {
     public void setMode(String mode) { this.mode = mode; }
     public String getStage() { return stage == null || stage.isBlank() ? "intake" : stage; }
     public void setStage(String stage) { this.stage = stage == null || stage.isBlank() ? "intake" : stage; }
+    public boolean isEnvironmentRecovery() { return environmentRecovery; }
+    public void setEnvironmentRecovery(boolean value) { this.environmentRecovery = value; }
     public CancellationToken getCancellationToken() { return cancellationToken; }
     public void setCancellationToken(CancellationToken cancellationToken) {
         this.cancellationToken = cancellationToken == null ? CancellationToken.none() : cancellationToken;
     }
+    public void setSelectedToolNames(Collection<String> toolNames) {
+        if (toolNames == null || toolNames.isEmpty()) {
+            this.selectedToolNames = Set.of();
+            return;
+        }
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        toolNames.stream()
+                .filter(name -> name != null && !name.isBlank())
+                .map(String::trim)
+                .forEach(normalized::add);
+        this.selectedToolNames = Set.copyOf(normalized);
+    }
+    public Set<String> getSelectedToolNames() { return this.selectedToolNames; }
+    public boolean isToolSelected(String toolName) {
+        return toolName != null && this.selectedToolNames.contains(toolName);
+    }
+
     public boolean hasUnverifiedChanges() { return unverifiedChanges; }
     public void setUnverifiedChanges(boolean unverifiedChanges) { this.unverifiedChanges = unverifiedChanges; }
     public int getWriteCount() { return writeCount; }

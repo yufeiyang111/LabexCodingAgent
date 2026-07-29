@@ -91,15 +91,8 @@ public class AgentRunRetryScheduler {
     }
 
     private AgentStreamRequest continuationRequest(AgentTask task) {
-        AgentStreamRequest request = new AgentStreamRequest();
-        request.setSessionId(task.getSessionId());
-        request.setConversationId(task.getConversationId());
-        request.setMode(task.getMode());
-        request.setResumeTaskId(task.getTaskId());
-        request.setMessage("Continue the existing task from its durable conversation history. "
-                + "A transient model failure was retried by the scheduler. "
-                + "Reassess the workspace and continue safely without repeating unconfirmed tool calls.");
-        return request;
+        return AgentRunContinuationRequestFactory.fromTask(task,
+                "A transient model failure was retried by the scheduler. Reassess the workspace and continue safely without repeating unconfirmed tool calls.");
     }
 
     private boolean validTask(AgentTask task) {

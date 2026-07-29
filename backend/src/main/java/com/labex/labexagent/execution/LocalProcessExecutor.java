@@ -37,7 +37,7 @@ public class LocalProcessExecutor implements ProcessExecutor {
 
         Process process;
         try {
-            ProcessBuilder processBuilder = new ProcessBuilder(request.command())
+            ProcessBuilder processBuilder = new ProcessBuilder(ProcessCommandResolver.resolve(request.command()))
                     .directory(request.workingDirectory().toFile())
                     .redirectErrorStream(true);
             if (!request.environment().isEmpty()) {

@@ -87,7 +87,7 @@ public class ApplyPatchTool implements AgentTool {
 
     private PreparedChange prepareChange(AgentContext context, JsonObject change) throws Exception {
         String path = stringValue(change, "path");
-        String operation = stringValue(change, "operation");
+        String operation = inferredOperation(change);
         String cleaned = ToolSupport.normalizeRelativePath(path);
         if (cleaned.isEmpty()) {
             throw new IllegalArgumentException("Unsafe file path");
@@ -142,6 +142,14 @@ public class ApplyPatchTool implements AgentTool {
             }
             throw new IllegalArgumentException(message);
         }
+    }
+
+    private String inferredOperation(JsonObject change) {
+        String explicit = stringValue(change, "operation");
+        if (!explicit.isBlank()) return explicit;
+        if (change.has("old_string") && change.has("new_string")) return "replace";
+        if (change.has("content")) return "create";
+        return "";
     }
 
     private String stringValue(JsonObject object, String name) {

@@ -148,6 +148,49 @@ CREATE TABLE IF NOT EXISTS t_agent_message (
     INDEX idx_msg_conversation_history (conversation_id, student_id, project_id, message_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS t_agent_run_message (
+    run_message_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    conversation_id VARCHAR(64) DEFAULT NULL,
+    student_id INT NOT NULL,
+    project_id INT NOT NULL,
+    message_key VARCHAR(160) NOT NULL,
+    sequence_number BIGINT DEFAULT NULL,
+    role VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'streaming',
+    content LONGTEXT DEFAULT NULL,
+    metadata LONGTEXT DEFAULT NULL,
+    create_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    update_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_agent_run_message_task_key (task_id, message_key),
+    INDEX idx_agent_run_message_task_sequence (task_id, run_message_id),
+    INDEX idx_agent_run_message_conversation (conversation_id, run_message_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_agent_run_part (
+    part_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    conversation_id VARCHAR(64) DEFAULT NULL,
+    message_id BIGINT DEFAULT NULL,
+    student_id INT NOT NULL,
+    project_id INT NOT NULL,
+    part_key VARCHAR(160) NOT NULL,
+    sequence_number BIGINT DEFAULT NULL,
+    part_type VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    tool_call_id VARCHAR(160) DEFAULT NULL,
+    tool_name VARCHAR(128) DEFAULT NULL,
+    input_json LONGTEXT DEFAULT NULL,
+    output_text LONGTEXT DEFAULT NULL,
+    metadata LONGTEXT DEFAULT NULL,
+    create_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    update_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_agent_run_part_task_key (task_id, part_key),
+    INDEX idx_agent_run_part_task_sequence (task_id, part_id),
+    INDEX idx_agent_run_part_conversation (conversation_id, part_id),
+    INDEX idx_agent_run_part_tool_call (task_id, tool_call_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS t_agent_change_set (
     change_set_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     task_id BIGINT NOT NULL,

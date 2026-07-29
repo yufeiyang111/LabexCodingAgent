@@ -78,6 +78,9 @@ export const projectApi = {
   agentRetryEnvironment(projectId, taskId) {
     return request.post('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId) + '/retry-environment')
   },
+  agentCompletionEvidence(projectId, taskId) {
+    return request.get('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId) + '/completion-evidence')
+  },
   terminalRun(projectId, command, timeoutSeconds) {
     return request.post('/student/projects/' + projectId + '/terminal/run', { command, timeoutSeconds: timeoutSeconds || 60 })
   },

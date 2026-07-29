@@ -2,39 +2,31 @@ package com.labex.labexagent.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import com.labex.entity.AgentConversation;
 import com.labex.labexagent.llm.LlmProvider;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 class AgentLoopEngineParallelToolCallTest {
 
     @Test
     void serializesProviderParallelToolCallsInsteadOfTurningThemIntoModelErrors() throws Exception {
-        Method chatStreaming = AgentLoopEngine.class.getDeclaredMethod(
-                "chatStreaming", AgentSsePublisher.class, AgentConversation.class, String.class,
-                List.class, List.class, LlmProvider.class, LlmProvider.LlmConfig.class,
-                int.class, Long.class, String.class, CancellationToken.class);
-        chatStreaming.setAccessible(true);
-
-        @SuppressWarnings("unchecked")
-        Map<String, Object> result = (Map<String, Object>) chatStreaming.invoke(
-                newEngine(), new AgentSsePublisher(new SseEmitter()), null, "system", List.of(), List.of(),
-                new ParallelCallProvider(), new LlmProvider.LlmConfig("key", "https://example.test", "model", 32, 0.1),
-                1, 71L, "en", CancellationToken.none());
-
-        assertEquals("tool_call", result.get("type"));
-        assertEquals("read_file", result.get("tool"));
-        assertEquals("call-read", result.get("toolCallId"));
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(5_000L);
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(new AgentModelTurnExecutor.ModelTurnRequest(
+                "system", List.of(), List.of(), new ParallelCallProvider(),
+                new LlmProvider.LlmConfig("key", "https://example.test", "model", 32, 0.1),
+                1, 71L, "en", CancellationToken.none(), new NoopSink()));
+        assertEquals(AgentModelTurnExecutor.ResultType.TOOL_CALL, result.type());
+        assertEquals(2, result.toolCalls().size());
+        assertEquals("read_file", result.toolCalls().get(0).toolName());
+        assertEquals("call-read", result.toolCalls().get(0).toolCallId());
+        assertEquals("list_files", result.toolCalls().get(1).toolName());
+        assertEquals("call-list", result.toolCalls().get(1).toolCallId());
     }
 
-    private AgentLoopEngine newEngine() throws Exception {
-        Constructor<?> constructor = AgentLoopEngine.class.getConstructors()[0];
-        return (AgentLoopEngine) constructor.newInstance(new Object[constructor.getParameterCount()]);
+    private static final class NoopSink implements AgentModelTurnExecutor.EventSink {
+        public void durable(String type, Object data) {}
+        public void transientEvent(String type, Object data) {}
     }
 
     private static final class ParallelCallProvider implements LlmProvider {

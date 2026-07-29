@@ -48,6 +48,19 @@ labex-agent:
   project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/LabexAgent/workspaces}
   interaction-timeout-poll-interval-ms: ${LABEX_AGENT_INTERACTION_TIMEOUT_POLL_INTERVAL_MS:30000}
   retry-poll-interval-ms: ${LABEX_AGENT_RETRY_POLL_INTERVAL_MS:1000}
+  loop:
+    hard-max-iterations: ${LABEX_AGENT_HARD_MAX_ITERATIONS:0}
+    repeated-tool-call-threshold: ${LABEX_AGENT_REPEATED_TOOL_CALL_THRESHOLD:3}
+    max-cycle-length: ${LABEX_AGENT_MAX_TOOL_CYCLE_LENGTH:3}
+    max-automatic-strategy-switches: ${LABEX_AGENT_MAX_AUTOMATIC_STRATEGY_SWITCHES:1}
+    max-non-progress-iterations: ${LABEX_AGENT_MAX_NON_PROGRESS_ITERATIONS:8}
+  recovery:
+    auto-repair-enabled: ${LABEX_AGENT_AUTO_REPAIR_ENABLED:true}
+    max-automatic-repairs: ${LABEX_AGENT_MAX_AUTOMATIC_REPAIRS:3}
+    max-repeated-command-failures: ${LABEX_AGENT_MAX_REPEATED_COMMAND_FAILURES:2}
+    max-environment-failures: ${LABEX_AGENT_MAX_ENVIRONMENT_FAILURES:1}
+    verification-strategy: ${LABEX_AGENT_VERIFICATION_STRATEGY:auto}
+    fallback-verification-strategy: ${LABEX_AGENT_FALLBACK_VERIFICATION_STRATEGY:manual}
   instance-id: ${LABEX_AGENT_INSTANCE_ID:}
   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}

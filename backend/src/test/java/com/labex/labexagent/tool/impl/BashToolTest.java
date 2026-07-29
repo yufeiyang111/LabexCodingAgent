@@ -222,6 +222,19 @@ class BashToolTest {
         verifyNoMoreInteractions(worker);
     }
 
+    @Test
+    void shellOperatorFailureExplainsHowToRecover() throws Exception {
+        SandboxWorker worker = mock(SandboxWorker.class);
+        AgentContext context = context("session-shell-policy", 15L);
+
+        ToolResult result = new RunCommandTool(worker).execute(context, commandArgs("echo one | cat"));
+
+        assertFalse(result.isSuccess());
+        assertTrue(result.getContent().contains("reason=shell_operator"));
+        assertTrue(result.getContent().contains("\u8bf7\u62c6\u5206\u4e3a\u591a\u4e2a\u72ec\u7acb\u5de5\u5177\u8c03\u7528"));
+        verifyNoInteractions(worker);
+    }
+
     private SandboxWorker successfulWorker() {
         SandboxWorker worker = mock(SandboxWorker.class);
         when(worker.execute(any(), any(), any())).thenReturn(new ProcessExecutionResult(

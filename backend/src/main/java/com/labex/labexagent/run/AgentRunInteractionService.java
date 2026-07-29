@@ -59,6 +59,15 @@ public class AgentRunInteractionService {
         return interaction;
     }
 
+    public AgentRunInteraction findWaitingForTask(Long taskId) {
+        if (taskId == null) return null;
+        return interactionMapper.selectOne(new QueryWrapper<AgentRunInteraction>()
+                .eq("task_id", taskId)
+                .eq("status", "waiting")
+                .orderByDesc("create_time")
+                .last("LIMIT 1"));
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public AgentRunInteraction respond(Integer studentId, Integer projectId, String interactionId,
                                        String status, Object responsePayload) {

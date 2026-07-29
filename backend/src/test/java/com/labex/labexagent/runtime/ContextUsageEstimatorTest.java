@@ -28,8 +28,8 @@ class ContextUsageEstimatorTest {
         Map<String, Integer> categories = (Map<String, Integer>) payload.get("categories");
         assertEquals(0, estimator.estimateTokens(""));
         assertEquals(estimator.estimateTokens("system prompt"), categories.get("systemPrompt"));
-        assertEquals(estimator.estimateTokens("modelanguage") + estimator.estimateTokens("question"),
-                categories.get("conversationMessages"));
+        assertEquals(estimator.estimateTokens("modelanguage"), categories.get("fixedInstructions"));
+        assertEquals(estimator.estimateTokens("question"), categories.get("conversationMessages"));
         assertEquals(estimator.estimateTokens("[Tool read_file result]\ncontents"), categories.get("toolResults"));
         assertEquals("ESTIMATED_CHARS", payload.get("measurementSource"));
     }

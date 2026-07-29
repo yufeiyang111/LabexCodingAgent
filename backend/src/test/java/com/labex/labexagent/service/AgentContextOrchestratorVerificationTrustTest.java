@@ -38,4 +38,24 @@ class AgentContextOrchestratorVerificationTrustTest {
         assertThat(context.getVerificationCount()).isEqualTo(1);
         assertThat(context.getTrustedVerificationSources()).containsExactly("run_tests");
     }
+
+    @Test
+    void manualReadWithShaCreatesTrustedVerificationEvidence() throws Exception {
+        AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(
+                mock(AgentContextManager.class), mock(ProjectIndexService.class),
+                mock(AgentWorkspaceMemoryService.class), mock(LspSessionManager.class),
+                mock(ProjectCodeMapService.class));
+        StudentProject project = new StudentProject();
+        project.setWorkspacePath(Files.createDirectories(workspace).toString());
+        AgentContext context = AgentContext.create("session", 1, project, "conversation", 1L);
+        context.markUnverifiedChangeTarget("package.json");
+        JsonObject args = new JsonObject();
+        args.addProperty("file_path", "package.json");
+
+        orchestrator.afterTool(context, "read_file", args,
+                ToolResult.ok("[read_file path=package.json sha256=abc]\n{}"));
+
+        assertThat(context.hasUnverifiedChanges()).isFalse();
+        assertThat(context.getTrustedVerificationSources()).containsExactly("read_file");
+    }
 }

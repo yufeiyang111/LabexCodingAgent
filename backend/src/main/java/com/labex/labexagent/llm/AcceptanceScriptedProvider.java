@@ -93,6 +93,39 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             emitTool(onChunk, "list_files", "{\"path\":\"\"}", "acceptance-tool-list");
             return;
         }
+        if (prompt.contains("[acceptance:permission]") && !hasResumedInteraction(prompt, "waiting_approval")) {
+            emitTool(onChunk, "read_file", "{\"file_path\":\".env\"}",
+                    "acceptance-permission-read-env");
+            return;
+        }
+        if (prompt.contains("[acceptance:unverified]") && !prompt.contains("[Tool write_file result]")) {
+            emitTool(onChunk, "write_file",
+                    "{\"file_path\":\"unverified-acceptance.txt\",\"content\":\"must-not-complete\"}",
+                    "acceptance-unverified-write");
+            return;
+        }
+        if (prompt.contains("[acceptance:evidence]") && !prompt.contains("[Tool write_file result]")) {
+            emitTool(onChunk, "write_file",
+                    "{\"file_path\":\"package.json\",\"content\":"
+                    + "\"{\\\"name\\\":\\\"acceptance-evidence\\\","
+                    + "\\\"scripts\\\":{\\\"test\\\":"
+                    + "\\\"node -e \\\\\\\"process.exit(0)\\\\\\\"\\\"}}\"}",
+                    "acceptance-evidence-write");
+            return;
+        }
+        if (prompt.contains("[acceptance:evidence]")
+                && prompt.contains("[Tool write_file result]")
+                && !prompt.contains("[Tool read_file result]")) {
+            emitTool(onChunk, "read_file", "{\"file_path\":\"package.json\"}", "acceptance-evidence-read");
+            return;
+        }
+        if (prompt.contains("[acceptance:evidence]")
+                && prompt.contains("[Tool read_file result]")
+                && prompt.contains("package.json")
+                && !prompt.contains("[Tool run_tests result]")) {
+            emitTool(onChunk, "run_tests", "{\"strategy\":\"test\"}", "acceptance-evidence-test");
+            return;
+        }
         if (prompt.contains("[acceptance:question]") && !hasResumedInteraction(prompt, "waiting_user")) {
             emitTool(onChunk, "question",
                     "{\"question\":\"是否继续真实验收？\",\"summary\":\"等待验收选择\","
@@ -106,11 +139,30 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return;
         }
 
+        if (prompt.contains("[acceptance:checkout-hold]")) {
+            holdCheckoutLease(token);
+        }
+
         String finalText = finalReply(prompt);
         onChunk.accept(new StreamChunk("text_delta", finalText, null, null, null, false, null,
                 null, null, null));
         onChunk.accept(new StreamChunk("done", "", null, null, null, true, USAGE,
                 null, null, null));
+    }
+
+    private void holdCheckoutLease(CancellationToken token) {
+        long configured = Long.getLong("labex.acceptance.hold.ms", 4000L);
+        long remaining = Math.max(0L, Math.min(15000L, configured));
+        while (remaining > 0L && !token.isCancellationRequested()) {
+            long slice = Math.min(100L, remaining);
+            try {
+                Thread.sleep(slice);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            remaining -= slice;
+        }
     }
 
     private void emitTool(Consumer<StreamChunk> onChunk, String name, String arguments, String id) {
@@ -127,7 +179,10 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 || lower.contains("user answered")
                 || lower.contains("approval granted")
                 || lower.contains("approval rejected")
-                || lower.contains("command approval decision");
+                || lower.contains("command approval decision")
+                || lower.contains("resolution status: answered")
+                || lower.contains("resolution status: cancelled")
+                || lower.contains("persisted user response is ready");
     }
 
     private boolean isCompactionRequest(String systemPrompt) {
@@ -139,6 +194,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
     private String finalReply(String prompt) {
         Matcher marker = ISOLATION_MARKER.matcher(prompt);
         String isolation = marker.find() ? marker.group(1).trim() : "none";
+        if (prompt.contains("[acceptance:checkout-hold]")) {
+            return "## Summary\n**Completed**\n- The acceptance run held and released the project checkout lease.\n"
+                    + "**Verification**\n- A concurrent task can observe the durable workspace-wait state.\n"
+                    + "**Risk**\n- The hold duration is bounded and acceptance-profile only.";
+        }
         if (prompt.contains("[acceptance:tool]")) {
             return "## Summary\n**Completed**\n- The production Agent loop executed `list_files` and returned its result.\n"
                     + "**Verification**\n- Native tool-call identity, tool observation, token usage, and final SSE completion were preserved.\n"
@@ -150,9 +210,21 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                     + "**Risk**\n- The scripted provider is available only outside the production profile.";
         }
         if (prompt.contains("[acceptance:approval]")) {
-            return "## Summary\n**Completed**\n- The one-time command approval decision resumed the original task and conversation.\n"
+            String decision = prompt.toLowerCase(Locale.ROOT).contains("rejected") ? "rejected" : "approved";
+            return "## Summary\n**Completed**\n- The one-time command approval decision was " + decision
+                    + " and resumed the original task and conversation.\n"
                     + "**Verification**\n- Approval ownership stayed bound to its request and the Agent emitted a final structured result.\n"
                     + "**Risk**\n- The disposable acceptance project may contain a failed git command observation by design.";
+        }
+        if (prompt.contains("[acceptance:permission]")) {
+            return "## Summary\n**Completed**\n- The tool permission decision resumed the original task.\n"
+                    + "**Verification**\n- The acceptance run reached a final reply after the .env read decision.\n"
+                    + "**Risk**\n- The acceptance provider never reads credentials itself.";
+        }
+        if (prompt.contains("[acceptance:evidence]")) {
+            return "## Summary\n**Completed**\n- The edit and completion evidence scenario finished.\n"
+                    + "**Verification**\n- A write_file observation and successful run_tests observation produced durable completion evidence.\n"
+                    + "**Risk**\n- The package file belongs only to the disposable acceptance project.";
         }
         return "## Summary\n**Completed**\n- Conversation isolation marker: `" + isolation + "`.\n"
                 + "**Verification**\n- The reply was derived only from messages supplied to this provider invocation; no shared mutable session state exists.\n"

@@ -2,6 +2,7 @@ package com.labex.labexagent.tool;
 
 import com.labex.labexagent.commandsecurity.CommandRedactor;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import java.util.Map;
 
 /*
  * Exception performing whole class analysis ignored.
@@ -21,6 +22,7 @@ public class ToolResult {
     private boolean interactionRequired;
     private String interactionRequestId;
     private String interactionType;
+    private Map<String, Object> interactionPayload;
 
     public ToolResult() {
     }
@@ -80,6 +82,11 @@ public class ToolResult {
         result.setInteractionRequestId(requestId);
         result.setInteractionType(interactionType);
         return result;
+    }
+
+    public ToolResult withInteractionPayload(Map<String, Object> payload) {
+        this.interactionPayload = payload == null ? Map.of() : Map.copyOf(payload);
+        return this;
     }
 
     public ToolResult withDiff(String diff) {
@@ -146,6 +153,10 @@ public class ToolResult {
 
     public String getInteractionType() {
         return this.interactionType;
+    }
+
+    public Map<String, Object> getInteractionPayload() {
+        return this.interactionPayload;
     }
 
     public void setSuccess(boolean success) {

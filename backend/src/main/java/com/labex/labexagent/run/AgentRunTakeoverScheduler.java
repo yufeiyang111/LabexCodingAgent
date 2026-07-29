@@ -37,12 +37,8 @@ public class AgentRunTakeoverScheduler {
                     "Missing durable conversation or task ownership metadata");
         }
         try {
-            AgentStreamRequest request = new AgentStreamRequest();
-            request.setSessionId(task.getSessionId());
-            request.setConversationId(task.getConversationId());
-            request.setMode(task.getMode());
-            request.setResumeTaskId(task.getTaskId());
-            request.setMessage("Continue the existing task from durable conversation history after an expired execution lease was taken over.");
+            AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task,
+                    "An expired execution lease was taken over. Reassess the workspace and continue without replaying uncertain side effects.");
             engine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true);
             return true;
         } catch (RuntimeException failure) {

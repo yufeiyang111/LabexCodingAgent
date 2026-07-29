@@ -138,10 +138,14 @@ public final class CommandClassifier {
 
     private boolean isMutating(String executable, String command) {
         if ("npm".equals(executable)) {
-            return command.equals("npm test") || command.startsWith("npm test ");
+            return command.equals("npm test") || command.startsWith("npm test ")
+                    || command.equals("npm run build") || command.startsWith("npm run build ");
         }
         if ("mvn".equals(executable)) {
-            return command.equals("mvn test") || command.startsWith("mvn test ");
+            return command.equals("mvn test") || command.startsWith("mvn test ")
+                    || command.equals("mvn compile") || command.startsWith("mvn compile ")
+                    || command.equals("mvn package -DskipTests") || command.startsWith("mvn package ")
+                    || command.equals("mvn -o test") || command.startsWith("mvn -o test ");
         }
         if ("./gradlew".equals(executable) || "gradle".equals(executable)) {
             return command.equals(executable + " test") || command.startsWith(executable + " test ");

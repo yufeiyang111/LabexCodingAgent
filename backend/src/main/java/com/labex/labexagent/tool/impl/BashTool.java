@@ -5,6 +5,7 @@ import com.labex.labexagent.commandsecurity.CommandClassification;
 import com.labex.labexagent.commandsecurity.CommandClassifier;
 import com.labex.labexagent.commandsecurity.CommandDecision;
 import com.labex.labexagent.commandsecurity.CommandRequest;
+import com.labex.labexagent.commandsecurity.CommandPolicyMessage;
 import com.labex.labexagent.commandsecurity.DirectCommandTokenizer;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.runtime.AgentContext;
@@ -32,7 +33,7 @@ implements AgentTool {
     }
 
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("bash").description("Shell command alias. Execute a command in the student workspace; dangerous commands require approval.").stringProperty("command", "command to execute", true).intProperty("timeout_seconds", "timeout seconds, default 60", false).build();
+        return ToolDefinition.builder().name("bash").description("Execute one restricted direct command in the student workspace; pipes, redirection, variables, quoting, and command chaining are not supported. Dangerous commands require approval.").stringProperty("command", "command to execute", true).intProperty("timeout_seconds", "timeout seconds, default 60", false).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
@@ -45,7 +46,9 @@ implements AgentTool {
             if (classification.requiresApproval()) {
                 return ToolResult.approvalRequired("command requires a server-owned one-time approval", command);
             }
-            return ToolResult.failed("command blocked by restricted command policy: " + classification.reasonCode().name().toLowerCase());
+            return ToolResult.failed("command blocked by restricted command policy\n"
+                    + "reason=" + classification.reasonCode().name().toLowerCase() + "\n"
+                    + "hint=" + CommandPolicyMessage.forReason(classification.reasonCode()));
         }
         int timeout = Math.min(600, Math.max(1, ToolSupport.intArg((JsonObject)args, "timeout_seconds", 60)));
         List<String> cmd;

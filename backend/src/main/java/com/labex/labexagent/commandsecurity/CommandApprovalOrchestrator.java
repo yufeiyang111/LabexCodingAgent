@@ -6,6 +6,11 @@ import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunContinuationRequestFactory;
+import com.labex.labexagent.run.AgentToolCallJournalService;
+import com.labex.labexagent.run.CommandFailureGuard;
+import com.labex.labexagent.run.EnvironmentBlockerClassifier;
+import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.run.AgentRunState;
@@ -33,6 +38,8 @@ public class CommandApprovalOrchestrator {
     private final AgentTaskService taskService;
     private final AgentLoopEngine agentLoopEngine;
     private final AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
+    private CommandFailureGuard commandFailureGuard = new CommandFailureGuard(1, 2);
+    private AgentToolCallJournalService toolCallJournalService;
 
     public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
                                        AgentApprovedCommandExecutor executor, StudentProjectService projectService,
@@ -47,6 +54,16 @@ public class CommandApprovalOrchestrator {
         this.taskService = taskService;
         this.agentLoopEngine = agentLoopEngine;
         this.metadataRefreshScheduler = metadataRefreshScheduler;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setCommandFailureGuard(CommandFailureGuard commandFailureGuard) {
+        if (commandFailureGuard != null) this.commandFailureGuard = commandFailureGuard;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setToolCallJournalService(AgentToolCallJournalService toolCallJournalService) {
+        this.toolCallJournalService = toolCallJournalService;
     }
 
     public DecisionResult decide(Integer studentId, Integer projectId, String approvalId,
@@ -104,6 +121,18 @@ public class CommandApprovalOrchestrator {
             long processDurationMs = result.durationMs();
             auditService.recordExecutionOutcome(approval, result, processDurationMs);
             boolean succeeded = result.succeeded();
+            if (!succeeded) {
+                EnvironmentBlockerClassifier.classify(approvalToolName(approval.getCanonicalCommand()),
+                                ToolResult.fromProcessExecution(result))
+                        .ifPresent(blocker -> lifecycleService.appendEvent(approval.getTaskId(), "ENVIRONMENT_BLOCKED",
+                                publicPayload(approval, Map.of("blockerCode", blocker.code(), "code", blocker.code(),
+                                        "detail", blocker.detail(), "retryable", false, "manualRetryRequired", true)),
+                                lifecycleKey(approval, "environment-blocked:" + blocker.code())));
+            }
+            if (!succeeded) {
+                commandFailureGuard.record(approval.getTaskId(), approvalToolName(approval.getCanonicalCommand()),
+                        approval.getCanonicalCommand(), approval.getWorkingDirectory(), result.output());
+            }
             boolean resumeAgentLoop = isLatestTaskApproval(approval);
             String executionStatus = succeeded ? "completed" : "failed";
             log.info("COMMAND_APPROVAL_PROCESS_FINISHED taskId={} projectId={} approvalId={} executionStatus={} exitCode={} processDurationMs={} orchestrationDurationMs={}",
@@ -117,6 +146,7 @@ public class CommandApprovalOrchestrator {
                             "durationMs", processDurationMs,
                             "resumeAgentLoop", resumeAgentLoop)),
                     lifecycleKey(approval, "execution-outcome:" + executionStatus));
+            closeApprovedToolCall(approval, succeeded, result);
             if (resumeAgentLoop) {
                 lifecycleService.transition(approval.getTaskId(), AgentRunState.RECOVERING,
                         "COMMAND_EXECUTION_RESUME_QUEUED",
@@ -138,6 +168,7 @@ public class CommandApprovalOrchestrator {
 
             try {
                 auditService.recordExecutionInterrupted(approval, "orchestration_failure");
+                failApprovedToolCall(approval, "Approved command orchestration was interrupted");
                 lifecycleService.transition(approval.getTaskId(), AgentRunState.FAILED,
                         "COMMAND_EXECUTION_INTERRUPTED",
                         publicPayload(approval, Map.of("executionStatus", "interrupted", "resumeAgentLoop", false)),
@@ -148,6 +179,15 @@ public class CommandApprovalOrchestrator {
             }
             return ExecutionResult.unavailable();
         }
+    }
+
+    private String approvalToolName(String command) {
+        if (command == null) return "run_command";
+        String normalized = command.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.startsWith("mvn") || normalized.startsWith("npm")
+                || normalized.startsWith("gradle") || normalized.startsWith("./gradlew")
+                || normalized.startsWith("python") || normalized.startsWith("pytest")
+                ? "run_tests" : "run_command";
     }
 
     private boolean consume(CommandApproval approval) {
@@ -172,6 +212,8 @@ public class CommandApprovalOrchestrator {
         lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_APPROVAL_" + status.toUpperCase(),
                 publicPayload(approval, Map.of("decision", status, "resumeAgentLoop", true)),
                 lifecycleKey(approval, "resolution:" + decisionIdempotencyKey));
+        failApprovedToolCall(approval, "expired".equals(status)
+                ? "Command approval expired" : "Command approval was rejected");
         if (!isLatestTaskApproval(approval)) {
             log.info("COMMAND_APPROVAL_RESUME_SKIPPED taskId={} projectId={} approvalId={} reason=superseded_after_transition",
                     approval.getTaskId(), approval.getProjectId(), approval.getApprovalId());
@@ -181,27 +223,41 @@ public class CommandApprovalOrchestrator {
         return true;
     }
 
+    private void closeApprovedToolCall(CommandApproval approval, boolean succeeded, ProcessExecutionResult result) {
+        if (toolCallJournalService == null || approval == null) return;
+        String output = result == null ? "" : CommandRedactor.redact(result.output());
+        String detail = "status=" + (succeeded ? "completed" : "failed")
+                + "\nexit=" + (result == null || result.exitCode() == null ? "none" : result.exitCode())
+                + (output == null || output.isBlank() ? "" : "\n" + output);
+        if (succeeded) {
+            toolCallJournalService.completedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
+        } else {
+            toolCallJournalService.failedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
+        }
+    }
+
+    private void failApprovedToolCall(CommandApproval approval, String detail) {
+        if (toolCallJournalService != null && approval != null) {
+            toolCallJournalService.failedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
+        }
+    }
+
     private void resumeAgentLoop(CommandApproval approval, String resolutionStatus, ProcessExecutionResult result) {
         AgentTask task = taskService.getOwnedTask(approval.getStudentId(), approval.getProjectId(), approval.getTaskId());
         if (task == null) {
             throw new IllegalStateException("Agent task is unavailable for command continuation");
         }
-        AgentStreamRequest request = new AgentStreamRequest();
-        request.setSessionId(approval.getSessionId());
-        request.setConversationId(approval.getConversationId());
-        request.setMode(task.getMode());
-        request.setResumeTaskId(approval.getTaskId());
         String output = result == null ? "" : CommandRedactor.redact(result.output());
         if (output.length() > 4_000) output = output.substring(0, 4_000) + "...";
-        request.setMessage("""
-                Continue the existing task from its durable conversation history.
+        String continuation = """
                 The one-time command approval has been resolved and the command must not be replayed.
                 Resolution status: %s
                 Command exit code: %s
                 Redacted command output: %s
                 Reassess the workspace, use the recorded command outcome, and continue the existing plan.
                 """.formatted(resolutionStatus,
-                result == null || result.exitCode() == null ? "" : result.exitCode(), output));
+                result == null || result.exitCode() == null ? "" : result.exitCode(), output);
+        AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task, continuation);
         log.info("COMMAND_APPROVAL_AGENT_RESUME_REQUEST taskId={} projectId={} approvalId={} resolutionStatus={}",
                 approval.getTaskId(), approval.getProjectId(), approval.getApprovalId(), resolutionStatus);
         agentLoopEngine.resume(approval.getStudentId(), approval.getProjectId(), request, approval.getTaskId(), true);

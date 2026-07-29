@@ -1,15 +1,24 @@
 package com.labex.labexagent.controller;
 
+import com.google.gson.Gson;
 import com.labex.common.Result;
+import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.CommandAuditEvent;
 import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.commandsecurity.CommandAuditService;
 import com.labex.labexagent.run.AgentTaskEventSubscriptionService;
+import com.labex.labexagent.run.AgentToolCallJournalService;
+import com.labex.labexagent.run.AgentRunPartService;
+import com.labex.labexagent.run.AgentRunMessageService;
+import com.labex.labexagent.run.AgentRunSessionSnapshot;
+import com.labex.labexagent.run.AgentRunInteractionService;
 import com.labex.labexagent.service.AgentTaskService;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -27,19 +36,71 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RequestMapping("/student/projects/{projectId}/agent")
 public class AgentTaskEventController {
     private static final Logger log = LoggerFactory.getLogger(AgentTaskEventController.class);
+    private static final Gson GSON = new Gson();
     private final AgentTaskService taskService;
     private final AgentTaskEventSubscriptionService subscriptionService;
     private final CommandApprovalService commandApprovalService;
     private final CommandAuditService commandAuditService;
+    private final AgentToolCallJournalService toolCallJournalService;
+    private final AgentRunPartService partService;
+    private final AgentRunMessageService runMessageService;
+    private final AgentRunInteractionService interactionService;
+
+    /** 兼容旧测试构造器；生产路径由 Spring 注入运行时服务。 */
+    AgentTaskEventController(AgentTaskService taskService,
+                             AgentTaskEventSubscriptionService subscriptionService,
+                             CommandApprovalService commandApprovalService,
+                             CommandAuditService commandAuditService) {
+        this(taskService, subscriptionService, commandApprovalService, commandAuditService, null, null, null, null);
+    }
 
     public AgentTaskEventController(AgentTaskService taskService,
                                     AgentTaskEventSubscriptionService subscriptionService,
                                     CommandApprovalService commandApprovalService,
-                                    CommandAuditService commandAuditService) {
+                                    CommandAuditService commandAuditService,
+                                    AgentToolCallJournalService toolCallJournalService) {
+        this(taskService, subscriptionService, commandApprovalService, commandAuditService,
+                toolCallJournalService, null, null, null);
+    }
+
+    public AgentTaskEventController(AgentTaskService taskService,
+                                    AgentTaskEventSubscriptionService subscriptionService,
+                                    CommandApprovalService commandApprovalService,
+                                    CommandAuditService commandAuditService,
+                                    AgentToolCallJournalService toolCallJournalService,
+                                    AgentRunPartService partService) {
+        this(taskService, subscriptionService, commandApprovalService, commandAuditService,
+                toolCallJournalService, partService, null, null);
+    }
+
+    public AgentTaskEventController(AgentTaskService taskService,
+                                    AgentTaskEventSubscriptionService subscriptionService,
+                                    CommandApprovalService commandApprovalService,
+                                    CommandAuditService commandAuditService,
+                                    AgentToolCallJournalService toolCallJournalService,
+                                    AgentRunPartService partService,
+                                    AgentRunMessageService runMessageService) {
+        this(taskService, subscriptionService, commandApprovalService, commandAuditService,
+                toolCallJournalService, partService, runMessageService, null);
+    }
+
+    @Autowired
+    public AgentTaskEventController(AgentTaskService taskService,
+                                    AgentTaskEventSubscriptionService subscriptionService,
+                                    CommandApprovalService commandApprovalService,
+                                    CommandAuditService commandAuditService,
+                                    AgentToolCallJournalService toolCallJournalService,
+                                    AgentRunPartService partService,
+                                    AgentRunMessageService runMessageService,
+                                     AgentRunInteractionService interactionService) {
         this.taskService = taskService;
         this.subscriptionService = subscriptionService;
         this.commandApprovalService = commandApprovalService;
         this.commandAuditService = commandAuditService;
+        this.toolCallJournalService = toolCallJournalService;
+        this.partService = partService;
+        this.runMessageService = runMessageService;
+        this.interactionService = interactionService;
     }
 
     @GetMapping("/conversations/{conversationId}/active-task")
@@ -82,9 +143,40 @@ public class AgentTaskEventController {
         response.put("currentStep", task.getCurrentStep());
         response.put("summary", task.getSummary());
         response.put("lastEventSequence", task.getLastEventSequence() == null ? 0L : task.getLastEventSequence());
+        response.put("runSession", AgentRunSessionSnapshot.from(task).toPayload());
+        response.put("toolCalls", toolCallJournalService == null ? List.of() : toolCallJournalService.latestForTask(task.getTaskId()));
+        response.put("parts", partService == null ? List.of() : partService.publicHistory(task.getTaskId()));
+        response.put("runMessages", runMessageService == null ? List.of() : runMessageService.publicHistory(task.getTaskId()));
+        AgentRunInteraction pendingInteraction = interactionService == null
+                ? null : interactionService.findWaitingForTask(task.getTaskId());
+        if (pendingInteraction != null) {
+            response.put("pendingInteraction", publicInteraction(pendingInteraction));
+        }
         CommandApproval approval = commandApprovalService.findLatestForTask(studentId, projectId, task.getTaskId());
         if (approval != null) {
             response.put("commandApproval", publicApproval(approval));
+        }
+        return response;
+    }
+
+    private Map<String, Object> publicInteraction(AgentRunInteraction interaction) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("interactionId", interaction.getInteractionId());
+        response.put("requestId", interaction.getInteractionId());
+        response.put("taskId", interaction.getTaskId());
+        response.put("conversationId", interaction.getConversationId());
+        response.put("sessionId", interaction.getSessionId());
+        response.put("interactionType", interaction.getInteractionType());
+        response.put("status", interaction.getStatus());
+        if (interaction.getRequestPayload() != null && !interaction.getRequestPayload().isBlank()) {
+            try {
+                Object payload = GSON.fromJson(interaction.getRequestPayload(), Object.class);
+                if (payload instanceof Map<?, ?> map) {
+                    map.forEach((key, value) -> response.put(String.valueOf(key), value));
+                }
+            } catch (RuntimeException ignored) {
+                log.warn("Unable to decode pending interaction payload interactionId={}", interaction.getInteractionId());
+            }
         }
         return response;
     }

@@ -5,6 +5,8 @@
         <svg v-if="call.status === 'running'" class="tc-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         <svg v-else-if="call.status === 'completed'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
         <svg v-else-if="call.status === 'error'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        <svg v-else-if="call.status === 'warning'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <svg v-else-if="call.status === 'skipped' || call.status === 'interrupted'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 9 6 6m0-6-6 6"/></svg>
         <svg v-else-if="call.status === 'waiting_user' || call.status === 'waiting_approval'" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
         <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
       </div>
@@ -160,7 +162,7 @@ const props = defineProps({
 
 const emit = defineEmits(['permission', 'question', 'command-approval'])
 
-const expanded = ref(props.call.status === 'error' || props.call.status === 'waiting_approval' || props.call.status === 'waiting_user')
+const expanded = ref(['error', 'warning', 'waiting_approval', 'waiting_user', 'interrupted'].includes(props.call.status))
 const answerDraft = ref('')
 const approvalFeedback = ref('')
 const commandSubmitting = computed(() => props.call._commandApprovalInFlight === true)
@@ -179,6 +181,8 @@ const toolMap = {
 }
 const toolLabel = computed(() => toolMap[props.call.name] || props.call.name)
 const executionText = computed(() => {
+  if (props.call.status === 'skipped') return '\u5df2\u8df3\u8fc7'
+  if (props.call.status === 'interrupted') return '\u5df2\u4e2d\u65ad'
   const execution = props.call.execution
   if (!execution) return ''
   const phaseNames = {
@@ -197,8 +201,10 @@ const executionText = computed(() => {
 const statusColor = computed(() => {
   if (props.call.status === 'running') return '#3b82f6'
   if (props.call.status === 'error') return '#ef4444'
+  if (props.call.status === 'warning') return '#f59e0b'
   if (props.call.status === 'waiting_approval') return '#f59e0b'
   if (props.call.status === 'waiting_user') return '#8b5cf6'
+  if (props.call.status === 'skipped' || props.call.status === 'interrupted') return '#64748b'
   return '#10b981'
 })
 const isPermissionAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.permissionRequest)
@@ -259,7 +265,7 @@ function emitQuestion(action) {
 }
 
 watch(() => props.call.status, (status) => {
-  if (status === 'error' || status === 'waiting_approval' || status === 'waiting_user') {
+  if (status === 'error' || status === 'waiting_approval' || status === 'waiting_user' || status === 'interrupted') {
     expanded.value = true
   }
 })
@@ -282,6 +288,8 @@ watch(() => props.call.questionRequest, (request) => {
 .tc-card.tc-running { border-color: #93c5fd; }
 .tc-card.tc-error { border-color: #fca5a5; }
 .tc-card.tc-waiting_approval { border-color: #fbbf24; }
+.tc-card.tc-warning { border-color: #fbbf24; }
+.tc-card.tc-skipped, .tc-card.tc-interrupted { border-color: #cbd5e1; background: #f8fafc; }
 .tc-card.tc-waiting_user { border-color: #c4b5fd; }
 .tc-header {
   display: flex;

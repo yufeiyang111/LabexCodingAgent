@@ -14,6 +14,18 @@ public final class AgentRunTransitionKey {
                 + digest(String.valueOf(status), String.valueOf(currentStep), String.valueOf(summary));
     }
 
+    public static String forInteractionResume(Long taskId, String interactionId) {
+        return "task-" + String.valueOf(taskId) + "-interaction-resume-"
+                + digest(String.valueOf(interactionId));
+    }
+
+    public static String forResumedRunUpdate(Long taskId, Object resumeInstance,
+                                             String status, String currentStep, String summary) {
+        return "task-" + String.valueOf(taskId) + "-resumed-run-"
+                + digest(String.valueOf(resumeInstance), String.valueOf(status),
+                String.valueOf(currentStep), String.valueOf(summary));
+    }
+
     private static String digest(String... values) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

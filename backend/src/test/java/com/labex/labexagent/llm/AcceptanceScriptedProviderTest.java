@@ -63,6 +63,16 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void recognizesTheDurableQuestionContinuationAsResolved() {
+        List<LlmProvider.StreamChunk> resumed = stream(
+                "[acceptance:question] question continuation",
+                "Durable continuation context: Resolution status: answered");
+
+        assertTrue(resumed.stream().noneMatch(chunk -> "tool_call".equals(chunk.type())));
+        assertTrue(text(resumed).contains("durable user-question interaction resumed"));
+    }
+
+    @Test
     void keepsConversationMarkersIsolatedAndHonorsCancellation() {
         String first = text(stream("[acceptance:isolation:A-ONLY]"));
         String second = text(stream("[acceptance:isolation:B-ONLY]"));
@@ -76,6 +86,87 @@ class AcceptanceScriptedProviderTest {
         provider.chatStream("", List.of(Map.of("role", "user", "content", "[acceptance:tool]")),
                 List.of(), config(), () -> true, cancelled::add);
         assertEquals(List.of("cancelled"), cancelled.stream().map(LlmProvider.StreamChunk::type).toList());
+    }
+
+    @Test
+    void emitsPermissionAndCompletionEvidenceScenariosDeterministically() {
+        LlmProvider.StreamChunk permission = stream("[acceptance:permission] permission scenario").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("read_file", permission.toolName());
+        assertTrue(permission.toolArgs().contains(".env"));
+
+        LlmProvider.StreamChunk edit = stream("[acceptance:evidence] evidence scenario").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("write_file", edit.toolName());
+
+        LlmProvider.StreamChunk verification = stream(
+                "[acceptance:evidence] evidence scenario",
+                "[Tool write_file result]\ncreated acceptance-evidence.txt").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("read_file", verification.toolName());
+
+        LlmProvider.StreamChunk test = stream(
+                "[acceptance:evidence] evidence scenario",
+                "[Tool write_file result]\ncreated acceptance-evidence.txt",
+                "[Tool read_file result]\n[read_file path=package.json sha256=abc]\n{}").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("run_tests", test.toolName());
+
+        String completed = text(stream(
+                "[acceptance:evidence] evidence scenario",
+                "[Tool write_file result]\ncreated acceptance-evidence.txt",
+                "[Tool read_file result]\n[read_file path=package.json sha256=abc]\n{}",
+                "[Tool run_tests result]\npassed"));
+        assertTrue(completed.contains("completion evidence"));
+    }
+
+    @Test
+    void emitsAnUnverifiedWriteWithoutInventingVerification() {
+        LlmProvider.StreamChunk edit = stream("[acceptance:unverified] reject false completion").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("write_file", edit.toolName());
+
+        String finalText = text(stream("[acceptance:unverified] reject false completion",
+                "[Tool write_file result]\ncreated"));
+        assertTrue(finalText.contains("## Summary"));
+    }
+
+    @Test
+    void distinguishesApprovedAndRejectedCommandContinuations() {
+        String approved = text(stream(
+                "[acceptance:approval] evidence scenario?",
+                "command approval decision: approved"));
+        String rejected = text(stream(
+                "[acceptance:approval] evidence scenario?",
+                "command approval decision: rejected"));
+
+        assertTrue(approved.contains("approved"));
+        assertTrue(rejected.contains("rejected"));
+    }
+
+    @Test
+    void supportsABoundedCheckoutHoldScenario() {
+        String previous = System.getProperty("labex.acceptance.hold.ms");
+        System.setProperty("labex.acceptance.hold.ms", "1");
+        try {
+            String reply = text(stream("[acceptance:checkout-hold]"));
+            assertTrue(reply.contains("checkout lease"));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("labex.acceptance.hold.ms");
+            } else {
+                System.setProperty("labex.acceptance.hold.ms", previous);
+            }
+        }
     }
 
     private List<LlmProvider.StreamChunk> stream(String... contents) {

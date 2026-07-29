@@ -1,5 +1,6 @@
 package com.labex.labexagent.run;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.labex.entity.AgentRunArtifact;
 import com.labex.mapper.AgentRunArtifactMapper;
 import java.nio.charset.StandardCharsets;
@@ -19,6 +20,42 @@ public class AgentRunArtifactService {
         artifact.setTaskId(taskId); artifact.setArtifactType(type.trim()); artifact.setArtifactPath(path);
         artifact.setContent(content == null ? "" : content); artifact.setSha256(sha256(artifact.getContent())); artifact.setCreateTime(LocalDateTime.now());
         mapper.insert(artifact); return artifact;
+    }
+
+    public AgentRunArtifact recordDeterministic(Long taskId, String type, String path, String content) {
+        String safeContent = content == null ? "" : content;
+        String digest = sha256(safeContent);
+        AgentRunArtifact existing = mapper.selectOne(new LambdaQueryWrapper<AgentRunArtifact>()
+                .eq(AgentRunArtifact::getTaskId, taskId)
+                .eq(AgentRunArtifact::getArtifactType, type)
+                .eq(path != null, AgentRunArtifact::getArtifactPath, path)
+                .eq(AgentRunArtifact::getSha256, digest)
+                .orderByDesc(AgentRunArtifact::getArtifactId)
+                .last("LIMIT 1"));
+        return existing != null ? existing : record(taskId, type, path, safeContent);
+    }
+
+    public AgentRunArtifact latest(Long taskId, String type) {
+        if (taskId == null || type == null || type.isBlank()) return null;
+        return mapper.selectOne(new LambdaQueryWrapper<AgentRunArtifact>()
+                .eq(AgentRunArtifact::getTaskId, taskId)
+                .eq(AgentRunArtifact::getArtifactType, type)
+                .orderByDesc(AgentRunArtifact::getArtifactId)
+                .last("LIMIT 1"));
+    }
+
+    public java.util.List<AgentRunArtifact> listAll(Long taskId) {
+        if (taskId == null) return java.util.List.of();
+        return mapper.selectList(new LambdaQueryWrapper<AgentRunArtifact>()
+                .eq(AgentRunArtifact::getTaskId, taskId)
+                .orderByAsc(AgentRunArtifact::getArtifactId));
+    }
+    public java.util.List<AgentRunArtifact> list(Long taskId, String type) {
+        if (taskId == null || type == null || type.isBlank()) return java.util.List.of();
+        return mapper.selectList(new LambdaQueryWrapper<AgentRunArtifact>()
+                .eq(AgentRunArtifact::getTaskId, taskId)
+                .eq(AgentRunArtifact::getArtifactType, type)
+                .orderByAsc(AgentRunArtifact::getArtifactId));
     }
 
     static String sha256(String value) {

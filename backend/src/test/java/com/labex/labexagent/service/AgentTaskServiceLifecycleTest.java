@@ -65,6 +65,22 @@ class AgentTaskServiceLifecycleTest {
     }
 
     @Test
+    void acceptsAResumeScopedIdempotencyKeyForTheFirstRunningTransition() {
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTaskService service = new AgentTaskService(
+                mock(AgentTaskMapper.class),
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class),
+                lifecycle);
+
+        service.updateTask(72L, "running", "Thinking", "Resume", "resume-transition-72");
+
+        verify(lifecycle).transition(
+                eq(72L), eq(AgentRunState.RUNNING), eq("RUN_STATE_RUNNING"), any(),
+                eq("Thinking"), eq("Resume"), eq("resume-transition-72"));
+    }
+
+    @Test
     void finalizesTimingInsideTheTerminalStateUpdateTransaction() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentTask task = new AgentTask();

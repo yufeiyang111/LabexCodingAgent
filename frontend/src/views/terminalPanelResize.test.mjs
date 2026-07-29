@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-const workspaceSource = await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 'utf8')
+const workspaceSource = [
+  await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 'utf8'),
+  await readFile(new URL('../styles/cloud-workspace.scoped.scss', import.meta.url), 'utf8'),
+  await readFile(new URL('../styles/cloud-workspace.scss', import.meta.url), 'utf8')
+].join('\n')
 const terminalPanelSource = await readFile(new URL('../components/terminal/TerminalPanel.vue', import.meta.url), 'utf8')
 const fileTreeSource = await readFile(new URL('../components/cloud/FileTreeNode.vue', import.meta.url), 'utf8')
 

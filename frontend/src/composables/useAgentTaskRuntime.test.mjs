@@ -92,6 +92,99 @@ test('stale active-task recovery cannot attach to a newly selected conversation'
   assert.equal(state.messages.value.length, 0)
 })
 
+test('old task events cannot attach after the same conversation switches to a new session', async () => {
+  let onEvent
+  const state = harness()
+  state.runtime.subscribeToTaskEvents({
+    taskId: 71,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'running',
+    lastEventSequence: 0
+  }, { role: 'assistant', taskId: 71, isStreaming: true })
+  await Promise.resolve()
+  onEvent = state.subscriptions[0]?.options?.onEvent
+  assert.equal(typeof onEvent, 'function')
+
+  state.currentAgentSession.value = { conversationId: 'conversation-a', sessionId: 'session-b' }
+  onEvent({ type: 'THINK', eventId: 9, data: {} })
+
+  assert.deepEqual(state.events, [])
+})
+
+test('active-task recovery hydrates durable tool call states after refresh', async () => {
+  let activeTaskCalls = 0
+  const recoveredTask = {
+    taskId: 71,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'waiting_environment',
+    currentStep: '等待环境恢复',
+    toolCalls: [{
+      toolCallId: 'call-1',
+      tool: 'run_tests',
+      arguments: { command: 'mvn compile' },
+      status: 'environment_blocked',
+      detail: 'failure_code=ENVIRONMENT_BLOCKED'
+    }]
+  }
+  const state = harness({ api: {
+    agentActiveTask: async () => ({ data: activeTaskCalls++ === 0 ? recoveredTask : { ...recoveredTask, status: 'completed' } }),
+    agentTasks: async () => ({ data: [] })
+  } })
+
+  assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), true)
+  const call = state.messages.value[0].toolCalls[0]
+  assert.equal(call.toolCallId, 'call-1')
+  assert.equal(call.status, 'warning')
+  assert.equal(call.durableStatus, 'environment_blocked')
+  assert.equal(state.agentLoading.value, false)
+})
+
+test('active-task recovery hydrates a pending question reply card', async () => {
+  const recoveredTask = {
+    taskId: 72,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'waiting_user',
+    currentStep: 'Waiting for user input',
+    toolCalls: [],
+    parts: [],
+    pendingInteraction: {
+      interactionId: 'request-72',
+      requestId: 'request-72',
+      taskId: 72,
+      conversationId: 'conversation-a',
+      sessionId: 'session-a',
+      interactionType: 'question',
+      status: 'waiting',
+      question: 'Continue?',
+      summary: 'Please choose',
+      options: ['Continue', 'Stop']
+    }
+  }
+  let activeTaskCalls = 0
+  const state = harness({ api: {
+    agentActiveTask: async () => ({ data: activeTaskCalls++ === 0 ? recoveredTask : { ...recoveredTask, status: 'completed' } }),
+    agentTasks: async () => ({ data: [] })
+  } })
+
+  assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), true)
+  const call = state.messages.value[0].toolCalls[0]
+  assert.equal(call.status, 'waiting_user')
+  assert.equal(call.questionRequest.requestId, 'request-72')
+  assert.deepEqual(call.questionRequest.options, ['Continue', 'Stop'])
+})
+
+test('explicit invalidation immediately releases loading ownership from the detached conversation', () => {
+  const state = harness()
+  state.agentLoading.value = true
+
+  state.runtime.invalidate()
+
+  assert.equal(state.agentLoading.value, false)
+})
+
 test('explicit invalidation disconnects transport and invalidates pending recovery', async () => {
   const pending = deferred()
   const state = harness({ api: {

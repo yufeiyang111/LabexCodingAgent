@@ -40,28 +40,37 @@ public class ContextUsageEstimator {
                                           PromptContext promptContext, List<Map<String, Object>> messages,
                                           String trimState, String previewSource,
                                           Map<String, Object> previewMetadata) {
-        Map<String, Integer> categories = new LinkedHashMap<>();
-        categories.put("systemPrompt", estimateTokens(systemPrompt));
-        categories.put("toolDefinitions", estimateTokens(serialize(tools)));
-        categories.put("projectContext", estimateTokens(promptContext.projectContext()));
-        categories.put("workspaceMemory", estimateTokens(promptContext.workspaceMemory()));
-        categories.put("compactedContext", estimateTokens(promptContext.compactedContext()));
-        categories.put("skillsAndInstructions", estimateTokens(promptContext.skillsAndInstructions()));
-        categories.put("conversationMessages", estimateTokens(promptContext.fixedInstructions()));
-        categories.put("toolResults", 0);
-
-        for (Map<String, Object> message : messages) {
-            Object content = message.get("content");
-            String text = content instanceof String ? (String) content : serialize(content);
-            if (text.equals(promptContext.initialContextMessage())) continue;
-            String category = text.startsWith(TOOL_RESULT_PREFIX) && text.contains("result]")
-                    ? "toolResults" : "conversationMessages";
-            categories.merge(category, estimateTokens(text), Integer::sum);
-        }
+        Map<String, Integer> categories = estimateCategories(systemPrompt, tools, promptContext, messages);
 
         return new ContextUsageSnapshot(conversationId, sessionId, provider, model,
                 contextWindowTokens, categories, trimState,
                 buildPreview(systemPrompt, tools, promptContext, messages), previewSource, previewMetadata);
+    }
+
+    public Map<String, Integer> estimateCategories(String systemPrompt, Object tools,
+                                                   PromptContext promptContext,
+                                                   List<Map<String, Object>> messages) {
+        PromptContext context = promptContext == null ? new PromptContext("", "", "", "") : promptContext;
+        Map<String, Integer> categories = new LinkedHashMap<>();
+        categories.put("systemPrompt", estimateTokens(systemPrompt));
+        categories.put("toolDefinitions", estimateTokens(serialize(tools)));
+        categories.put("projectContext", estimateTokens(context.projectContext()));
+        categories.put("workspaceMemory", estimateTokens(context.workspaceMemory()));
+        categories.put("compactedContext", estimateTokens(context.compactedContext()));
+        categories.put("skillsAndInstructions", estimateTokens(context.skillsAndInstructions()));
+        categories.put("fixedInstructions", estimateTokens(context.fixedInstructions()));
+        categories.put("conversationMessages", 0);
+        categories.put("toolResults", 0);
+
+        for (Map<String, Object> message : messages == null ? List.<Map<String, Object>>of() : messages) {
+            Object content = message.get("content");
+            String text = content instanceof String value ? value : serialize(content);
+            if (text.equals(context.initialContextMessage())) continue;
+            String category = text.startsWith(TOOL_RESULT_PREFIX) && text.contains("result]")
+                    ? "toolResults" : "conversationMessages";
+            categories.merge(category, estimateTokens(text), Integer::sum);
+        }
+        return Map.copyOf(categories);
     }
 
     public int estimateTokens(String text) {

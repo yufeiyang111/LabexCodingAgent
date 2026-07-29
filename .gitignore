@@ -22,6 +22,9 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Test output
+frontend/test-output.txt
+
 # Logs
 *.log
 npm-debug.log*

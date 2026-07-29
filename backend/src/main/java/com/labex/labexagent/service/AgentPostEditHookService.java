@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.labex.labexagent.lsp.LspSessionManager;
+import com.labex.labexagent.run.AgentRunArtifactService;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
@@ -24,9 +25,16 @@ public class AgentPostEditHookService {
     private static final int MAX_DIAGNOSTIC_LINES_PER_FILE = 8;
 
     private final LspSessionManager lspSessionManager;
+    private final AgentRunArtifactService artifactService;
 
     public AgentPostEditHookService(LspSessionManager lspSessionManager) {
+        this(lspSessionManager, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentPostEditHookService(LspSessionManager lspSessionManager, AgentRunArtifactService artifactService) {
         this.lspSessionManager = lspSessionManager;
+        this.artifactService = artifactService;
     }
 
     public HookReport afterTool(AgentContext context, String toolName, JsonObject args, ToolResult result) {
@@ -46,6 +54,7 @@ public class AgentPostEditHookService {
         int skipped = 0;
         int unavailable = 0;
         List<String> suggestions = new ArrayList<>();
+        List<String> unresolvedRisks = new ArrayList<>();
 
         for (String relative : changedFiles) {
             suggestedCommand(context.getWorkspaceRoot(), relative).ifPresent(suggestions::add);
@@ -63,6 +72,7 @@ public class AgentPostEditHookService {
                 DiagnosticSummary summary = diagnose(context.getWorkspaceRoot(), file);
                 if (!summary.available()) {
                     unavailable++;
+                    unresolvedRisks.add("LSP unavailable: " + relative + " (" + summary.message() + ")");
                     out.append("- ").append(relative).append(": ")
                             .append(summary.source()).append(" unavailable (")
                             .append(summary.message()).append(")\n");
@@ -70,6 +80,9 @@ public class AgentPostEditHookService {
                 }
                 totalErrors += summary.errors();
                 totalWarnings += summary.warnings();
+                if (summary.errors() > 0) {
+                    unresolvedRisks.add("LSP diagnostics failed: " + relative + " (" + summary.errors() + " error(s))");
+                }
                 out.append("- ").append(relative).append(": ")
                         .append(summary.source()).append(" diagnostics ")
                         .append(summary.errors()).append(" error(s), ")
@@ -79,6 +92,7 @@ public class AgentPostEditHookService {
                 }
             } catch (Exception e) {
                 unavailable++;
+                unresolvedRisks.add("Diagnostics unavailable: " + relative + " (" + message(e) + ")");
                 out.append("- ").append(relative).append(": diagnostics unavailable (")
                         .append(message(e)).append(")\n");
             }
@@ -98,10 +112,32 @@ public class AgentPostEditHookService {
                 out.append("  - ").append(command).append('\n');
             }
         }
-        if (totalErrors > 0) {
-            out.append("- action_required: fix diagnostics before final response.\n");
+        VerificationStatus status = totalErrors > 0
+                ? VerificationStatus.FAIL
+                : unavailable > 0
+                ? VerificationStatus.UNAVAILABLE
+                : checked == 0
+                ? VerificationStatus.SKIPPED
+                : VerificationStatus.PASS;
+        out.append("- status=").append(status.name()).append('\n');
+        if (status == VerificationStatus.FAIL || status == VerificationStatus.UNAVAILABLE) {
+            out.append("- action_required: diagnostics are not a successful verification; run the suggested compile or test command before final response.\n");
         }
-        return new HookReport(changedFiles, totalErrors, totalWarnings, uniqueSuggestions, out.toString());
+        HookReport report = new HookReport(changedFiles, totalErrors, totalWarnings, uniqueSuggestions,
+                unresolvedRisks, status, out.toString());
+        persistReport(context, report);
+        return report;
+    }
+
+    private void persistReport(AgentContext context, HookReport report) {
+        if (artifactService == null || context == null || context.getTaskId() == null || report.status() == VerificationStatus.PASS) {
+            return;
+        }
+        try {
+            artifactService.record(context.getTaskId(), "post_edit_verification", "post-edit", report.content());
+        } catch (Exception ignored) {
+            // 诊断记录失败不能覆盖实际编辑结果；工具结果仍会附带 hook 状态。
+        }
     }
 
     private DiagnosticSummary diagnose(Path root, Path file) throws Exception {
@@ -186,13 +222,27 @@ public class AgentPostEditHookService {
         }
     }
 
+    public enum VerificationStatus {
+        PASS, FAIL, UNAVAILABLE, SKIPPED
+    }
+
     public record HookReport(List<String> changedFiles,
                              int errorCount,
                              int warningCount,
                              List<String> suggestedCommands,
+                             List<String> unresolvedRisks,
+                             VerificationStatus status,
                              String content) {
+        public HookReport {
+            changedFiles = List.copyOf(changedFiles == null ? List.of() : changedFiles);
+            suggestedCommands = List.copyOf(suggestedCommands == null ? List.of() : suggestedCommands);
+            unresolvedRisks = List.copyOf(unresolvedRisks == null ? List.of() : unresolvedRisks);
+            status = status == null ? VerificationStatus.SKIPPED : status;
+            content = content == null ? "" : content;
+        }
+
         public static HookReport empty() {
-            return new HookReport(List.of(), 0, 0, List.of(), "");
+            return new HookReport(List.of(), 0, 0, List.of(), List.of(), VerificationStatus.SKIPPED, "");
         }
     }
 }

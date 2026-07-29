@@ -137,6 +137,22 @@ class ApplyPatchToolTest {
     }
 
     @Test
+    void infersReplaceWhenModelOmitsOperationButProvidesOldAndNewStrings() throws Exception {
+        Files.writeString(workspace.resolve("AdminPage.jsx"), "status === 'PUBLISHED'");
+        DiffService diffService = mock(DiffService.class);
+        when(diffService.stageAndApplyBatchDeferred(eq(7), same(project), eq("conversation"), eq(1L), any()))
+                .thenReturn(List.of(pendingChange("replace-id", "diff")));
+        JsonObject change = new JsonObject();
+        change.addProperty("path", "AdminPage.jsx");
+        change.addProperty("old_string", "PUBLISHED");
+        change.addProperty("new_string", "published");
+
+        ToolResult result = new ApplyPatchTool(diffService).execute(context(), args(change));
+
+        assertTrue(result.isSuccess());
+    }
+
+    @Test
     void batchesPreparedCreateReplaceAndDeleteInInputOrder() throws Exception {
         Files.writeString(workspace.resolve("Replace.txt"), "old-value");
         Files.writeString(workspace.resolve("Delete.txt"), "delete-value");

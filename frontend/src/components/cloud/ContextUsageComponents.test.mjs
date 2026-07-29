@@ -40,9 +40,10 @@ test('ContextUsageDialog exposes stable categories and a safely rendered actual-
 
 test('CloudWorkspace loads and renders context usage components', async () => {
   const source = await readFile(new URL('../../views/CloudWorkspace.vue', import.meta.url), 'utf8')
+  const timeline = await readFile(new URL('../../composables/useAgentEventTimeline.js', import.meta.url), 'utf8')
   assert.match(source, /ContextUsageIndicator/)
   assert.match(source, /ContextUsageDialog/)
   assert.match(source, /openContextUsageDialog/)
   assert.match(source, /loadContextUsageStatus/)
-  assert.match(source, /case 'CONTEXT_STATUS'/)
+  assert.match(timeline, /case 'CONTEXT_STATUS'/)
 })

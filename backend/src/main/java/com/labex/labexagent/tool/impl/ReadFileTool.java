@@ -2,6 +2,7 @@ package com.labex.labexagent.tool.impl;
 
 import com.google.gson.JsonObject;
 import com.labex.labexagent.runtime.AgentContext;
+import com.labex.labexagent.tool.FileContentFingerprint;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
@@ -40,7 +41,7 @@ implements AgentTool {
                 .append(" lines=").append(lines.length == 0 ? 0 : offset + 1)
                 .append("-").append(end)
                 .append("/").append(lines.length)
-                .append(" sha256=").append(shortHash(content))
+                .append(" sha256=").append(FileContentFingerprint.sha256(content))
                 .append("]\n");
         for (int i = offset; i < end; ++i) {
             result.append(i + 1).append(": ").append(lines[i]).append("\n");
@@ -48,17 +49,5 @@ implements AgentTool {
         return ToolResult.ok((String)result.toString());
     }
 
-    private String shortHash(String content) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest((content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
-            StringBuilder out = new StringBuilder();
-            for (int i = 0; i < Math.min(8, bytes.length); i++) {
-                out.append(String.format("%02x", bytes[i]));
-            }
-            return out.toString();
-        } catch (Exception e) {
-            return "";
-        }
-    }
+
 }

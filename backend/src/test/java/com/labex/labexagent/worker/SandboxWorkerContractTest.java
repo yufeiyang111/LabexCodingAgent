@@ -7,19 +7,44 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.labex.labexagent.execution.LocalProcessExecutor;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.CleanupMode;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.core.env.Environment;
 
 class SandboxWorkerContractTest {
 
-    @TempDir
+    @TempDir(cleanup = CleanupMode.NEVER)
     Path workspace;
+
+    @AfterEach
+    void deleteWorkspaceAfterProcessHandlesAreReleased() throws Exception {
+        IOException failure = null;
+        for (int attempt = 0; attempt < 20; attempt++) {
+            try {
+                if (Files.exists(workspace)) {
+                    try (var paths = Files.walk(workspace)) {
+                        for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                            Files.deleteIfExists(path);
+                        }
+                    }
+                }
+                return;
+            } catch (IOException e) {
+                failure = e;
+                Thread.sleep(50L);
+            }
+        }
+        throw failure == null ? new IOException("Failed to clean worker test workspace") : failure;
+    }
 
     @Test
     void localDevelopmentWorkerPreparesExecutesAndManagesWorkspaceFiles() throws Exception {

@@ -14,6 +14,8 @@ import com.labex.entity.CommandAuditEvent;
 import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.commandsecurity.CommandAuditService;
 import com.labex.labexagent.run.AgentTaskEventSubscriptionService;
+import com.labex.labexagent.run.AgentRunPartService;
+import com.labex.labexagent.run.AgentRunMessageService;
 import com.labex.labexagent.service.AgentTaskService;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -47,7 +49,12 @@ class AgentTaskEventControllerTest {
         execution.setExitCode(1);
         execution.setDurationMs(125L);
         when(audit.findLatestExecutionOutcome("approval-71")).thenReturn(execution);
-        AgentTaskEventController controller = new AgentTaskEventController(tasks, mock(AgentTaskEventSubscriptionService.class), approvals, audit);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        when(parts.publicHistory(71L)).thenReturn(java.util.List.of(Map.of("partKey", "tool:call-1")));
+        AgentRunMessageService runMessages = mock(AgentRunMessageService.class);
+        when(runMessages.publicHistory(71L)).thenReturn(java.util.List.of(Map.of("messageKey", "assistant:turn:1")));
+        AgentTaskEventController controller = new AgentTaskEventController(tasks,
+                mock(AgentTaskEventSubscriptionService.class), approvals, audit, null, parts, runMessages);
 
         Result<Map<String, Object>> result = controller.activeTask(12, "conversation-71", authentication(7));
 

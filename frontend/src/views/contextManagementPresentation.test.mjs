@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 
-const source = await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 'utf8')
+const source = [
+  await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 'utf8'),
+  await readFile(new URL('../styles/cloud-workspace.scoped.scss', import.meta.url), 'utf8'),
+  await readFile(new URL('../styles/cloud-workspace.scss', import.meta.url), 'utf8')
+].join('\n')
 const contextSource = await readFile(new URL('../composables/useContextManagement.js', import.meta.url), 'utf8')
 
 test('renders context-management events as status cards in the unified timeline', () => {

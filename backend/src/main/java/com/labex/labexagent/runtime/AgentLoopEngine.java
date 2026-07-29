@@ -15,11 +15,17 @@ import com.labex.labexagent.commandsecurity.CommandDecision;
 import com.labex.labexagent.commandsecurity.CommandRedactor;
 import com.labex.labexagent.commandsecurity.CommandRequest;
 import com.labex.labexagent.commandsecurity.TestCommandResolver;
+import com.labex.labexagent.commandsecurity.VerificationStrategy;
 import com.labex.labexagent.diff.GitSnapshotService;
 import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunTransitionKey;
+import com.labex.labexagent.run.AgentRunArtifactService;
+import com.labex.labexagent.run.AgentToolCallJournalService;
+import com.labex.labexagent.run.CommandFailureGuard;
+import com.labex.labexagent.run.AgentRecoveryProperties;
 import com.labex.labexagent.run.AgentTaskEventSubscriptionService;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunLeaseHeartbeatService;
@@ -43,13 +49,14 @@ import com.labex.labexagent.service.AgentPostEditHookService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.TokenTracker;
 import com.labex.labexagent.tool.AgentTool;
+import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolRegistry;
+import com.labex.labexagent.tool.ToolSelectionPolicy;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
-import com.labex.labexagent.llm.ProviderCapabilities;
 import com.labex.labexagent.llm.ProviderEventType;
 import com.labex.labexagent.llm.PromptCacheKeyFactory;
 import com.labex.rag.config.RagConfig;
@@ -71,6 +78,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -83,7 +91,6 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeoutException;
@@ -93,6 +100,7 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -101,8 +109,6 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class AgentLoopEngine {
     private static final Logger log = LoggerFactory.getLogger(AgentLoopEngine.class);
     private static final Gson GSON = new Gson();
-    private static final int MAX_RECOVERABLE_MODEL_ERRORS = 10;
-    private static final int DEFAULT_MAX_ITERATIONS = 30;
     private static final ThreadPoolExecutor AGENT_EXECUTOR = new ThreadPoolExecutor(
             4,
             16,
@@ -111,27 +117,18 @@ public class AgentLoopEngine {
             new ArrayBlockingQueue<>(128),
             new AgentThreadFactory(),
             new ThreadPoolExecutor.AbortPolicy());
-    private static final ThreadPoolExecutor PROVIDER_STREAM_EXECUTOR = new ThreadPoolExecutor(
-            0,
-            16,
-            30L,
-            TimeUnit.SECONDS,
-            new SynchronousQueue<>(),
-            new ProviderStreamThreadFactory(),
-            new ThreadPoolExecutor.AbortPolicy());
-    private static final ThreadPoolExecutor TOOL_EXECUTION_EXECUTOR = new ThreadPoolExecutor(
-            0,
-            32,
-            30L,
-            TimeUnit.SECONDS,
-            new SynchronousQueue<>(),
-            new ToolExecutionThreadFactory(),
-            new ThreadPoolExecutor.AbortPolicy());
     private static final long PROVIDER_FIRST_EVENT_TIMEOUT_MS = 45_000L;
     private final StudentProjectService studentProjectService;
     private final ToolRegistry toolRegistry;
+    private AgentToolTurnExecutor toolTurnExecutor;
     private final AgentContextManager contextManager;
     private final AgentCancellationRegistry cancellationRegistry;
+    private AgentModelTurnExecutor modelTurnExecutor = new AgentModelTurnExecutor(PROVIDER_FIRST_EVENT_TIMEOUT_MS);
+    private AgentToolCallBatchProtocol toolCallBatchProtocol = new AgentToolCallBatchProtocol();
+    private AgentToolNarrator toolNarrator = new AgentToolNarrator();
+    private ToolSelectionPolicy toolSelectionPolicy = new ToolSelectionPolicy();
+    private ContextAdmissionService contextAdmissionService = new ContextAdmissionService();
+    private ContextAdmissionGate contextAdmissionGate = new ContextAdmissionGate();
     private final MiniMaxChat miniMaxChat;
     private final OllamaChat ollamaChat;
     private final RagConfig ragConfig;
@@ -149,12 +146,19 @@ public class AgentLoopEngine {
     private final AgentPostEditHookService postEditHookService;
     private final AgentMetricsService metricsService;
     private final AgentInteractionService interactionService;
+    private AgentInteractionPauser interactionPauser;
     private final AgentRunLifecycleService runLifecycleService;
     private final CommandApprovalService commandApprovalService;
     private final ContextUsageEstimator contextUsageEstimator;
     private final ContextUsageRegistry contextUsageRegistry;
     private final CompactionAgent compactionAgent;
     private final CommandClassifier commandClassifier;
+    private CommandFailureGuard commandFailureGuard = new CommandFailureGuard(1, 2);
+    private AgentRecoveryProperties recoveryProperties = new AgentRecoveryProperties();
+    private AgentLoopProperties loopProperties = new AgentLoopProperties();
+
+    @Value("${labex-agent.acceptance.auto-approve-verification:false}")
+    private boolean acceptanceAutoApproveVerification;
     private final AgentCheckpointStore checkpointStore = new AgentCheckpointStore();
     private AgentRunExecutionLeaseService executionLeaseService;
     private AgentRunLeaseHeartbeatService leaseHeartbeatService;
@@ -162,6 +166,9 @@ public class AgentLoopEngine {
     private ProjectCheckoutLeaseService projectCheckoutLeaseService;
     private ProjectCheckoutLeaseHeartbeatService projectCheckoutLeaseHeartbeatService;
     private AgentTaskEventSubscriptionService taskEventSubscriptionService;
+    private AgentRunFinalizer runFinalizer;
+    private AgentRunArtifactService artifactService;
+    private AgentToolCallJournalService toolCallJournalService;
 
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService) {
         this(s, t, c, cr, mm, oc, r, cs, ts, pf, mcs, tt, skillService, mcpServerService,
@@ -179,6 +186,7 @@ public class AgentLoopEngine {
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService, AgentRunLifecycleService runLifecycleService, CommandApprovalService commandApprovalService, ContextUsageEstimator contextUsageEstimator, ContextUsageRegistry contextUsageRegistry, CompactionAgent compactionAgent) {
         this.studentProjectService = s;
         this.toolRegistry = t;
+        this.toolTurnExecutor = new AgentToolTurnExecutor(t);
         this.contextManager = c;
         this.cancellationRegistry = cr;
         this.miniMaxChat = mm;
@@ -186,6 +194,7 @@ public class AgentLoopEngine {
         this.ragConfig = r;
         this.conversationService = cs;
         this.taskService = ts;
+        this.interactionPauser = new AgentInteractionPauser(ts);
         this.providerFactory = pf;
         this.modelConfigService = mcs;
         this.tokenTracker = tt;
@@ -214,8 +223,57 @@ public class AgentLoopEngine {
     }
 
     @Autowired(required = false)
+    void setRunProcessors(AgentModelTurnExecutor modelTurnExecutor,
+                          AgentToolTurnExecutor toolTurnExecutor,
+                          AgentToolCallBatchProtocol toolCallBatchProtocol,
+                          AgentToolNarrator toolNarrator,
+                          ToolSelectionPolicy toolSelectionPolicy,
+                          ContextAdmissionService contextAdmissionService,
+                          ContextAdmissionGate contextAdmissionGate,
+                          AgentInteractionPauser interactionPauser) {
+        if (modelTurnExecutor != null) this.modelTurnExecutor = modelTurnExecutor;
+        if (toolTurnExecutor != null) this.toolTurnExecutor = toolTurnExecutor;
+        if (toolCallBatchProtocol != null) this.toolCallBatchProtocol = toolCallBatchProtocol;
+        if (toolNarrator != null) this.toolNarrator = toolNarrator;
+        if (toolSelectionPolicy != null) this.toolSelectionPolicy = toolSelectionPolicy;
+        if (contextAdmissionService != null) this.contextAdmissionService = contextAdmissionService;
+        if (contextAdmissionGate != null) this.contextAdmissionGate = contextAdmissionGate;
+        if (interactionPauser != null) this.interactionPauser = interactionPauser;
+    }
+
+    @Autowired(required = false)
     void setTaskEventSubscriptionService(AgentTaskEventSubscriptionService taskEventSubscriptionService) {
         this.taskEventSubscriptionService = taskEventSubscriptionService;
+    }
+
+    @Autowired(required = false)
+    void setRunFinalizer(AgentRunFinalizer runFinalizer) {
+        this.runFinalizer = runFinalizer;
+    }
+
+    @Autowired(required = false)
+    void setArtifactService(AgentRunArtifactService artifactService) {
+        this.artifactService = artifactService;
+    }
+
+    @Autowired(required = false)
+    void setToolCallJournalService(AgentToolCallJournalService toolCallJournalService) {
+        this.toolCallJournalService = toolCallJournalService;
+    }
+
+    @Autowired(required = false)
+    void setCommandFailureGuard(CommandFailureGuard commandFailureGuard) {
+        if (commandFailureGuard != null) this.commandFailureGuard = commandFailureGuard;
+    }
+
+    @Autowired(required = false)
+    void setRecoveryProperties(AgentRecoveryProperties recoveryProperties) {
+        if (recoveryProperties != null) this.recoveryProperties = recoveryProperties;
+    }
+
+    @Autowired(required = false)
+    void setLoopProperties(AgentLoopProperties loopProperties) {
+        if (loopProperties != null) this.loopProperties = loopProperties;
     }
 
     @Autowired(required = false)
@@ -247,10 +305,20 @@ public class AgentLoopEngine {
         if (request == null || taskId == null) {
             throw new IllegalArgumentException("A continuation request and task ID are required");
         }
+        if (this.isEnvironmentRecoveryRequest(request.getMessage())) {
+            this.commandFailureGuard.reset(taskId);
+        }
         request.setResumeTaskId(taskId);
         return this.enqueue(studentId, projectId, request, failWhenQueueRejected);
     }
 
+    private boolean isEnvironmentRecoveryRequest(String message) {
+        if (message == null) return false;
+        String normalized = message.toLowerCase(Locale.ROOT);
+        return normalized.contains("dependency environment is restored")
+                || normalized.contains("环境已恢复")
+                || normalized.contains("环境恢复后重试");
+    }
     private SseEmitter enqueue(Integer studentId, Integer projectId, AgentStreamRequest request,
                                boolean failWhenQueueRejected) {
         SseEmitter emitter = new SseEmitter(Long.valueOf(0L));
@@ -317,9 +385,11 @@ public class AgentLoopEngine {
         previewContext.setMode(mode);
         previewContext.setStage("intake");
 
-        String toolDefinitions = this.buildToolDefinitions(mode);
+        List<ToolDefinition> selectedToolDefinitions = this.selectToolDefinitions(studentId, mode, modelConfig);
+        previewContext.setSelectedToolNames(this.toolSelectionPolicy.selectedNames(selectedToolDefinitions));
+        String toolDefinitions = this.buildToolDefinitions(selectedToolDefinitions);
         String systemPrompt = LabexSystemPrompt.buildSystemPrompt(project, toolDefinitions, visibleLanguage);
-        List<Map<String, Object>> tools = this.buildToolsList(mode);
+        List<Map<String, Object>> tools = this.buildToolsList(selectedToolDefinitions);
         String activeFileContent = this.readActiveFile(studentId, projectId, activePath);
         String projectRules = this.readProjectRules(studentId, projectId);
         String projectIndex = this.readProjectIndex(studentId, projectId);
@@ -349,9 +419,13 @@ public class AgentLoopEngine {
         previewMetadata.put("agentMode", mode);
         previewMetadata.put("modelConfigId", modelConfig.getConfigId());
         previewMetadata.put("adaptiveContextDependsOnDraft", true);
-        return this.contextUsageEstimator.estimateNextRequest(conversationId,
+        ContextUsageSnapshot snapshot = this.contextUsageEstimator.estimateNextRequest(conversationId,
                 "context-preview-" + conversationId, modelConfig.getProvider(), modelConfig.getModelName(),
                 modelConfig.getContextWindowTokens(), systemPrompt, tools, promptContext, messages, previewMetadata);
+        ContextAdmissionDecision admission = this.evaluateContextAdmission(
+                modelConfig, systemPrompt, tools, promptContext, messages);
+        if (admission != null) snapshot.withBudgetBreakdown(admission.breakdown());
+        return snapshot;
     }
 
     private static class AgentThreadFactory implements ThreadFactory {
@@ -364,16 +438,6 @@ public class AgentLoopEngine {
         }
     }
 
-    private static class ProviderStreamThreadFactory implements ThreadFactory {
-        private int index = 1;
-
-        public synchronized Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(runnable, "labex-provider-stream-" + index++);
-            thread.setDaemon(true);
-            return thread;
-        }
-    }
-
     private static class ToolExecutionThreadFactory implements ThreadFactory {
         private int index = 1;
 
@@ -381,15 +445,6 @@ public class AgentLoopEngine {
             Thread thread = new Thread(runnable, "labex-tool-execution-" + index++);
             thread.setDaemon(true);
             return thread;
-        }
-    }
-
-    private static class ToolExecutionTimedOutException extends Exception {
-        private final long budgetMs;
-
-        private ToolExecutionTimedOutException(String toolName, long budgetMs) {
-            super("Tool '" + toolName + "' exceeded its execution budget of " + budgetMs + " ms");
-            this.budgetMs = budgetMs;
         }
     }
 
@@ -455,7 +510,9 @@ public class AgentLoopEngine {
                 memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
                 visibleLanguage = this.visibleLanguage(request.getMessage(), memoryContext);
                 this.conversationService.saveUserMessage(conv, request.getMessage());
-                task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode, request.getMessage(), request.isBackgroundRun(), request.getSubmittedAt());
+                task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode,
+                        request.getMessage(), request.getActivePath(), modelConfig.getConfigId(),
+                        request.isBackgroundRun(), request.getSubmittedAt());
             }
             if (this.executionLeaseService != null) {
                 executionLease = this.executionLeaseService.acquire(task.getTaskId());
@@ -517,6 +574,7 @@ public class AgentLoopEngine {
             ctx.setCancellationToken(cancellationToken);
             ctx.setModelConfigId(modelConfig.getConfigId());
             ctx.setMode(mode);
+            ctx.setEnvironmentRecovery(this.isEnvironmentRecoveryRequest(request.getMessage()));
             if (resumedRun) {
                 resumedCheckpoint = this.checkpointStore.load(project, conv.getConversationId(), task.getTaskId());
                 if (resumedCheckpoint.isPresent()) {
@@ -525,11 +583,13 @@ public class AgentLoopEngine {
             } else {
                 ctx.setStage("intake");
             }
-            this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Iteration limit: `" + DEFAULT_MAX_ITERATIONS + "`\n");
+            this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Iteration policy: `" + this.iterationPolicyDescription() + "`\n");
             long contextBuildStartedAt = System.nanoTime();
-            String toolDefinitions = this.buildToolDefinitions(mode);
+            List<ToolDefinition> selectedToolDefinitions = this.selectToolDefinitions(studentId, mode, modelConfig);
+            ctx.setSelectedToolNames(this.toolSelectionPolicy.selectedNames(selectedToolDefinitions));
+            String toolDefinitions = this.buildToolDefinitions(selectedToolDefinitions);
             String sysPrompt = LabexSystemPrompt.buildSystemPrompt((StudentProject)project, (String)toolDefinitions, visibleLanguage);
-            List<Map<String, Object>> tools = this.buildToolsList(mode);
+            List<Map<String, Object>> tools = this.buildToolsList(selectedToolDefinitions);
             llmConfig = llmConfig.withPromptCacheKey(PromptCacheKeyFactory.forStablePrefix(
                     studentId, modelConfig.getConfigId(), llmConfig.baseUrl(), llmConfig.modelName(),
                     sysPrompt, GSON.toJson(tools)));
@@ -559,10 +619,7 @@ public class AgentLoopEngine {
             this.appendRunLog(runLog, "\n## Context orchestration\n\n```json\n" + GSON.toJson(contextBundle.stats()) + "\n```\n");
             this.writeAgentCheckpoint(project, request, task, ctx, "running", "Session started, preparing first model call.", "", "", runLog);
             int i = 1;
-            int maxIterations = DEFAULT_MAX_ITERATIONS;
-            java.util.List<String> recentToolCalls = new java.util.ArrayList<>();
-            int sameToolCount = 0;
-            String lastToolSignature = "";
+            AgentLoopGuard loopGuard = new AgentLoopGuard(loopProperties);
             while (true) {
                 block19: {
                     boolean executed;
@@ -583,26 +640,82 @@ public class AgentLoopEngine {
                                             this.completeCancelledRun(sse, conv, task, project, runLog, i, visibleLanguage, emitter);
                                             return;
                                         }
-                                        if (i > maxIterations) {
-                                            String stopReason = this.localText(visibleLanguage,
-                                                    "已达到 " + maxIterations + " 轮迭代上限。为避免重复思考和 token 浪费，已停止本次运行。",
-                                                    "Reached " + maxIterations + " iterations. Stopping to prevent repeated reasoning and token waste.");
+                                        AgentLoopGuard.IterationDecision iterationDecision = loopGuard.beforeIteration(i);
+                                        if (iterationDecision.action() == AgentLoopGuard.IterationAction.STOP) {
+                                            boolean noProgressStop = "non_progress".equals(iterationDecision.reason());
+                                            String stopReason = noProgressStop
+                                                    ? this.localText(visibleLanguage,
+                                                            "?? " + iterationDecision.nonProgressIterations() + " ????????????????????????????????????????????",
+                                                            "No confirmed progress was produced for " + iterationDecision.nonProgressIterations() + " consecutive model turns. Further requests were stopped; add guidance, switch strategy, or resume from the current progress.")
+                                                    : this.localText(visibleLanguage,
+                                                            "\u5df2\u8fbe\u5230\u914d\u7f6e\u7684\u6700\u7ec8\u4fdd\u9669\u4e0a\u9650 " + iterationDecision.configuredHardMax() + " \u8f6e\u3002\u8be5\u4e0a\u9650\u9ed8\u8ba4\u5173\u95ed\uff1b\u5f53\u524d\u8fd0\u884c\u5df2\u5b89\u5168\u505c\u6b62\u3002",
+                                                            "Reached the configured final safety fuse of " + iterationDecision.configuredHardMax() + " iterations. This fuse is disabled by default; the run stopped safely.");
                                             this.appendRunLog(runLog, "\n- Stop reason: " + stopReason + "\n");
-                                            this.taskService.updateTask(task.getTaskId(), "failed", this.localText(visibleLanguage, "达到迭代上限", "Iteration limit reached"), stopReason);
-                                            this.writeAgentCheckpoint(project, request, task, ctx, "iteration_limit", stopReason, "", "", runLog);
-                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "已停止", "Stopped"), stopReason, project, runLog, visibleLanguage), visibleLanguage);
-                                            this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "达到迭代上限", "Iteration limit reached"), "iterations", i - 1));
+                                            this.taskService.updateTask(task.getTaskId(), "failed", noProgressStop
+                                                    ? this.localText(visibleLanguage, "\u8fde\u7eed\u65e0\u8fdb\u5c55", "No progress")
+                                                    : this.localText(visibleLanguage, "\u8fbe\u5230\u6700\u7ec8\u8fd0\u884c\u4fdd\u9669\u4e0a\u9650", "Hard iteration fuse reached"), stopReason);
+                                            this.writeAgentCheckpoint(project, request, task, ctx, noProgressStop ? "no_progress_guard" : "hard_iteration_limit", stopReason, "", "", runLog);
+                                            this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "\u5df2\u505c\u6b62", "Stopped"), stopReason, project, runLog, visibleLanguage), visibleLanguage);
+                                            this.sendEvent(sse, conv, "DONE", Map.of("message", noProgressStop
+                                                    ? this.localText(visibleLanguage, "\u65e0\u8fdb\u5c55\u5faa\u73af\u4fdd\u62a4\u5df2\u505c\u6b62", "No-progress guard stopped the run")
+                                                    : this.localText(visibleLanguage, "\u8fbe\u5230\u6700\u7ec8\u8fd0\u884c\u4fdd\u9669\u4e0a\u9650", "Hard iteration fuse reached"), "iterations", i - 1));
                                             emitter.complete();
                                             return;
                                         }
-                                        this.taskService.updateTask(task.getTaskId(), "running", this.localText(visibleLanguage, "思考中", "Thinking"), null);
+                                        String runningStep = this.localText(visibleLanguage, "\u601d\u8003\u4e2d", "Thinking");
+                                        if (resumedRun) {
+                                            this.taskService.updateTask(task.getTaskId(), "running", runningStep, null,
+                                                    AgentRunTransitionKey.forResumedRunUpdate(task.getTaskId(), request.getSubmittedAt(),
+                                                            "running", runningStep, null));
+                                        } else {
+                                            this.taskService.updateTask(task.getTaskId(), "running", runningStep, null);
+                                        }
+                                        ContextAdmissionDecision preCompactionAdmission = this.evaluateContextAdmission(
+                                                modelConfig, sysPrompt, tools, contextPrompt, msgs);
+                                        if (preCompactionAdmission != null
+                                                && preCompactionAdmission.action() == ContextAdmissionDecision.Action.BLOCK_STATIC_OVERFLOW) {
+                                            this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
+                                                    sysPrompt, tools, contextPrompt, msgs, "STATIC_ADMISSION_BLOCKED");
+                                            this.stopForContextLimit(sse, conv, task, project, request, ctx, runLog,
+                                                    preCompactionAdmission, i, visibleLanguage, emitter);
+                                            return;
+                                        }
                                         // Apply the OpenCode-style soft budget before sending the next provider request.
                                         ContextManagementResult contextManagement = this.manageContextBeforeModel(
                                                 msgs, sysPrompt, tools, contextWindowPolicy, request.getMessage(), ctx,
                                                 sse, conv, modelConfig, studentId, cancellationToken);
+                                        ContextAdmissionDecision admission = this.evaluateContextAdmission(
+                                                modelConfig, sysPrompt, tools, contextPrompt, msgs);
                                         this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
                                                 sysPrompt, tools, contextPrompt, msgs, contextManagement.strategy());
-                                        lr = this.chatStreaming(sse, conv, sysPrompt, msgs, tools, llmProvider, llmConfig, i, task.getTaskId(), visibleLanguage, cancellationToken);
+                                        AgentSsePublisher modelEventPublisher = sse;
+                                        AgentConversation modelEventConversation = conv;
+                                        int modelIteration = i;
+                                        AgentModelTurnExecutor.ModelTurnRequest modelTurnRequest =
+                                                new AgentModelTurnExecutor.ModelTurnRequest(
+                                                        sysPrompt, msgs, tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
+                                                        visibleLanguage, cancellationToken, new AgentModelTurnExecutor.EventSink() {
+                                                    @Override
+                                                    public void durable(String eventType, Object data) throws Exception {
+                                                        AgentLoopEngine.this.sendEvent(modelEventPublisher, modelEventConversation, eventType, data);
+                                                    }
+
+                                                    @Override
+                                                    public void transientEvent(String eventType, Object data) throws Exception {
+                                                        modelEventPublisher.sendTransient(eventType, data);
+                                                    }
+                                                });
+                                        Optional<AgentModelTurnExecutor.ModelTurnResult> admittedTurn = admission == null
+                                                ? Optional.of(this.modelTurnExecutor.execute(modelTurnRequest))
+                                                : this.contextAdmissionGate.invokeIfAllowed(admission,
+                                                        () -> this.modelTurnExecutor.execute(modelTurnRequest));
+                                        if (admittedTurn.isEmpty()) {
+                                            this.stopForContextLimit(sse, conv, task, project, request, ctx, runLog,
+                                                    admission, i, visibleLanguage, emitter);
+                                            return;
+                                        }
+                                        AgentModelTurnExecutor.ModelTurnResult modelTurnResult = admittedTurn.orElseThrow();
+                                        lr = modelTurnResult.toMap();
                                         type = (String)lr.get("type");
                                         if (cancellationToken.isCancellationRequested() || "cancelled".equals(type)) {
                                             this.completeCancelledRun(sse, conv, task, project, runLog, i, visibleLanguage, emitter);
@@ -660,92 +773,179 @@ public class AgentLoopEngine {
                                         }
                                         executed = false;
                                         if (!"tool_call".equals(type)) break block20;
-                                        String tn = (String)lr.get("tool");
-                                        String as = (String)lr.get("arguments");
-                                        String modelThinkingRaw = lr.get("thinking") != null ? lr.get("thinking").toString() : "";
-                                        String modelThinking = this.cleanModelOutput(modelThinkingRaw);
-                                        JsonObject ta = this.parseArgs(as);
-                                        JsonObject publicArgs = this.publicToolArguments(tn, ta);
-                                        this.appendRunLog(runLog, "\n### Tool call\n\n- Tool: `" + this.safeLogText(tn) + "`\n- Args:\n\n```json\n" + GSON.toJson((JsonElement)publicArgs) + "\n```\n");
-                                        // Send local thinking only if model didn't provide reasoning (streaming already sent it)
-                                        if (modelThinking.isBlank()) {
-                                            this.sendThought(sse, conv, i, this.visibleActionSummary(tn, publicArgs, visibleLanguage), this.buildToolThought(tn, publicArgs, false, visibleLanguage), task.getTaskId());
-                                        }
-                                        String toolCallId = this.nativeToolCallId(lr);
-                                        if (toolCallId == null) {
+                                        List<AgentModelTurnExecutor.NativeToolCall> nativeToolCalls = modelTurnResult.toolCalls();
+                                        if (nativeToolCalls.isEmpty()) {
                                             this.stopForMissingToolCallIdentity(sse, conv, task, project, request, ctx,
-                                                    runLog, i, tn, visibleLanguage, emitter);
+                                                    runLog, i, "unknown", visibleLanguage, emitter);
                                             return;
                                         }
-                                        this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", tn, "arguments", publicArgs, "summary", this.visibleActionSummary(tn, publicArgs, visibleLanguage), "content", this.visibleActionDetail(tn, publicArgs, visibleLanguage), "taskId", task.getTaskId(), "toolCallId", toolCallId));
-                                        String toolSignature = tn + ":" + this.toolTarget(this.safeTool(tn), ta);
-                                        recentToolCalls.add(toolSignature);
-                                        if (recentToolCalls.size() > 5) recentToolCalls.remove(0);
-                                        if (toolSignature.equals(lastToolSignature)) {
-                                            sameToolCount++;
-                                            if (sameToolCount >= 2) {
-                                                String loopMessage = this.localText(visibleLanguage,
-                                                        "循环保护拦截了重复工具调用 `" + this.safeLogText(toolSignature) + "`。请换一个工具、调整目标/范围、利用已有观察结果，或在证据足够时直接完成。",
-                                                        "Loop guard blocked repeated call `" + this.safeLogText(toolSignature) + "` before a third consecutive execution. Use a different tool, change the target/range, inspect prior output, or finish if enough evidence exists.");
+                                        for (AgentModelTurnExecutor.NativeToolCall call : nativeToolCalls) {
+                                            String identityError = this.toolCallBatchProtocol.validateIdentity(call);
+                                            if (!identityError.isEmpty()) {
+                                                this.appendRunLog(runLog, "\n- Invalid native tool call: " + identityError + "\n");
+                                                this.stopForMissingToolCallIdentity(sse, conv, task, project, request, ctx,
+                                                        runLog, i, call == null ? "unknown" : call.toolName(), visibleLanguage, emitter);
+                                                return;
+                                            }
+                                        }
+
+                                        String modelContent = lr.get("content") == null ? "" : lr.get("content").toString();
+                                        String modelThinkingRaw = lr.get("thinking") != null ? lr.get("thinking").toString() : "";
+                                        String modelThinking = this.cleanModelOutput(modelThinkingRaw);
+                                        msgs.add(this.toolCallBatchProtocol.assistantMessage(modelContent, nativeToolCalls));
+
+                                        // 先持久化同一 assistant turn 的全部 Tool Part，再按顺序执行。
+                                        // 如果后续进入审批或环境等待，未执行的 Part 仍可由恢复器明确收口，不会静默丢失。
+                                        for (AgentModelTurnExecutor.NativeToolCall call : nativeToolCalls) {
+                                            JsonObject pendingArgs = this.parseArgs(call.toolArguments());
+                                            JsonObject pendingPublicArgs = this.publicToolArguments(call.toolName(), pendingArgs);
+                                            this.sendEvent(sse, conv, "TOOL_CALL", Map.of(
+                                                    "iteration", i,
+                                                    "tool", call.toolName(),
+                                                    "arguments", pendingPublicArgs,
+                                                    "summary", this.toolNarrator.visibleActionSummary(call.toolName(), pendingPublicArgs, visibleLanguage),
+                                                    "content", this.toolNarrator.visibleActionDetail(call.toolName(), pendingPublicArgs, visibleLanguage),
+                                                    "taskId", task.getTaskId(),
+                                                    "toolCallId", call.toolCallId(),
+                                                    "toolCallIndex", call.toolCallIndex()));
+                                            this.journalToolPending(task.getTaskId(), call.toolCallId(), call.toolName(), pendingPublicArgs, i);
+                                        }
+
+                                        for (int batchIndex = 0; batchIndex < nativeToolCalls.size(); batchIndex++) {
+                                            AgentModelTurnExecutor.NativeToolCall call = nativeToolCalls.get(batchIndex);
+                                            String tn = call.toolName();
+                                            JsonObject ta = this.parseArgs(call.toolArguments());
+                                            JsonObject publicArgs = this.publicToolArguments(tn, ta);
+                                            String toolCallId = call.toolCallId();
+                                            this.appendRunLog(runLog, "\n### Tool call " + (batchIndex + 1) + "/" + nativeToolCalls.size()
+                                                    + "\n\n- Tool: `" + this.safeLogText(tn) + "`\n- Args:\n\n```json\n"
+                                                    + GSON.toJson((JsonElement)publicArgs) + "\n```\n");
+                                            if (modelThinking.isBlank()) {
+                                                this.sendThought(sse, conv, i,
+                                                        this.toolNarrator.visibleActionSummary(tn, publicArgs, visibleLanguage),
+                                                        this.toolNarrator.buildToolThought(tn, publicArgs, false, visibleLanguage),
+                                                        task.getTaskId());
+                                            }
+
+                                            AgentLoopGuard.ToolDecision loopDecision = loopGuard.beforeToolCall(tn, ta);
+                                            if (loopDecision.action() != AgentLoopGuard.ToolAction.ALLOW) {
+                                                String loopMessage = this.loopGuardMessage(loopDecision, tn, visibleLanguage);
+                                                ToolResult blockedResult = this.loopGuardResult(loopDecision, tn, ctx, visibleLanguage, loopMessage);
+                                                this.journalToolResult(task.getTaskId(), toolCallId, tn, publicArgs, i, blockedResult);
+                                                msgs.add(this.toolCallBatchProtocol.toolResultMessage(call,
+                                                        "[Tool " + tn + " result]\n" + loopMessage));
+                                                String skippedMessage = "Skipped because an earlier tool call in the same model turn was blocked by the loop guard.";
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i, skippedMessage);
+                                                for (int skippedIndex = batchIndex + 1; skippedIndex < nativeToolCalls.size(); skippedIndex++) {
+                                                    AgentModelTurnExecutor.NativeToolCall skipped = nativeToolCalls.get(skippedIndex);
+                                                    msgs.add(this.toolCallBatchProtocol.toolResultMessage(skipped,
+                                                            "[Tool " + skipped.toolName() + " result]\n" + skippedMessage));
+                                                }
+                                                String visibleSignature = tn + ":" + this.toolNarrator.toolTarget(this.safeTool(tn), publicArgs);
                                                 this.appendRunLog(runLog, "\n- " + loopMessage + "\n");
-                                                this.sendThought(sse, conv, i, this.localText(visibleLanguage, "检测到重复操作", "Loop detected"), loopMessage, task.getTaskId());
-                                                this.sendEvent(sse, conv, "LOOP_GUARD", Map.of("iteration", i, "tool", tn, "signature", toolSignature, "message", loopMessage));
-                                                this.metricsService.recordLoopGuard(ctx, toolSignature, i);
-                                                this.writeAgentCheckpoint(project, request, task, ctx, "loop_guard", loopMessage, tn, "", runLog);
-                                                msgs.add(Map.of("role", "assistant", "content", ""));
+                                                this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u6d4b\u5230\u91cd\u590d\u64cd\u4f5c", "Loop detected"), loopMessage, task.getTaskId());
+                                                this.sendEvent(sse, conv, "LOOP_GUARD", Map.of(
+                                                        "iteration", i, "tool", tn, "signature", visibleSignature,
+                                                        "action", loopDecision.action().name().toLowerCase(Locale.ROOT),
+                                                        "cycleLength", loopDecision.cycleLength(), "message", loopMessage));
+                                                this.metricsService.recordLoopGuard(ctx, visibleSignature, i);
+                                                if (blockedResult.isInteractionRequired()) {
+                                                    AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
+                                                            task.getTaskId(), blockedResult, visibleLanguage);
+                                                    this.publishUserQuestion(sse, conv, blockedResult);
+                                                    this.writeAgentCheckpoint(project, request, task, ctx, pause.state(),
+                                                            pause.detail(), tn, this.compactToolResultForCheckpoint(tn, blockedResult), runLog);
+                                                    this.streamFinal(sse, conv, this.buildStopFinal(pause.title(), pause.detail(), project, runLog, visibleLanguage), visibleLanguage);
+                                                    this.sendEvent(sse, conv, "DONE", Map.of("message", pause.title(), "iterations", i));
+                                                    emitter.complete();
+                                                    return;
+                                                }
+                                                this.writeAgentCheckpoint(project, request, task, ctx, "loop_guard_strategy_switch", loopMessage, tn, "", runLog);
                                                 msgs.add(Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
-                                                        + "\nDo not repeat the same tool call again. Use earlier observations, call a different tool, narrow the target, or provide the final answer if the task is complete."));
+                                                        + "\nDo not repeat the blocked pattern. Change the tool, target, scope, or verification method; use existing evidence; or finish if the task is complete."));
                                                 executed = true;
                                                 break block19;
                                             }
-                                        } else {
-                                            sameToolCount = 0;
-                                            lastToolSignature = toolSignature;
-                                        }
-                                        ToolResult res = this.execTool(tn, ta, ctx, sse, conv, visibleLanguage, toolCallId, runLog);
-                                        Optional<EnvironmentBlockerClassifier.Blocker> environmentBlocker =
-                                                EnvironmentBlockerClassifier.classify(tn, res);
-                                        if (environmentBlocker.isPresent()) {
+
+                                            this.journalToolRunning(task.getTaskId(), toolCallId, tn, publicArgs, i);
+                                            ToolResult res = this.execTool(tn, ta, ctx, sse, conv, visibleLanguage, toolCallId, runLog);
+                                            loopGuard.recordToolResult(res.isSuccess());
+                                            Optional<EnvironmentBlockerClassifier.Blocker> environmentBlocker =
+                                                    EnvironmentBlockerClassifier.classify(tn, res);
+                                            if (environmentBlocker.isPresent()) {
+                                                this.journalToolBlocked(task.getTaskId(), toolCallId, tn, publicArgs, i, res.getContent());
+                                                this.appendToolResult(runLog, res);
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i,
+                                                        "Skipped because an earlier tool call in the same model turn is blocked by the environment.");
+                                                this.stopForEnvironmentBlocker(sse, conv, task, project, request, ctx, runLog, i, tn,
+                                                        res, environmentBlocker.get(), visibleLanguage, emitter);
+                                                return;
+                                            }
+                                            if (res.isApprovalRequired()) {
+                                                this.journalToolWaitingApproval(task.getTaskId(), toolCallId, tn, publicArgs, i, res.getApprovalId());
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i,
+                                                        "Skipped because an earlier tool call in the same model turn is waiting for approval.");
+                                                this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, tn, res, visibleLanguage, emitter);
+                                                return;
+                                            }
+                                            if (res.isInteractionRequired()) {
+                                                this.journalToolWaitingUser(task.getTaskId(), toolCallId, tn, publicArgs, i,
+                                                        res.getInteractionRequestId(), res.getContent(), res.getInteractionPayload());
+                                            } else {
+                                                this.journalToolFinished(task.getTaskId(), toolCallId, tn, publicArgs, i, res);
+                                            }
                                             this.appendToolResult(runLog, res);
-                                            this.stopForEnvironmentBlocker(sse, conv, task, project, request, ctx, runLog, i, tn,
-                                                    res, environmentBlocker.get(), visibleLanguage, emitter);
-                                            return;
-                                        }
-                                        if (res.isApprovalRequired()) {
-                                            this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, tn, res, visibleLanguage, emitter);
-                                            return;
-                                        }
-                                        this.appendToolResult(runLog, res);
-                                        this.writeAgentCheckpoint(project, request, task, ctx, res.isSuccess() ? "tool_success" : "tool_failed", "Tool `" + this.safeLogText(tn) + "` returned.", tn, this.compactToolResultForCheckpoint(tn, res), runLog);
-                                        this.sendObserve(sse, conv, i, tn, res, task.getTaskId());
-                                        if (("create_plan".equals(tn) || "plan".equals(tn) || "todo_write".equals(tn) || "todowrite".equals(tn)) && (planJson = ctx.getPlanJson()) != null && !planJson.isBlank()) {
-                                            this.sendEvent(sse, conv, "PLAN_UPDATE", Map.of("plan", ctx.getPlan(), "summary", ctx.getPlanSummary(), "planJson", planJson));
-                                        }
-                                        this.sendThought(sse, conv, i, this.localText(visibleLanguage, "检查结果", "Check result"), this.buildResultThought(tn, ta, res, visibleLanguage), task.getTaskId());
-                                        if (res.isInteractionRequired()) {
-                                            boolean waitingForPermission = "permission".equals(res.getInteractionType());
-                                            String waitingState = waitingForPermission ? "waiting_approval" : "waiting_user";
-                                            String waitingTitle = waitingForPermission
-                                                    ? this.localText(visibleLanguage, "等待用户批准", "Awaiting approval")
-                                                    : this.localText(visibleLanguage, "等待用户输入", "Awaiting user input");
-                                            String waitingDetail = waitingForPermission
-                                                    ? this.localText(visibleLanguage, "继续执行前需要用户批准。", "User approval is required before execution can continue.")
-                                                    : this.localText(visibleLanguage, "继续执行前需要用户输入。", "User input is required before execution can continue.");
-                                            this.taskService.updateTask(task.getTaskId(), waitingState, waitingTitle, waitingDetail);
-                                            this.appendRunLog(runLog, "\n- Durable user interaction pending: type=`" + this.safeLogText(res.getInteractionType())
-                                                    + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
-                                            this.writeAgentCheckpoint(project, request, task, ctx, waitingState, waitingDetail, tn,
+                                            this.writeAgentCheckpoint(project, request, task, ctx,
+                                                    res.isInteractionRequired() ? "waiting_user" : (res.isSuccess() ? "tool_success" : "tool_failed"),
+                                                    "Tool `" + this.safeLogText(tn) + "` returned.", tn,
                                                     this.compactToolResultForCheckpoint(tn, res), runLog);
-                                            this.streamFinal(sse, conv, this.buildStopFinal(waitingTitle, waitingDetail, project, runLog, visibleLanguage), visibleLanguage);
-                                            this.sendEvent(sse, conv, "DONE", Map.of("message", waitingTitle, "iterations", i));
-                                            emitter.complete();
-                                            return;
+                                            this.sendObserve(sse, conv, i, tn, res, task.getTaskId());
+                                            if (("create_plan".equals(tn) || "plan".equals(tn) || "todo_write".equals(tn) || "todowrite".equals(tn))
+                                                    && (planJson = ctx.getPlanJson()) != null && !planJson.isBlank()) {
+                                                this.sendEvent(sse, conv, "PLAN_UPDATE", Map.of(
+                                                        "plan", ctx.getPlan(), "summary", ctx.getPlanSummary(), "planJson", planJson));
+                                            }
+                                            this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u67e5\u7ed3\u679c", "Check result"),
+                                                    this.toolNarrator.buildResultThought(tn, ta, res, visibleLanguage), task.getTaskId());
+                                            if (res.isInteractionRequired()) {
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i,
+                                                        "Skipped because an earlier tool call in the same model turn is waiting for user input.");
+                                                AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
+                                                        task.getTaskId(), res, visibleLanguage);
+                                                this.publishUserQuestion(sse, conv, res);
+                                                String waitingState = pause.state();
+                                                String waitingTitle = pause.title();
+                                                String waitingDetail = pause.detail();
+                                                this.appendRunLog(runLog, "\n- Durable user interaction pending: type=`" + this.safeLogText(res.getInteractionType())
+                                                        + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
+                                                this.writeAgentCheckpoint(project, request, task, ctx, waitingState, waitingDetail, tn,
+                                                        this.compactToolResultForCheckpoint(tn, res), runLog);
+                                                this.streamFinal(sse, conv, this.buildStopFinal(waitingTitle, waitingDetail, project, runLog, visibleLanguage), visibleLanguage);
+                                                this.sendEvent(sse, conv, "DONE", Map.of("message", waitingTitle, "iterations", i));
+                                                emitter.complete();
+                                                return;
+                                            }
+                                            String planStatus = ctx.getPlanSummary();
+                                            String planNote = planStatus.isEmpty() ? "" : "\nCurrent plan progress:\n" + planStatus;
+                                            String stageNote = "\nCurrent engineering stage: " + ctx.getStage();
+                                            String resultForModel = "[Tool " + tn + " result]\n"
+                                                    + this.compactToolResultForModel(tn, res) + planNote + stageNote
+                                                    + "\nContinue using tools when needed. Only output the final summary after all plan tasks are complete and verified.";
+                                            msgs.add(this.toolCallBatchProtocol.toolResultMessage(call, resultForModel));
+                                            if (isMissingPlanCompletion(tn, ta, res)) {
+                                                String skippedMessage = "Skipped because completing a plan requires an existing plan.";
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i, skippedMessage);
+                                                for (int skippedIndex = batchIndex + 1; skippedIndex < nativeToolCalls.size(); skippedIndex++) {
+                                                    AgentModelTurnExecutor.NativeToolCall skipped = nativeToolCalls.get(skippedIndex);
+                                                    msgs.add(this.toolCallBatchProtocol.toolResultMessage(skipped,
+                                                            "[Tool " + skipped.toolName() + " result]\n" + skippedMessage));
+                                                }
+                                                msgs.add(Map.of("role", "user", "content",
+                                                        "No execution plan exists. Create a plan before completing plan items; do not submit more complete actions in the same turn."));
+                                                executed = true;
+                                                break block19;
+                                            }
                                         }
-                                        String planStatus = ctx.getPlanSummary();
-                                        Object planNote = planStatus.isEmpty() ? "" : "\nCurrent plan progress:\n" + planStatus;
-                                        String stageNote = "\nCurrent engineering stage: " + ctx.getStage();
-                                        msgs.add(Map.of("role", "assistant", "content", ""));
-                                        msgs.add(Map.of("role", "user", "content", "[Tool " + tn + " result]\n" + this.compactToolResultForModel(tn, res) + (String)planNote + stageNote + "\nCall tools to continue. Do not output plain text. Only output final summary after all plan tasks are complete and verified."));
                                         executed = true;
                                         break block19;
                                     }
@@ -762,22 +962,82 @@ public class AgentLoopEngine {
                                     this.appendRunLog(runLog, "\n### Recovered tool call from text\n\n- Tool: `" + this.safeLogText(invTool) + "`\n- Args:\n\n```json\n" + GSON.toJson((JsonElement)publicArgs) + "\n```\n");
                                     // Send local thinking only if streaming didn't already cover it
                                     if (modelThinkingFromLr == null || modelThinkingFromLr.isBlank()) {
-                                        this.sendThought(sse, conv, i, this.visibleActionSummary(invTool, publicArgs, visibleLanguage), this.buildToolThought(invTool, publicArgs, true, visibleLanguage), task.getTaskId());
+                                        this.sendThought(sse, conv, i, this.toolNarrator.visibleActionSummary(invTool, publicArgs, visibleLanguage), this.toolNarrator.buildToolThought(invTool, publicArgs, true, visibleLanguage), task.getTaskId());
                                     }
                                     String recoveredToolCallId = this.recoveredToolCallId(ctx, i, invTool, parsedArgs);
-                                    this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", invTool, "arguments", publicArgs, "summary", this.visibleActionSummary(invTool, publicArgs, visibleLanguage), "content", this.visibleActionDetail(invTool, publicArgs, visibleLanguage), "taskId", task.getTaskId(), "toolCallId", recoveredToolCallId));
+                                    this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", invTool, "arguments", publicArgs, "summary", this.toolNarrator.visibleActionSummary(invTool, publicArgs, visibleLanguage), "content", this.toolNarrator.visibleActionDetail(invTool, publicArgs, visibleLanguage), "taskId", task.getTaskId(), "toolCallId", recoveredToolCallId));
+                                    this.journalToolPending(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i);
+                                    AgentLoopGuard.ToolDecision recoveredLoopDecision = loopGuard.beforeToolCall(invTool, parsedArgs);
+                                    if (recoveredLoopDecision.action() != AgentLoopGuard.ToolAction.ALLOW) {
+                                        String loopMessage = this.loopGuardMessage(recoveredLoopDecision, invTool, visibleLanguage);
+                                        ToolResult blockedResult = this.loopGuardResult(recoveredLoopDecision, invTool, ctx, visibleLanguage, loopMessage);
+                                        this.journalToolResult(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, blockedResult);
+                                        String visibleSignature = invTool + ":" + this.toolNarrator.toolTarget(this.safeTool(invTool), publicArgs);
+                                        this.appendRunLog(runLog, "\n- " + loopMessage + "\n");
+                                        this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u6d4b\u5230\u91cd\u590d\u64cd\u4f5c", "Loop detected"), loopMessage, task.getTaskId());
+                                        this.sendEvent(sse, conv, "LOOP_GUARD", Map.of(
+                                                "iteration", i, "tool", invTool, "signature", visibleSignature,
+                                                "action", recoveredLoopDecision.action().name().toLowerCase(Locale.ROOT),
+                                                "cycleLength", recoveredLoopDecision.cycleLength(), "message", loopMessage));
+                                        this.metricsService.recordLoopGuard(ctx, visibleSignature, i);
+                                        if (blockedResult.isInteractionRequired()) {
+                                            AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
+                                                    task.getTaskId(), blockedResult, visibleLanguage);
+                                            this.publishUserQuestion(sse, conv, blockedResult);
+                                            this.writeAgentCheckpoint(project, request, task, ctx, pause.state(),
+                                                    pause.detail(), invTool, this.compactToolResultForCheckpoint(invTool, blockedResult), runLog);
+                                            this.streamFinal(sse, conv, this.buildStopFinal(pause.title(), pause.detail(), project, runLog, visibleLanguage), visibleLanguage);
+                                            this.sendEvent(sse, conv, "DONE", Map.of("message", pause.title(), "iterations", i));
+                                            emitter.complete();
+                                            return;
+                                        }
+                                        this.writeAgentCheckpoint(project, request, task, ctx, "loop_guard_strategy_switch", loopMessage, invTool, "", runLog);
+                                        msgs.add(Map.of("role", "assistant", "content", ""));
+                                        msgs.add(Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
+                                                + "\nDo not repeat the blocked pattern. Change the tool, target, scope, or verification method; use existing evidence; or finish if the task is complete."));
+                                        break block19;
+                                    }
+                                    this.journalToolRunning(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i);
                                     ToolResult res = this.execTool(invTool, parsedArgs, ctx, sse, conv, visibleLanguage, recoveredToolCallId, runLog);
+                                    loopGuard.recordToolResult(res.isSuccess());
+                                     Optional<EnvironmentBlockerClassifier.Blocker> recoveredEnvironmentBlocker =
+                                             EnvironmentBlockerClassifier.classify(invTool, res);
+                                     if (recoveredEnvironmentBlocker.isPresent()) {
+                                         this.journalToolBlocked(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, res.getContent());
+                                         this.appendToolResult(runLog, res);
+                                         this.stopForEnvironmentBlocker(sse, conv, task, project, request, ctx, runLog, i,
+                                                 invTool, res, recoveredEnvironmentBlocker.get(), visibleLanguage, emitter);
+                                         return;
+                                     }
                                     if (res.isApprovalRequired()) {
+                                        this.journalToolWaitingApproval(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, res.getApprovalId());
                                         this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, invTool, res, visibleLanguage, emitter);
                                         return;
                                     }
+                                    this.journalToolResult(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, res);
                                     this.appendToolResult(runLog, res);
-                                    this.writeAgentCheckpoint(project, request, task, ctx, res.isSuccess() ? "tool_success" : "tool_failed", "Recovered and executed tool `" + this.safeLogText(invTool) + "`.", invTool, this.compactToolResultForCheckpoint(invTool, res), runLog);
+                                    this.writeAgentCheckpoint(project, request, task, ctx, res.isInteractionRequired() ? "waiting_user" : (res.isSuccess() ? "tool_success" : "tool_failed"), "Recovered and executed tool `" + this.safeLogText(invTool) + "`.", invTool, this.compactToolResultForCheckpoint(invTool, res), runLog);
                                     this.sendObserve(sse, conv, i, invTool, res, task.getTaskId());
                                     if (("create_plan".equals(invTool) || "plan".equals(invTool) || "todo_write".equals(invTool) || "todowrite".equals(invTool)) && (planJson2 = ctx.getPlanJson()) != null && !planJson2.isBlank()) {
                                         this.sendEvent(sse, conv, "PLAN_UPDATE", Map.of("plan", ctx.getPlan(), "summary", ctx.getPlanSummary(), "planJson", planJson2));
                                     }
-                                    this.sendThought(sse, conv, i, this.localText(visibleLanguage, "检查结果", "Check result"), this.buildResultThought(invTool, parsedArgs, res, visibleLanguage), task.getTaskId());
+                                    this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u67e5\u7ed3\u679c", "Check result"), this.toolNarrator.buildResultThought(invTool, parsedArgs, res, visibleLanguage), task.getTaskId());
+                                    if (res.isInteractionRequired()) {
+                                        AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
+                                                task.getTaskId(), res, visibleLanguage);
+                                        this.publishUserQuestion(sse, conv, res);
+                                        String waitingState = pause.state();
+                                        String waitingTitle = pause.title();
+                                        String waitingDetail = pause.detail();
+                                        this.appendRunLog(runLog, "\n- Durable user interaction pending: type=`" + this.safeLogText(res.getInteractionType())
+                                                + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
+                                        this.writeAgentCheckpoint(project, request, task, ctx, waitingState, waitingDetail, invTool,
+                                                this.compactToolResultForCheckpoint(invTool, res), runLog);
+                                        this.streamFinal(sse, conv, this.buildStopFinal(waitingTitle, waitingDetail, project, runLog, visibleLanguage), visibleLanguage);
+                                        this.sendEvent(sse, conv, "DONE", Map.of("message", waitingTitle, "iterations", i));
+                                        emitter.complete();
+                                        return;
+                                    }
                                     String planStatus2 = ctx.getPlanSummary();
                                     Object planNote2 = planStatus2.isEmpty() ? "" : "\nCurrent plan progress:\n" + planStatus2;
                                     String stageNote2 = "\nCurrent engineering stage: " + ctx.getStage();
@@ -789,6 +1049,7 @@ public class AgentLoopEngine {
                                 log.info("Iteration {}: text ({} chars, cleaned={} chars): {}", new Object[]{i, content.length(), cleaned.length(), content.substring(0, Math.min(200, content.length()))});
                                 if (!cleaned.isEmpty()) break block23;
                                 log.info("Iteration {}: empty/marker-only response, nudging model", i);
+                                loopGuard.recordModelNoProgress();
                                 this.appendRunLog(runLog, "\n- Model returned empty/marker-only response, requesting continuation.\n");
                                 msgs.add(Map.of("role", "assistant", "content", content));
                                 msgs.add(Map.of("role", "user", "content", "Task not done. Call tools to execute next step. Do not output plain text ending."));
@@ -800,7 +1061,8 @@ public class AgentLoopEngine {
                                 ft = cleaned;
                             }
                             if (!this.isPrematureFinal(ft, ctx)) break block24;
-            this.appendRunLog(runLog, "\n- Model returned mid-placeholder text, rejecting as final, continuing: `" + this.safeLogText(ft) + "`\n");
+                            loopGuard.recordModelNoProgress();
+                            this.appendRunLog(runLog, "\n- Model returned mid-placeholder text, rejecting as final, continuing: `" + this.safeLogText(ft) + "`\n");
             this.writeAgentCheckpoint(project, request, task, ctx, "continuing_after_premature_final", "Model returned mid-placeholder text, rejected as final.", "", ft, runLog);
                             msgs.add(Map.of("role", "assistant", "content", ft));
                             msgs.add(Map.of("role", "user", "content", this.buildContinuationInstruction(ctx)));
@@ -808,6 +1070,7 @@ public class AgentLoopEngine {
                             break block19;
                         }
                         if (this.hasOpenPlan(ctx)) {
+                            loopGuard.recordModelNoProgress();
                             this.appendRunLog(runLog, "\n- Plan has unfinished tasks, rejecting premature end. Remaining: " + ctx.getPlanSummary() + "\n");
                             this.writeAgentCheckpoint(project, request, task, ctx, "continuing_open_plan", "Plan has unfinished tasks, rejecting premature end.", "", ft, runLog);
                             msgs.add(Map.of("role", "assistant", "content", ft));
@@ -815,32 +1078,43 @@ public class AgentLoopEngine {
                             msgs.add(Map.of("role", "user", "content", planMsg));
                             executed = true;
                             break block19;
-                        } else if (ctx.hasUnverifiedChanges()) {
-                            this.appendRunLog(runLog, "\n- Files changed without successful verification, rejecting final response.\n");
-                            this.writeAgentCheckpoint(project, request, task, ctx, "continuing_unverified_changes", "Files changed but no successful verification has run yet.", "", ft, runLog);
-                            msgs.add(Map.of("role", "assistant", "content", ft));
-                            msgs.add(Map.of("role", "user", "content", "Files were changed in this run but no successful verification has run after the latest write. Run the most relevant compile/test/diagnostic command now. If no executable check exists, use read_file on each changed file to verify saved content and sha256, then explicitly explain that manual verification before final."));
-                            executed = true;
-                            break block19;
                         } else {
                             boolean tooShort = ft.length() < 80;
                             boolean noStructure = !ft.contains("##") && !ft.contains("**") && !ft.contains("- ");
                             boolean noSubstance = !containsFinalSubstance(ft);
                             if (shouldRejectFinalReply(request.getMessage(), ft)) {
+                                loopGuard.recordModelNoProgress();
                                 this.appendRunLog(runLog, "\n- Reply quality insufficient (length=" + ft.length() + ", noStructure=" + noStructure + ", noSubstance=" + noSubstance + "), rejecting as final.\n");
                                 msgs.add(Map.of("role", "assistant", "content", ft));
                                 msgs.add(Map.of("role", "user", "content", "Reply too short to be final. Output complete structured summary:\n## Summary\n**Completed**\n- What was modified\n**Verification**\n- How it was verified\n**Suggestions**\n- Next steps"));
                                 executed = true;
                                 break block19;
                             } else {
-                                // Model's reasoning already streamed in real-time by chatStreaming
+                                // Model reasoning is already streamed by AgentModelTurnExecutor.
                                 this.appendRunLog(runLog, "\n## Final response\n\n" + this.safeLogText(ft) + "\n");
                                 log.info("Iteration {}: final response ({} chars)", i, ft.length());
+                                AgentRunFinalizer.CompletionAssessment completion = this.runFinalizer == null
+                                        ? null : this.runFinalizer.assess(task.getTaskId(), studentId, projectId,
+                                                ctx.hasTrustedVerification());
+                                if (completion != null) {
+                                    this.sendEvent(sse, conv, "COMPLETION_EVIDENCE", completion.evidence().toPayload());
+                                    if (!completion.allowed()) {
+                                        loopGuard.recordModelNoProgress();
+                                        this.appendRunLog(runLog, "\n- Server completion evidence rejected the model final response.\n");
+                                        this.writeAgentCheckpoint(project, request, task, ctx, "continuing_missing_completion_evidence",
+                                                completion.guidance(), "", this.limitForContext(ft, 2000), runLog);
+                                        msgs.add(Map.of("role", "assistant", "content", ft));
+                                        msgs.add(Map.of("role", "user", "content", completion.guidance()));
+                                        executed = true;
+                                        break block19;
+                                    }
+                                }
                                 this.sendEvent(sse, conv, "FINAL", Map.of("content", ft, "summary", this.finalResponseSummary(visibleLanguage)));
-                                this.taskService.updateTask(task.getTaskId(), "completed", this.localText(visibleLanguage, "已完成", "Completed"), ft);
+                                this.taskService.updateTask(task.getTaskId(), "completed", this.localText(visibleLanguage, "\u5df2\u5b8c\u6210", "Completed"), ft);
                                 ctx.setStage("final");
                                 this.writeAgentCheckpoint(project, request, task, ctx, "completed", "Task completed with final response.", "", this.limitForContext(ft, 2000), runLog);
-                                this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "完成", "Done"), "iterations", i));
+                                this.sendEvent(sse, conv, "RUN_STATE_COMPLETED", Map.of("taskId", task.getTaskId(), "state", "completed"));
+                                this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "\u5b8c\u6210", "Done"), "iterations", i));
                                 emitter.complete();
                                 return;
                             }
@@ -946,6 +1220,7 @@ public class AgentLoopEngine {
                         }
                     }
                     log.warn("Iteration {} unknown type: {}", i, type);
+                    loopGuard.recordModelNoProgress();
                     this.appendRunLog(runLog, "\n- Unknown response type: `" + this.safeLogText(type) + "`\n");
                     this.sendEvent(sse, conv, "ERROR", Map.of("message", "Unknown response type: " + type));
                     executed = true;
@@ -1050,9 +1325,11 @@ public class AgentLoopEngine {
                 "message", summary,
                 "iterations", iteration,
                 "taskId", task.getTaskId(),
-                "taskStatus", "waiting_approval",
-                "waitingForApproval", true,
-                "resumeAgentLoop", true));
+                "taskStatus", "waiting_environment",
+                "waitingForEnvironment", true,
+                "waitingForApproval", false,
+                "resumeAgentLoop", false,
+                "manualRetryRequired", true));
         emitter.complete();
     }
 
@@ -1075,8 +1352,14 @@ public class AgentLoopEngine {
         event.put("resumeAutomatically", true);
         event.put("message", detail);
         this.sendEvent(sse, conv, "WORKSPACE_WAITING", event);
-        this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
-        this.sendEvent(sse, conv, "DONE", Map.of("message", summary));
+        this.sendEvent(sse, conv, "TASK_PAUSED", Map.of(
+                "taskId", task.getTaskId(),
+                "taskStatus", "waiting_workspace",
+                "reason", "workspace_checkout",
+                "message", summary,
+                "detail", detail,
+                "resumeAgentLoop", true));
+        // Close only the current HTTP transport; a recoverable task must not emit terminal FINAL/DONE events.
         emitter.complete();
     }
 
@@ -1131,18 +1414,14 @@ public class AgentLoopEngine {
     private ToolResult execTool(String name, JsonObject args, AgentContext ctx, AgentSsePublisher sse,
                                 AgentConversation conv, String visibleLanguage, String toolCallId, Path runLog) {
         // 工具权限检查：plan/explore 模式下不允许使用编辑类工具
-        if (!this.toolRegistry.isToolAllowed(ctx.getMode(), name)) {
-            return ToolResult.failed(this.localText(visibleLanguage,
-                    "工具 `" + name + "` 在 " + ctx.getMode() + " 模式下不可用，请切换到 build 模式执行写入操作。",
-                    "Tool '" + name + "' is not allowed in " + ctx.getMode() + " mode. Use read-only tools only."));
-        }
-        AgentTool t = this.toolRegistry.get(name);
-        if (t == null) {
-            return ToolResult.failed(this.localText(visibleLanguage, "未知工具：" + name, "Unknown tool: " + name));
-        }
+        AgentToolTurnExecutor.ToolResolution resolution = this.toolTurnExecutor.resolve(ctx, name, visibleLanguage);
+        if (!resolution.allowed()) return resolution.rejection();
+        AgentTool t = resolution.tool();
         if ("question".equals(this.safeTool(name))) {
-            return this.askUserQuestion(args, ctx, sse, conv, visibleLanguage);
+            return this.askUserQuestion(args, ctx, visibleLanguage);
         }
+        String guardedCommand = this.commandForGuard(name, args, ctx);
+        String guardedWorkingDirectory = this.commandWorkingDirectoryForArgs(name, ctx.getWorkspaceRoot(), args);
         if (this.isCommandPolicyTool(name)) {
             CommandClassification classification = this.commandClassification(name, args, ctx);
             if (classification != null) {
@@ -1151,7 +1430,27 @@ public class AgentLoopEngine {
                     return ToolResult.failed("command blocked by restricted command policy: "
                             + classification.reasonCode().name().toLowerCase(Locale.ROOT));
                 }
-                if (classification.requiresApproval()) {
+                CommandFailureGuard.Decision retryDecision = this.commandFailureGuard.before(
+                        ctx.getTaskId(), guardedCommand, guardedWorkingDirectory);
+                if (!retryDecision.allowed()) {
+                    LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("taskId", ctx.getTaskId());
+                    payload.put("tool", name);
+                    payload.put("command", CommandRedactor.redact(guardedCommand));
+                    payload.put("code", retryDecision.code());
+                    payload.put("blockerCode", retryDecision.code());
+                    payload.put("attempts", retryDecision.attempts());
+                    payload.put("retryable", false);
+                    payload.put("detail", retryDecision.message());
+                    try {
+                        this.sendEvent(sse, conv, "ENVIRONMENT_BLOCKED", payload);
+                    } catch (Exception ignored) {
+                        log.debug("Unable to publish command recovery event", ignored);
+                    }
+                    return ToolResult.failed("failure_code=" + retryDecision.code() + "\nretryable=false\n" + retryDecision.message());
+                }
+                if (classification.requiresApproval()
+                        && !(acceptanceAutoApproveVerification && "run_tests".equals(this.safeTool(name)))) {
                     return this.createCommandApproval(ctx, classification, timeout, toolCallId);
                 }
             }
@@ -1179,7 +1478,7 @@ public class AgentLoopEngine {
                             conv,
                             name,
                             inputStr,
-                            this.visibleActionSummary(name, args, visibleLanguage),
+                            this.toolNarrator.visibleActionSummary(name, args, visibleLanguage),
                             askRule != null ? askRule.getPermission() : "*",
                             askRule != null ? askRule.getPattern() : "*"
                     );
@@ -1225,7 +1524,8 @@ public class AgentLoopEngine {
 
             phase = "tool_delegate";
             long delegateStartedNanos = System.nanoTime();
-            ToolResult result = this.executeToolWithBudget(t, ctx, args, name);
+            ToolResult result = this.toolTurnExecutor.execute(t, ctx, args, name);
+            result = this.annotateCommandRecovery(name, result);
             delegateElapsedMs = elapsedMs(delegateStartedNanos);
             DiffService.ApplyTelemetry diffTelemetry = this.diffService.consumeLastApplyTelemetry();
             if (!diffTelemetry.timingMs().isEmpty()) {
@@ -1267,6 +1567,12 @@ public class AgentLoopEngine {
             if (hookReport.content() != null && !hookReport.content().isBlank()) {
                 result.setContent((result.getContent() == null ? "" : result.getContent()) + hookReport.content());
             }
+            if (this.isCommandPolicyTool(name) && !result.isSuccess() && !result.isApprovalRequired()) {
+                this.commandFailureGuard.record(ctx.getTaskId(), name, guardedCommand, guardedWorkingDirectory, result.getContent());
+            }
+            if (!result.isSuccess() && !result.isApprovalRequired()) {
+                this.recordToolFailure(ctx, name, toolCallId, result.getContent());
+            }
 
             phase = "context_orchestration";
             this.sendToolExecutionEvent(sse, conv, "TOOL_PHASE_CHANGED", ctx, name, toolCallId,
@@ -1294,19 +1600,20 @@ public class AgentLoopEngine {
                             snapshotDiffElapsedMs, postEditElapsedMs, contextElapsedMs));
             return result;
         }
-        catch (ToolExecutionTimedOutException timeout) {
+        catch (AgentToolTurnExecutor.ToolTimedOutException timeout) {
             long totalElapsedMs = elapsedMs(totalStartedNanos);
             ToolResult failed = ToolResult.failed(this.localText(visibleLanguage,
-                    "\u5de5\u5177\u6267\u884c\u8d85\u65f6\uff08\u9884\u7b97 " + timeout.budgetMs + " ms\uff09\uff0c\u5df2\u8bf7\u6c42\u505c\u6b62\u6267\u884c\u3002",
-                    "Tool execution timed out after " + timeout.budgetMs + " ms; cancellation was requested."));
+                    "\u5de5\u5177\u6267\u884c\u8d85\u65f6\uff08\u9884\u7b97 " + timeout.budgetMs() + " ms\uff09\uff0c\u5df2\u8bf7\u6c42\u505c\u6b62\u6267\u884c\u3002",
+                    "Tool execution timed out after " + timeout.budgetMs() + " ms; cancellation was requested."));
             LinkedHashMap<String, Object> timing = toolTimingPayload(delegateElapsedMs, beforeSnapshotElapsedMs,
                     afterSnapshotElapsedMs, snapshotDiffElapsedMs, postEditElapsedMs, contextElapsedMs);
             timing.put("timedOut", true);
-            timing.put("budgetMs", timeout.budgetMs);
+            timing.put("budgetMs", timeout.budgetMs());
             timing.put("error", timeout.getMessage());
             this.appendToolExecutionFailed(runLog, name, toolCallId, phase, totalElapsedMs, timeout);
             this.sendToolExecutionEvent(sse, conv, "TOOL_TIMED_OUT", ctx, name, toolCallId, phase,
                     totalElapsedMs, timing);
+            this.recordToolFailure(ctx, name, toolCallId, failed.getContent());
             this.contextOrchestrator.afterTool(ctx, name, args, failed);
             this.metricsService.recordTool(ctx, name, args, failed, totalElapsedMs, AgentPostEditHookService.HookReport.empty());
             return failed;
@@ -1324,30 +1631,44 @@ public class AgentLoopEngine {
             timing.put("error", this.limitForThought(e.getMessage(), 240));
             this.sendToolExecutionEvent(sse, conv, "TOOL_EXECUTION_FAILED", ctx, name, toolCallId, phase,
                     totalElapsedMs, timing);
+            this.recordToolFailure(ctx, name, toolCallId, failed.getContent());
             this.contextOrchestrator.afterTool(ctx, name, args, failed);
             this.metricsService.recordTool(ctx, name, args, failed, totalElapsedMs, AgentPostEditHookService.HookReport.empty());
             return failed;
         }
     }
 
-    private ToolResult executeToolWithBudget(AgentTool tool, AgentContext context, JsonObject arguments,
-                                              String toolName) throws Exception {
-        long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments);
-        Future<ToolResult> future = TOOL_EXECUTION_EXECUTOR.submit(() -> tool.execute(context, arguments));
+    private ToolResult annotateCommandRecovery(String toolName, ToolResult result) {
+        if (result == null || result.isSuccess() || result.isApprovalRequired() || !this.isCommandPolicyTool(toolName)) {
+            return result;
+        }
+        String content = result.getContent() == null ? "" : result.getContent();
+        EnvironmentBlockerClassifier.Blocker blocker = EnvironmentBlockerClassifier.classify(toolName, result).orElse(null);
+        String prefix;
+        if (blocker != null) {
+            prefix = "failure_code=" + blocker.code()
+                    + "\nretryable=false\nrecovery_action=restore_environment_or_switch_verification_strategy\n"
+                    + "recovery_detail=" + blocker.detail();
+        } else if (this.recoveryProperties.isAutoRepairEnabled()) {
+            prefix = "failure_code=COMMAND_FAILED\nretryable=true\nrecovery_action=inspect_output_edit_then_retry\n"
+                    + "max_automatic_repairs=" + this.recoveryProperties.getMaxAutomaticRepairs();
+        } else {
+            prefix = "failure_code=COMMAND_FAILED\nretryable=false\nrecovery_action=manual_intervention_required";
+        }
+        result.setContent(prefix + "\n" + content);
+        return result;
+    }
+    private void recordToolFailure(AgentContext context, String toolName, String toolCallId, String content) {
+        if (artifactService == null || context == null || context.getTaskId() == null) {
+            return;
+        }
         try {
-            return future.get(budgetMs, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException timeout) {
-            future.cancel(true);
-            throw new ToolExecutionTimedOutException(this.safeTool(toolName), budgetMs);
-        } catch (InterruptedException interrupted) {
-            future.cancel(true);
-            Thread.currentThread().interrupt();
-            throw interrupted;
-        } catch (ExecutionException executionFailure) {
-            Throwable cause = executionFailure.getCause();
-            if (cause instanceof Exception exception) throw exception;
-            if (cause instanceof Error error) throw error;
-            throw new IllegalStateException("Tool execution failed", cause);
+            String safeContent = CommandRedactor.redact(content == null ? "" : content);
+            artifactService.record(context.getTaskId(), "tool_failure",
+                    (toolName == null ? "unknown" : toolName) + ":" + (toolCallId == null ? "" : toolCallId),
+                    "tool=" + safeTool(toolName) + "\n" + safeContent);
+        } catch (Exception ignored) {
+            // 工具失败记录不能掩盖原始工具结果。
         }
     }
 
@@ -1381,7 +1702,59 @@ public class AgentLoopEngine {
         }
     }
 
-    private ToolResult askUserQuestion(JsonObject args, AgentContext ctx, AgentSsePublisher sse, AgentConversation conv, String visibleLanguage) {
+    static boolean isMissingPlanCompletion(String toolName, JsonObject arguments, ToolResult result) {
+        String normalized = toolName == null ? "" : toolName.trim().toLowerCase(Locale.ROOT);
+        if (!("create_plan".equals(normalized) || "plan".equals(normalized))) return false;
+        String action = arguments != null && arguments.has("action")
+                ? arguments.get("action").getAsString() : "";
+        if (!"complete".equalsIgnoreCase(action) || result == null || result.isSuccess()) return false;
+        String content = result.getContent() == null ? "" : result.getContent();
+        return content.contains("failure_code=PLAN_MISSING")
+                || content.contains("\u5f53\u524d\u6ca1\u6709\u6267\u884c\u8ba1\u5212");
+    }
+
+    private String iterationPolicyDescription() {
+        int hardMax = loopProperties == null ? 0 : loopProperties.getHardMaxIterations();
+        return hardMax > 0
+                ? "repeat/cycle guard with configurable hard fuse=" + hardMax
+                : "repeat/cycle guard; no fixed total iteration cap";
+    }
+
+    private String loopGuardMessage(AgentLoopGuard.ToolDecision decision, String toolName, String visibleLanguage) {
+        String safeName = this.safeTool(toolName);
+        if (decision.action() == AgentLoopGuard.ToolAction.REQUEST_USER) {
+            return this.localText(visibleLanguage,
+                    "Agent \u5728\u5207\u6362\u7b56\u7565\u540e\u4ecd\u91cd\u590d\u4e86\u5de5\u5177 `" + safeName + "` \u7684\u76f8\u540c\u8c03\u7528\u6a21\u5f0f\uff0c\u5df2\u6682\u505c\u5e76\u8bf7\u6c42\u7528\u6237\u51b3\u5b9a\u3002",
+                    "The agent repeated the same `" + safeName + "` tool-call pattern after a strategy switch, so the run paused for a user decision.");
+        }
+        String pattern = decision.cycleLength() <= 1
+                ? this.localText(visibleLanguage, "\u5b8c\u5168\u76f8\u540c\u7684\u8c03\u7528", "an identical call")
+                : this.localText(visibleLanguage, decision.cycleLength() + " \u6b65\u5faa\u73af\u8c03\u7528",
+                        "a " + decision.cycleLength() + "-step call cycle");
+        return this.localText(visibleLanguage,
+                "\u5faa\u73af\u4fdd\u62a4\u68c0\u6d4b\u5230\u5de5\u5177 `" + safeName + "` \u51fa\u73b0" + pattern + "\u3002\u672c\u6b21\u8c03\u7528\u5df2\u62e6\u622a\uff1bAgent \u5fc5\u987b\u6539\u7528\u4e0d\u540c\u5de5\u5177\u3001\u76ee\u6807\u3001\u8303\u56f4\u6216\u9a8c\u8bc1\u7b56\u7565\u3002",
+                "Loop protection detected " + pattern + " involving tool `" + safeName + "`. This call was blocked; the agent must change the tool, target, scope, or verification strategy.");
+    }
+
+    private ToolResult loopGuardResult(AgentLoopGuard.ToolDecision decision, String toolName, AgentContext ctx,
+                                       String visibleLanguage, String loopMessage) {
+        if (decision.action() != AgentLoopGuard.ToolAction.REQUEST_USER) {
+            return ToolResult.failed(loopMessage);
+        }
+        JsonObject question = new JsonObject();
+        question.addProperty("summary", this.localText(visibleLanguage, "\u68c0\u6d4b\u5230\u5de5\u5177\u8c03\u7528\u6b7b\u5faa\u73af", "Tool-call loop detected"));
+        question.addProperty("question", this.localText(visibleLanguage,
+                "Agent \u5df2\u7ecf\u81ea\u52a8\u5c1d\u8bd5\u5207\u6362\u7b56\u7565\uff0c\u4f46\u4ecd\u91cd\u590d\u8c03\u7528\u5de5\u5177 `" + this.safeTool(toolName) + "`\u3002\u8bf7\u9009\u62e9\u4e0b\u4e00\u6b65\uff1b\u4e5f\u53ef\u4ee5\u76f4\u63a5\u8f93\u5165\u65b0\u7684\u5904\u7406\u8981\u6c42\u3002",
+                "The agent already tried to switch strategy but still repeated tool `" + this.safeTool(toolName) + "`. Choose the next step, or enter new instructions."));
+        com.google.gson.JsonArray options = new com.google.gson.JsonArray();
+        options.add(this.localText(visibleLanguage, "\u7ee7\u7eed\uff0c\u4f46\u5fc5\u987b\u66f4\u6362\u7b56\u7565", "Continue with a different strategy"));
+        options.add(this.localText(visibleLanguage, "\u5141\u8bb8\u91cd\u65b0\u5c1d\u8bd5\u8be5\u8c03\u7528", "Allow this call to be retried"));
+        options.add(this.localText(visibleLanguage, "\u505c\u6b62\u5e76\u603b\u7ed3\u5f53\u524d\u8fdb\u5ea6", "Stop and summarize current progress"));
+        question.add("options", options);
+        return this.askUserQuestion(question, ctx, visibleLanguage);
+    }
+
+    private ToolResult askUserQuestion(JsonObject args, AgentContext ctx, String visibleLanguage) {
         String question = ToolSupport.stringArg(args, "question", "").trim();
         if (question.isBlank()) {
             return ToolResult.failed(this.localText(visibleLanguage, "question 参数不能为空", "question is required"));
@@ -1402,22 +1775,20 @@ public class AgentLoopEngine {
                     summary,
                     options
             );
-            this.taskService.updateTask(ctx.getTaskId(), "waiting_user", summary, question);
-            LinkedHashMap<String, Object> data = new LinkedHashMap<>();
-            data.put("requestId", request.requestId());
-            data.put("projectId", request.projectId());
-            data.put("sessionId", request.sessionId());
-            data.put("taskId", request.taskId());
-            data.put("conversationId", request.conversationId());
-            data.put("question", request.question());
-            data.put("summary", request.summary());
-            data.put("options", request.options());
-            data.put("createdAt", request.createdAt());
-            this.sendEvent(sse, conv, "USER_QUESTION", data);
             return ToolResult.interactionRequired(
                     this.localText(visibleLanguage, "正在等待用户输入。", "Waiting for user input."),
                     request.requestId(),
-                    "question");
+                    "question").withInteractionPayload(Map.of(
+                            "requestId", request.requestId(),
+                            "interactionType", "question",
+                            "question", request.question(),
+                            "summary", request.summary(),
+                            "options", request.options(),
+                            "projectId", request.projectId(),
+                            "sessionId", request.sessionId(),
+                            "taskId", request.taskId(),
+                            "conversationId", request.conversationId(),
+                            "createdAt", request.createdAt()));
         } catch (Exception e) {
             return ToolResult.failed(this.localText(visibleLanguage, "用户问题处理失败：" + e.getMessage(), "User question failed: " + e.getMessage()));
         }
@@ -1599,39 +1970,55 @@ public class AgentLoopEngine {
     }
 
     private CommandClassification commandClassification(String toolName, JsonObject args, AgentContext context) {
-        String command;
-        String workingDirectory = ".";
-        if ("run_tests".equals(toolName)) {
-            command = TestCommandResolver.canonicalCommand(context.getWorkspaceRoot());
-            workingDirectory = commandWorkingDirectory(toolName, context.getWorkspaceRoot());
-        } else {
-            command = this.permissionInput(toolName, args);
-        }
-        if (command.isBlank()) {
-            return null;
-        }
+        String command = this.commandForGuard(toolName, args, context);
+        String workingDirectory = this.commandWorkingDirectoryForArgs(toolName, context.getWorkspaceRoot(), args);
+        if (command.isBlank()) return null;
         int timeout = this.commandTimeout(toolName, args);
         return this.commandClassifier.classify(new CommandRequest(
                 command, "direct", workingDirectory, timeout, false, false, "agent-worker"));
     }
 
-    /**
-     * Keeps the approval capability bound to the exact directory selected by the fixed test resolver.
-     * A caller cannot supply this value, and a resolved path outside the workspace is never persisted.
-     */
+    private String commandForGuard(String toolName, JsonObject args, AgentContext context) {
+        if ("run_tests".equals(toolName)) {
+            VerificationStrategy strategy = context.isEnvironmentRecovery()
+                    ? this.recoveryProperties.getVerificationStrategy()
+                    : this.verificationStrategy(args);
+            return String.join(" ", TestCommandResolver.resolveProject(context.getWorkspaceRoot(),
+                    strategy, this.recoveryProperties.getFallbackVerificationStrategy()).command());
+        }
+        return this.permissionInput(toolName, args);
+    }
+
+    private VerificationStrategy verificationStrategy(JsonObject args) {
+        String requested = args != null && args.has("strategy") ? args.get("strategy").getAsString() : null;
+        return VerificationStrategy.parse(requested, this.recoveryProperties.getVerificationStrategy());
+    }
+
+    private String commandWorkingDirectoryForArgs(String toolName, Path workspaceRoot, JsonObject args) {
+        return commandWorkingDirectory(toolName, workspaceRoot, args,
+                this.recoveryProperties.getVerificationStrategy(), this.recoveryProperties.getFallbackVerificationStrategy());
+    }
+    /** 将固定解析出的验证项目目录绑定到审批和失败熔断指纹。 */
     static String commandWorkingDirectory(String toolName, Path workspaceRoot) {
-        if (!"run_tests".equals(toolName) || workspaceRoot == null) {
-            return ".";
-        }
-        TestCommandResolver.ResolvedTestCommand resolved = TestCommandResolver.resolveProject(workspaceRoot);
-        if (resolved.workingDirectory() == null || resolved.command().isEmpty()) {
-            return ".";
-        }
+        return commandWorkingDirectory(toolName, workspaceRoot, null);
+    }
+
+    static String commandWorkingDirectory(String toolName, Path workspaceRoot, JsonObject args) {
+        return commandWorkingDirectory(toolName, workspaceRoot, args, VerificationStrategy.AUTO, null);
+    }
+
+    private static String commandWorkingDirectory(String toolName, Path workspaceRoot, JsonObject args,
+                                                   VerificationStrategy defaultStrategy,
+                                                   VerificationStrategy fallbackStrategy) {
+        if (!"run_tests".equals(toolName) || workspaceRoot == null) return ".";
+        TestCommandResolver.ResolvedTestCommand resolved = TestCommandResolver.resolveProject(
+                workspaceRoot, VerificationStrategy.parse(
+                        args != null && args.has("strategy") ? args.get("strategy").getAsString() : null,
+                        defaultStrategy), fallbackStrategy);
+        if (resolved.workingDirectory() == null || resolved.command().isEmpty()) return ".";
         Path root = workspaceRoot.toAbsolutePath().normalize();
         Path workingDirectory = resolved.workingDirectory().toAbsolutePath().normalize();
-        if (!workingDirectory.startsWith(root)) {
-            return ".";
-        }
+        if (!workingDirectory.startsWith(root)) return ".";
         String relative = root.relativize(workingDirectory).toString().replace('\\', '/');
         return relative.isBlank() ? "." : relative;
     }
@@ -1761,6 +2148,9 @@ public class AgentLoopEngine {
         }
         JsonObject publicArguments = new JsonObject();
         publicArguments.addProperty("command", "<redacted; approval required for mutating commands>");
+        if ("run_tests".equals(this.safeTool(toolName)) && arguments != null && arguments.has("strategy")) {
+            publicArguments.add("strategy", arguments.get("strategy"));
+        }
         if (arguments != null && arguments.has("timeout_seconds")) {
             publicArguments.add("timeout_seconds", arguments.get("timeout_seconds"));
         }
@@ -1838,152 +2228,6 @@ public class AgentLoopEngine {
             return false;
         }
         return lower.contains("temporarily unavailable") || lower.contains("connection reset") || lower.contains("handshake") || lower.contains("remote host terminated") || lower.contains("connection aborted") || lower.contains("connection closed") || lower.contains("ssl") || lower.contains("tls") || lower.contains("eof") || lower.contains("503") || lower.contains("502") || lower.contains("504");
-    }
-
-    // Stream-based LLM call — sends thinking in real-time via SSE
-    private Map<String, Object> chatStreaming(AgentSsePublisher sse, AgentConversation conv,
-                                               String sysPrompt, List<Map<String, Object>> msgs,
-                                               List<Map<String, Object>> tools, LlmProvider provider,
-                                               LlmProvider.LlmConfig config,
-                                               int iteration, Long taskId, String visibleLanguage,
-                                               CancellationToken cancellationToken) throws Exception {
-        ProviderCapabilities capabilities = provider.capabilities();
-        if (!capabilities.streaming()) {
-            return Map.of("type", "error", "message", "Selected provider does not support streaming", "content", "");
-        }
-        if (tools != null && !tools.isEmpty() && !capabilities.toolCalling()) {
-            return Map.of("type", "error", "message", "Selected provider does not support tool calling", "content", "");
-        }
-        StringBuilder contentBuf = new StringBuilder();
-        StringBuilder thinkingBuf = new StringBuilder();
-        Map<Integer, LlmProvider.StreamChunk> toolCalls = new LinkedHashMap<>();
-        String[] errorMsg = {null};
-        boolean[] cancelled = {false};
-        boolean[] thinkingStarted = {false};
-        AtomicReference<Map<String, Object>> usageRef = new AtomicReference<>();
-        String thinkMsgId = "think-" + iteration + "-" + UUID.randomUUID().toString();
-
-        Future<?> streamFuture = PROVIDER_STREAM_EXECUTOR.submit(() -> provider.chatStream(sysPrompt, msgs, tools, config, cancellationToken, chunk -> {
-            try {
-                switch (chunk.eventType()) {
-                    case CANCELLED -> cancelled[0] = true;
-                    case THINKING_DELTA -> {
-                        if (!thinkingStarted[0]) {
-                            LinkedHashMap<String, Object> start = new LinkedHashMap<>();
-                            start.put("messageId", thinkMsgId);
-                            start.put("iteration", iteration);
-                            start.put("summary", this.localText(visibleLanguage, "分析问题", "Analyzing problem"));
-                            start.put("taskId", taskId);
-                            sse.send("THINK_START", start);
-                            thinkingStarted[0] = true;
-                        }
-                        String delta = chunk.content() != null ? chunk.content() : "";
-                        thinkingBuf.append(delta);
-                        if (!delta.isEmpty()) {
-                            sse.sendTransient("THINK_DELTA", Map.of(
-                                    "messageId", thinkMsgId,
-                                    "delta", delta,
-                                    "taskId", taskId));
-                        }
-                    }
-                    case TEXT_DELTA -> {
-                        String delta = chunk.content() != null ? chunk.content() : "";
-                        contentBuf.append(delta);
-                        if (!delta.isEmpty()) {
-                            sse.sendTransient("FINAL_DELTA", Map.of("delta", delta, "taskId", taskId));
-                        }
-                    }
-                    case TOOL_ARGUMENTS_DELTA, TOOL_CALL -> {
-                        int callIndex = chunk.toolCallIndex() == null ? 0 : chunk.toolCallIndex();
-                        toolCalls.put(callIndex, chunk);
-                        if (chunk.usage() != null) usageRef.set(chunk.usage());
-                    }
-                    case ERROR -> errorMsg[0] = chunk.content();
-                    case USAGE, DONE -> {
-                        if (chunk.usage() != null) usageRef.set(chunk.usage());
-                    }
-                    case UNKNOWN -> log.debug("Ignoring unknown provider event type={}", chunk.type());
-                }
-            } catch (Exception e) {
-                log.warn("chatStream callback error: {}", e.getMessage());
-            }
-        }));
-        try {
-            streamFuture.get(PROVIDER_FIRST_EVENT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            this.requestProviderCancellation(cancellationToken);
-            streamFuture.cancel(true);
-            errorMsg[0] = this.localText(visibleLanguage,
-                    "模型服务响应超时，已自动停止本次请求。请检查模型服务、网络或换一个模型后重试。",
-                    "Model service timed out, so this request was stopped. Check the provider, network, or try another model.");
-        } catch (Exception e) {
-            this.requestProviderCancellation(cancellationToken);
-            streamFuture.cancel(true);
-            errorMsg[0] = e.getCause() == null ? e.getMessage() : e.getCause().getMessage();
-        }
-
-        // After stream completes, finalize THINK event if thinking was streaming
-        if (thinkingStarted[0]) {
-            LinkedHashMap<String, Object> done = new LinkedHashMap<>();
-            done.put("messageId", thinkMsgId);
-            done.put("iteration", iteration);
-            done.put("summary", this.localText(visibleLanguage, "思考完成", "Thinking complete"));
-            done.put("content", thinkingBuf.toString());
-            done.put("streaming", false);
-            done.put("taskId", taskId);
-            this.sendEvent(sse, conv, "THINK", done);
-        }
-
-        if (cancelled[0] || (cancellationToken != null && cancellationToken.isCancellationRequested())) {
-            return withUsage(Map.of("type", "cancelled", "content", contentBuf.toString(),
-                    "thinking", thinkingBuf.toString()), usageRef.get());
-        }
-
-        if (errorMsg[0] != null) {
-            return withUsage(Map.of("type", "error", "message", errorMsg[0], "content", contentBuf.toString(),
-                    "thinking", thinkingBuf.toString()), usageRef.get());
-        }
-
-        if (toolCalls.size() > 1) {
-            log.warn("Provider returned {} concurrent tool calls; executing the first call serially and allowing the next model turn to reconsider deferred calls.",
-                    toolCalls.size());
-        }
-        if (!toolCalls.isEmpty()) {
-            LlmProvider.StreamChunk toolCall = toolCalls.values().iterator().next();
-            LinkedHashMap<String, Object> toolCallResult = new LinkedHashMap<>();
-            toolCallResult.put("type", "tool_call");
-            toolCallResult.put("tool", toolCall.toolName());
-            toolCallResult.put("arguments", toolCall.toolArgs() == null ? "" : toolCall.toolArgs());
-            toolCallResult.put("toolCallId", toolCall.toolCallId());
-            toolCallResult.put("toolCallIndex", toolCall.toolCallIndex());
-            toolCallResult.put("thinking", thinkingBuf.toString());
-            toolCallResult.put("content", contentBuf.toString());
-            return withUsage(toolCallResult, usageRef.get());
-        }
-
-        String fullContent = contentBuf.toString();
-        if (!fullContent.isBlank()) {
-            return withUsage(Map.of("type", "text", "content", fullContent,
-                    "thinking", thinkingBuf.toString()), usageRef.get());
-        }
-
-        return withUsage(Map.of("type", "text", "content", thinkingBuf.toString(),
-                "thinking", thinkingBuf.toString()), usageRef.get());
-    }
-
-    private void requestProviderCancellation(CancellationToken cancellationToken) {
-        if (cancellationToken instanceof AgentCancellationRegistry.ActiveRun activeRun) {
-            activeRun.requestCancellation();
-        }
-    }
-
-    private Map<String, Object> withUsage(Map<String, Object> result, Map<String, Object> usage) {
-        if (usage == null || usage.isEmpty()) {
-            return result;
-        }
-        Map<String, Object> out = new LinkedHashMap<>(result);
-        out.put("usage", usage);
-        return out;
     }
 
     private String extractThinking(String c) {
@@ -2075,8 +2319,27 @@ public class AgentLoopEngine {
         return "Model connection recoverable error (attempt " + retryCount + "): " + this.limitForThought(errMsg, 180) + ". This usually means cloud handshake, proxy, TLS or temporary link interruption, not project code failure. Will wait " + delayMs + "ms then continue from existing conversation, task plan and this round's log. Will first confirm which tool steps succeeded, then resume from next unfinished action. If same step fails again, will narrow tool scope or re-read project state.";
     }
 
-    private String buildToolDefinitions(String mode) {
-        return this.toolRegistry.definitionsForMode(mode).stream().map(d -> "- " + d.getName() + ": " + d.getDescription()).collect(Collectors.joining("\n"));
+    private List<ToolDefinition> selectToolDefinitions(Integer studentId, String mode, AgentModelConfig modelConfig) {
+        boolean imageInputEnabled = modelConfig != null && Integer.valueOf(1).equals(modelConfig.getImageInputEnabled());
+        boolean mcpEnabled = this.toolRegistry.getDynamicToolCount() > 0;
+        if (!mcpEnabled && this.mcpServerService != null) {
+            try {
+                mcpEnabled = !this.mcpServerService.listEnabled(studentId).isEmpty();
+            } catch (RuntimeException lookupFailure) {
+                log.warn("Unable to resolve MCP capability for student {}: {}", studentId, lookupFailure.getMessage());
+            }
+        }
+        // Web Search / Fetch 保持现有启用行为；这里只收敛未配置的图片和 MCP 能力。
+        ToolSelectionPolicy.Capabilities capabilities = new ToolSelectionPolicy.Capabilities(
+                imageInputEnabled, mcpEnabled, true, true);
+        return this.toolSelectionPolicy.select(this.toolRegistry, mode, capabilities);
+    }
+
+    private String buildToolDefinitions(Collection<ToolDefinition> definitions) {
+        if (definitions == null) return "";
+        return definitions.stream()
+                .map(definition -> "- " + definition.getName() + ": " + definition.getDescription())
+                .collect(Collectors.joining("\n"));
     }
 
     // ==================== 上下文窗口管理（参考 OpenCode 的 compaction 机制） ====================
@@ -2119,6 +2382,55 @@ public class AgentLoopEngine {
         return total;
     }
 
+    ContextAdmissionDecision evaluateContextAdmission(AgentModelConfig modelConfig,
+                                                        String systemPrompt,
+                                                        List<Map<String, Object>> tools,
+                                                        ContextUsageEstimator.PromptContext promptContext,
+                                                        List<Map<String, Object>> messages) {
+        if (this.contextUsageEstimator == null || modelConfig == null) return null;
+        Optional<ContextWindowPolicy> policy = ContextWindowPolicy.from(modelConfig);
+        if (policy.isEmpty()) return null;
+        Map<String, Integer> categories = this.contextUsageEstimator.estimateCategories(
+                systemPrompt, tools, promptContext, messages);
+        ContextWindowPolicy value = policy.orElseThrow();
+        ContextBudgetBreakdown breakdown = this.contextAdmissionService.breakdown(
+                categories, modelConfig.getContextWindowTokens(), modelConfig.getMaxTokens(), value.softLimitTokens());
+        // 可裁剪和自动压缩已经由 manageContextBeforeModel 执行；这里是 Provider 前的最终硬门禁。
+        return this.contextAdmissionService.decide(breakdown, false, false);
+    }
+
+    private void stopForContextLimit(AgentSsePublisher sse,
+                                     AgentConversation conversation,
+                                     AgentTask task,
+                                     StudentProject project,
+                                     AgentStreamRequest request,
+                                     AgentContext context,
+                                     Path runLog,
+                                     ContextAdmissionDecision decision,
+                                     int iteration,
+                                     String visibleLanguage,
+                                     SseEmitter emitter) throws Exception {
+        String title = this.localText(visibleLanguage, "上下文配置阻塞", "Context configuration blocked");
+        String detail = decision.message();
+        this.taskService.waitForEnvironment(task.getTaskId(), title, detail, decision.reasonCode());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("taskId", task.getTaskId());
+        payload.put("iteration", iteration);
+        payload.put("action", decision.action().name());
+        payload.put("reasonCode", decision.reasonCode());
+        payload.put("message", detail);
+        payload.put("remediation", decision.remediation());
+        payload.put("budget", decision.breakdown().toPayload());
+        this.appendRunLog(runLog, "\n- Context admission blocked provider invocation: `"
+                + this.safeLogText(decision.reasonCode()) + "`\n");
+        this.sendEvent(sse, conversation, "CONTEXT_LIMIT_BLOCKED", payload);
+        this.writeAgentCheckpoint(project, request, task, context, "waiting_environment", detail, "", "", runLog);
+        this.streamFinal(sse, conversation, this.buildStopFinal(title, detail, project, runLog, visibleLanguage), visibleLanguage);
+        this.sendEvent(sse, conversation, "DONE", Map.of(
+                "message", title, "iterations", iteration, "reasonCode", decision.reasonCode()));
+        emitter.complete();
+    }
+
     private void publishContextStatus(AgentSsePublisher sse, AgentConversation conversation,
                                       AgentStreamRequest request, LlmProvider provider,
                                       LlmProvider.LlmConfig config, AgentModelConfig modelConfig,
@@ -2129,6 +2441,9 @@ public class AgentLoopEngine {
         ContextUsageSnapshot snapshot = contextUsageEstimator.estimate(
                 conversation.getConversationId(), request.getSessionId(), provider.getProviderId(), config.modelName(),
                 modelConfig.getContextWindowTokens(), systemPrompt, tools, promptContext, messages, trimState);
+        ContextAdmissionDecision admission = this.evaluateContextAdmission(
+                modelConfig, systemPrompt, tools, promptContext, messages);
+        if (admission != null) snapshot.withBudgetBreakdown(admission.breakdown());
         contextUsageRegistry.save(snapshot);
         try {
             this.sendEvent(sse, conversation, "CONTEXT_STATUS", snapshot.toPayload());
@@ -2424,333 +2739,6 @@ public class AgentLoopEngine {
         return chunks;
     }
 
-    private String buildToolThought(String toolName, JsonObject args, boolean recoveredFromText, String visibleLanguage) {
-        String tool = this.safeTool(toolName);
-        String target = this.toolTarget(tool, args);
-        String readable = target.isBlank() ? tool : target;
-        if (this.isChineseLanguage(visibleLanguage)) {
-            if (recoveredFromText) {
-                return "模型没有使用标准工具格式，但我识别到了工具意图。现在执行：" + readable + "。";
-            }
-            if (this.isWriteAction(tool)) {
-                String[] writeVariants = {
-                    "需要修改 " + readable + "，现在写入变更。",
-                    readable + " 需要更新，我会直接应用必要改动。",
-                    "正在把本轮需要的修改写入 " + readable + "。",
-                    "开始更新 " + readable + "，改完后会做验证。"
-                };
-                return writeVariants[(int)(System.nanoTime() % writeVariants.length)];
-            }
-            if (this.isVerificationAction(tool)) {
-                String[] verifyVariants = {
-                    "运行 " + readable + " 验证改动是否生效。",
-                    "用 " + readable + " 做一次针对性检查。",
-                    "进入验证步骤，执行 " + readable + "。",
-                    "通过 " + readable + " 确认结果。"
-                };
-                return verifyVariants[(int)(System.nanoTime() % verifyVariants.length)];
-            }
-            return switch (tool) {
-                case "list_files", "glob" -> "查看项目结构，定位 " + readable + "。";
-                case "read_file", "read" -> "读取 " + readable + "，先确认当前实现。";
-                case "search_code", "codesearch", "grep" -> "搜索 " + readable + "，定位相关代码位置。";
-                case "create_plan", "plan", "todo_write", "todowrite", "todo" -> "先把任务拆成可验证的步骤，避免反复试错。";
-                case "question" -> "当前需要用户补充一个关键决策，先发起提问。";
-                default -> "执行 " + readable + "，推进当前步骤。";
-            };
-        }
-        if (recoveredFromText) {
-            return "Model didn't use standard tool format, but I detected tool intent from text. Executing: " + readable + ".";
-        }
-        if (this.isWriteAction(tool)) {
-            String[] writeVariants = {
-                "Need to modify " + readable + ". Will write the changes now.",
-                "File " + readable + " needs updating. Writing changes...",
-                "Applying changes to " + readable + ".",
-                "Writing to " + readable + " with the required modifications."
-            };
-            return writeVariants[(int)(System.nanoTime() % writeVariants.length)];
-        }
-        if (this.isVerificationAction(tool)) {
-            String[] verifyVariants = {
-                "Running " + readable + " to verify the changes work correctly.",
-                "Testing with " + readable + " to confirm the fix.",
-                "Verification step: executing " + readable + ".",
-                "Validating results by running " + readable + "."
-            };
-            return verifyVariants[(int)(System.nanoTime() % verifyVariants.length)];
-        }
-        return switch (tool) {
-            case "list_files", "glob" -> "Checking project structure with " + readable + " to locate target files.";
-            case "read_file", "read" -> "Reading " + readable + " to understand current content before editing.";
-            case "search_code", "codesearch", "grep" -> "Searching for " + readable + " to find relevant code locations.";
-            case "create_plan", "plan", "todo_write", "todowrite", "todo" -> "Breaking down the task into actionable steps with a plan.";
-            default -> "Executing " + readable + " to proceed with the task.";
-        };
-    }
-
-    private String buildResultThought(String toolName, JsonObject args, ToolResult result, String visibleLanguage) {
-        String tool = this.safeTool(toolName);
-        String target = this.toolTarget(tool, args);
-        String content = result == null ? "" : result.getContent();
-        String compact = this.limitForThought(content, 180);
-        if (this.isChineseLanguage(visibleLanguage)) {
-            if (result == null || !result.isSuccess()) {
-                String err = compact.isBlank() ? "没有输出" : compact;
-                String[] failVariants = {
-                    "执行失败" + this.withTarget(target) + "：" + err + "。接下来会调整做法。",
-                    "在 " + this.withTarget(target) + " 上遇到错误：" + err + "。需要换一种路径处理。",
-                    "工具执行没有成功" + this.withTarget(target) + "，关键信息是：" + err
-                };
-                return failVariants[(int)(System.nanoTime() % failVariants.length)];
-            }
-            if (result.getPendingChangeId() != null) {
-                return "文件已修改" + this.withTarget(target) + "，变更已记录，下一步做验证。";
-            }
-            if (this.isWriteAction(tool)) {
-                String[] writeOkVariants = {
-                    "写入完成" + this.withTarget(target) + "，现在检查结果。",
-                    "已更新" + this.withTarget(target) + "，接下来验证内容。",
-                    "修改已落到文件" + this.withTarget(target) + "，继续做针对性校验。"
-                };
-                return writeOkVariants[(int)(System.nanoTime() % writeOkVariants.length)];
-            }
-            if (this.isVerificationAction(tool)) {
-                String lower = compact.toLowerCase(Locale.ROOT);
-                if (lower.contains("success") || lower.contains("passed") || lower.contains("ok") || compact.contains("成功") || compact.contains("通过")) {
-                    return "验证通过" + this.withTarget(target) + "。关键输出：" + compact + "。";
-                }
-                return "验证命令已完成" + this.withTarget(target) + "：" + compact + "。我会据此判断是否还需要修复。";
-            }
-            return switch (tool) {
-                case "list_files", "glob" -> "目录已检查" + this.withTarget(target) + "，项目结构更清楚了。";
-                case "read_file", "read" -> "已读取" + this.withTarget(target) + "，可以基于当前内容继续修改。";
-                case "search_code", "codesearch", "grep" -> "搜索完成" + this.withTarget(target) + "，找到了需要关注的位置。";
-                case "create_plan", "plan", "todo_write", "todowrite", "todo" -> this.planResultSentence(compact, visibleLanguage);
-                case "question" -> "已收到用户输入，继续按新的信息执行。";
-                default -> "步骤完成" + this.withTarget(target) + "。结果摘要：" + compact + "。";
-            };
-        }
-        if (result == null || !result.isSuccess()) {
-            String err = compact.isBlank() ? "No output" : compact;
-            String[] failVariants = {
-                "Command failed" + this.withTarget(target) + ": " + err + ". Will adjust approach.",
-                "Error on " + this.withTarget(target) + ": " + err + ". Trying alternative.",
-                "Failed to execute " + this.withTarget(target) + ". Analyzing: " + err
-            };
-            return failVariants[(int)(System.nanoTime() % failVariants.length)];
-        }
-        if (result.getPendingChangeId() != null) {
-            return "File modified" + this.withTarget(target) + ". Changes applied. Will verify next.";
-        }
-        if (this.isWriteAction(tool)) {
-            String[] writeOkVariants = {
-                "Written to " + this.withTarget(target) + ". Checking result...",
-                "Write complete for " + this.withTarget(target) + ". Verifying content.",
-                "Updated " + this.withTarget(target) + ". Will validate the changes."
-            };
-            return writeOkVariants[(int)(System.nanoTime() % writeOkVariants.length)];
-        }
-        if (this.isVerificationAction(tool)) {
-            String lower = compact.toLowerCase();
-            if (lower.contains("success") || lower.contains("passed") || lower.contains("ok")) {
-                return "Verification passed" + this.withTarget(target) + ". Key output: " + compact + ". Moving to next step.";
-            }
-            return "Verification done" + this.withTarget(target) + ": " + compact + ". Will analyze and proceed.";
-        }
-        return switch (tool) {
-            case "list_files", "glob" -> "Checked directory" + this.withTarget(target) + ". Project structure understood.";
-            case "read_file", "read" -> "Read " + this.withTarget(target) + ". Content reviewed, ready to edit.";
-            case "search_code", "codesearch", "grep" -> "Search done for " + this.withTarget(target) + ". Found relevant code, will read and modify.";
-            case "create_plan", "plan", "todo_write", "todowrite", "todo" -> this.planResultSentence(compact, visibleLanguage);
-            default -> "Done" + this.withTarget(target) + ". Result: " + compact + ".";
-        };
-    }
-
-    private String visibleActionSummary(String toolName, JsonObject args) {
-        return this.visibleActionSummary(toolName, args, "en");
-    }
-
-    private String visibleActionSummary(String toolName, JsonObject args, String visibleLanguage) {
-        String tool = this.safeTool(toolName);
-        String target = this.toolTarget(tool, args);
-        if (this.isChineseLanguage(visibleLanguage)) {
-            if (this.isWriteAction(tool)) {
-                return "编辑 " + this.shortTarget(target, "文件");
-            }
-            if (this.isVerificationAction(tool)) {
-                return "运行 " + this.shortTarget(target, "命令");
-            }
-            return switch (tool) {
-                case "list_files", "glob" -> "查看 " + this.shortTarget(target, "目录");
-                case "read_file", "read" -> "读取 " + this.shortTarget(target, "文件");
-                case "search_code", "codesearch", "grep" -> "搜索 " + this.shortTarget(target, "代码");
-                case "retrieve_context" -> "获取上下文";
-                case "create_plan", "plan", "todo_write", "todowrite", "todo" -> "创建计划";
-                case "question" -> "询问用户";
-                default -> "执行 " + (tool.isBlank() ? "下一步" : tool);
-            };
-        }
-        if (this.isWriteAction(tool)) {
-            return "Editing " + this.shortTarget(target, "file");
-        }
-        if (this.isVerificationAction(tool)) {
-            return "Running " + this.shortTarget(target, "command");
-        }
-        return switch (tool) {
-            case "list_files", "glob" -> "List " + this.shortTarget(target, "directory");
-            case "read_file", "read" -> "Read " + this.shortTarget(target, "file");
-            case "search_code", "codesearch", "grep" -> "Search " + this.shortTarget(target, "code");
-            case "retrieve_context" -> "Get context";
-            case "create_plan", "plan", "todo_write", "todowrite", "todo" -> "Create plan";
-            default -> "Execute " + (tool.isBlank() ? "next step" : tool);
-        };
-    }
-
-    private String visibleActionDetail(String toolName, JsonObject args) {
-        return this.visibleActionDetail(toolName, args, "en");
-    }
-
-    private String visibleActionDetail(String toolName, JsonObject args, String visibleLanguage) {
-        String t;
-        String tool = this.safeTool(toolName);
-        String target = this.toolTarget(tool, args);
-        String string = t = target.isBlank() ? tool : target;
-        if (this.isChineseLanguage(visibleLanguage)) {
-            if (this.isWriteAction(tool)) {
-                return "编辑 " + t;
-            }
-            if (this.isVerificationAction(tool)) {
-                return "运行 " + t;
-            }
-            return switch (tool) {
-                case "list_files", "glob" -> "查看 " + t;
-                case "read_file", "read" -> "读取 " + t;
-                case "search_code", "codesearch", "grep" -> "搜索 " + t;
-                case "retrieve_context" -> "获取上下文";
-                case "create_plan", "plan", "todo_write", "todowrite", "todo" -> this.planActionSentence(args, visibleLanguage);
-                case "question" -> "等待用户回答";
-                default -> "执行 " + t;
-            };
-        }
-        if (this.isWriteAction(tool)) {
-            return "Edit " + t;
-        }
-        if (this.isVerificationAction(tool)) {
-            return "Run " + t;
-        }
-        return switch (tool) {
-            case "list_files", "glob" -> "List " + t;
-            case "read_file", "read" -> "Read " + t;
-            case "search_code", "codesearch", "grep" -> "Search " + t;
-            case "retrieve_context" -> "Get context";
-            case "create_plan", "plan", "todo_write", "todowrite", "todo" -> this.planActionSentence(args, visibleLanguage);
-            default -> "Execute " + t;
-        };
-    }
-
-    private String toolTarget(String toolName, JsonObject args) {
-        if (args == null) {
-            return "";
-        }
-        for (String key : List.of("path", "file_path", "relativePath", "target_file", "directory", "dir", "cwd", "pattern", "query", "command", "cmd")) {
-            String value;
-            if (!args.has(key) || args.get(key).isJsonNull() || (value = args.get(key).isJsonPrimitive() ? args.get(key).getAsString() : args.get(key).toString()) == null || value.isBlank()) continue;
-            return value.trim();
-        }
-        if (("create_plan".equals(toolName) || "plan".equals(toolName)) && args.has("action")) {
-            return args.get("action").getAsString();
-        }
-        return "";
-    }
-
-    private String planActionSentence(JsonObject args, String visibleLanguage) {
-        String action;
-        String string = action = args != null && args.has("action") ? args.get("action").getAsString() : "create";
-        if (this.isChineseLanguage(visibleLanguage)) {
-            if ("complete".equalsIgnoreCase(action)) {
-                String index = args != null && args.has("task_index") ? args.get("task_index").getAsString() : "";
-                return "把计划中的" + (index.isBlank() ? "当前步骤" : "第 " + index + " 步") + "标记为完成，工具结果已经能证明这一步结束。";
-            }
-            if ("update".equalsIgnoreCase(action)) {
-                return "根据最新发现更新计划，调整后续步骤的顺序或内容。";
-            }
-            int count = args != null && args.has("tasks") && args.get("tasks").isJsonArray() ? args.getAsJsonArray("tasks").size() : 0;
-            return count > 0 ? "把任务拆成 " + count + " 个可执行步骤，每一步都有明确验证方式。" : "先创建行动计划，再开始修改文件。";
-        }
-        if ("complete".equalsIgnoreCase(action)) {
-            String index = args != null && args.has("task_index") ? args.get("task_index").getAsString() : "";
-            return "Marking task " + (index.isBlank() ? "current" : index) + " as complete in the plan. Tool results confirm this step is done.";
-        }
-        if ("update".equalsIgnoreCase(action)) {
-            return "Updating the task plan because new findings changed the order or content of subsequent steps.";
-        }
-        int count = args != null && args.has("tasks") && args.get("tasks").isJsonArray() ? args.getAsJsonArray("tasks").size() : 0;
-        return count > 0 ? "Breaking this work into " + count + " executable tasks as a plan. Each task will have a clear verification." : "Creating an action plan before editing files.";
-    }
-
-    private String planResultSentence(String compact, String visibleLanguage) {
-        if (this.isChineseLanguage(visibleLanguage)) {
-            if (compact.contains("all tasks complete") || compact.contains("全部完成")) {
-                return "计划中的任务都已完成，可以输出带验证结果的最终总结。";
-            }
-            if (compact.contains("next step") || compact.contains("下一步")) {
-                return "计划已更新，下一步已经明确，会继续执行。";
-            }
-            if (compact.contains("plan created") || compact.contains("计划")) {
-                return "计划已创建，会按步骤执行并标记进度。";
-            }
-            return "计划状态已更新，继续进入下一步。摘要：" + compact;
-        }
-        if (compact.contains("all tasks complete")) {
-            return "All plan tasks are complete. Ready to output final summary with verification results.";
-        }
-        if (compact.contains("next step")) {
-            return "Plan updated. Next step identified, will continue execution.";
-        }
-        if (compact.contains("plan created")) {
-            return "Plan created with task list. Will execute each step and mark progress.";
-        }
-        return "Plan state updated. Continuing with next task. Summary: " + compact;
-    }
-
-    private String verificationResultSentence(String target, String compact) {
-        String lower = compact.toLowerCase(Locale.ROOT);
-        if (lower.contains("build success") || lower.contains("success") || lower.contains("passed") || lower.contains("ok")) {
-            return "Verification passed" + this.withTarget(target) + ". Changes passed this check. Key output: " + compact + ". Will assess if more checks needed or ready for final summary.";
-        }
-        if (lower.contains("error") || lower.contains("failed") || lower.contains("exception")) {
-            return "Verification exposed issue" + this.withTarget(target) + ". Key output: " + compact + ". Will trace this error for recovery.";
-        }
-        return "Verification command returned" + this.withTarget(target) + ", but no clear success/failure marker in output. Summary: " + compact;
-    }
-
-    private String readableTarget(String target, String fallback) {
-        return target == null || target.isBlank() ? fallback : " `" + this.limitForThought(target, 120) + "`";
-    }
-
-    private String withTarget(String target) {
-        return target == null || target.isBlank() ? "" : " (`" + this.limitForThought(target, 120) + "`)";
-    }
-
-    private String shortTarget(String target, String fallback) {
-        if (target == null || target.isBlank()) {
-            return fallback;
-        }
-        String compact = target.trim().replaceAll("\\s+", " ");
-        return compact.length() <= 28 ? compact : compact.substring(0, 28) + "...";
-    }
-
-    private boolean isWriteAction(String toolName) {
-        String safe = this.safeTool(toolName);
-        return "write_file".equals(safe) || "write".equals(safe) || "edit_file".equals(safe) || "edit".equals(safe) || "apply_patch".equals(safe) || "patch".equals(safe);
-    }
-
-    private boolean isVerificationAction(String toolName) {
-        String safe = this.safeTool(toolName);
-        return "run_tests".equals(safe) || "execute_code".equals(safe) || "shell".equals(safe) || "bash".equals(safe) || "run_command".equals(safe);
-    }
-
     private String safeTool(String toolName) {
         return toolName == null ? "" : toolName.trim();
     }
@@ -2833,7 +2821,9 @@ public class AgentLoopEngine {
                 ? "- Approval required: `" + this.safeLogText(CommandRedactor.redact(
                         result.getApprovalDisplayCommand() == null ? "<redacted>" : result.getApprovalDisplayCommand())) + "`\n"
                 : "";
-        this.appendRunLog(path, "\n### Tool result\n\n- Status: `" + (result.isSuccess() ? "success" : "failed")
+        String resultStatus = result.isInteractionRequired() ? "waiting_user"
+                : (result.isApprovalRequired() ? "waiting_approval" : (result.isSuccess() ? "success" : "failed"));
+        this.appendRunLog(path, "\n### Tool result\n\n- Status: `" + resultStatus
                 + "`\n" + approvalDetail
                 + (result.getPendingChangeId() != null ? "- Change record: `" + this.safeLogText(result.getPendingChangeId()) + "`\n" : "")
                 + "\n```text\n" + this.safeLogText(this.limitForContext(result.getContent(), 6000)) + "\n```\n");
@@ -2885,8 +2875,9 @@ public class AgentLoopEngine {
         return compact.length() <= max ? compact : compact.substring(0, max) + "...";
     }
 
-    private List<Map<String, Object>> buildToolsList(String mode) {
-        return this.toolRegistry.definitionsForMode(mode).stream().map(d -> {
+    private List<Map<String, Object>> buildToolsList(Collection<ToolDefinition> definitions) {
+        if (definitions == null) return List.of();
+        return definitions.stream().map(d -> {
             LinkedHashMap<String, Object> tool = new LinkedHashMap<String, Object>();
             tool.put("type", "function");
             LinkedHashMap<String, Object> fn = new LinkedHashMap<String, Object>();
@@ -2896,6 +2887,82 @@ public class AgentLoopEngine {
             tool.put("function", fn);
             return tool;
         }).collect(Collectors.toList());
+    }
+
+    private void journalRemainingBatchSkipped(Long taskId,
+                                              List<AgentModelTurnExecutor.NativeToolCall> calls,
+                                              int startIndex, int iteration, String reason) {
+        if (this.toolCallJournalService == null || calls == null || startIndex >= calls.size()) return;
+        for (int index = Math.max(0, startIndex); index < calls.size(); index++) {
+            AgentModelTurnExecutor.NativeToolCall call = calls.get(index);
+            JsonObject arguments = this.parseArgs(call.toolArguments());
+            JsonObject publicArguments = this.publicToolArguments(call.toolName(), arguments);
+            this.toolCallJournalService.skipped(taskId, call.toolCallId(), call.toolName(),
+                    publicArguments, iteration, reason);
+        }
+    }
+
+    private void journalToolPending(Long taskId, String toolCallId, String toolName, Object arguments, int iteration) {
+        if (this.toolCallJournalService != null) {
+            this.toolCallJournalService.pending(taskId, toolCallId, toolName, arguments, iteration);
+        }
+    }
+
+    private void journalToolRunning(Long taskId, String toolCallId, String toolName, Object arguments, int iteration) {
+        if (this.toolCallJournalService != null) {
+            this.toolCallJournalService.running(taskId, toolCallId, toolName, arguments, iteration);
+        }
+    }
+
+    private void journalToolWaitingApproval(Long taskId, String toolCallId, String toolName, Object arguments,
+                                            int iteration, String approvalId) {
+        if (this.toolCallJournalService != null) {
+            this.toolCallJournalService.waitingApproval(taskId, toolCallId, toolName, arguments, iteration, approvalId);
+        }
+    }
+
+    private void publishUserQuestion(AgentSsePublisher sse, AgentConversation conv, ToolResult result) throws Exception {
+        if (result == null || !result.isInteractionRequired() || result.getInteractionPayload() == null
+                || result.getInteractionPayload().isEmpty()) {
+            return;
+        }
+        this.sendEvent(sse, conv, "USER_QUESTION", result.getInteractionPayload());
+    }
+
+    private void journalToolResult(Long taskId, String toolCallId, String toolName, Object arguments,
+                                   int iteration, ToolResult result) {
+        if (result != null && result.isInteractionRequired()) {
+            this.journalToolWaitingUser(taskId, toolCallId, toolName, arguments, iteration,
+                    result.getInteractionRequestId(), result.getContent(), result.getInteractionPayload());
+            return;
+        }
+        this.journalToolFinished(taskId, toolCallId, toolName, arguments, iteration, result);
+    }
+
+    private void journalToolWaitingUser(Long taskId, String toolCallId, String toolName, Object arguments,
+                                        int iteration, String requestId, String detail, Map<String, Object> interactionPayload) {
+        if (this.toolCallJournalService != null) {
+            this.toolCallJournalService.waitingUser(taskId, toolCallId, toolName, arguments, iteration,
+                    requestId, detail, interactionPayload);
+        }
+    }
+
+    private void journalToolBlocked(Long taskId, String toolCallId, String toolName, Object arguments,
+                                    int iteration, String detail) {
+        if (this.toolCallJournalService != null) {
+            this.toolCallJournalService.blocked(taskId, toolCallId, toolName, arguments, iteration, detail);
+        }
+    }
+
+    private void journalToolFinished(Long taskId, String toolCallId, String toolName, Object arguments,
+                                     int iteration, ToolResult result) {
+        if (this.toolCallJournalService == null) return;
+        String detail = result == null ? "" : result.getContent();
+        if (result != null && result.isSuccess()) {
+            this.toolCallJournalService.completed(taskId, toolCallId, toolName, arguments, iteration, detail);
+        } else {
+            this.toolCallJournalService.failed(taskId, toolCallId, toolName, arguments, iteration, detail);
+        }
     }
 
     private void sendEvent(AgentSsePublisher sse, AgentConversation conv, String type, Object data) throws Exception {

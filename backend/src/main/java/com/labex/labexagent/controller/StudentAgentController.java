@@ -15,7 +15,9 @@ import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.dto.PromptOptimizationRequest;
 import com.labex.labexagent.run.AgentRunEventReplayService;
+import com.labex.labexagent.run.AgentRunContinuationRequestFactory;
 import com.labex.labexagent.run.AgentSubagentService;
+import com.labex.labexagent.run.RunCompletionEvidenceService;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.runtime.ContextUsageSnapshot;
@@ -39,6 +41,8 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -49,6 +53,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RestController
 @RequestMapping(value={"/student/projects/{projectId}/agent"})
 public class StudentAgentController {
+    private static final Logger log = LoggerFactory.getLogger(StudentAgentController.class);
     private static final Gson GSON = new Gson();
 
     private final AgentLoopEngine agentLoopEngine;
@@ -69,6 +74,9 @@ public class StudentAgentController {
 
     @Autowired(required = false)
     private ManualCompactionTaskRunner manualCompactionTaskRunner;
+
+    @Autowired(required = false)
+    private RunCompletionEvidenceService completionEvidenceService;
 
     public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService) {
         this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService,
@@ -235,6 +243,20 @@ public class StudentAgentController {
         return Result.success(this.taskService.listTasks(this.getStudentId(auth), projectId));
     }
 
+    @GetMapping(value={"/tasks/{taskId}/completion-evidence"})
+    public Result<?> completionEvidence(@PathVariable Integer projectId, @PathVariable Long taskId,
+                                        Authentication auth) {
+        Integer studentId = this.getStudentId(auth);
+        if (this.taskService.getOwnedTask(studentId, projectId, taskId) == null) {
+            return Result.error("Task not found");
+        }
+        if (this.completionEvidenceService == null) {
+            return Result.error("Completion evidence service is unavailable");
+        }
+        var evidence = this.completionEvidenceService.latest(taskId);
+        return Result.success(evidence == null ? null : evidence.toPayload());
+    }
+
     @GetMapping(value={"/changes"})
     public Result<List<?>> changes(@PathVariable Integer projectId, Authentication auth) {
         return Result.success(this.taskService.listPendingChanges(this.getStudentId(auth), projectId));
@@ -290,13 +312,9 @@ public class StudentAgentController {
             if (!this.taskService.beginEnvironmentResume(taskId)) {
                 return Result.error("Agent task is not waiting for environment recovery");
             }
-            AgentStreamRequest request = new AgentStreamRequest();
-            request.setSessionId(task.getSessionId());
-            request.setConversationId(task.getConversationId());
-            request.setMode(task.getMode());
-            request.setResumeTaskId(taskId);
-            request.setMessage("Continue the existing task. The user indicated the dependency environment is restored. "
-                    + "Re-run only the previously blocked verification and reassess the workspace before modifying files.");
+            AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task,
+                    "The user indicated the dependency environment is restored. "
+                            + "Re-run only the previously blocked verification and reassess the workspace before modifying files.");
             this.agentLoopEngine.resume(studentId, projectId, request, taskId, true);
             return Result.success(Map.of("taskId", taskId, "status", "queued"));
         } catch (Exception exception) {
@@ -564,13 +582,18 @@ public class StudentAgentController {
             String requestId = request.get("requestId");
             String action = request.get("action");
             String answer = request.get("answer");
+            Integer studentId = this.getStudentId(auth);
+            log.info("AGENT_QUESTION_REPLY_RECEIVED projectId={} studentId={} requestId={} action={} answerChars={}",
+                    projectId, studentId, requestId, action, answer == null ? 0 : answer.length());
             AgentInteractionService.UserQuestionResult result = this.interactionService.reply(
                     projectId,
-                    this.getStudentId(auth),
+                    studentId,
                     requestId,
                     action,
                     answer
             );
+            log.info("AGENT_QUESTION_REPLY_RESULT projectId={} studentId={} requestId={} answered={} cancelled={} timedOut={}",
+                    projectId, studentId, requestId, result.answered(), result.cancelled(), result.timedOut());
             LinkedHashMap<String, Object> response = new LinkedHashMap<>();
             response.put("answered", result.answered());
             response.put("cancelled", result.cancelled());

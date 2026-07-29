@@ -24,7 +24,8 @@ test('conversation state exposes cursor-based loading of older history', async (
 
 test('CloudWorkspace keeps a visible file-tree error instead of rendering a failed page request as an empty tree', async () => {
   const source = await readFile(new URL('../views/CloudWorkspace.vue', import.meta.url), 'utf8')
-  assert.match(source, /const treeError = ref\(''\)/)
+  const files = await readFile(new URL('./useWorkspaceFiles.js', import.meta.url), 'utf8')
+  assert.match(files, /const treeError = ref\(''\)/)
   assert.match(source, /v-if="treeError"/)
-  assert.match(source, /treeNextOffset\.value = null/)
+  assert.match(files, /treeNextOffset\.value = null/)
 })
