@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.labex.entity.AgentModelConfig;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -83,5 +84,17 @@ class AgentLoopEngineContextBudgetTest {
 
     private Map<String, Object> toolResult(String name) {
         return Map.of("role", "user", "content", "[Tool " + name + " result]\n" + "x".repeat(2_100));
+    }
+    @Test
+    void blocksProviderWhenModelContextWindowIsMissing() throws Exception {
+        AgentModelConfig config = new AgentModelConfig();
+        config.setMaxTokens(1_024);
+        ContextAdmissionDecision decision = newEngine().evaluateContextAdmission(
+                config, "system", List.of(),
+                new ContextUsageEstimator.PromptContext("", "", "", ""), List.of());
+
+        assertEquals(ContextAdmissionDecision.Action.BLOCK_STATIC_OVERFLOW, decision.action());
+        assertEquals("context_window_unconfigured", decision.reasonCode());
+        assertFalse(decision.providerInvocationAllowed());
     }
 }

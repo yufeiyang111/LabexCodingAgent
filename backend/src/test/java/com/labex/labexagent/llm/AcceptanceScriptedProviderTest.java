@@ -169,6 +169,27 @@ class AcceptanceScriptedProviderTest {
         }
     }
 
+    @Test
+    void drivesAQuestionThenLargeNativeToolCallForDurableCompactionAcceptance() {
+        LlmProvider.StreamChunk question = stream("[acceptance:compaction] long context scenario").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("question", question.toolName());
+
+        LlmProvider.StreamChunk largeCall = stream(
+                "[acceptance:compaction] long context scenario",
+                "Durable continuation context: Resolution status: answered").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("list_files", largeCall.toolName());
+        assertTrue(largeCall.toolArgs().length() > 20_000);
+
+        String completed = text(stream(
+                "<conversation-checkpoint>[acceptance:compaction] durable summary</conversation-checkpoint>",
+                "Durable continuation context: Resolution status: answered",
+                "[Tool list_files result]\nREADME.md"));
+        assertTrue(completed.contains("durable compaction epoch"));
+    }
     private List<LlmProvider.StreamChunk> stream(String... contents) {
         List<Map<String, Object>> messages = new ArrayList<>();
         for (String content : contents) {

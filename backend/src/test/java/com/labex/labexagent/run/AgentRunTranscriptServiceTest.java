@@ -161,4 +161,22 @@ class AgentRunTranscriptServiceTest {
         org.mockito.Mockito.verify(mapper).insert(captor.capture());
         return captor.getValue();
     }
+    @Test
+    void loadsOnlyProtocolSafeFactsAppendedAfterCompactionBoundary() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(messages.selectList(any())).thenReturn(List.of(
+                message(1L, "provider:3:message:8", 8L, "user", "before"),
+                message(2L, "provider:3:message:10", 10L, "user", "after"),
+                message(3L, "provider:3:message:11", 11L, "assistant", "continued")));
+        when(parts.selectList(any())).thenReturn(List.of());
+
+        List<Map<String, Object>> result = new AgentRunTranscriptService(messages, parts, tasks)
+                .loadProjectableTranscriptAfter(7L, 9L);
+
+        assertThat(result).containsExactly(
+                Map.of("role", "user", "content", "after"),
+                Map.of("role", "assistant", "content", "continued"));
+    }
 }

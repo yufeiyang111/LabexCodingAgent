@@ -7,6 +7,8 @@ import java.util.Map;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -19,8 +21,10 @@ import org.springframework.stereotype.Component;
 @Component
 @Profile("acceptance & !prod")
 public final class AcceptanceScriptedProvider implements LlmProvider {
+    private static final Logger log = LoggerFactory.getLogger(AcceptanceScriptedProvider.class);
     private static final String PROVIDER_ID = "acceptance_scripted";
     private static final Pattern ISOLATION_MARKER = Pattern.compile("\\[acceptance:isolation:([^]\\r\\n]+)]");
+    private static final String COMPACTION_PADDING = "x".repeat(30_000);
     private static final Map<String, Object> USAGE = Map.of(
             "prompt_tokens", 64,
             "completion_tokens", 32,
@@ -56,7 +60,8 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                                               List<Map<String, Object>> tools, LlmConfig config) {
         String prompt = flatten(messages);
         if (isCompactionRequest(sysPrompt)) {
-            String summary = "Acceptance compaction preserved the active task, verified state, and next runtime action.";
+            String marker = prompt.contains("[acceptance:compaction]") ? " [acceptance:compaction]" : "";
+            String summary = "Acceptance compaction preserved the active task, verified state, and next runtime action." + marker;
             String content = "{\"summary\":\"" + summary + "\","
                     + "\"facts\":[\"The scripted acceptance provider never accesses the network.\"],"
                     + "\"nextActions\":[\"Continue the active acceptance scenario from its durable checkpoint.\"],"
@@ -86,11 +91,29 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         }
 
         String prompt = flatten(messages);
+        log.info("ACCEPTANCE_PROVIDER_STREAM model={} compactionMarker={} interactionResolved={} listResult={}",
+                config == null ? "" : config.modelName(), prompt.contains("[acceptance:compaction]"),
+                hasResumedInteraction(prompt, "waiting_user"), prompt.contains("[Tool list_files result]"));
         onChunk.accept(new StreamChunk("thinking_delta", "Acceptance runtime scenario selected. ",
                 null, null, null, false, null, null, null, null));
 
         if (prompt.contains("[acceptance:tool]") && !prompt.contains("[Tool list_files result]")) {
             emitTool(onChunk, "list_files", "{\"path\":\"\"}", "acceptance-tool-list");
+            return;
+        }
+        if (isCompactionScenario(prompt)
+                && !hasResumedInteraction(prompt, "waiting_user")) {
+            emitTool(onChunk, "question",
+                    "{\"question\":\"是否继续长上下文压缩验收？\",\"summary\":\"等待压缩验收选择\","
+                            + "\"options\":[\"继续压缩验收\",\"停止\"]}",
+                    "acceptance-compaction-question");
+            return;
+        }
+        if (isCompactionScenario(prompt)
+                && !prompt.contains("[Tool list_files result]")) {
+            emitTool(onChunk, "list_files",
+                    "{\"path\":\"\",\"padding\":\"" + COMPACTION_PADDING + "\"}",
+                    "acceptance-compaction-large-tool-call");
             return;
         }
         if (prompt.contains("[acceptance:permission]") && !hasResumedInteraction(prompt, "waiting_approval")) {
@@ -185,6 +208,10 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 || lower.contains("persisted user response is ready");
     }
 
+    private boolean isCompactionScenario(String prompt) {
+        return prompt.contains("[acceptance:compaction]");
+    }
+
     private boolean isCompactionRequest(String systemPrompt) {
         String normalized = systemPrompt == null ? "" : systemPrompt.toLowerCase(Locale.ROOT);
         return normalized.contains("context compaction agent")
@@ -194,6 +221,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
     private String finalReply(String prompt) {
         Matcher marker = ISOLATION_MARKER.matcher(prompt);
         String isolation = marker.find() ? marker.group(1).trim() : "none";
+        if (isCompactionScenario(prompt)) {
+            return "## Summary\n**Completed**\n- The durable compaction epoch was applied before the final provider turn.\n"
+                    + "**Verification**\n- The latest summary, retained tail, and post-boundary transcript remained protocol-valid.\n"
+                    + "**Risk**\n- The large native tool arguments are acceptance-profile only.";
+        }
         if (prompt.contains("[acceptance:checkout-hold]")) {
             return "## Summary\n**Completed**\n- The acceptance run held and released the project checkout lease.\n"
                     + "**Verification**\n- A concurrent task can observe the durable workspace-wait state.\n"

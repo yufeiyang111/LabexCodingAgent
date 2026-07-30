@@ -140,6 +140,21 @@ test('keeps a completed tool-result prune as a separate context-management item'
   assert.equal(target.contextManagementEvents[0].releasedTokens, 3_400)
 })
 
+test('keeps tool-schema reduction as a visible completed recovery strategy', () => {
+  const target = message()
+
+  reduceHistoryEvent('CONTEXT_TOOL_SCHEMA_REDUCED', {
+    strategy: 'tool_schema_reduction', tokensBefore: 48_000, tokensAfter: 39_000,
+    toolCountBefore: 27, toolCountAfter: 12, recoveryAttempt: 2
+  }, target)
+
+  assert.equal(target.contextManagementEvents.length, 1)
+  assert.equal(target.contextManagementEvents[0].phase, 'tools-reduced')
+  assert.equal(target.contextManagementEvents[0].status, 'completed')
+  assert.equal(target.contextManagementEvents[0].releasedTokens, 9_000)
+  assert.equal(target.contextManagementEvents[0].toolCountBefore, 27)
+  assert.equal(target.contextManagementEvents[0].toolCountAfter, 12)
+})
 
 test('attaches lifecycle timings to the matching tool call id', () => {
   const target = message()

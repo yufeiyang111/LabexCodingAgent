@@ -1,5 +1,6 @@
 export function contextManagementTitle(event) {
   if (event.phase === 'pruned') return '已清理历史工具结果'
+  if (event.phase === 'tools-reduced') return '已缩减工具上下文'
   if (event.status === 'running') return '正在压缩上下文'
   if (event.status === 'warning') return '上下文压缩正在安全回退'
   if (event.phase === 'fallback') return '上下文压缩完成（安全回退）'
@@ -19,6 +20,7 @@ export function contextManagementStrategyText(event) {
     manual_deterministic_fallback: '手动安全回退',
     proactive: '自动触发',
     tool_result_prune: '工具结果裁剪',
+    tool_schema_reduction: '工具 Schema 缩减',
     model: '模型摘要',
     deterministic_fallback: '确定性安全回退'
   }

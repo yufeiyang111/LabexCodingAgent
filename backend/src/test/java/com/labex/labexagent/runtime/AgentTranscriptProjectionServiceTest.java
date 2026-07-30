@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import java.util.List;
 import java.util.Map;
@@ -39,5 +40,28 @@ class AgentTranscriptProjectionServiceTest {
         assertThat(projection.shadowMismatch()).isTrue();
         assertThat(projection.messages()).isEqualTo(current);
         assertThat(projection.detail()).contains("durable=1").contains("memory=1");
+    }
+    @Test
+    void appliesLatestCompletedCompactionForShadowComparisonAndRestartRestore() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentCompactionService compactions = mock(AgentCompactionService.class);
+        List<Map<String, Object>> compacted = List.of(
+                Map.of("role", "user", "content", "durable summary"),
+                Map.of("role", "user", "content", "retained"),
+                Map.of("role", "assistant", "content", "answer"),
+                Map.of("role", "user", "content", "later"));
+        when(compactions.projectLatest(org.mockito.ArgumentMatchers.eq(7L), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.util.Optional.of(new AgentCompactionService.Projection(compacted, 2L, 9L)));
+        AgentTranscriptProjectionService service = new AgentTranscriptProjectionService(
+                transcript, new AgentProviderMessageProjector(), compactions);
+
+        AgentTranscriptProjectionService.Projection live = service.project(7L, compacted);
+        AgentTranscriptProjectionService.Projection restored = service.loadDurableProjection(7L);
+
+        assertThat(live.source()).isEqualTo(AgentTranscriptProjectionService.Source.DURABLE);
+        assertThat(live.shadowMismatch()).isFalse();
+        assertThat(live.detail()).contains("compaction_epoch=2");
+        assertThat(restored.messages()).isEqualTo(compacted);
+        assertThat(restored.source()).isEqualTo(AgentTranscriptProjectionService.Source.DURABLE);
     }
 }

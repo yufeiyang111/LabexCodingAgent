@@ -233,6 +233,7 @@ function toolResultStatus(success, result) {
       case 'COMPACTION_STARTED':
       case 'COMPACTION_PROGRESS':
       case 'CONTEXT_PRUNED':
+      case 'CONTEXT_TOOL_SCHEMA_REDUCED':
       case 'COMPACTION_COMPLETED':
       case 'COMPACTION_FAILED':
       case 'COMPACTION_CANCELLED':

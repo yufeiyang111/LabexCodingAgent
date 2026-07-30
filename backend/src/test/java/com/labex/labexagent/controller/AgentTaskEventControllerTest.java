@@ -13,6 +13,7 @@ import com.labex.entity.CommandApproval;
 import com.labex.entity.CommandAuditEvent;
 import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.commandsecurity.CommandAuditService;
+import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.run.AgentTaskEventSubscriptionService;
 import com.labex.labexagent.run.AgentRunPartService;
 import com.labex.labexagent.run.AgentRunMessageService;
@@ -53,8 +54,12 @@ class AgentTaskEventControllerTest {
         when(parts.publicHistory(71L)).thenReturn(java.util.List.of(Map.of("partKey", "tool:call-1")));
         AgentRunMessageService runMessages = mock(AgentRunMessageService.class);
         when(runMessages.publicHistory(71L)).thenReturn(java.util.List.of(Map.of("messageKey", "assistant:turn:1")));
+        AgentCompactionService compactions = mock(AgentCompactionService.class);
+        when(compactions.publicHistory(71L)).thenReturn(java.util.List.of(Map.of(
+                "compactionEpoch", 1L, "status", "completed")));
         AgentTaskEventController controller = new AgentTaskEventController(tasks,
                 mock(AgentTaskEventSubscriptionService.class), approvals, audit, null, parts, runMessages);
+        controller.setCompactionService(compactions);
 
         Result<Map<String, Object>> result = controller.activeTask(12, "conversation-71", authentication(7));
 
@@ -62,6 +67,8 @@ class AgentTaskEventControllerTest {
         assertThat(result.getData()).containsEntry("taskId", 71L)
                 .containsEntry("sessionId", "session-71")
                 .containsEntry("lastEventSequence", 42L)
+                .containsEntry("compactions", java.util.List.of(Map.of(
+                        "compactionEpoch", 1L, "status", "completed")))
                 .doesNotContainKeys("requestPayload", "userMessage");
         @SuppressWarnings("unchecked")
         Map<String, Object> approvalData = (Map<String, Object>) result.getData().get("commandApproval");
@@ -71,6 +78,34 @@ class AgentTaskEventControllerTest {
         assertThat(approvalData.get("exitCode")).isEqualTo(1);
         assertThat(approvalData.get("durationMs")).isEqualTo(125L);
         assertThat(approvalData).doesNotContainKey("canonicalCommand");
+    }
+
+    @Test
+    void exposesTerminalTaskProjectionByOwnedTaskId() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentTask task = new AgentTask();
+        task.setTaskId(81L);
+        task.setConversationId("conversation-81");
+        task.setSessionId("session-81");
+        task.setMode("build");
+        task.setStatus("completed");
+        task.setLastEventSequence(88L);
+        when(tasks.getOwnedTask(7, 12, 81L)).thenReturn(task);
+        AgentCompactionService compactions = mock(AgentCompactionService.class);
+        when(compactions.publicHistory(81L)).thenReturn(java.util.List.of(Map.of(
+                "compactionEpoch", 2L, "status", "completed")));
+        AgentTaskEventController controller = new AgentTaskEventController(tasks,
+                mock(AgentTaskEventSubscriptionService.class), mock(CommandApprovalService.class),
+                mock(CommandAuditService.class));
+        controller.setCompactionService(compactions);
+
+        Result<Map<String, Object>> result = controller.task(12, 81L, authentication(7));
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getData()).containsEntry("taskId", 81L)
+                .containsEntry("status", "completed")
+                .containsEntry("compactions", java.util.List.of(Map.of(
+                        "compactionEpoch", 2L, "status", "completed")));
     }
 
     @Test

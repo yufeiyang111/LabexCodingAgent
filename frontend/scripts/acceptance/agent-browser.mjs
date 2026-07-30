@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -10,6 +10,7 @@ const uiBase = process.env.ACCEPTANCE_UI_BASE || 'http://127.0.0.1:13000'
 const apiBase = process.env.ACCEPTANCE_API_BASE || 'http://127.0.0.1:18080/api'
 const debugPort = Number.parseInt(process.env.ACCEPTANCE_CDP_PORT || '19222', 10)
 const timeoutMs = Number.parseInt(process.env.ACCEPTANCE_BROWSER_TIMEOUT_MS || '90000', 10)
+const restartHandoffDir = process.env.ACCEPTANCE_RESTART_HANDOFF_DIR || ''
 const runId = crypto.randomUUID().replaceAll('-', '')
 let token = ''
 let projectId = null
@@ -139,6 +140,21 @@ function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds))
 }
 
+async function waitForRestartContinuation() {
+  if (!restartHandoffDir) return false
+  await mkdir(restartHandoffDir, { recursive: true })
+  const continuationFile = join(restartHandoffDir, 'continue.signal')
+  await waitFor(async () => {
+    try {
+      await access(continuationFile)
+      return true
+    } catch {
+      return false
+    }
+  }, 'backend restart continuation signal')
+  return true
+}
+
 async function setSession() {
   await navigate(`${uiBase}/login`)
   const session = JSON.stringify({ token, userInfo: globalThis.__acceptanceUserInfo })
@@ -197,6 +213,14 @@ async function assertDesktopWorkspaceLayout() {
     throw new Error(`Workspace did not render as a desktop layout: ${JSON.stringify(layout)}`)
   }
   return layout
+}
+
+async function waitForAgentIdle(label = 'agent terminal state') {
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('button.ai-submit-btn'))
+      && !document.querySelector('.ai-generating-indicator')`),
+    label
+  )
 }
 
 async function sendMessage(message) {
@@ -324,6 +348,107 @@ async function runScenario() {
     () => client.evaluate(`!document.querySelector('.tc-question') && document.body.innerText.includes('durable user-question interaction resumed')`),
     'question reply completion'
   )
+  await createNewConversation()
+  await sendMessage(`[acceptance:isolation:COMPACTION-WARMUP] ${'warmup '.repeat(850)}`)
+  await waitFor(() => bodyIncludes('COMPACTION-WARMUP'), 'compaction warmup turn')
+  await waitForAgentIdle('compaction warmup terminal state')
+  const compactionConfig = await api('/student/model-configs', {
+    method: 'POST',
+    body: {
+      configName: 'Browser Durable Compaction', provider: 'acceptance_scripted', modelName: 'acceptance-compaction',
+      apiKey: 'acceptance-placeholder-not-a-secret', baseUrl: 'acceptance://scripted',
+      maxTokens: 4096, contextWindowTokens: 32768, temperature: 0, isDefault: true,
+      compactionAuto: true, compactionPrune: false, compactionTailTurns: 1,
+      compactionPreserveRecentTokens: 8000, compactionReservedTokens: 4096,
+      compactionThresholdPercent: 70,
+      promptCacheKeyEnabled: false, reasoningEffort: 'medium', imageInputEnabled: false
+    }
+  })
+  configIds.push(compactionConfig.configId)
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitFor(() => bodyIncludes('acceptance-compaction'), 'durable compaction model selection')
+  await waitFor(() => bodyIncludes('COMPACTION-WARMUP'), 'compaction warmup replay after model switch')
+  await waitForAgentIdle('reloaded compaction conversation terminal state')
+  const tasksBeforeCompaction = await api(`/student/projects/${projectId}/agent/tasks`)
+  const priorTaskIds = new Set(tasksBeforeCompaction.map(task => Number(task.taskId)))
+  await sendMessage('[acceptance:compaction]')
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.tc-question'))`),
+    'durable compaction question component'
+  )
+  await client.evaluate(`document.querySelector('.tc-question .tc-option-btn')?.click()`)
+  await client.evaluate(`document.querySelector('.tc-question .tc-approval-btn.primary')?.click()`)
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.ai-context-management-card.is-completed'))`),
+    'durable compaction completion card'
+  )
+  await waitFor(
+    () => bodyIncludes('durable compaction epoch'),
+    'durable compaction final reply'
+  )
+  const tasksAfterCompaction = await api(`/student/projects/${projectId}/agent/tasks`)
+  const compactionTask = [...tasksAfterCompaction]
+    .filter(task => !priorTaskIds.has(Number(task.taskId)))
+    .sort((left, right) => Number(right.taskId) - Number(left.taskId))[0]
+  if (!compactionTask?.taskId) {
+    throw new Error(`No durable compaction task was found: ${JSON.stringify(tasksAfterCompaction)}`)
+  }
+  const compactionTaskProjection = await api(
+    `/student/projects/${projectId}/agent/tasks/${compactionTask.taskId}`
+  )
+  const completedCompaction = (compactionTaskProjection?.compactions || [])
+    .find(item => item.status === 'completed')
+  if (!completedCompaction
+      || Number(completedCompaction.compactionEpoch) < 1
+      || Number(completedCompaction.estimatedTokensBefore) <= Number(completedCompaction.estimatedTokensAfter)) {
+    throw new Error(`Durable compaction audit record is invalid: ${JSON.stringify(compactionTaskProjection?.compactions || [])}`)
+  }
+  const compactionProviderMessages = (compactionTaskProjection?.runMessages || [])
+    .filter(message => String(message.messageKey || '').startsWith('provider:'))
+  const compactionProviderParts = (compactionTaskProjection?.parts || [])
+    .filter(part => String(part.partKey || '').startsWith('provider:'))
+  if (compactionProviderMessages.length === 0 || compactionProviderMessages.length > 16) {
+    throw new Error(`Compaction duplicated Provider transcript messages: ${compactionProviderMessages.length}`)
+  }
+  if (!compactionProviderParts.some(part => part.toolCallId === 'acceptance-compaction-large-tool-call')) {
+    throw new Error('The large native tool call was not preserved in the durable Provider transcript')
+  }
+
+  let restartProjectionVerified = false
+  if (restartHandoffDir) {
+    await mkdir(restartHandoffDir, { recursive: true })
+    await writeFile(join(restartHandoffDir, 'ready.json'), JSON.stringify({
+      projectId,
+      taskId: compactionTask.taskId,
+      conversationId: compactionTask.conversationId,
+      compactionEpoch: completedCompaction.compactionEpoch
+    }, null, 2), 'utf8')
+    await waitForRestartContinuation()
+    let restartedProjection = null
+    await waitFor(async () => {
+      try {
+        restartedProjection = await api(`/student/projects/${projectId}/agent/tasks/${compactionTask.taskId}`)
+        return Boolean(restartedProjection)
+      } catch {
+        return false
+      }
+    }, 'same task projection after real backend restart')
+    const restartedCompaction = (restartedProjection.compactions || [])
+      .find(item => Number(item.compactionEpoch) === Number(completedCompaction.compactionEpoch)
+        && item.status === 'completed')
+    const restartedProviderMessages = (restartedProjection.runMessages || [])
+      .filter(message => String(message.messageKey || '').startsWith('provider:'))
+    if (!restartedCompaction || restartedProviderMessages.length !== compactionProviderMessages.length) {
+      throw new Error(`Restart projection mismatch: ${JSON.stringify({
+        compactions: restartedProjection.compactions || [],
+        providerMessages: restartedProviderMessages.length,
+        expectedProviderMessages: compactionProviderMessages.length
+      })}`)
+    }
+    restartProjectionVerified = true
+  }
+
   const tinyConfig = await api('/student/model-configs', {
     method: 'POST',
     body: {
@@ -401,6 +526,12 @@ async function runScenario() {
     durableProviderMessages: providerMessages.length,
     durableProviderParts: providerParts.length,
     cursorKeys: cursorKeys.length,
+    durableCompaction: true,
+    compactionEpoch: completedCompaction.compactionEpoch,
+    compactionTokensBefore: completedCompaction.estimatedTokensBefore,
+    compactionTokensAfter: completedCompaction.estimatedTokensAfter,
+    compactionProviderMessages: compactionProviderMessages.length,
+    restartProjectionVerified,
     staticContextBlockerCard: true,
     completionEvidenceCard: true,
     unverifiedCompletionBlocked: true,
@@ -413,6 +544,9 @@ let result
 try {
   result = await runScenario()
   console.log(JSON.stringify(redactEvidence(result), null, 2))
+  if (restartHandoffDir) {
+    await writeFile(join(restartHandoffDir, 'done.json'), JSON.stringify(redactEvidence(result), null, 2), 'utf8')
+  }
 } catch (error) {
   let page = null
   try {
@@ -420,12 +554,17 @@ try {
   } catch {
     // ???????????????? CDP ???
   }
-  console.error(JSON.stringify(redactEvidence({
+  const failure = redactEvidence({
     error: error?.message || String(error),
     consoleErrors,
     networkErrors,
     page
-  }), null, 2))
+  })
+  console.error(JSON.stringify(failure, null, 2))
+  if (restartHandoffDir) {
+    await mkdir(restartHandoffDir, { recursive: true }).catch(() => {})
+    await writeFile(join(restartHandoffDir, 'error.json'), JSON.stringify(failure, null, 2), 'utf8').catch(() => {})
+  }
   throw error
 } finally {
   for (const id of [...configIds].reverse()) {

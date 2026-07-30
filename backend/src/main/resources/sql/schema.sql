@@ -191,6 +191,34 @@ CREATE TABLE IF NOT EXISTS t_agent_run_part (
     INDEX idx_agent_run_part_tool_call (task_id, tool_call_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS t_agent_compaction_record (
+    compaction_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    conversation_id VARCHAR(64) DEFAULT NULL,
+    student_id INT NOT NULL,
+    project_id INT NOT NULL,
+    execution_epoch BIGINT NOT NULL DEFAULT 0,
+    compaction_epoch BIGINT NOT NULL,
+    trigger_reason VARCHAR(64) DEFAULT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'running',
+    previous_summary LONGTEXT DEFAULT NULL,
+    summary LONGTEXT DEFAULT NULL,
+    compacted_head LONGTEXT NOT NULL,
+    retained_tail LONGTEXT NOT NULL,
+    tail_start_index INT NOT NULL DEFAULT 0,
+    retained_turns INT NOT NULL DEFAULT 0,
+    source_max_sequence BIGINT NOT NULL DEFAULT -1,
+    estimated_tokens_before INT NOT NULL DEFAULT 0,
+    estimated_tokens_after INT DEFAULT NULL,
+    model_window_tokens INT NOT NULL DEFAULT 0,
+    reserved_output_tokens INT NOT NULL DEFAULT 0,
+    failure_reason TEXT DEFAULT NULL,
+    create_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    update_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_agent_compaction_task_epoch (task_id, compaction_epoch),
+    INDEX idx_agent_compaction_task_status (task_id, status, compaction_epoch),
+    INDEX idx_agent_compaction_conversation (conversation_id, compaction_epoch)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE TABLE IF NOT EXISTS t_agent_change_set (
     change_set_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     task_id BIGINT NOT NULL,

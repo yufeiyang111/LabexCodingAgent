@@ -8,6 +8,7 @@ import com.labex.entity.CommandApproval;
 import com.labex.entity.CommandAuditEvent;
 import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.commandsecurity.CommandAuditService;
+import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.run.AgentTaskEventSubscriptionService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.AgentRunPartService;
@@ -45,6 +46,7 @@ public class AgentTaskEventController {
     private final AgentRunPartService partService;
     private final AgentRunMessageService runMessageService;
     private final AgentRunInteractionService interactionService;
+    private AgentCompactionService compactionService;
 
     /** 兼容旧测试构造器；生产路径由 Spring 注入运行时服务。 */
     AgentTaskEventController(AgentTaskService taskService,
@@ -103,6 +105,11 @@ public class AgentTaskEventController {
         this.interactionService = interactionService;
     }
 
+    @Autowired
+    public void setCompactionService(AgentCompactionService compactionService) {
+        this.compactionService = compactionService;
+    }
+
     @GetMapping("/conversations/{conversationId}/active-task")
     public Result<Map<String, Object>> activeTask(@PathVariable Integer projectId,
                                                    @PathVariable String conversationId,
@@ -114,6 +121,18 @@ public class AgentTaskEventController {
         log.info("ACTIVE_TASK_LOOKUP_RESULT studentId={} projectId={} conversationId={} taskId={} status={}",
                 studentId, projectId, diagnosticConversationId, task == null ? null : task.getTaskId(), task == null ? "none" : task.getStatus());
         return Result.success(task == null ? null : publicTask(studentId, projectId, task));
+    }
+
+    @GetMapping("/tasks/{taskId}")
+    public Result<Map<String, Object>> task(@PathVariable Integer projectId,
+                                            @PathVariable Long taskId,
+                                            Authentication auth) {
+        Integer studentId = Integer.parseInt(auth.getName());
+        AgentTask task = taskService.getOwnedTask(studentId, projectId, taskId);
+        if (task == null) {
+            return Result.error(404, "Agent task not found");
+        }
+        return Result.success(publicTask(studentId, projectId, task));
     }
 
     @GetMapping(value = "/tasks/{taskId}/subscribe", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -147,6 +166,7 @@ public class AgentTaskEventController {
         response.put("toolCalls", toolCallJournalService == null ? List.of() : toolCallJournalService.latestForTask(task.getTaskId()));
         response.put("parts", partService == null ? List.of() : partService.publicHistory(task.getTaskId()));
         response.put("runMessages", runMessageService == null ? List.of() : runMessageService.publicHistory(task.getTaskId()));
+        response.put("compactions", compactionService == null ? List.of() : compactionService.publicHistory(task.getTaskId()));
         AgentRunInteraction pendingInteraction = interactionService == null
                 ? null : interactionService.findWaitingForTask(task.getTaskId());
         if (pendingInteraction != null) {

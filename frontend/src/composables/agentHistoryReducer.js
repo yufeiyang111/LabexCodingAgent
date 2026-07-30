@@ -103,6 +103,15 @@ export function reduceContextManagementEvent(type, data = {}, message) {
         releasedTokens: releasedTokens(tokensBefore, tokensAfter), reason: ''
       }, taskId))
       return true
+    case 'CONTEXT_TOOL_SCHEMA_REDUCED':
+      createContextManagementEvent(message, withContextTask({
+        phase: 'tools-reduced', status: 'completed', strategy, tokensBefore, tokensAfter,
+        releasedTokens: releasedTokens(tokensBefore, tokensAfter), reason: '',
+        toolCountBefore: Number.isFinite(Number(data.toolCountBefore)) ? Number(data.toolCountBefore) : null,
+        toolCountAfter: Number.isFinite(Number(data.toolCountAfter)) ? Number(data.toolCountAfter) : null,
+        recoveryAttempt: Number.isFinite(Number(data.recoveryAttempt)) ? Number(data.recoveryAttempt) : null
+      }, taskId))
+      return true
     case 'COMPACTION_FAILED': {
       const pending = latestPendingContextManagementEvent(message, taskId)
       const reason = typeof data.reason === 'string' ? data.reason : ''
@@ -295,6 +304,7 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'CONTEXT_STATUS': callbacks.onContextStatus?.(data); break
     case 'COMPACTION_STARTED':
     case 'CONTEXT_PRUNED':
+    case 'CONTEXT_TOOL_SCHEMA_REDUCED':
     case 'COMPACTION_COMPLETED':
     case 'COMPACTION_FAILED':
     case 'COMPACTION_PROGRESS':

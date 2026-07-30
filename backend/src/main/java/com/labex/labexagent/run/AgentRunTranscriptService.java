@@ -66,12 +66,21 @@ public class AgentRunTranscriptService {
 
     /** 将当前持久化 transcript 按 Provider 协议重建。 */
     public List<Map<String, Object>> loadProjectableTranscript(Long taskId) {
+        return loadProjectableTranscriptAfter(taskId, -1L);
+    }
+
+    /** 只加载压缩 source boundary 之后追加的事实，供重启投影拼接使用。 */
+    public List<Map<String, Object>> loadProjectableTranscriptAfter(Long taskId, long sequenceExclusive) {
         if (taskId == null || taskId <= 0) {
             return List.of();
         }
-        List<AgentRunMessage> messages = messageMapper.selectList(new LambdaQueryWrapper<AgentRunMessage>()
+        LambdaQueryWrapper<AgentRunMessage> query = new LambdaQueryWrapper<AgentRunMessage>()
                 .eq(AgentRunMessage::getTaskId, taskId)
-                .likeRight(AgentRunMessage::getMessageKey, PROVIDER_KEY_PREFIX)
+                .likeRight(AgentRunMessage::getMessageKey, PROVIDER_KEY_PREFIX);
+        if (sequenceExclusive >= 0) {
+            query.gt(AgentRunMessage::getSequenceNumber, sequenceExclusive);
+        }
+        List<AgentRunMessage> messages = messageMapper.selectList(query
                 .orderByAsc(AgentRunMessage::getSequenceNumber)
                 .orderByAsc(AgentRunMessage::getRunMessageId));
         if (messages == null || messages.isEmpty()) {
@@ -79,6 +88,11 @@ public class AgentRunTranscriptService {
         }
         List<Map<String, Object>> result = new ArrayList<>();
         for (AgentRunMessage message : messages) {
+            long sequence = message.getSequenceNumber() == null ? -1L : message.getSequenceNumber();
+            // 单测 mock 不会执行 MyBatis 条件；Java 层再次守住 source boundary。
+            if (sequence <= sequenceExclusive) {
+                continue;
+            }
             String role = stringValue(message.getRole());
             if ("assistant".equalsIgnoreCase(role)) {
                 result.add(rebuildAssistant(message, taskId));

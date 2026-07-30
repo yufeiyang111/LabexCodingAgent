@@ -142,10 +142,11 @@ test('routes compaction/context status and accumulates token usage', () => {
   state.handleAgentEvent({ type: 'CONTEXT_STATUS', data: { state: 'READY' } }, assistant)
   state.handleAgentEvent({ type: 'COMPACTION_STARTED', data: { taskId: 10 } }, assistant)
   state.handleAgentEvent({ type: 'COMPACTION_COMPLETED', data: { taskId: 10 } }, assistant)
+  state.handleAgentEvent({ type: 'CONTEXT_TOOL_SCHEMA_REDUCED', data: { taskId: 10 } }, assistant)
   state.handleAgentEvent({ type: 'TOKEN_USAGE', data: { promptTokens: 10, completionTokens: 5, totalTokens: 15, conversationTotal: 20 } }, assistant)
 
   assert.equal(state.contextUsageStatus.value.state, 'READY')
-  assert.deepEqual(state.calls.filter(call => call[0] === 'context').map(call => call[1]), ['COMPACTION_STARTED', 'COMPACTION_COMPLETED'])
+  assert.deepEqual(state.calls.filter(call => call[0] === 'context').map(call => call[1]), ['COMPACTION_STARTED', 'COMPACTION_COMPLETED', 'CONTEXT_TOOL_SCHEMA_REDUCED'])
   assert.deepEqual(state.tokenUsage.value, { promptTokens: 10, completionTokens: 5, totalTokens: 15, callCount: 1, conversationTotal: 20 })
   assert.equal(state.sessionHistory.value[0].conversationId, 'c1')
 })

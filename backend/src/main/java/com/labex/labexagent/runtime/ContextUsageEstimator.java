@@ -61,14 +61,20 @@ public class ContextUsageEstimator {
         categories.put("fixedInstructions", estimateTokens(context.fixedInstructions()));
         categories.put("conversationMessages", 0);
         categories.put("toolResults", 0);
+        categories.put("messageProtocol", 0);
 
         for (Map<String, Object> message : messages == null ? List.<Map<String, Object>>of() : messages) {
             Object content = message.get("content");
             String text = content instanceof String value ? value : serialize(content);
             if (text.equals(context.initialContextMessage())) continue;
-            String category = text.startsWith(TOOL_RESULT_PREFIX) && text.contains("result]")
+            String role = String.valueOf(message.getOrDefault("role", "user"));
+            String category = "tool".equalsIgnoreCase(role)
+                    || (text.startsWith(TOOL_RESULT_PREFIX) && text.contains("result]"))
                     ? "toolResults" : "conversationMessages";
             categories.merge(category, estimateTokens(text), Integer::sum);
+            LinkedHashMap<String, Object> protocol = new LinkedHashMap<>(message);
+            protocol.remove("content");
+            categories.merge("messageProtocol", estimateTokens(serialize(protocol)), Integer::sum);
         }
         return Map.copyOf(categories);
     }

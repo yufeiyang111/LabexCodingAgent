@@ -40,6 +40,16 @@ final class ConversationCheckpointCompactor {
     boolean compact(List<Map<String, Object>> messages, String taskRequest, AgentContext context) {
         return compactWithResult(messages, taskRequest, context).changed();
     }
+    /** 只对已选定的 historical head 生成摘要，不再自行猜测 tail 边界。 */
+    String checkpointForHistory(List<Map<String, Object>> historical,
+                                String taskRequest,
+                                AgentContext context) {
+        List<Map<String, Object>> source = historical == null ? List.of() : historical;
+        if (source.isEmpty()) {
+            return "";
+        }
+        return buildCheckpoint(collectFacts(source, taskRequest, context));
+    }
 
     Result compactWithResult(List<Map<String, Object>> messages, String taskRequest, AgentContext context) {
         if (messages == null || messages.size() <= DEFAULT_KEEP_RECENT_TURNS * 2) {

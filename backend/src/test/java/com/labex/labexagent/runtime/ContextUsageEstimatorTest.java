@@ -115,4 +115,24 @@ class ContextUsageEstimatorTest {
         assertTrue(((List<?>) payload.get("previewSections")).size() > 0);
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void countsNativeToolCallMetadataAndClassifiesRoleToolOutput() {
+        Map<String, Object> assistant = Map.of(
+                "role", "assistant",
+                "content", "",
+                "tool_calls", List.of(Map.of(
+                        "id", "call-1",
+                        "type", "function",
+                        "function", Map.of("name", "run_tests", "arguments", "{\"command\":\"mvn test\"}"))));
+        Map<String, Object> tool = Map.of(
+                "role", "tool", "tool_call_id", "call-1", "name", "run_tests", "content", "BUILD SUCCESS");
+
+        Map<String, Integer> categories = estimator.estimateCategories("", List.of(),
+                new ContextUsageEstimator.PromptContext("", "", "", ""), List.of(assistant, tool));
+
+        assertTrue(categories.getOrDefault("messageProtocol", 0) > 0);
+        assertEquals(estimator.estimateTokens("BUILD SUCCESS"), categories.get("toolResults"));
+        assertTrue(categories.get("messageProtocol") > estimator.estimateTokens("assistanttool"));
+    }
 }
