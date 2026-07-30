@@ -32,6 +32,17 @@ public final class AgentProviderMessageProjector {
         return copyMap(message);
     }
 
+    /** 交互恢复的中间状态不进行严格校验，补写 role=tool 后再校验。 */
+    public List<Map<String, Object>> copyMessages(List<Map<String, Object>> messages) {
+        List<Map<String, Object>> copied = new ArrayList<>();
+        if (messages != null) {
+            for (Map<String, Object> message : messages) {
+                copied.add(copyMap(message));
+            }
+        }
+        return List.copyOf(copied);
+    }
+
     private Map<String, Object> copyMap(Map<?, ?> source) {
         LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
         if (source == null) {

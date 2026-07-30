@@ -37,6 +37,7 @@ class AgentRunResumeSchedulerTest {
         assertThat(request.getValue().getConversationId()).isEqualTo("conversation-1");
         assertThat(request.getValue().getSessionId()).isEqualTo("session-1");
         assertThat(request.getValue().getResumeTaskId()).isEqualTo(71L);
+        assertThat(request.getValue().getResumeInteractionId()).isEqualTo("interaction-71-question-answered");
         assertThat(request.getValue().getMessage()).contains("answered").contains("Continue the existing task");
     }
 

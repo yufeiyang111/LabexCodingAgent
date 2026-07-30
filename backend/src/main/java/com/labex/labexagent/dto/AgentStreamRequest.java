@@ -10,6 +10,8 @@ public class AgentStreamRequest {
     private String activePath;
     private Integer modelConfigId;
     private Long resumeTaskId;
+    /** 持久化运行时边界说明。 */
+    private String resumeInteractionId;
     private boolean backgroundRun;
     private LocalDateTime submittedAt;
 
@@ -59,6 +61,14 @@ public class AgentStreamRequest {
 
     public Long getResumeTaskId() {
         return this.resumeTaskId;
+    }
+
+    public String getResumeInteractionId() {
+        return this.resumeInteractionId;
+    }
+
+    public void setResumeInteractionId(String resumeInteractionId) {
+        this.resumeInteractionId = resumeInteractionId;
     }
 
     public boolean isBackgroundRun() {
@@ -142,6 +152,6 @@ public class AgentStreamRequest {
     }
 
     public String toString() {
-        return "AgentStreamRequest(sessionId=" + this.getSessionId() + ", conversationId=" + this.getConversationId() + ", mode=" + this.getMode() + ", message=" + this.getMessage() + ", activePath=" + this.getActivePath() + ")";
+        return "AgentStreamRequest(sessionId=" + this.getSessionId() + ", conversationId=" + this.getConversationId() + ", mode=" + this.getMode() + ", message=" + this.getMessage() + ", activePath=" + this.getActivePath() + ", resumeTaskId=" + this.getResumeTaskId() + ", resumeInteractionId=" + this.getResumeInteractionId() + ")";
     }
 }

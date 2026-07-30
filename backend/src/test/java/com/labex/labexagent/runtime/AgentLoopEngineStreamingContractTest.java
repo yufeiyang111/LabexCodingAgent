@@ -30,6 +30,13 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
+    void providerRequestsUseStrictDurableTranscriptProjection() {
+        assertTrue(source.contains("projectForProvider(taskId, inMemoryMessages).messages()"));
+        assertFalse(source.contains("transcriptProjectionService.project(taskId, inMemoryMessages)"));
+        assertFalse(source.contains("return this.providerMessageProjector.project(inMemoryMessages);\n        } catch"));
+    }
+
+    @Test
     void consumesAnApprovedOfflineRetryWithoutAskingForTheSameCommandAgain() {
         assertTrue(source.contains("hasApprovedOfflineRetryGrant(ctx.getTaskId(), guardedCommand)"));
         assertTrue(source.contains("&& !approvedOfflineRetry"));

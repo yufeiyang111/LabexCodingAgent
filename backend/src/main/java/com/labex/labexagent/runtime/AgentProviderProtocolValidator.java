@@ -16,6 +16,7 @@ public final class AgentProviderProtocolValidator {
             return errors;
         }
         Set<String> pendingToolCalls = new LinkedHashSet<>();
+        Set<String> seenToolCalls = new LinkedHashSet<>();
         for (int index = 0; index < messages.size(); index++) {
             Map<String, Object> message = messages.get(index);
             if (message == null) {
@@ -28,7 +29,7 @@ public final class AgentProviderProtocolValidator {
                 continue;
             }
             if ("assistant".equalsIgnoreCase(role)) {
-                validateAssistantToolCalls(index, message.get("tool_calls"), pendingToolCalls, errors);
+                validateAssistantToolCalls(index, message.get("tool_calls"), pendingToolCalls, seenToolCalls, errors);
             } else if ("tool".equalsIgnoreCase(role)) {
                 String toolCallId = stringValue(message.get("tool_call_id"));
                 String toolName = stringValue(message.get("name"));
@@ -56,7 +57,8 @@ public final class AgentProviderProtocolValidator {
     }
 
     private void validateAssistantToolCalls(int index, Object rawToolCalls,
-                                            Set<String> pendingToolCalls, List<String> errors) {
+                                            Set<String> pendingToolCalls, Set<String> seenToolCalls,
+                                            List<String> errors) {
         if (rawToolCalls == null) {
             return;
         }
@@ -75,13 +77,21 @@ public final class AgentProviderProtocolValidator {
                 errors.add("message[" + index + "] tool_calls[" + callIndex + "] id is required");
                 continue;
             }
-            if (!pendingToolCalls.add(id)) {
+            if (!seenToolCalls.add(id)) {
                 errors.add("duplicate tool call id: " + id);
+            } else {
+                pendingToolCalls.add(id);
             }
             Object function = call.get("function");
-            if (!(function instanceof Map<?, ?> functionMap)
-                    || stringValue(functionMap.get("name")).isBlank()) {
+            if (!(function instanceof Map<?, ?> functionMap)) {
+                errors.add("message[" + index + "] tool_calls[" + callIndex + "] function is required");
+                continue;
+            }
+            if (stringValue(functionMap.get("name")).isBlank()) {
                 errors.add("message[" + index + "] tool_calls[" + callIndex + "] function.name is required");
+            }
+            if (stringValue(functionMap.get("arguments")).isBlank()) {
+                errors.add("message[" + index + "] tool_calls[" + callIndex + "] function.arguments is required");
             }
         }
     }

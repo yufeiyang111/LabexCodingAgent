@@ -1,6 +1,7 @@
 package com.labex.labexagent.runtime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -41,6 +42,21 @@ class AgentTranscriptProjectionServiceTest {
         assertThat(projection.messages()).isEqualTo(current);
         assertThat(projection.detail()).contains("durable=1").contains("memory=1");
     }
+    @Test
+    void strictProviderProjectionRejectsDurableDivergenceInsteadOfFallingBackToMemory() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        when(transcript.loadProjectableTranscript(7L))
+                .thenReturn(List.of(Map.of("role", "user", "content", "stale")));
+        List<Map<String, Object>> current = List.of(Map.of("role", "user", "content", "current"));
+
+        assertThatThrownBy(() -> new AgentTranscriptProjectionService(transcript)
+                .projectForProvider(7L, current))
+                .isInstanceOf(AgentTranscriptProjectionDivergenceException.class)
+                .hasMessageContaining("taskId=7")
+                .hasMessageContaining("durable=1")
+                .hasMessageContaining("memory=1");
+    }
+
     @Test
     void appliesLatestCompletedCompactionForShadowComparisonAndRestartRestore() {
         AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);

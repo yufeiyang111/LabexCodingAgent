@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
@@ -115,6 +116,45 @@ class AgentRunTranscriptServiceTest {
         assertThat(result).containsExactly(
                 Map.of("role", "user", "content", "continue task"),
                 Map.of("role", "user", "content", "approved, continue"));
+    }
+
+    @Test
+    void resolvesAnAnsweredInteractionToAProtocolToolResult() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+
+        AgentRunMessage user = message(1L, "provider:3:message:0", 0L, "user", "start");
+        AgentRunMessage assistant = message(2L, "provider:3:message:1", 1L, "assistant", "");
+        AgentRunPart openCall = new AgentRunPart();
+        openCall.setPartId(11L);
+        openCall.setMessageId(2L);
+        openCall.setPartKey("provider:3:tool-call:1:0:call-question");
+        openCall.setPartType("tool_call");
+        openCall.setStatus("waiting_user");
+        openCall.setSequenceNumber(1000L);
+        openCall.setInputJson("{\"id\":\"call-question\",\"type\":\"function\",\"function\":{\"name\":\"question\",\"arguments\":\"{}\"}}");
+        when(messages.selectList(any())).thenReturn(List.of(user, assistant));
+        when(parts.selectList(any())).thenReturn(List.of(openCall));
+
+        AgentRunInteraction interaction = new AgentRunInteraction();
+        interaction.setInteractionId("question-1");
+        interaction.setInteractionType("question");
+        interaction.setStatus("answered");
+        interaction.setRequestPayload("{\"question\":\"Continue?\"}");
+        interaction.setResponsePayload("{\"answer\":\"yes\"}");
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        List<Map<String, Object>> projection = service.loadProjectableTranscriptForInteractionResume(7L);
+        Map<String, Object> result = service.resolvedInteractionToolResult(interaction, projection);
+
+        assertThat(projection).hasSize(2);
+        assertThat(result).containsEntry("role", "tool")
+                .containsEntry("tool_call_id", "call-question")
+                .containsEntry("name", "question");
+        assertThat(String.valueOf(result.get("content"))).contains("answered").contains("yes");
+        assertThat(service.resolvedInteractionToolResult(interaction,
+                List.of(projection.get(0), projection.get(1), result))).isNull();
     }
 
     @Test

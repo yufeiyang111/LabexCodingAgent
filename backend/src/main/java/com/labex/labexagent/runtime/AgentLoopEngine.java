@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.labex.entity.AgentConversation;
+import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.context.AgentCompactionRecord;
@@ -28,6 +29,7 @@ import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTransitionKey;
 import com.labex.labexagent.run.AgentRunArtifactService;
+import com.labex.labexagent.run.AgentRunInteractionService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.CommandFailureGuard;
@@ -179,6 +181,7 @@ public class AgentLoopEngine {
     private AgentRunArtifactService artifactService;
     private AgentToolCallJournalService toolCallJournalService;
     private AgentRunTranscriptService transcriptService;
+    private AgentRunInteractionService runInteractionService;
     private AgentTranscriptProjectionService transcriptProjectionService;
     private AgentCompactionService compactionService;
     private AgentRequestTokenEstimator requestTokenEstimator = new AgentRequestTokenEstimator();
@@ -289,6 +292,11 @@ public class AgentLoopEngine {
     void setTranscriptProjectionService(AgentTranscriptProjectionService transcriptProjectionService) {
         this.transcriptProjectionService = transcriptProjectionService;
     }
+    @Autowired(required = false)
+    void setRunInteractionService(AgentRunInteractionService runInteractionService) {
+        this.runInteractionService = runInteractionService;
+    }
+
     @Autowired(required = false)
     void setContextCompactionServices(AgentCompactionService compactionService,
                                       AgentRequestTokenEstimator requestTokenEstimator) {
@@ -729,23 +737,41 @@ public class AgentLoopEngine {
             boolean transcriptRestored = false;
             if (this.transcriptService != null) {
                 try {
-                    List<Map<String, Object>> persistedMessages = this.transcriptProjectionService == null
+                    List<Map<String, Object>> persistedMessages = resumedRun
+                            && request.getResumeInteractionId() != null
+                            ? (this.transcriptProjectionService == null
+                            ? this.transcriptService.loadProjectableTranscriptForInteractionResume(task.getTaskId())
+                            : this.transcriptProjectionService.loadDurableProjectionForInteractionResume(task.getTaskId()).messages())
+                            : (this.transcriptProjectionService == null
                             ? this.transcriptService.loadProjectableTranscript(task.getTaskId())
-                            : this.transcriptProjectionService.loadDurableProjection(task.getTaskId()).messages();
+                            : this.transcriptProjectionService.loadDurableProjection(task.getTaskId()).messages());
                     if (!persistedMessages.isEmpty()) {
                         msgs.restore(persistedMessages);
                         transcriptRestored = true;
                     }
                 } catch (RuntimeException transcriptFailure) {
+                    if (resumedRun) {
+                        throw transcriptFailure;
+                    }
                     log.warn("Unable to restore durable Provider transcript taskId={}: {}", task.getTaskId(), transcriptFailure.getMessage());
                 }
             }
             if (!transcriptRestored) {
                 msgs.add(Map.of("role", "user", "content", initialContextMessage));
                 msgs.add(Map.of("role", "user", "content", request.getMessage()));
-            } else if (resumedRun && request.getMessage() != null && !request.getMessage().isBlank()) {
-                // 恢复请求中的用户回复是新的 durable turn，不能依赖旧进程内存。
-                msgs.add(Map.of("role", "user", "content", request.getMessage()));
+            } else if (resumedRun) {
+                if (request.getResumeInteractionId() != null && this.runInteractionService != null) {
+                    AgentRunInteraction interaction = this.runInteractionService.findById(request.getResumeInteractionId());
+                    Map<String, Object> toolResult = this.transcriptService == null
+                            ? null : this.transcriptService.resolvedInteractionToolResult(interaction, msgs);
+                    if (toolResult != null) {
+                        msgs.add(toolResult);
+                    }
+                }
+                if (request.getMessage() != null && !request.getMessage().isBlank()) {
+                    // 持久化运行时边界说明。
+                    msgs.add(Map.of("role", "user", "content", request.getMessage()));
+                }
             }
             log.info("AGENT_CONTEXT_READY taskId={} buildMs={} systemPromptChars={} contextChars={} userChars={} toolCount={} toolSchemaChars={} estimatedContextTokens={}",
                     task.getTaskId(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - contextBuildStartedAt),
@@ -3413,20 +3439,10 @@ public class AgentLoopEngine {
     private List<Map<String, Object>> projectProviderMessages(Long taskId,
                                                                List<Map<String, Object>> inMemoryMessages) {
         if (this.transcriptProjectionService == null) {
+            // 持久化运行时边界说明。
             return this.providerMessageProjector.project(inMemoryMessages);
         }
-        try {
-            AgentTranscriptProjectionService.Projection projection =
-                    this.transcriptProjectionService.project(taskId, inMemoryMessages);
-            if (projection.shadowMismatch()) {
-                log.warn("AGENT_TRANSCRIPT_SHADOW_MISMATCH taskId={} detail={}", taskId, projection.detail());
-            }
-            return projection.messages();
-        } catch (RuntimeException transcriptFailure) {
-            log.warn("AGENT_TRANSCRIPT_PROJECTION_FAILED taskId={} errorType={} message={}", taskId,
-                    transcriptFailure.getClass().getSimpleName(), transcriptFailure.getMessage());
-            return this.providerMessageProjector.project(inMemoryMessages);
-        }
+        return this.transcriptProjectionService.projectForProvider(taskId, inMemoryMessages).messages();
     }
 
     private void sendEvent(AgentSsePublisher sse, AgentConversation conv, String type, Object data) throws Exception {

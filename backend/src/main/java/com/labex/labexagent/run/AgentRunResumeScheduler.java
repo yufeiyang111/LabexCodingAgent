@@ -38,6 +38,7 @@ public class AgentRunResumeScheduler {
         }
 
         AgentStreamRequest request = continuationRequest(task, interaction);
+        request.setResumeInteractionId(interaction.getInteractionId());
         if (!taskService.beginInteractionResume(
                 task.getTaskId(),
                 interaction.getInteractionId(),

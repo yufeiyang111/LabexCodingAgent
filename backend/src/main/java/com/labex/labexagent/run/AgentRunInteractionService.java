@@ -66,6 +66,14 @@ public class AgentRunInteractionService {
     }
 
     /** 查询当前任务是否已经针对同一网络请求获得一次性批准。 */
+    /** 持久化运行时边界说明。 */
+    public AgentRunInteraction findById(String interactionId) {
+        if (interactionId == null || interactionId.isBlank()) {
+            return null;
+        }
+        return interactionMapper.selectById(interactionId);
+    }
+
     public boolean hasApprovedNetworkGrant(Long taskId, String requestDigest) {
         return hasApprovedNetworkGrant(taskId, requestDigest, null);
     }

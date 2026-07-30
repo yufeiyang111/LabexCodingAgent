@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
+import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
@@ -69,8 +70,27 @@ public class AgentRunTranscriptService {
         return loadProjectableTranscriptAfter(taskId, -1L);
     }
 
-    /** 只加载压缩 source boundary 之后追加的事实，供重启投影拼接使用。 */
+    /** 持久化运行时边界说明。 */
     public List<Map<String, Object>> loadProjectableTranscriptAfter(Long taskId, long sequenceExclusive) {
+        return loadProjectableTranscriptAfter(taskId, sequenceExclusive, false);
+    }
+
+    /**
+      * 持久化运行时边界说明。
+      * 持久化运行时边界说明。
+     */
+    public List<Map<String, Object>> loadProjectableTranscriptForInteractionResume(Long taskId) {
+        return loadProjectableTranscriptAfter(taskId, -1L, true);
+    }
+
+    /** 持久化运行时边界说明。 */
+    public List<Map<String, Object>> loadProjectableTranscriptForInteractionResumeAfter(
+            Long taskId, long sequenceExclusive) {
+        return loadProjectableTranscriptAfter(taskId, sequenceExclusive, true);
+    }
+
+    private List<Map<String, Object>> loadProjectableTranscriptAfter(
+            Long taskId, long sequenceExclusive, boolean preserveOpenBatch) {
         if (taskId == null || taskId <= 0) {
             return List.of();
         }
@@ -89,26 +109,73 @@ public class AgentRunTranscriptService {
         List<Map<String, Object>> result = new ArrayList<>();
         for (AgentRunMessage message : messages) {
             long sequence = message.getSequenceNumber() == null ? -1L : message.getSequenceNumber();
-            // 单测 mock 不会执行 MyBatis 条件；Java 层再次守住 source boundary。
+            // 持久化运行时边界说明。
             if (sequence <= sequenceExclusive) {
                 continue;
             }
             String role = stringValue(message.getRole());
             if ("assistant".equalsIgnoreCase(role)) {
-                result.add(rebuildAssistant(message, taskId));
+                result.add(rebuildAssistant(message, taskId, preserveOpenBatch));
             } else if ("tool".equalsIgnoreCase(role)) {
                 result.add(rebuildTool(message));
             } else {
                 result.add(simpleMessage(role, message.getContent()));
             }
         }
-        return protocolSafeProjection(result);
+        return preserveOpenBatch ? resumeProjection(result) : protocolSafeProjection(result);
     }
 
     /**
-     * 恢复时只返回完整 turn。审批或进程中断留下的半个 tool batch 不能发送给 Provider，
-     * 否则会产生 orphan/missing tool result 协议错误；开放批次仍保留在数据库中供恢复器处理。
+      * 持久化运行时边界说明。
+      * 持久化运行时边界说明。
      */
+    public Map<String, Object> resolvedInteractionToolResult(
+            AgentRunInteraction interaction, List<Map<String, Object>> transcript) {
+        if (interaction == null || transcript == null || transcript.isEmpty()) {
+            return null;
+        }
+        String expectedToolName = expectedToolName(interaction);
+        UnresolvedToolCall selected = null;
+        for (Map<String, Object> message : transcript) {
+            if (!"assistant".equalsIgnoreCase(stringValue(message.get("role")))) {
+                continue;
+            }
+            Object rawCalls = message.get("tool_calls");
+            if (!(rawCalls instanceof List<?> calls)) {
+                continue;
+            }
+            for (Object rawCall : calls) {
+                if (!(rawCall instanceof Map<?, ?> call)) {
+                    continue;
+                }
+                String id = stringValue(call.get("id"));
+                String name = functionName(call);
+                if (id.isBlank() || name.isBlank() || hasToolResult(transcript, id)) {
+                    continue;
+                }
+                if (selected == null || name.equals(expectedToolName)) {
+                    selected = new UnresolvedToolCall(id, name);
+                }
+                if (!expectedToolName.isBlank() && name.equals(expectedToolName)) {
+                    break;
+                }
+            }
+            if (selected != null && !expectedToolName.isBlank()
+                    && selected.name().equals(expectedToolName)) {
+                break;
+            }
+        }
+        if (selected == null) {
+            return null;
+        }
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        result.put("role", "tool");
+        result.put("tool_call_id", selected.id());
+        result.put("name", selected.name());
+        result.put("content", interactionResultContent(interaction));
+        return result;
+    }
+
     private List<Map<String, Object>> protocolSafeProjection(List<Map<String, Object>> messages) {
         List<Map<String, Object>> projected = new ArrayList<>();
         int index = 0;
@@ -155,6 +222,90 @@ public class AgentRunTranscriptService {
     }
 
     /** 当前 transcript 的下一个追加序号，用于恢复进程后的幂等续写。 */
+    private List<Map<String, Object>> resumeProjection(List<Map<String, Object>> messages) {
+        List<Map<String, Object>> projected = new ArrayList<>();
+        int index = 0;
+        while (index < messages.size()) {
+            Map<String, Object> message = messages.get(index);
+            String role = stringValue(message.get("role"));
+            if (!"assistant".equalsIgnoreCase(role)
+                    || !(message.get("tool_calls") instanceof List<?> calls)
+                    || calls.isEmpty()) {
+                if ("tool".equalsIgnoreCase(role)) {
+                    throw new IllegalStateException("Orphan durable tool result at message index " + index);
+                }
+                projected.add(message);
+                index++;
+                continue;
+            }
+            Set<String> pendingToolCalls = new LinkedHashSet<>();
+            for (Object rawCall : calls) {
+                if (rawCall instanceof Map<?, ?> call) {
+                    String id = stringValue(call.get("id"));
+                    if (!id.isBlank()) pendingToolCalls.add(id);
+                }
+            }
+            projected.add(message);
+            int cursor = index + 1;
+            while (cursor < messages.size() && !pendingToolCalls.isEmpty()) {
+                Map<String, Object> candidate = messages.get(cursor);
+                if (!"tool".equalsIgnoreCase(stringValue(candidate.get("role")))) {
+                    break;
+                }
+                pendingToolCalls.remove(stringValue(candidate.get("tool_call_id")));
+                projected.add(candidate);
+                cursor++;
+            }
+            if (!pendingToolCalls.isEmpty()) {
+                // 持久化运行时边界说明。
+                return List.copyOf(projected);
+            }
+            index = cursor;
+        }
+        return List.copyOf(projected);
+    }
+
+    private boolean isOpenPartStatus(String status) {
+        return "waiting_user".equalsIgnoreCase(status)
+                || "waiting_approval".equalsIgnoreCase(status)
+                || "running".equalsIgnoreCase(status)
+                || "error".equalsIgnoreCase(status);
+    }
+
+    private boolean hasToolResult(List<Map<String, Object>> transcript, String toolCallId) {
+        return transcript.stream().anyMatch(message ->
+                "tool".equalsIgnoreCase(stringValue(message.get("role")))
+                        && toolCallId.equals(stringValue(message.get("tool_call_id"))));
+    }
+
+    private String expectedToolName(AgentRunInteraction interaction) {
+        if ("question".equalsIgnoreCase(interaction.getInteractionType())) {
+            return "question";
+        }
+        Map<String, Object> payload = parseObject(interaction.getRequestPayload());
+        return stringValue(payload.get("toolName"));
+    }
+
+    private String functionName(Map<?, ?> call) {
+        Object function = call.get("function");
+        if (function instanceof Map<?, ?> functionMap) {
+            return stringValue(functionMap.get("name"));
+        }
+        return stringValue(call.get("name"));
+    }
+
+    private String interactionResultContent(AgentRunInteraction interaction) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("interactionType", stringValue(interaction.getInteractionType()));
+        result.put("status", stringValue(interaction.getStatus()));
+        result.put("request", parseObject(interaction.getRequestPayload()));
+        result.put("response", parseObject(interaction.getResponsePayload()));
+        return limit(GSON.toJson(result), 8_000);
+    }
+
+    private record UnresolvedToolCall(String id, String name) {
+    }
+
     public long nextSequence(Long taskId) {
         if (taskId == null || taskId <= 0) {
             return 0L;
@@ -306,6 +457,10 @@ public class AgentRunTranscriptService {
     }
 
     private Map<String, Object> rebuildAssistant(AgentRunMessage message, Long taskId) {
+        return rebuildAssistant(message, taskId, false);
+    }
+
+    private Map<String, Object> rebuildAssistant(AgentRunMessage message, Long taskId, boolean allowOpenBatch) {
         LinkedHashMap<String, Object> result = new LinkedHashMap<>();
         result.put("role", "assistant");
         result.put("content", message.getContent() == null ? "" : message.getContent());
@@ -319,7 +474,8 @@ public class AgentRunTranscriptService {
             List<Map<String, Object>> toolCalls = new ArrayList<>();
             for (AgentRunPart part : calls) {
                 if (!"completed".equalsIgnoreCase(part.getStatus())
-                        && !"pending".equalsIgnoreCase(part.getStatus())) {
+                        && !"pending".equalsIgnoreCase(part.getStatus())
+                        && !(allowOpenBatch && isOpenPartStatus(part.getStatus()))) {
                     throw new IllegalStateException("Provider tool call part is not recoverable: " + part.getPartKey());
                 }
                 Map<String, Object> parsed = parseObject(part.getInputJson());

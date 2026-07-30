@@ -62,6 +62,27 @@ class AgentCompactionServiceTest {
     }
 
     @Test
+    void preservesOpenToolBatchForInteractionResumeUntilRuntimeCompletes() {
+        AgentCompactionRecordMapper mapper = mock(AgentCompactionRecordMapper.class);
+        AgentCompactionRecord completed = new AgentCompactionRecord();
+        completed.setTaskId(7L);
+        completed.setStatus("completed");
+        completed.setCompactionEpoch(2L);
+        completed.setSummary("durable summary");
+        completed.setRetainedTail("[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"question\",\"arguments\":\"{}\"}}]}]");
+        completed.setSourceMaxSequence(9L);
+        when(mapper.selectOne(any())).thenReturn(completed);
+        AgentCompactionService service = new AgentCompactionService(mapper);
+
+        AgentCompactionService.Projection projection = service.projectLatestForInteractionResume(7L, boundary -> List.of()).orElseThrow();
+
+        assertThat(projection.messages()).hasSize(2);
+        Map<String, Object> resumedAssistant = projection.messages().get(1);
+        assertThat(resumedAssistant).containsEntry("role", "assistant");
+        assertThat((List<?>) resumedAssistant.get("tool_calls")).hasSize(1);
+    }
+
+    @Test
     void exposesSafeOrderedCompactionHistoryWithoutTranscriptPayloads() {
         AgentCompactionRecordMapper mapper = mock(AgentCompactionRecordMapper.class);
         AgentCompactionRecord completed = new AgentCompactionRecord();

@@ -110,13 +110,25 @@ public class AgentCompactionService {
 
     public Optional<Projection> projectLatest(Long taskId,
                                               LongFunction<List<Map<String, Object>>> appendedMessageLoader) {
+        return projectLatestInternal(taskId, appendedMessageLoader, true);
+    }
+
+    /** 交互恢复的中间状态不进行严格校验，补写 role=tool 后再校验。 */
+    public Optional<Projection> projectLatestForInteractionResume(
+            Long taskId, LongFunction<List<Map<String, Object>>> appendedMessageLoader) {
+        return projectLatestInternal(taskId, appendedMessageLoader, false);
+    }
+
+    private Optional<Projection> projectLatestInternal(Long taskId,
+                                                       LongFunction<List<Map<String, Object>>> appendedMessageLoader,
+                                                       boolean validate) {
         AgentCompactionRecord record = latestCompleted(taskId).orElse(null);
         if (record == null || record.getSummary() == null || record.getSummary().isBlank()) {
             return Optional.empty();
         }
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", record.getSummary()));
-        messages.addAll(parseMessages(record.getRetainedTail()));
+        messages.addAll(parseMessages(record.getRetainedTail(), validate));
         if (appendedMessageLoader != null) {
             List<Map<String, Object>> appended = appendedMessageLoader.apply(
                     record.getSourceMaxSequence() == null ? -1L : record.getSourceMaxSequence());
@@ -124,7 +136,9 @@ public class AgentCompactionService {
                 messages.addAll(appended);
             }
         }
-        List<Map<String, Object>> projected = projector.project(messages);
+        List<Map<String, Object>> projected = validate
+                ? projector.project(messages)
+                : projector.copyMessages(messages);
         return Optional.of(new Projection(projected,
                 record.getCompactionEpoch() == null ? 0L : record.getCompactionEpoch(),
                 record.getSourceMaxSequence() == null ? -1L : record.getSourceMaxSequence()));
@@ -159,12 +173,13 @@ public class AgentCompactionService {
         return mapper.selectOne(query);
     }
 
-    private List<Map<String, Object>> parseMessages(String json) {
+    private List<Map<String, Object>> parseMessages(String json, boolean validate) {
         if (json == null || json.isBlank()) {
             return List.of();
         }
         List<Map<String, Object>> parsed = GSON.fromJson(json, MESSAGE_LIST);
-        return projector.project(parsed == null ? List.of() : parsed);
+        List<Map<String, Object>> messages = parsed == null ? List.of() : parsed;
+        return validate ? projector.project(messages) : projector.copyMessages(messages);
     }
 
     private void requirePersisted(AgentCompactionRecord record) {
