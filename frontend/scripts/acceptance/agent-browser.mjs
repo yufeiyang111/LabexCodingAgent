@@ -11,6 +11,8 @@ const apiBase = process.env.ACCEPTANCE_API_BASE || 'http://127.0.0.1:18080/api'
 const debugPort = Number.parseInt(process.env.ACCEPTANCE_CDP_PORT || '19222', 10)
 const timeoutMs = Number.parseInt(process.env.ACCEPTANCE_BROWSER_TIMEOUT_MS || '90000', 10)
 const restartHandoffDir = process.env.ACCEPTANCE_RESTART_HANDOFF_DIR || ''
+const interactionRestartHandoffDir = process.env.ACCEPTANCE_INTERACTION_RESTART_HANDOFF_DIR || ''
+const handoffStatusDir = restartHandoffDir || interactionRestartHandoffDir
 const runId = crypto.randomUUID().replaceAll('-', '')
 let token = ''
 let projectId = null
@@ -373,6 +375,28 @@ async function runScenario() {
       .find(task => task.status === 'waiting_approval' && !permissionPriorTaskIds.has(Number(task.taskId)))
     return Boolean(permissionTask?.taskId)
   }, 'durable waiting_approval task')
+  let restartInteractionVerified = false
+  if (interactionRestartHandoffDir) {
+    await mkdir(interactionRestartHandoffDir, { recursive: true })
+    const interactionProjection = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
+    await writeFile(join(interactionRestartHandoffDir, 'ready.json'), JSON.stringify({
+      projectId,
+      taskId: permissionTask.taskId,
+      conversationId: permissionTask.conversationId,
+      interactionId: interactionProjection?.pendingInteraction?.interactionId || null
+    }, null, 2), 'utf8')
+    await waitForRestartContinuation()
+    const restartedInteractionProjection = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
+    if (Number(restartedInteractionProjection?.taskId) !== Number(permissionTask.taskId)
+        || restartedInteractionProjection?.status !== 'waiting_approval'
+        || restartedInteractionProjection?.pendingInteraction?.status !== 'waiting') {
+      throw new Error(`Restart interaction projection mismatch: ${JSON.stringify(restartedInteractionProjection)}`)
+    }
+    await client.send('Page.reload', { ignoreCache: true })
+    await waitForWorkspace()
+    await waitFor(() => client.evaluate(`Boolean(document.querySelector('.tc-approval'))`), 'approval after backend restart')
+    restartInteractionVerified = true
+  }
   await client.evaluate(`(() => {
     const card = Array.from(document.querySelectorAll('.tc-approval')).find(item => item.innerText.includes('需要确认后才能继续执行'))
     card?.querySelector('.tc-approval-btn.primary')?.click()
@@ -582,6 +606,7 @@ async function runScenario() {
     compactionTokensAfter: completedCompaction.estimatedTokensAfter,
     compactionProviderMessages: compactionProviderMessages.length,
     restartProjectionVerified,
+    restartInteractionVerified,
     staticContextBlockerCard: true,
     completionEvidenceCard: true,
     unverifiedCompletionBlocked: true,
@@ -594,8 +619,8 @@ let result
 try {
   result = await runScenario()
   console.log(JSON.stringify(redactEvidence(result), null, 2))
-  if (restartHandoffDir) {
-    await writeFile(join(restartHandoffDir, 'done.json'), JSON.stringify(redactEvidence(result), null, 2), 'utf8')
+  if (handoffStatusDir) {
+    await writeFile(join(handoffStatusDir, 'done.json'), JSON.stringify(redactEvidence(result), null, 2), 'utf8')
   }
 } catch (error) {
   let page = null
@@ -611,9 +636,9 @@ try {
     page
   })
   console.error(JSON.stringify(failure, null, 2))
-  if (restartHandoffDir) {
-    await mkdir(restartHandoffDir, { recursive: true }).catch(() => {})
-    await writeFile(join(restartHandoffDir, 'error.json'), JSON.stringify(failure, null, 2), 'utf8').catch(() => {})
+  if (handoffStatusDir) {
+    await mkdir(handoffStatusDir, { recursive: true }).catch(() => {})
+    await writeFile(join(handoffStatusDir, 'error.json'), JSON.stringify(failure, null, 2), 'utf8').catch(() => {})
   }
   throw error
 } finally {
@@ -635,4 +660,3 @@ try {
     await rm(profileDir, { recursive: true, force: true }).catch(() => {})
   }
 }
-

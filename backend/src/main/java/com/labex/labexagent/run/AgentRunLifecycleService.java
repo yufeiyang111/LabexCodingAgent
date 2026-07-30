@@ -147,15 +147,8 @@ public class AgentRunLifecycleService {
             if (expectedState != null) {
                 return null;
             }
-            throw new IllegalStateException(
-                    "Agent run idempotency key was already used while the task is in a different state"
-                            + " (taskId=" + taskId
-                            + ", currentState=" + currentState.persistedStatus()
-                            + ", targetState=" + targetState.persistedStatus()
-                            + ", eventType=" + eventType
-                            + ", existingEventId=" + existing.getEventId()
-                            + ", existingState=" + existing.getState()
-                            + ", existingEventType=" + existing.getEventType() + ")");
+            // 同一幂等键的事件已经持久化时，过期重试只能返回历史结果，不能因任务已前进而再次失败或复活任务。
+            return new TransitionResult(existing, false);
         }
         if (expectedState != null && currentState != expectedState) {
             return null;

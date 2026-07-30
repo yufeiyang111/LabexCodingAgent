@@ -332,7 +332,7 @@ class AgentRunLifecycleServiceTest {
     }
 
     @Test
-    void rejectsAHistoricIdempotencyKeyAfterTheTaskHasAdvanced() {
+    void treatsAHistoricSameTransitionAsAnIdempotentNoOpAfterTheTaskHasAdvanced() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
@@ -346,14 +346,17 @@ class AgentRunLifecycleServiceTest {
 
         AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
 
-        assertThrows(IllegalStateException.class, () -> service.transition(
+        AgentRunLifecycleService.TransitionResult result = service.transition(
                 71L,
                 AgentRunState.RUNNING,
                 "RUN_STATE_RUNNING",
                 Map.of(),
                 "Thinking",
                 null,
-                "run-71-running"));
+                "run-71-running");
+
+        assertFalse(result.stateChanged());
+        assertEquals(existing, result.event());
         verify(taskMapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
         verify(eventMapper, never()).insert(any(AgentRunEvent.class));
         verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
