@@ -125,6 +125,7 @@ public class AgentLoopEngine {
     private final AgentCancellationRegistry cancellationRegistry;
     private AgentModelTurnExecutor modelTurnExecutor = new AgentModelTurnExecutor(PROVIDER_FIRST_EVENT_TIMEOUT_MS);
     private AgentToolCallBatchProtocol toolCallBatchProtocol = new AgentToolCallBatchProtocol();
+    private AgentProviderMessageProjector providerMessageProjector = new AgentProviderMessageProjector();
     private AgentToolNarrator toolNarrator = new AgentToolNarrator();
     private ToolSelectionPolicy toolSelectionPolicy = new ToolSelectionPolicy();
     private ContextAdmissionService contextAdmissionService = new ContextAdmissionService();
@@ -693,7 +694,7 @@ public class AgentLoopEngine {
                                         int modelIteration = i;
                                         AgentModelTurnExecutor.ModelTurnRequest modelTurnRequest =
                                                 new AgentModelTurnExecutor.ModelTurnRequest(
-                                                        sysPrompt, msgs, tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
+                                                        sysPrompt, this.providerMessageProjector.project(msgs), tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
                                                         visibleLanguage, cancellationToken, new AgentModelTurnExecutor.EventSink() {
                                                     @Override
                                                     public void durable(String eventType, Object data) throws Exception {

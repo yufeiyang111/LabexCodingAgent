@@ -51,8 +51,12 @@ public final class TurnAwareContextPruner {
                     + toolName + " if exact output is needed.]";
             if (replacement.length() >= content.length()) {
                 continue;
+            }            Map<String, Object> rewritten = new java.util.LinkedHashMap<>();
+            if (message != null) {
+                rewritten.putAll(message);
             }
-            messages.set(index, Map.of("role", roleOf(message), "content", replacement));
+            rewritten.put("content", replacement);
+            messages.set(index, rewritten);
             pruned++;
         }
         int after = estimate(messages);
