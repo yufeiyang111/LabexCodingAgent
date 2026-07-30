@@ -105,6 +105,11 @@ public class ToolDefinition {
             if (required) this.required.add(name);
             return this;
         }
+        public Builder booleanProperty(String name, String desc, boolean required) {
+            properties.put(name, Map.of("type", "boolean", "description", desc != null ? desc : ""));
+            if (required) this.required.add(name);
+            return this;
+        }
         public Builder arrayProperty(String name, String desc, Map<String, Object> items, boolean required) {
             properties.put(name, Map.of("type", "array", "description", desc != null ? desc : "", "items", items));
             if (required) this.required.add(name);

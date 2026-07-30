@@ -23,9 +23,17 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
-    void usesAResumeScopedRunningTransitionKeyForDurableContinuations() {
+    void usesAResumeScopedRunningTransitionKeyForEveryDurableContinuationEntry() {
         assertTrue(source.contains("AgentRunTransitionKey.forResumedRunUpdate"));
         assertTrue(source.contains("request.getSubmittedAt()"));
+        assertTrue(source.contains("\"Recovered execution\",\n                        \"Execution resumed after lease takeover\",\n                        AgentRunTransitionKey.forResumedRunUpdate("));
+    }
+
+    @Test
+    void consumesAnApprovedOfflineRetryWithoutAskingForTheSameCommandAgain() {
+        assertTrue(source.contains("hasApprovedOfflineRetryGrant(ctx.getTaskId(), guardedCommand)"));
+        assertTrue(source.contains("&& !approvedOfflineRetry"));
+        assertTrue(source.contains("boolean networkRequested = this.networkRequested(args) || approvedOfflineRetry;"));
     }
 
     @Test
@@ -37,6 +45,16 @@ class AgentLoopEngineStreamingContractTest {
         assertTrue(publish > pause);
     }
 
+    @Test
+    void publishesTypedDurableInteractionEventsWithoutPseudoTerminalFrames() {
+        assertTrue(source.contains("case \"permission\" -> \"PERMISSION_ASK\""));
+        assertTrue(source.contains("case \"network\" -> \"NETWORK_ACCESS_ASK\""));
+        assertTrue(source.contains("default -> \"USER_QUESTION\""));
+        assertTrue(source.contains("\"TASK_PAUSED\""));
+        assertTrue(source.contains("\"resumeAgentLoop\", true"));
+        assertFalse(source.contains("this.streamFinal(sse, conv, this.buildStopFinal(waitingTitle"));
+        assertFalse(source.contains("this.streamFinal(sse, conv, this.buildStopFinal(pause.title()"));
+    }
     @Test
     void wrapsProviderStreamWithHardTimeout() {
         assertTrue(source.contains("PROVIDER_FIRST_EVENT_TIMEOUT_MS"));
@@ -60,7 +78,9 @@ class AgentLoopEngineStreamingContractTest {
 
     private String readSource(String fileName) {
         try {
-            return Files.readString(Path.of("src/main/java/com/labex/labexagent/runtime/" + fileName));
+            return Files.readString(Path.of("src/main/java/com/labex/labexagent/runtime/" + fileName))
+                    .replace("\r\n", "\n")
+                    .replace("\r", "\n");
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }

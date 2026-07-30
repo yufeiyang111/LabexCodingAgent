@@ -90,6 +90,18 @@ class SandboxWorkerContractTest {
     }
 
     @Test
+    void dockerWorkerUsesBridgeOnlyForAnExplicitNetworkRun() {
+        DockerSandboxWorker worker = new DockerSandboxWorker(new LocalProcessExecutor());
+        WorkerRunSpec run = WorkerRunSpec.forWorkspace("docker-network", workspace, true);
+        ProcessExecutionRequest request = new ProcessExecutionRequest(
+                List.of("/bin/sh", "-lc", "npm test"), workspace, Duration.ofSeconds(10), 10_000);
+
+        List<String> command = worker.buildDockerCommand(run, request);
+
+        assertContainsPair(command, "--network", "bridge");
+    }
+
+    @Test
     void dockerWorkerBuildsAnInteractiveTerminalInsideTheSameRestrictedWorkspace() {
         DockerSandboxWorker worker = new DockerSandboxWorker(new LocalProcessExecutor());
         WorkerRunSpec run = WorkerRunSpec.forWorkspace("docker-terminal", workspace);

@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { useAgentEventTimeline } from './useAgentEventTimeline.js'
@@ -86,18 +86,25 @@ test('routes question, permission, command approval, and pause events', () => {
   const assistant = message()
   assistant.toolCalls.push({ name: 'read_file', status: 'running' })
 
+  state.handleAgentEvent({ type: 'NETWORK_ACCESS_ASK', data: {
+    taskId: 7, toolName: 'run_tests', toolCallId: 'network-call', requestId: 'n', request: 'mvn test'
+  } }, assistant)
   state.handleAgentEvent({ type: 'PERMISSION_ASK', data: { taskId: 7, toolName: 'read_file', requestId: 'p' } }, assistant)
   state.handleAgentEvent({ type: 'USER_QUESTION', data: { taskId: 7, requestId: 'q' } }, assistant)
   state.handleAgentEvent({ type: 'COMMAND_APPROVAL_REQUIRED', data: { taskId: 7, approvalId: 'a' } }, assistant)
   state.handleAgentEvent({ type: 'COMMAND_EXECUTION_COMPLETED', data: { taskId: 7, approvalId: 'a' } }, assistant)
   state.handleAgentEvent({ type: 'TASK_PAUSED', data: { taskId: 7, reason: 'command_approval', resumeAgentLoop: true } }, assistant)
 
-  assert.equal(assistant.toolCalls[0].status, 'waiting_approval')
+  const networkCall = assistant.toolCalls.find(call => call.networkRequest?.requestId === 'n')
+  assert.equal(networkCall.status, 'waiting_approval')
+  assert.equal(networkCall.networkRequest.requestId, 'n')
   assert.equal(state.calls.filter(call => call[0] === 'question').length, 1)
   assert.equal(state.calls.filter(call => call[0] === 'command').length, 1)
   assert.equal(state.calls.filter(call => call[0] === 'commandLifecycle').length, 1)
   assert.equal(state.calls.filter(call => call[0] === 'render').length >= 1, true)
   assert.equal(assistant.waitingForCommandApproval, true)
+  assert.equal(assistant.resumeTaskEventsAfterStream, true)
+  assert.equal(assistant.taskId, 7)
 })
 
 test('schedules a render after a live user question event', () => {
@@ -204,4 +211,26 @@ test('replays a durable thinking snapshot after a refresh during an active task'
 
   assert.equal(assistant.thinking, 'analyzing file')
   assert.equal(assistant._thinkingDisplay, 'analyzing file')
+})
+
+test('live interaction resume hides duplicate waiting cards without touching another request', () => {
+  const state = harness()
+  const assistant = message()
+  assistant.toolCalls.push(
+    { name: 'question', toolCallId: 'question-call', status: 'waiting_user', questionRequest: { requestId: 'interaction-72' } },
+    { name: 'question', status: 'waiting_user', questionRequest: { requestId: 'interaction-72' } },
+    { name: 'read_file', status: 'waiting_approval', permissionRequest: { requestId: 'other-interaction' } }
+  )
+
+  state.handleAgentEvent({
+    type: 'RUN_INTERACTION_RESUME_QUEUED',
+    data: { taskId: 72, interactionId: 'interaction-72' }
+  }, assistant)
+
+  assert.equal(assistant.toolCalls.length, 2)
+  assert.equal(assistant.toolCalls[0].toolCallId, 'question-call')
+  assert.equal(assistant.toolCalls[0].status, 'running')
+  assert.equal(assistant.toolCalls[0].durableStatus, 'resuming')
+  assert.equal(assistant.toolCalls[1].status, 'waiting_approval')
+  assert.equal(state.calls.some(call => call[0] === 'render'), true)
 })

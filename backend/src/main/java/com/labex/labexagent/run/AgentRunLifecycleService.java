@@ -140,6 +140,7 @@ public class AgentRunLifecycleService {
         AgentRunState currentState = AgentRunState.fromPersistedStatus(task.getStatus());
         AgentRunEvent existing = findByIdempotencyKey(taskId, idempotencyKey);
         if (existing != null) {
+            validateIdempotentReplay(existing, targetState, eventType);
             if (currentState == targetState) {
                 return new TransitionResult(existing, false);
             }
@@ -147,7 +148,14 @@ public class AgentRunLifecycleService {
                 return null;
             }
             throw new IllegalStateException(
-                    "Agent run idempotency key was already used while the task is in a different state");
+                    "Agent run idempotency key was already used while the task is in a different state"
+                            + " (taskId=" + taskId
+                            + ", currentState=" + currentState.persistedStatus()
+                            + ", targetState=" + targetState.persistedStatus()
+                            + ", eventType=" + eventType
+                            + ", existingEventId=" + existing.getEventId()
+                            + ", existingState=" + existing.getState()
+                            + ", existingEventType=" + existing.getEventType() + ")");
         }
         if (expectedState != null && currentState != expectedState) {
             return null;
@@ -309,6 +317,15 @@ public class AgentRunLifecycleService {
         message.put("eventType", event.getEventType());
         message.put("payload", payload);
         return message;
+    }
+
+    private void validateIdempotentReplay(AgentRunEvent existing, AgentRunState targetState, String eventType) {
+        boolean sameState = targetState.persistedStatus().equalsIgnoreCase(String.valueOf(existing.getState()));
+        boolean sameEventType = eventType.equals(existing.getEventType());
+        if (!sameState || !sameEventType) {
+            throw new IllegalStateException(
+                    "Agent run idempotency key collision: the existing event represents a different transition");
+        }
     }
 
     private AgentRunEvent findByIdempotencyKey(Long taskId, String idempotencyKey) {

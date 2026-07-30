@@ -176,6 +176,81 @@ test('active-task recovery hydrates a pending question reply card', async () => 
   assert.deepEqual(call.questionRequest.options, ['Continue', 'Stop'])
 })
 
+test('active-task recovery hydrates pending permission and network approval cards', async () => {
+  const pendingInteractions = [
+    {
+      taskId: 73,
+      interactionId: 'permission-73',
+      requestId: 'permission-73',
+      interactionType: 'permission',
+      status: 'waiting',
+      toolName: 'write_file',
+      summary: '允许写入文件？'
+    },
+    {
+      taskId: 74,
+      interactionId: 'network-74',
+      requestId: 'network-74',
+      interactionType: 'network',
+      status: 'waiting',
+      toolName: 'run_tests',
+      summary: '允许当前命令联网？',
+      request: 'mvn compile'
+    }
+  ]
+
+  for (const pendingInteraction of pendingInteractions) {
+    let activeTaskCalls = 0
+    const recoveredTask = {
+      taskId: pendingInteraction.taskId,
+      conversationId: 'conversation-a',
+      sessionId: 'session-a',
+      status: 'waiting_approval',
+      toolCalls: [],
+      parts: [],
+      pendingInteraction
+    }
+    const state = harness({ api: {
+      agentActiveTask: async () => ({ data: activeTaskCalls++ === 0 ? recoveredTask : { ...recoveredTask, status: 'completed' } }),
+      agentTasks: async () => ({ data: [] })
+    } })
+
+    assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), true)
+    const call = state.messages.value[0].toolCalls[0]
+    assert.equal(call.status, 'waiting_approval')
+    assert.equal(call.permissionRequest?.requestId || call.networkRequest?.requestId, pendingInteraction.requestId)
+  }
+})
+
+test('approval resume waits for the same durable task to become active', async () => {
+  let activeTaskCalls = 0
+  const task = {
+    taskId: 75,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'waiting_approval',
+    lastEventSequence: 4,
+    toolCalls: [],
+    parts: [],
+    pendingInteraction: {
+      interactionId: 'permission-75', requestId: 'permission-75', taskId: 75,
+      interactionType: 'permission', status: 'waiting', toolName: 'read_file', summary: '等待权限批准'
+    }
+  }
+  const state = harness({ api: {
+    agentActiveTask: async () => ({ data: activeTaskCalls++ === 0 ? null : activeTaskCalls === 2 ? task : { ...task, status: 'completed' } }),
+    agentTasks: async () => ({ data: [] })
+  } })
+  const assistant = { role: 'assistant', taskId: 75, isStreaming: false, timing: { isRunning: false } }
+
+  await state.runtime.resumeTaskEventSubscription(75, assistant)
+  await Promise.resolve()
+
+  assert.equal(activeTaskCalls >= 2, true)
+  assert.equal(state.subscriptions[0].taskId, 75)
+  assert.equal(assistant.toolCalls[0].permissionRequest.requestId, 'permission-75')
+})
+
 test('explicit invalidation immediately releases loading ownership from the detached conversation', () => {
   const state = harness()
   state.agentLoading.value = true
@@ -198,4 +273,89 @@ test('explicit invalidation disconnects transport and invalidates pending recove
 
   assert.equal(await recovery, false)
   assert.deepEqual(state.events, ['disconnect', 'disconnect'])
+})
+
+test('active task recovery does not restore a waiting card after the task entered recovery', async () => {
+  const recoveringTask = {
+    taskId: 76,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'recovering',
+    lastEventSequence: 24,
+    pendingInteraction: {
+      interactionId: 'interaction-76',
+      requestId: 'interaction-76',
+      interactionType: 'question',
+      status: 'waiting',
+      taskId: 76,
+      conversationId: 'conversation-a',
+      sessionId: 'session-a',
+      toolCallId: 'question-call-76',
+      requestPayload: { question: 'Continue?', summary: 'Choose next step' }
+    }
+  }
+  let activeTaskCalls = 0
+  const state = harness({ api: {
+    agentActiveTask: async () => ({ data: ++activeTaskCalls === 1
+      ? recoveringTask
+      : { ...recoveringTask, status: 'completed', pendingInteraction: null } }),
+    agentTasks: async () => ({ data: [] })
+  } })
+  state.messages.value.push({
+    role: 'assistant', taskId: 76, toolCalls: [
+      {
+        name: 'question',
+        toolCallId: 'question-call-76',
+        status: 'waiting_user',
+        questionRequest: { requestId: 'interaction-76', question: 'Continue?' }
+      }
+    ], _nextOrder: 1, timing: {}
+  })
+
+  assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), true)
+
+  const waitingCards = state.messages.value[0].toolCalls.filter(call => call.status === 'waiting_user')
+  assert.equal(waitingCards.length, 0)
+  assert.equal(state.messages.value[0].toolCalls[0].durableStatus, 'resuming')
+})
+
+test('active task recovery collapses duplicate cards for one pending durable interaction', async () => {
+  let activeTaskCalls = 0
+  const waitingTask = {
+    taskId: 75,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'waiting_user',
+    lastEventSequence: 23,
+    pendingInteraction: {
+      interactionId: 'interaction-75',
+      requestId: 'interaction-75',
+      interactionType: 'question',
+      status: 'waiting',
+      taskId: 75,
+      conversationId: 'conversation-a',
+      sessionId: 'session-a',
+      toolCallId: 'question-call',
+      requestPayload: { question: 'Continue?', summary: 'Choose next step' }
+    }
+  }
+  const state = harness({ api: {
+    agentActiveTask: async () => ({ data: ++activeTaskCalls === 1
+      ? waitingTask
+      : { ...waitingTask, status: 'completed', pendingInteraction: null } }),
+    agentTasks: async () => ({ data: [] })
+  } })
+  state.messages.value.push({
+    role: 'assistant', taskId: 75, toolCalls: [
+      { name: 'question', toolCallId: 'question-call', status: 'waiting_user' },
+      { name: 'question', status: 'waiting_user', questionRequest: { requestId: 'interaction-75' } }
+    ], _nextOrder: 2, timing: {}
+  })
+
+  assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), true)
+
+  const cards = state.messages.value[0].toolCalls.filter(call =>
+    call.questionRequest?.requestId === 'interaction-75' && call.status === 'waiting_user')
+  assert.equal(cards.length, 1)
+  assert.equal(cards[0].toolCallId, 'question-call')
 })

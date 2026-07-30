@@ -805,6 +805,7 @@ import { useAgentExtensions } from '@/composables/useAgentExtensions'
 import { useWorkspaceFiles } from '@/composables/useWorkspaceFiles'
 import { useChangeSetState } from '@/composables/useChangeSetState'
 import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
+import { attachDurableInteraction } from '@/composables/agentInteractionProjection'
 import { normalizeSpecialMarkdownBlocks } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
 import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
@@ -1483,25 +1484,7 @@ function attachCommandApproval(msg, data) {
 }
 
 function attachUserQuestion(msg, data) {
-  if (!msg || !data) return
-  msg.toolCalls = msg.toolCalls || []
-  const last = msg.toolCalls[msg.toolCalls.length - 1]
-  const summary = data.summary || data.question || '等待用户回答'
-  if (last && last.status === 'running' && last.name === 'question') {
-    last.status = 'waiting_user'
-    last.questionRequest = data
-    last.summary = summary
-    return
-  }
-  msg.toolCalls.push({
-    name: 'question',
-    args: { question: data.question, options: data.options || [] },
-    summary,
-    result: null,
-    status: 'waiting_user',
-    questionRequest: data,
-    _order: (msg._nextOrder = (msg._nextOrder || 0) + 1)
-  })
+  attachDurableInteraction(msg, 'question', data)
 }
 
 async function handleCommandApproval(payload) {
@@ -1656,7 +1639,18 @@ async function replayResumedAgent(taskId, assistantMsg) {
 }
 
 async function handlePermissionDecision(payload) {
-  await submitPermissionDecision(payload)
+  const result = await submitPermissionDecision(payload)
+  if (!result.success || (payload?.call?.status === 'error' && payload?.action !== 'reject')) return
+  const call = payload.call
+  const request = call?.networkRequest || call?.permissionRequest
+  const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
+  const taskId = request?.taskId || assistantMsg?.taskId
+  if (assistantMsg && taskId) {
+    assistantMsg.isStreaming = true
+    if (assistantMsg.timing) assistantMsg.timing.isRunning = true
+    agentLoading.value = true
+    void replayResumedAgent(taskId, assistantMsg)
+  }
 }
 
 async function handleQuestionReply(payload) {
@@ -1665,7 +1659,7 @@ async function handleQuestionReply(payload) {
     ElMessage.warning('\u8bf7\u5148\u8f93\u5165\u56de\u7b54')
     return
   }
-  if (result.success && payload?.action === 'answer') {
+  if (result.success) {
     const call = payload.call
     const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
     const taskId = call?.questionRequest?.taskId || assistantMsg?.taskId

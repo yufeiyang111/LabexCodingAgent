@@ -1,0 +1,119 @@
+package com.labex.labexagent.network;
+
+import com.labex.labexagent.run.AgentRunInteractionService;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import org.springframework.stereotype.Service;
+
+/**
+ * 管理一次性网络访问审批，审批结果只允许绑定到当前任务的当前命令。
+ */
+@Service
+public class NetworkAccessService {
+    private static final String INTERACTION_TYPE = "network";
+    private static final String SCOPE = "single_command";
+
+    private final AgentRunInteractionService interactionService;
+
+    public NetworkAccessService(AgentRunInteractionService interactionService) {
+        this.interactionService = interactionService;
+    }
+
+    public NetworkAccessRequest begin(Integer studentId, Integer projectId, Long taskId,
+                                      String conversationId, String sessionId, String toolName,
+                                      String request, String summary, List<String> domains) {
+        return begin(studentId, projectId, taskId, conversationId, sessionId, toolName, request,
+                summary, "explicit_command", false, null, domains);
+    }
+
+    public NetworkAccessRequest begin(Integer studentId, Integer projectId, Long taskId,
+                                      String conversationId, String sessionId, String toolName,
+                                      String request, String summary, String requestKind,
+                                      boolean retryable, String attemptKey, List<String> domains) {
+        require(studentId, "studentId");
+        require(projectId, "projectId");
+        require(taskId, "taskId");
+        require(toolName, "toolName");
+        String normalizedRequest = request == null ? "" : request.trim();
+        String requestDigest = digest(normalizedRequest);
+        String interactionId = "network-" + UUID.randomUUID();
+        LocalDateTime expiresAt = LocalDateTime.now().plusMinutes(10);
+        String normalizedKind = requestKind == null || requestKind.isBlank()
+                ? "explicit_command" : requestKind.trim();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("interactionType", INTERACTION_TYPE);
+        payload.put("toolName", toolName);
+        payload.put("request", normalizedRequest);
+        payload.put("requestDigest", requestDigest);
+        payload.put("requestKind", normalizedKind);
+        payload.put("retryable", retryable);
+        payload.put("summary", summary == null ? "Agent \u8bf7\u6c42\u4f7f\u7528\u7f51\u7edc\u5b8c\u6210\u5f53\u524d\u547d\u4ee4" : summary);
+        payload.put("domains", domains == null ? List.of() : List.copyOf(domains));
+        payload.put("scope", SCOPE);
+        payload.put("networkMode", "isolated_bridge");
+        payload.put("expiresTime", expiresAt.toString());
+        interactionService.createWaiting(new AgentRunInteractionService.WaitingInteraction(
+                interactionId, taskId, conversationId, sessionId, studentId, projectId,
+                INTERACTION_TYPE, payload, idempotencyKey(taskId, requestDigest, normalizedKind, attemptKey), expiresAt));
+        return new NetworkAccessRequest(interactionId, requestDigest, normalizedRequest, payload);
+    }
+
+    public boolean hasApprovedGrant(Long taskId, String request) {
+        return taskId != null && interactionService.hasApprovedNetworkGrant(
+                taskId, digest(request == null ? "" : request.trim()));
+    }
+
+    /** 仅识别由已批准命令的离线失败产生的精确一次重试授权。 */
+    public boolean hasApprovedOfflineRetryGrant(Long taskId, String request) {
+        return taskId != null && interactionService.hasApprovedNetworkGrant(
+                taskId, digest(request == null ? "" : request.trim()), "offline_failure_retry");
+    }
+
+    public boolean hasOfflineRetryAttempt(Long taskId, String request) {
+        return taskId != null && interactionService.hasNetworkInteraction(
+                taskId, digest(request == null ? "" : request.trim()), "offline_failure_retry");
+    }
+
+    public boolean consumeGrant(Integer studentId, Integer projectId, Long taskId, String request) {
+        return interactionService.consumeApprovedNetworkGrant(
+                studentId, projectId, taskId, digest(request == null ? "" : request.trim()));
+    }
+
+    /** 网络审批不依赖技术栈白名单；目标域名仅在未来有可靠解析器时作为展示信息。 */
+    public List<String> domainsFor(String toolName, String request) {
+        return List.of();
+    }
+
+    public String digest(String request) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest((request == null ? "" : request).getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Unable to hash network request", exception);
+        }
+    }
+
+    private String idempotencyKey(Long taskId, String requestDigest, String requestKind, String attemptKey) {
+        String attemptDigest = digest((requestKind == null ? "" : requestKind) + ":"
+                + (attemptKey == null ? "" : attemptKey));
+        return "network-access:v2:" + taskId + ":" + requestDigest + ":" + attemptDigest.substring(0, 16);
+    }
+
+    private void require(Object value, String name) {
+        if (value == null || (value instanceof String text && text.isBlank())) {
+            throw new IllegalArgumentException(name + " is required");
+        }
+    }
+
+    public record NetworkAccessRequest(String requestId, String requestDigest, String request,
+                                       Map<String, Object> payload) {
+    }
+}

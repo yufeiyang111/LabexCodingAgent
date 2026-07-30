@@ -132,6 +132,22 @@
           </div>
         </div>
 
+        <div v-if="isNetworkAsk" class="tc-approval tc-network-approval">
+          <div class="tc-approval-title">Agent 请求使用网络</div>
+          <div class="tc-network-reason">{{ networkRequest.summary || 'Agent 请求访问外部依赖仓库' }}</div>
+          <div v-if="networkRequest.retryable" class="tc-approval-meta tc-network-retry-note">
+            <span>这是离线失败后的单次重试，批准后只会重试当前命令一次</span>
+          </div>
+          <div v-if="networkDomains.length" class="tc-approval-meta">
+            <span>允许的目标：{{ networkDomains.join(', ') }}</span>
+          </div>
+          <div class="tc-approval-meta"><span>仅对当前命令生效，不会保存为永久权限</span></div>
+          <div class="tc-approval-actions">
+            <button type="button" class="tc-approval-btn primary" @click.stop="emitPermission('once')">允许一次</button>
+            <button type="button" class="tc-approval-btn danger" @click.stop="emitPermission('reject')">拒绝</button>
+          </div>
+        </div>
+
         <div v-if="isPermissionAsk" class="tc-approval">
           <div class="tc-approval-title">需要确认后才能继续执行</div>
           <textarea
@@ -208,6 +224,10 @@ const statusColor = computed(() => {
   return '#10b981'
 })
 const isPermissionAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.permissionRequest)
+const isNetworkAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.networkRequest)
+const networkRequest = computed(() => props.call.networkRequest || {})
+const networkDomains = computed(() => Array.isArray(networkRequest.value.domains)
+  ? networkRequest.value.domains.filter(Boolean) : [])
 const isCommandApproval = computed(() => props.call.status === 'waiting_approval' && !!props.call.commandApproval)
 const commandApproval = computed(() => props.call.commandApproval || {})
 const isQuestionAsk = computed(() => props.call.status === 'waiting_user' && !!props.call.questionRequest)

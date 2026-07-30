@@ -22,7 +22,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 /**
- * OCI implementation using the local Docker CLI. Its command line deliberately grants no network or host privileges.
+ * OCI implementation using the local Docker CLI. Network is disabled by default and can only be enabled on a one-shot approved worker run.
  */
 @Component
 @Profile({"docker", "prod", "production"})

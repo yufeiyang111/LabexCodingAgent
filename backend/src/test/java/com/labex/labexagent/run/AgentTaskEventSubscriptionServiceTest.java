@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -79,6 +80,47 @@ class AgentTaskEventSubscriptionServiceTest {
     }
 
     @Test
+    void pollsDurableEventsEvenWhenAnotherInstanceConsumedTheOutboxNotification() throws Exception {
+        AgentRunEventReplayService replay = mock(AgentRunEventReplayService.class);
+        AgentRunEvent started = event(71L, 1L, "COMPACTION_STARTED", "{\"strategy\":\"model\"}");
+        AgentRunEvent completed = event(71L, 2L, "COMPACTION_COMPLETED", "{\"strategy\":\"model\"}");
+        when(replay.eventsAfter(7, 12, 71L, 0L))
+                .thenReturn(List.of())
+                .thenReturn(List.of(started, completed));
+        when(replay.eventsAfter(7, 12, 71L, 2L)).thenReturn(List.of());
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentTaskEventSubscriptionService subscriptions = new AgentTaskEventSubscriptionService(replay);
+        subscriptions.subscribe(7, 12, 71L, 0L, emitter);
+
+        subscriptions.pollDurableEvents();
+        subscriptions.pollDurableEvents();
+
+        verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
+        verify(replay).eventsAfter(7, 12, 71L, 2L);
+    }
+
+    @Test
+    void catchesUpMissingSequencesBeforeDeliveringANewerOutboxNotification() throws Exception {
+        AgentRunEventReplayService replay = mock(AgentRunEventReplayService.class);
+        AgentRunEvent first = event(71L, 1L, "COMPACTION_STARTED", "{}");
+        AgentRunEvent second = event(71L, 2L, "COMPACTION_COMPLETED", "{}");
+        AgentRunEvent third = event(71L, 3L, "RUN_STATE_COMPLETED", "{}");
+        when(replay.eventsAfter(7, 12, 71L, 0L))
+                .thenReturn(List.of())
+                .thenReturn(List.of(first, second, third));
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentTaskEventSubscriptionService subscriptions = new AgentTaskEventSubscriptionService(replay);
+        subscriptions.subscribe(7, 12, 71L, 0L, emitter);
+
+        subscriptions.onApplicationEvent(new AgentRunOutboxMessage(91L, 803L, 71L, "agent.run.event", """
+                {"taskId":71,"sequence":3,"state":"completed","eventType":"RUN_STATE_COMPLETED","payload":{}}
+                """));
+
+        verify(emitter, times(3)).send(any(SseEmitter.SseEventBuilder.class));
+        verify(emitter).complete();
+    }
+
+    @Test
     void forwardsLiveTransientDeltasToMatchingSubscribersWithoutAReplaySequence() throws Exception {
         AgentRunEventReplayService replay = mock(AgentRunEventReplayService.class);
         when(replay.eventsAfter(7, 12, 71L, 0L)).thenReturn(List.of());
@@ -89,6 +131,16 @@ class AgentTaskEventSubscriptionServiceTest {
         subscriptions.publishTransient(71L, "FINAL_DELTA", java.util.Map.of("delta", "live"));
 
         verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+
+    private AgentRunEvent event(Long taskId, Long sequence, String eventType, String payload) {
+        AgentRunEvent event = new AgentRunEvent();
+        event.setTaskId(taskId);
+        event.setSequenceNumber(sequence);
+        event.setEventType(eventType);
+        event.setState("RUN_STATE_COMPLETED".equals(eventType) ? "completed" : "running");
+        event.setPayload(payload);
+        return event;
     }
 
     @Test

@@ -218,3 +218,20 @@ test('renders unavailable post-edit diagnostics as a warning instead of success'
   assert.equal(target.toolCalls[0].status, 'warning')
   assert.equal(target.toolCalls[0].verificationStatus, 'UNAVAILABLE')
 })
+
+test('replayed interaction resume hides every duplicate card for the same durable request', () => {
+  const target = message()
+  target.toolCalls.push(
+    { name: 'question', toolCallId: 'question-call', status: 'waiting_user', questionRequest: { requestId: 'interaction-72' } },
+    { name: 'question', status: 'waiting_user', questionRequest: { requestId: 'interaction-72' } },
+    { name: 'read_file', status: 'waiting_approval', permissionRequest: { requestId: 'other-interaction' } }
+  )
+
+  reduceHistoryEvent('RUN_INTERACTION_RESUME_QUEUED', { taskId: 72, interactionId: 'interaction-72' }, target)
+
+  assert.equal(target.toolCalls.length, 2)
+  assert.equal(target.toolCalls[0].toolCallId, 'question-call')
+  assert.equal(target.toolCalls[0].status, 'running')
+  assert.equal(target.toolCalls[0].durableStatus, 'resuming')
+  assert.equal(target.toolCalls[1].status, 'waiting_approval')
+})

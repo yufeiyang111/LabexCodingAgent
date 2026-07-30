@@ -48,6 +48,9 @@ export const projectApi = {
   agentApprovePermission(projectId, data) {
     return request.post('/student/projects/' + projectId + '/agent/permission/approve', data)
   },
+  agentApproveNetwork(projectId, data) {
+    return request.post('/student/projects/' + projectId + '/agent/network/approve', data)
+  },
   agentDecideCommandApproval(projectId, approvalId, data) {
     return request.post('/student/projects/' + projectId + '/agent/command-approvals/' + encodeURIComponent(approvalId) + '/decision', data)
   },

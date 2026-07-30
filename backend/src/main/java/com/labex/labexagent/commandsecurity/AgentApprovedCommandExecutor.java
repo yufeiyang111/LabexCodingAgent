@@ -4,6 +4,7 @@ import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.worker.SandboxWorker;
 import com.labex.labexagent.worker.WorkerRunSpec;
@@ -19,9 +20,16 @@ public class AgentApprovedCommandExecutor {
     private static final int MAX_OUTPUT_CHARS = 60_000;
 
     private final SandboxWorker sandboxWorker;
+    private final NetworkAccessService networkAccessService;
 
     public AgentApprovedCommandExecutor(SandboxWorker sandboxWorker) {
+        this(sandboxWorker, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentApprovedCommandExecutor(SandboxWorker sandboxWorker, NetworkAccessService networkAccessService) {
         this.sandboxWorker = sandboxWorker;
+        this.networkAccessService = networkAccessService;
     }
 
     public ProcessExecutionResult execute(CommandApproval approval, StudentProject project) {
@@ -35,10 +43,22 @@ public class AgentApprovedCommandExecutor {
         Path workspaceRoot = ProjectWorkspace.paths(project).workspaceRoot();
         Path workingDirectory = ProjectWorkspace.paths(project).resolveExisting(approval.getWorkingDirectory());
         int timeoutSeconds = timeoutSeconds(approval.getCommandOptions());
-        WorkerRunSpec run = WorkerRunSpec.forWorkspace("task-" + approval.getTaskId(), workspaceRoot);
+        boolean networkEnabled = networkEnabled(approval.getCommandOptions())
+                && networkAccessService != null
+                && networkAccessService.consumeGrant(approval.getStudentId(), approval.getProjectId(),
+                approval.getTaskId(), approval.getCanonicalCommand());
+        WorkerRunSpec run = WorkerRunSpec.forWorkspace("task-" + approval.getTaskId(), workspaceRoot, networkEnabled);
         ProcessExecutionRequest request = new ProcessExecutionRequest(
                 command, workingDirectory, Duration.ofSeconds(timeoutSeconds), MAX_OUTPUT_CHARS);
         return sandboxWorker.execute(run, request, CancellationToken.none());
+    }
+
+    private boolean networkEnabled(String options) {
+        if (options == null) return false;
+        for (String part : options.split(";")) {
+            if ("network=true".equalsIgnoreCase(part.trim())) return true;
+        }
+        return false;
     }
 
     private int timeoutSeconds(String options) {

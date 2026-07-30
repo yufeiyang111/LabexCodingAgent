@@ -66,6 +66,61 @@ class AgentRunInteractionServiceTest {
     }
 
     @Test
+    void returnsThePersistedDecisionForAnIdempotentReplay() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction approved = waitingInteraction();
+        approved.setInteractionType("permission");
+        approved.setStatus("approved");
+        when(mapper.selectById("request-71")).thenReturn(approved);
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        AgentRunInteraction replayed = service.respond(7, 12, "request-71", "approved", Map.of("action", "allow_once"));
+
+        assertEquals(approved, replayed);
+        verify(mapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+    }
+
+    @Test
+    void rejectsAContradictoryDecisionAfterTheInteractionWasResolved() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction approved = waitingInteraction();
+        approved.setInteractionType("permission");
+        approved.setStatus("approved");
+        when(mapper.selectById("request-71")).thenReturn(approved);
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.respond(7, 12, "request-71", "rejected", Map.of("action", "reject")));
+        verify(mapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+    }
+
+    @Test
+    void expiresALateDecisionInsideTheResponseTransaction() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction expired = waitingInteraction();
+        expired.setInteractionType("permission");
+        expired.setExpiresTime(LocalDateTime.now().minusSeconds(1));
+        when(mapper.selectById("request-71")).thenReturn(expired);
+        when(mapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.respond(7, 12, "request-71", "approved", Map.of("action", "allow_once")));
+        assertEquals("timed_out", expired.getStatus());
+        verify(mapper, times(1)).update(org.mockito.ArgumentMatchers.isNull(), any());
+    }
+
+    @Test
+    void rejectsAnInvalidResolutionStatusAtThePersistenceBoundary() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        when(mapper.selectById("request-71")).thenReturn(waitingInteraction());
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.respond(7, 12, "request-71", "running", Map.of()));
+        verify(mapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+    }
+    @Test
     void findsTheLatestWaitingInteractionForTask() {
         AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
         AgentRunInteraction waiting = waitingInteraction();
@@ -105,12 +160,31 @@ class AgentRunInteractionServiceTest {
         verify(mapper, never()).updateById(any(AgentRunInteraction.class));
     }
 
+    @Test
+    void matchesApprovedNetworkGrantByDigestAndRequestKind() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction approved = new AgentRunInteraction();
+        approved.setTaskId(71L);
+        approved.setStatus("approved");
+        approved.setInteractionType("network");
+        approved.setRequestPayload("{\"requestDigest\":\"digest-1\",\"requestKind\":\"offline_failure_retry\"}");
+        approved.setExpiresTime(LocalDateTime.now().plusMinutes(5));
+        when(mapper.selectList(any())).thenReturn(java.util.List.of(approved));
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        org.junit.jupiter.api.Assertions.assertTrue(
+                service.hasApprovedNetworkGrant(71L, "digest-1", "offline_failure_retry"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                service.hasApprovedNetworkGrant(71L, "digest-1", "explicit_command"));
+    }
+
     private AgentRunInteraction waitingInteraction() {
         AgentRunInteraction interaction = new AgentRunInteraction();
         interaction.setInteractionId("request-71");
         interaction.setTaskId(71L);
         interaction.setStudentId(7);
         interaction.setProjectId(12);
+        interaction.setInteractionType("question");
         interaction.setStatus("waiting");
         return interaction;
     }

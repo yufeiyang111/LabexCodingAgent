@@ -14,9 +14,26 @@ public final class AgentRunTransitionKey {
                 + digest(String.valueOf(status), String.valueOf(currentStep), String.valueOf(summary));
     }
 
+    public static String forTaskUpdateOccurrence(Long taskId, Object occurrence,
+                                                 String status, String currentStep, String summary) {
+        return "task-" + String.valueOf(taskId) + "-occurrence-"
+                + digest(String.valueOf(occurrence), String.valueOf(status),
+                String.valueOf(currentStep), String.valueOf(summary));
+    }
+
     public static String forInteractionResume(Long taskId, String interactionId) {
         return "task-" + String.valueOf(taskId) + "-interaction-resume-"
                 + digest(String.valueOf(interactionId));
+    }
+
+    /**
+     * 为一次具体的暂停交互生成稳定键。同一审批重放时键不变，不同审批即使文案相同也不会冲突。
+     */
+    public static String forPause(Long taskId, String pauseType, String pauseId,
+                                  String status, String currentStep, String summary) {
+        return "task-" + String.valueOf(taskId) + "-pause-"
+                + digest(String.valueOf(pauseType), String.valueOf(pauseId), String.valueOf(status),
+                String.valueOf(currentStep), String.valueOf(summary));
     }
 
     public static String forResumedRunUpdate(Long taskId, Object resumeInstance,

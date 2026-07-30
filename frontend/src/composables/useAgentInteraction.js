@@ -1,7 +1,8 @@
-﻿export function useAgentInteraction({ projectId, api }) {
+export function useAgentInteraction({ projectId, api }) {
   async function submitPermissionDecision({ call, action, feedback }) {
-    const request = call?.permissionRequest
+    const request = call?.networkRequest || call?.permissionRequest
     if (!request?.requestId) return { handled: false, reason: 'request_missing' }
+    const network = !!call?.networkRequest
 
     const rejected = action === 'reject'
     call.status = rejected ? 'error' : 'running'
@@ -10,12 +11,12 @@
       : '已确认，等待工具继续执行...'
 
     try {
-      const response = await api.agentApprovePermission(projectId.value, {
+      const response = await (network ? api.agentApproveNetwork : api.agentApprovePermission)(projectId.value, {
         requestId: request.requestId,
         action,
         feedback: rejected ? (feedback || '用户拒绝了本次工具调用') : (feedback || '')
       })
-      if (response?.data && !response.data.granted && !rejected) {
+      if (response?.data && !(network ? response.data.approved : response.data.granted) && !rejected) {
         call.status = 'error'
         call.result = response.data.feedback || '权限确认失败'
         return { handled: true, success: false }

@@ -14,6 +14,7 @@ import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.run.AgentRunState;
+import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.service.StudentProjectService;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -40,12 +41,24 @@ public class CommandApprovalOrchestrator {
     private final AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
     private CommandFailureGuard commandFailureGuard = new CommandFailureGuard(1, 2);
     private AgentToolCallJournalService toolCallJournalService;
+    private final NetworkAccessService networkAccessService;
 
     public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
                                        AgentApprovedCommandExecutor executor, StudentProjectService projectService,
                                        AgentRunLifecycleService lifecycleService, AgentTaskService taskService,
                                        @Lazy AgentLoopEngine agentLoopEngine,
                                        AgentProjectMetadataRefreshScheduler metadataRefreshScheduler) {
+        this(approvalService, auditService, executor, projectService, lifecycleService, taskService,
+                agentLoopEngine, metadataRefreshScheduler, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
+                                       AgentApprovedCommandExecutor executor, StudentProjectService projectService,
+                                       AgentRunLifecycleService lifecycleService, AgentTaskService taskService,
+                                       @Lazy AgentLoopEngine agentLoopEngine,
+                                       AgentProjectMetadataRefreshScheduler metadataRefreshScheduler,
+                                       NetworkAccessService networkAccessService) {
         this.approvalService = approvalService;
         this.auditService = auditService;
         this.executor = executor;
@@ -54,6 +67,7 @@ public class CommandApprovalOrchestrator {
         this.taskService = taskService;
         this.agentLoopEngine = agentLoopEngine;
         this.metadataRefreshScheduler = metadataRefreshScheduler;
+        this.networkAccessService = networkAccessService;
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -121,6 +135,23 @@ public class CommandApprovalOrchestrator {
             long processDurationMs = result.durationMs();
             auditService.recordExecutionOutcome(approval, result, processDurationMs);
             boolean succeeded = result.succeeded();
+            if (!succeeded && shouldRequestNetworkRetry(approval, result)) {
+                NetworkAccessService.NetworkAccessRequest network = createNetworkRetry(approval, result);
+                if (network != null) {
+                    Map<String, Object> payload = new LinkedHashMap<>(network.payload());
+                    payload.put("requestId", network.requestId());
+                    payload.put("taskId", approval.getTaskId());
+                    payload.put("sessionId", approval.getSessionId());
+                    payload.put("toolCallId", approval.getToolCallId());
+                    payload.put("toolName", approvalToolName(approval.getCanonicalCommand()));
+                    payload.put("approvalId", approval.getApprovalId());
+                    lifecycleService.transition(approval.getTaskId(), AgentRunState.WAITING_APPROVAL,
+                            "NETWORK_ACCESS_ASK", payload, "\u7b49\u5f85\u7f51\u7edc\u8bbf\u95ee\u6279\u51c6",
+                            "\u68c0\u6d4b\u5230\u79bb\u7ebf\u7f51\u7edc\u5931\u8d25\uff0c\u6279\u51c6\u540e\u53ea\u91cd\u8bd5\u5f53\u524d\u547d\u4ee4\u4e00\u6b21",
+                            lifecycleKey(approval, "network-retry-approval"));
+                    return ExecutionResult.available(approval, result, "waiting_network");
+                }
+            }
             if (!succeeded) {
                 EnvironmentBlockerClassifier.classify(approvalToolName(approval.getCanonicalCommand()),
                                 ToolResult.fromProcessExecution(result))
@@ -221,6 +252,47 @@ public class CommandApprovalOrchestrator {
         }
         resumeAgentLoop(approval, status, null);
         return true;
+    }
+
+    private boolean shouldRequestNetworkRetry(CommandApproval approval, ProcessExecutionResult result) {
+        if (networkAccessService == null || approval == null || result == null
+                || networkEnabled(approval.getCommandOptions()) || result.succeeded()) return false;
+        String command = approval.getCanonicalCommand();
+        return looksLikeNetworkFailure(result.output())
+                && !networkAccessService.hasOfflineRetryAttempt(approval.getTaskId(), command);
+    }
+
+    private NetworkAccessService.NetworkAccessRequest createNetworkRetry(CommandApproval approval,
+                                                                           ProcessExecutionResult result) {
+        try {
+            String output = result.output() == null ? "" : result.output().replaceAll("\\s+", " ");
+            String summary = "\u68c0\u6d4b\u5230\u547d\u4ee4\u5728\u79bb\u7ebf\u7f51\u7edc\u73af\u5883\u4e0b\u5931\u8d25\uff1b\u5141\u8bb8\u540e\u5c06\u4ec5\u91cd\u8bd5\u5f53\u524d\u547d\u4ee4\u4e00\u6b21\u3002\n\u5931\u8d25\u6458\u8981\uff1a"
+                    + (output.length() <= 500 ? output : output.substring(0, 500));
+            return networkAccessService.begin(approval.getStudentId(), approval.getProjectId(), approval.getTaskId(),
+                    approval.getConversationId(), approval.getSessionId(), approvalToolName(approval.getCanonicalCommand()),
+                    approval.getCanonicalCommand(), summary, "offline_failure_retry", true, approval.getToolCallId(),
+                    java.util.List.of());
+        } catch (RuntimeException exception) {
+            log.warn("Unable to create network retry approval taskId={} approvalId={}: {}",
+                    approval.getTaskId(), approval.getApprovalId(), exception.getMessage());
+            return null;
+        }
+    }
+
+    private boolean networkEnabled(String options) {
+        return options != null && java.util.Arrays.stream(options.split(";"))
+                .anyMatch(part -> "network=true".equalsIgnoreCase(part.trim()));
+    }
+
+    private boolean looksLikeNetworkFailure(String output) {
+        String lower = output == null ? "" : output.toLowerCase(java.util.Locale.ROOT);
+        String[] markers = {"could not resolve", "temporary failure in name resolution", "name resolution",
+                "unknown host", "no such host", "getaddrinfo", "network is unreachable",
+                "connection timed out", "connect timed out", "failed to connect", "connection reset",
+                "unable to access", "failed to download", "could not download", "download failed",
+                "proxy connect", "tls handshake timeout", "network is disabled", "internet is disabled"};
+        for (String marker : markers) if (lower.contains(marker)) return true;
+        return false;
     }
 
     private void closeApprovedToolCall(CommandApproval approval, boolean succeeded, ProcessExecutionResult result) {

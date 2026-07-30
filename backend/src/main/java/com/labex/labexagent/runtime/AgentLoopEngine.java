@@ -46,6 +46,7 @@ import com.labex.labexagent.runtime.AgentContextManager;
 import com.labex.labexagent.runtime.AgentSsePublisher;
 import com.labex.labexagent.runtime.ToolCallExtractor;
 import com.labex.labexagent.permission.*;
+import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.labexagent.tool.ToolSupport;
 import com.labex.labexagent.service.AgentConversationService;
 import com.labex.labexagent.service.AgentContextOrchestrator;
@@ -147,6 +148,7 @@ public class AgentLoopEngine {
     private final AgentSkillService skillService;
     private final AgentMcpServerService mcpServerService;
     private final PermissionService permissionService;
+    private NetworkAccessService networkAccessService;
     private final GitSnapshotService gitSnapshotService;
     private final DiffService diffService;
     private final AgentContextOrchestrator contextOrchestrator;
@@ -212,6 +214,7 @@ public class AgentLoopEngine {
         this.skillService = skillService;
         this.mcpServerService = mcpServerService;
         this.permissionService = permissionService;
+        this.networkAccessService = null;
         this.gitSnapshotService = gitSnapshotService;
         this.diffService = diffService;
         this.contextOrchestrator = contextOrchestrator;
@@ -224,6 +227,11 @@ public class AgentLoopEngine {
         this.contextUsageRegistry = contextUsageRegistry;
         this.compactionAgent = compactionAgent;
         this.commandClassifier = new CommandClassifier();
+    }
+
+    @Autowired(required = false)
+    void setNetworkAccessService(NetworkAccessService networkAccessService) {
+        this.networkAccessService = networkAccessService;
     }
 
     @Autowired
@@ -651,7 +659,14 @@ public class AgentLoopEngine {
                             resumedRun ? "Restoring the task from its saved conversation and user response." : "Preparing project context and available tools."),
                     task.getTaskId());
             if (resumedRun && "recovering".equalsIgnoreCase(task.getStatus())) {
-                this.taskService.updateTask(task.getTaskId(), "running", "Recovered execution", "Execution resumed after lease takeover");
+                this.taskService.updateTask(
+                        task.getTaskId(),
+                        "running",
+                        "Recovered execution",
+                        "Execution resumed after lease takeover",
+                        AgentRunTransitionKey.forResumedRunUpdate(
+                                task.getTaskId(), request.getSubmittedAt(), "running",
+                                "Recovered execution", "Execution resumed after lease takeover"));
             }
             if (!resumedRun || (resumedRun && "queued".equalsIgnoreCase(task.getStatus()))) {
                 this.taskService.updateTask(
@@ -977,8 +992,7 @@ public class AgentLoopEngine {
                                                     this.publishUserQuestion(sse, conv, blockedResult);
                                                     this.writeAgentCheckpoint(project, request, task, ctx, pause.state(),
                                                             pause.detail(), tn, this.compactToolResultForCheckpoint(tn, blockedResult), runLog);
-                                                    this.streamFinal(sse, conv, this.buildStopFinal(pause.title(), pause.detail(), project, runLog, visibleLanguage), visibleLanguage);
-                                                    this.sendEvent(sse, conv, "DONE", Map.of("message", pause.title(), "iterations", i));
+                                                    this.publishInteractionPause(sse, conv, task.getTaskId(), blockedResult, pause, i);
                                                     emitter.complete();
                                                     return;
                                                 }
@@ -1042,8 +1056,7 @@ public class AgentLoopEngine {
                                                         + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
                                                 this.writeAgentCheckpoint(project, request, task, ctx, waitingState, waitingDetail, tn,
                                                         this.compactToolResultForCheckpoint(tn, res), runLog);
-                                                this.streamFinal(sse, conv, this.buildStopFinal(waitingTitle, waitingDetail, project, runLog, visibleLanguage), visibleLanguage);
-                                                this.sendEvent(sse, conv, "DONE", Map.of("message", waitingTitle, "iterations", i));
+                                                this.publishInteractionPause(sse, conv, task.getTaskId(), res, pause, i);
                                                 emitter.complete();
                                                 return;
                                             }
@@ -1108,8 +1121,7 @@ public class AgentLoopEngine {
                                             this.publishUserQuestion(sse, conv, blockedResult);
                                             this.writeAgentCheckpoint(project, request, task, ctx, pause.state(),
                                                     pause.detail(), invTool, this.compactToolResultForCheckpoint(invTool, blockedResult), runLog);
-                                            this.streamFinal(sse, conv, this.buildStopFinal(pause.title(), pause.detail(), project, runLog, visibleLanguage), visibleLanguage);
-                                            this.sendEvent(sse, conv, "DONE", Map.of("message", pause.title(), "iterations", i));
+                                            this.publishInteractionPause(sse, conv, task.getTaskId(), blockedResult, pause, i);
                                             emitter.complete();
                                             return;
                                         }
@@ -1155,8 +1167,7 @@ public class AgentLoopEngine {
                                                 + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
                                         this.writeAgentCheckpoint(project, request, task, ctx, waitingState, waitingDetail, invTool,
                                                 this.compactToolResultForCheckpoint(invTool, res), runLog);
-                                        this.streamFinal(sse, conv, this.buildStopFinal(waitingTitle, waitingDetail, project, runLog, visibleLanguage), visibleLanguage);
-                                        this.sendEvent(sse, conv, "DONE", Map.of("message", waitingTitle, "iterations", i));
+                                        this.publishInteractionPause(sse, conv, task.getTaskId(), res, pause, i);
                                         emitter.complete();
                                         return;
                                     }
@@ -1576,8 +1587,20 @@ public class AgentLoopEngine {
         }
         String guardedCommand = this.commandForGuard(name, args, ctx);
         String guardedWorkingDirectory = this.commandWorkingDirectoryForArgs(name, ctx.getWorkspaceRoot(), args);
+        boolean approvedOfflineRetry = this.isCommandPolicyTool(name)
+                && this.networkAccessService != null
+                && this.networkAccessService.hasApprovedOfflineRetryGrant(ctx.getTaskId(), guardedCommand);
+        boolean networkRequested = this.networkRequested(args) || approvedOfflineRetry;
+        boolean networkEnabledForTool = false;
         if (this.isCommandPolicyTool(name)) {
+            String networkCommand = this.commandForGuard(name, args, ctx);
             CommandClassification classification = this.commandClassification(name, args, ctx);
+            if (classification != null && classification.decision() != CommandDecision.BLOCK
+                    && networkRequested && this.networkAccessService != null
+                    && !this.networkAccessService.hasApprovedGrant(ctx.getTaskId(), networkCommand)) {
+                return this.createNetworkApproval(ctx, name, networkCommand, toolCallId,
+                        "explicit_command", false, toolCallId, this.networkSummary());
+            }
             if (classification != null) {
                 int timeout = this.commandTimeout(name, args);
                 if (classification.decision() == CommandDecision.BLOCK) {
@@ -1604,6 +1627,7 @@ public class AgentLoopEngine {
                     return ToolResult.failed("failure_code=" + retryDecision.code() + "\nretryable=false\n" + retryDecision.message());
                 }
                 if (classification.requiresApproval()
+                        && !approvedOfflineRetry
                         && !(acceptanceAutoApproveVerification && "run_tests".equals(this.safeTool(name)))) {
                     return this.createCommandApproval(ctx, classification, timeout, toolCallId);
                 }
@@ -1647,6 +1671,19 @@ public class AgentLoopEngine {
             log.warn("Permission check failed: {}", e.getMessage());
             return ToolResult.failed(this.localText(visibleLanguage, "权限检查失败：" + e.getMessage(), "Permission check failed: " + e.getMessage()));
         }
+        if (networkRequested) {
+            if (!this.isCommandPolicyTool(name) || this.networkAccessService == null) {
+                return ToolResult.failed("\u5f53\u524d\u5de5\u5177\u4e0d\u652f\u6301\u53d7\u63a7\u7f51\u7edc\u8bbf\u95ee");
+            }
+            if (!this.networkAccessService.consumeGrant(ctx.getStudentId(), ctx.getProject().getProjectId(),
+                    ctx.getTaskId(), guardedCommand)) {
+                return this.createNetworkApproval(ctx, name, guardedCommand, toolCallId,
+                        "explicit_command", false, toolCallId, this.networkSummary());
+            }
+            ctx.setNetworkEnabled(true);
+            networkEnabledForTool = true;
+        }
+
         long totalStartedNanos = System.nanoTime();
         long delegateElapsedMs = 0L;
         long beforeSnapshotElapsedMs = 0L;
@@ -1680,6 +1717,7 @@ public class AgentLoopEngine {
             long delegateStartedNanos = System.nanoTime();
             ToolResult result = this.toolTurnExecutor.execute(t, ctx, args, name);
             result = this.annotateCommandRecovery(name, result);
+            result = this.maybeRequestNetworkAfterFailure(ctx, name, args, toolCallId, result);
             delegateElapsedMs = elapsedMs(delegateStartedNanos);
             DiffService.ApplyTelemetry diffTelemetry = this.diffService.consumeLastApplyTelemetry();
             if (!diffTelemetry.timingMs().isEmpty()) {
@@ -1789,6 +1827,11 @@ public class AgentLoopEngine {
             this.contextOrchestrator.afterTool(ctx, name, args, failed);
             this.metricsService.recordTool(ctx, name, args, failed, totalElapsedMs, AgentPostEditHookService.HookReport.empty());
             return failed;
+        }
+        finally {
+            if (networkEnabledForTool) {
+                ctx.setNetworkEnabled(false);
+            }
         }
     }
 
@@ -2006,11 +2049,6 @@ public class AgentLoopEngine {
                 permission,
                 pattern
         );
-        this.taskService.updateTask(
-                ctx.getTaskId(),
-                "waiting_approval",
-                "Awaiting approval",
-                summary);
         LinkedHashMap<String, Object> data = new LinkedHashMap<>();
         data.put("requestId", approval.getRequestId());
         data.put("taskId", ctx.getTaskId());
@@ -2106,7 +2144,10 @@ public class AgentLoopEngine {
                             classification.normalizedCommand().displayCommand(),
                             classification.normalizedCommand().canonicalWorkingDirectory(),
                             "direct",
-                            "timeout=" + timeout + ";longRunning=false",
+                            "timeout=" + timeout + ";longRunning=false;network="
+                                    + (this.networkAccessService != null
+                                    && this.networkAccessService.hasApprovedGrant(ctx.getTaskId(),
+                                    classification.normalizedCommand().canonicalCommand())),
                             classification.decision().name(),
                             classification.policyVersion(),
                             expiresTime));
@@ -2121,6 +2162,78 @@ public class AgentLoopEngine {
             log.warn("Unable to create command approval for task {}: {}", ctx.getTaskId(), exception.getMessage());
             return ToolResult.failed("command approval is unavailable");
         }
+    }
+
+    private boolean networkRequested(JsonObject args) {
+        if (args == null || !args.has("network") || args.get("network").isJsonNull()) return false;
+        try {
+            return args.get("network").getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private ToolResult maybeRequestNetworkAfterFailure(AgentContext ctx, String toolName, JsonObject args,
+                                                        String toolCallId, ToolResult result) {
+        if (result == null || result.isSuccess() || result.isApprovalRequired()
+                || result.isInteractionRequired() || !this.isCommandPolicyTool(toolName)
+                || this.networkAccessService == null || this.networkRequested(args)) {
+            return result;
+        }
+        String content = result.getContent() == null ? "" : result.getContent();
+        if (!this.looksLikeNetworkFailure(content)
+                || this.networkAccessService.hasOfflineRetryAttempt(ctx.getTaskId(), this.commandForGuard(toolName, args, ctx))) {
+            return result;
+        }
+        String command = this.commandForGuard(toolName, args, ctx);
+        return this.createNetworkApproval(ctx, toolName, command, toolCallId,
+                "offline_failure_retry", true, toolCallId,
+                "\u68c0\u6d4b\u5230\u547d\u4ee4\u5728\u79bb\u7ebf\u7f51\u7edc\u73af\u5883\u4e0b\u5931\u8d25\uff1b\u5141\u8bb8\u540e\u5c06\u4ec5\u91cd\u8bd5\u8fd9\u6761\u5b8c\u5168\u76f8\u540c\u7684\u547d\u4ee4\u4e00\u6b21\u3002\n\u5931\u8d25\u6458\u8981\uff1a"
+                        + this.limitForThought(content.replaceAll("\\s+", " "), 500));
+    }
+
+    private boolean looksLikeNetworkFailure(String content) {
+        String lower = content == null ? "" : content.toLowerCase(Locale.ROOT);
+        if (lower.isBlank()) return false;
+        String[] markers = {
+                "could not resolve", "temporary failure in name resolution", "name resolution",
+                "unknown host", "no such host", "getaddrinfo", "network is unreachable",
+                "connection timed out", "connect timed out", "failed to connect",
+                "connection reset", "unable to access", "failed to download",
+                "could not download", "download failed", "proxy connect", "tls handshake timeout",
+                "network is disabled", "internet is disabled"
+        };
+        for (String marker : markers) {
+            if (lower.contains(marker)) return true;
+        }
+        return false;
+    }
+
+    private ToolResult createNetworkApproval(AgentContext ctx, String toolName, String request, String toolCallId,
+                                             String requestKind, boolean retryable, String attemptKey, String summary) {
+        if (this.networkAccessService == null || ctx.getTaskId() == null) {
+            return ToolResult.failed("network approval service is unavailable");
+        }
+        try {
+            NetworkAccessService.NetworkAccessRequest approval = this.networkAccessService.begin(
+                    ctx.getStudentId(), ctx.getProject().getProjectId(), ctx.getTaskId(), ctx.getConversationId(),
+                    ctx.getSessionId(), toolName, request, summary, requestKind, retryable, attemptKey,
+                    this.networkAccessService.domainsFor(toolName, request));
+            LinkedHashMap<String, Object> event = new LinkedHashMap<>(approval.payload());
+            event.put("requestId", approval.requestId());
+            event.put("taskId", ctx.getTaskId());
+            event.put("sessionId", ctx.getSessionId());
+            event.put("toolCallId", toolCallId);
+            return ToolResult.interactionRequired("\u7b49\u5f85\u7528\u6237\u6279\u51c6\u7f51\u7edc\u8bbf\u95ee", approval.requestId(), "network")
+                    .withInteractionPayload(event);
+        } catch (Exception exception) {
+            log.warn("Unable to create network approval for task {}: {}", ctx.getTaskId(), exception.getMessage());
+            return ToolResult.failed("network approval is unavailable");
+        }
+    }
+
+    private String networkSummary() {
+        return "Agent \u8bf7\u6c42\u8bbf\u95ee\u7f51\u7edc\u4ee5\u5b8c\u6210\u5f53\u524d\u547d\u4ee4";
     }
 
     private CommandClassification commandClassification(String toolName, JsonObject args, AgentContext context) {
@@ -2266,7 +2379,9 @@ public class AgentLoopEngine {
         String detail = this.localText(visibleLanguage,
                 "命令已安全保存，批准后只会执行一次；命令结果会作为上下文恢复当前 Agent 任务。",
                 "The command is stored safely and will execute at most once after approval; its result will resume the current Agent task as durable context.");
-        this.taskService.updateTask(task.getTaskId(), "waiting_approval", summary, detail);
+        this.taskService.updateTask(task.getTaskId(), "waiting_approval", summary, detail,
+                AgentRunTransitionKey.forPause(task.getTaskId(), "command", result.getApprovalId(),
+                        "waiting_approval", summary, detail));
         String publicDisplay = CommandRedactor.redact(displayCommand);
         this.appendRunLog(runLog, "\n## Command approval state\n\n- Task status: `waiting_approval`\n- Approval ID: `"
                 + this.safeLogText(result.getApprovalId()) + "`\n- Display: `"
@@ -3235,7 +3350,28 @@ public class AgentLoopEngine {
                 || result.getInteractionPayload().isEmpty()) {
             return;
         }
-        this.sendEvent(sse, conv, "USER_QUESTION", result.getInteractionPayload());
+        String eventType = switch (String.valueOf(result.getInteractionType())) {
+            case "permission" -> "PERMISSION_ASK";
+            case "network" -> "NETWORK_ACCESS_ASK";
+            default -> "USER_QUESTION";
+        };
+        this.sendEvent(sse, conv, eventType, result.getInteractionPayload());
+    }
+
+    /** 持久化交互暂停时不发送 FINAL/DONE，由前端保留 task/cursor 等待恢复。 */
+    private void publishInteractionPause(AgentSsePublisher sse, AgentConversation conv, Long taskId,
+                                         ToolResult result, AgentInteractionPauser.Pause pause,
+                                         int iteration) throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("taskId", taskId);
+        payload.put("state", pause.state());
+        payload.put("reason", result == null ? "interaction" : String.valueOf(result.getInteractionType()));
+        payload.put("requestId", result == null ? "" : String.valueOf(result.getInteractionRequestId()));
+        payload.put("message", pause.title());
+        payload.put("detail", pause.detail());
+        payload.put("iterations", iteration);
+        payload.put("resumeAgentLoop", true);
+        this.sendEvent(sse, conv, "TASK_PAUSED", payload);
     }
 
     private void journalToolResult(Long taskId, String toolCallId, String toolName, Object arguments,

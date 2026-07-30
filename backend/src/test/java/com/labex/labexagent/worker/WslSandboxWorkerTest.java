@@ -17,6 +17,21 @@ class WslSandboxWorkerTest {
     Path workspace;
 
     @Test
+    void enablesNetworkOnlyForAnExplicitNetworkRunAndKeepsDnsReadOnly() {
+        WslSandboxWorker worker = new WslSandboxWorker(new LocalProcessExecutor(), "Debian");
+        WorkerRunSpec run = WorkerRunSpec.forWorkspace("wsl-network-contract", workspace, true);
+        ProcessExecutionRequest request = new ProcessExecutionRequest(
+                List.of("/bin/bash", "-lc", "mvn test"), workspace, Duration.ofSeconds(30), 10_000);
+
+        List<String> command = worker.buildWslCommand(run, request);
+
+        assertTrue(!command.contains("--unshare-net"));
+        assertContainsSequence(command, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf");
+        assertContainsSequence(command, "--ro-bind", "/etc/ssl", "/etc/ssl");
+        assertContainsSequence(command, "--bind", expectedWslPath(workspace), "/workspace");
+    }
+
+    @Test
     void buildsANetworklessBubblewrapCommandWithOnlyTheWorkspaceBoundWritable() {
         WslSandboxWorker worker = new WslSandboxWorker(new LocalProcessExecutor(), "Debian");
         WorkerRunSpec run = WorkerRunSpec.forWorkspace("wsl-contract", workspace);

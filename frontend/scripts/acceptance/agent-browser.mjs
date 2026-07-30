@@ -112,6 +112,11 @@ async function launchBrowser() {
   client.on('Log.entryAdded', ({ entry }) => {
     if (entry?.level === 'error') consoleErrors.push(entry.text || 'Browser log error')
   })
+  client.on('Runtime.consoleAPICalled', event => {
+    if (!['error', 'warning'].includes(event?.type)) return
+    const text = (event.args || []).map(arg => arg.value ?? arg.description ?? '').join(' ')
+    if (text) consoleErrors.push(`${event.type}: ${text}`)
+  })
   client.on('Network.loadingFailed', event => {
     if (!event.canceled) networkErrors.push(`${event.type ?? 'request'}: ${event.errorText ?? 'failed'}`)
   })
@@ -326,13 +331,15 @@ async function runScenario() {
   if (!questionCard || !questionCard.text.includes('\u662f\u5426\u7ee7\u7eed\u771f\u5b9e\u9a8c\u6536\uff1f') || questionCard.optionCount < 1) {
     throw new Error(`Question reply component was not hydrated: ${JSON.stringify(questionCard)}`)
   }
-  const waitingTasks = await api(`/student/projects/${projectId}/agent/tasks`)
-  const waitingTask = [...waitingTasks]
-    .sort((left, right) => Number(right.taskId) - Number(left.taskId))
-    .find(task => task.status === 'waiting_user')
-  if (!waitingTask?.conversationId) {
-    throw new Error(`No durable waiting_user task was found: ${JSON.stringify(waitingTasks)}`)
-  }
+  let waitingTasks = []
+  let waitingTask = null
+  await waitFor(async () => {
+    waitingTasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    waitingTask = [...waitingTasks]
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))
+      .find(task => task.status === 'waiting_user')
+    return Boolean(waitingTask?.conversationId)
+  }, 'durable waiting_user task')
   const activeTask = await api(`/student/projects/${projectId}/agent/conversations/${encodeURIComponent(waitingTask.conversationId)}/active-task`)
   const providerMessages = (activeTask?.runMessages || []).filter(message => String(message.messageKey || '').startsWith('provider:'))
   const providerParts = (activeTask?.parts || []).filter(part => String(part.partKey || '').startsWith('provider:'))
@@ -348,6 +355,48 @@ async function runScenario() {
     () => client.evaluate(`!document.querySelector('.tc-question') && document.body.innerText.includes('durable user-question interaction resumed')`),
     'question reply completion'
   )
+
+  await createNewConversation()
+  const tasksBeforePermission = await api(`/student/projects/${projectId}/agent/tasks`)
+  const permissionPriorTaskIds = new Set(tasksBeforePermission.map(task => Number(task.taskId)))
+  await sendMessage('[acceptance:permission]')
+  await waitFor(
+    () => client.evaluate(`Array.from(document.querySelectorAll('.tc-approval')).some(card => card.innerText.includes('需要确认后才能继续执行'))`),
+    'permission approval component'
+  )
+  let permissionTasks = []
+  let permissionTask = null
+  await waitFor(async () => {
+    permissionTasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    permissionTask = [...permissionTasks]
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))
+      .find(task => task.status === 'waiting_approval' && !permissionPriorTaskIds.has(Number(task.taskId)))
+    return Boolean(permissionTask?.taskId)
+  }, 'durable waiting_approval task')
+  await client.evaluate(`(() => {
+    const card = Array.from(document.querySelectorAll('.tc-approval')).find(item => item.innerText.includes('需要确认后才能继续执行'))
+    card?.querySelector('.tc-approval-btn.primary')?.click()
+  })()`)
+  await waitFor(async () => {
+    const task = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
+    return task && task.status !== 'waiting_approval'
+  }, 'permission durable decision before refresh')
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitFor(
+    () => bodyIncludes('tool permission decision resumed the original task'),
+    'permission same-task completion after refresh'
+  )
+  const permissionTasksAfter = await api(`/student/projects/${projectId}/agent/tasks`)
+  const createdPermissionTasks = permissionTasksAfter.filter(task => !permissionPriorTaskIds.has(Number(task.taskId)))
+  if (createdPermissionTasks.length !== 1 || Number(createdPermissionTasks[0].taskId) !== Number(permissionTask.taskId)) {
+    throw new Error(`Permission resume created another task: ${JSON.stringify(createdPermissionTasks)}`)
+  }
+  const completedPermissionTask = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
+  if (!['completed', 'failed', 'cancelled'].includes(completedPermissionTask?.status)) {
+    throw new Error(`Permission task did not reach a durable terminal state: ${JSON.stringify(completedPermissionTask)}`)
+  }
+
   await createNewConversation()
   await sendMessage(`[acceptance:isolation:COMPACTION-WARMUP] ${'warmup '.repeat(850)}`)
   await waitFor(() => bodyIncludes('COMPACTION-WARMUP'), 'compaction warmup turn')
@@ -523,6 +572,7 @@ async function runScenario() {
     conversationIsolation: true,
     refreshReplayDeduplicated: true,
     questionReplyComponent: true,
+    permissionApprovalRefreshRecovery: true,
     durableProviderMessages: providerMessages.length,
     durableProviderParts: providerParts.length,
     cursorKeys: cursorKeys.length,

@@ -145,7 +145,9 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
         command.add("bwrap");
         command.add("--die-with-parent");
         command.add("--new-session");
-        command.add("--unshare-net");
+        if (!run.policy().networkEnabled()) {
+            command.add("--unshare-net");
+        }
         command.add("--unshare-ipc");
         command.add("--unshare-uts");
         command.add("--unshare-pid");
@@ -165,9 +167,13 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
         command.add("/lib64");
         command.add("--dir");
         command.add("/etc");
+        if (run.policy().networkEnabled()) {
+            // 网络授权时只读挂载 DNS 与系统 CA；Java cacerts 会链接到 /etc/ssl/certs/java/cacerts。
+            readOnlyBind(command, "/etc/resolv.conf");
+            readOnlyBind(command, "/etc/ssl");
+        }
         readOnlyBind(command, "/etc/alternatives");
-        // Debian's Maven and OpenJDK packages keep immutable runtime configuration in these directories.
-        // Bind only the required configuration, not the host's complete /etc tree.
+        // Maven 和 OpenJDK 运行时依赖的只读 /etc 子目录。
         readOnlyBind(command, "/etc/maven");
         readOnlyBind(command, "/etc/java-21-openjdk");
         command.add("--dir");

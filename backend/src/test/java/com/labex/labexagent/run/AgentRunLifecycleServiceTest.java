@@ -309,6 +309,7 @@ class AgentRunLifecycleServiceTest {
         AgentRunEvent existing = new AgentRunEvent();
         existing.setEventId(902L);
         existing.setState("preparing");
+        existing.setEventType("RUN_PREPARING");
         existing.setSequenceNumber(1L);
         when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task(AgentRunState.PREPARING));
         when(eventMapper.selectOne(any())).thenReturn(existing);
@@ -331,6 +332,62 @@ class AgentRunLifecycleServiceTest {
     }
 
     @Test
+    void rejectsAHistoricIdempotencyKeyAfterTheTaskHasAdvanced() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentRunEvent existing = new AgentRunEvent();
+        existing.setEventId(906L);
+        existing.setState(AgentRunState.RUNNING.persistedStatus());
+        existing.setEventType("RUN_STATE_RUNNING");
+        existing.setIdempotencyKey("run-71-running");
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task(AgentRunState.WAITING_APPROVAL));
+        when(eventMapper.selectOne(any())).thenReturn(existing);
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        assertThrows(IllegalStateException.class, () -> service.transition(
+                71L,
+                AgentRunState.RUNNING,
+                "RUN_STATE_RUNNING",
+                Map.of(),
+                "Thinking",
+                null,
+                "run-71-running"));
+        verify(taskMapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void rejectsReuseOfAnIdempotencyKeyForADifferentTransition() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentRunEvent existing = new AgentRunEvent();
+        existing.setEventId(908L);
+        existing.setState(AgentRunState.RUNNING.persistedStatus());
+        existing.setEventType("RUN_STATE_RUNNING");
+        existing.setIdempotencyKey("run-71-collision");
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task(AgentRunState.WAITING_APPROVAL));
+        when(eventMapper.selectOne(any())).thenReturn(existing);
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        assertThrows(IllegalStateException.class, () -> service.transition(
+                71L,
+                AgentRunState.FAILED,
+                "RUN_FAILED",
+                Map.of(),
+                "Failed",
+                "Different operation",
+                "run-71-collision"));
+        verify(taskMapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
     void doesNotReportHistoricIdempotencyAsAppliedWhenTheTaskIsStillInTheExpectedState() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
@@ -339,6 +396,7 @@ class AgentRunLifecycleServiceTest {
         AgentRunEvent historic = new AgentRunEvent();
         historic.setEventId(907L);
         historic.setState(AgentRunState.RECOVERING.persistedStatus());
+        historic.setEventType("RUN_INTERACTION_RESUME_QUEUED");
         historic.setIdempotencyKey("interaction-resume-duplicate");
         when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
         when(eventMapper.selectOne(any())).thenReturn(historic);

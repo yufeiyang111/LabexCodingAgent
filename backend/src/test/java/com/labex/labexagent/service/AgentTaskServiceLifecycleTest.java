@@ -46,7 +46,7 @@ class AgentTaskServiceLifecycleTest {
 
 
     @Test
-    void usesTheSameIdempotencyKeyForARepeatedLogicalStateUpdate() {
+    void usesDifferentOccurrenceKeysWhenTheSameStatePayloadHappensAgain() {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         AgentTaskService service = new AgentTaskService(
                 mock(AgentTaskMapper.class),
@@ -61,7 +61,7 @@ class AgentTaskServiceLifecycleTest {
         verify(lifecycle, times(2)).transition(
                 eq(72L), eq(AgentRunState.PREPARING), eq("RUN_STATE_PREPARING"), any(),
                 eq("Preparing workspace"), eq("Worker accepted run"), keys.capture());
-        assertEquals(keys.getAllValues().get(0), keys.getAllValues().get(1));
+        org.junit.jupiter.api.Assertions.assertNotEquals(keys.getAllValues().get(0), keys.getAllValues().get(1));
     }
 
     @Test
@@ -214,6 +214,31 @@ class AgentTaskServiceLifecycleTest {
                 eq("RUN_ENVIRONMENT_BLOCKED"), any(), eq("Waiting"), eq("DNS failed"), any());
         verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_ENVIRONMENT), eq(AgentRunState.QUEUED),
                 any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void includesTheDurableInteractionIdentityInTheResumeEvent() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask waiting = new AgentTask();
+        waiting.setTaskId(72L);
+        waiting.setStatus("waiting_user");
+        when(taskMapper.selectById(72L)).thenReturn(waiting);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.RECOVERING),
+                eq("RUN_INTERACTION_RESUME_QUEUED"), any(), any(), any(), any())).thenReturn(true);
+        AgentTaskService service = new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class), lifecycle);
+
+        org.junit.jupiter.api.Assertions.assertTrue(service.beginInteractionResume(
+                72L, "interaction-72", "Resuming", "User response persisted"));
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<java.util.Map> payload = ArgumentCaptor.forClass(java.util.Map.class);
+        verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.RECOVERING),
+                eq("RUN_INTERACTION_RESUME_QUEUED"), payload.capture(), eq("Resuming"),
+                eq("User response persisted"), eq(com.labex.labexagent.run.AgentRunTransitionKey.forInteractionResume(
+                        72L, "interaction-72")));
+        assertEquals("interaction-72", payload.getValue().get("interactionId"));
     }
 
     @Test

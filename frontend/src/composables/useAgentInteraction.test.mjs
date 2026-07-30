@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ref } from 'vue'
 
@@ -34,6 +34,24 @@ test('submits a rejected permission with a safe default feedback message', async
   assert.equal(call.result, '已拒绝执行')
   assert.deepEqual(calls, [['permission', 42, {
     requestId: 'permission-1', action: 'reject', feedback: '用户拒绝了本次工具调用'
+  }]])
+})
+
+test('submits network approval through the isolated one-time endpoint', async () => {
+  const { interaction, calls } = createHarness({
+    agentApproveNetwork: async (id, payload) => {
+      calls.push(['network', id, payload])
+      return { data: { approved: true, scope: 'single_command' } }
+    }
+  })
+  const call = { status: 'waiting_approval', networkRequest: { requestId: 'network-1' } }
+
+  const result = await interaction.submitPermissionDecision({ call, action: 'once', feedback: '' })
+
+  assert.deepEqual(result, { handled: true, success: true })
+  assert.equal(call.status, 'running')
+  assert.deepEqual(calls, [['network', 42, {
+    requestId: 'network-1', action: 'once', feedback: ''
   }]])
 })
 

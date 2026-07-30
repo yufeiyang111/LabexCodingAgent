@@ -125,8 +125,9 @@ public class AgentTaskService {
 
     @Transactional(rollbackFor = Exception.class)
     public void updateTask(Long taskId, String status, String currentStep, String summary) {
+        // 普通状态写入代表一次新的发生实例；需要可重放幂等性的调用方必须显式传入领域键。
         this.updateTask(taskId, status, currentStep, summary,
-                AgentRunTransitionKey.forTaskUpdate(taskId, status, currentStep, summary));
+                AgentRunTransitionKey.forTaskUpdateOccurrence(taskId, UUID.randomUUID(), status, currentStep, summary));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -267,12 +268,15 @@ public class AgentTaskService {
         AgentRunState current = this.runState(task.getStatus());
         if (current == AgentRunState.RECOVERING) return true;
         if (current != AgentRunState.WAITING_USER && current != AgentRunState.WAITING_APPROVAL) return false;
+        Map<String, Object> payload = new LinkedHashMap<>(
+                this.taskUpdatePayload("recovering", currentStep, summary));
+        payload.put("interactionId", interactionId);
         return this.lifecycleService.transitionIfCurrent(
                 taskId,
                 current,
                 AgentRunState.RECOVERING,
                 "RUN_INTERACTION_RESUME_QUEUED",
-                this.taskUpdatePayload("recovering", currentStep, summary),
+                payload,
                 currentStep,
                 summary,
                 AgentRunTransitionKey.forInteractionResume(taskId, interactionId));

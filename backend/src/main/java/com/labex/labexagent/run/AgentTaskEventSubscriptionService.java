@@ -45,7 +45,7 @@ public class AgentTaskEventSubscriptionService {
         long replayStartedAt = System.nanoTime();
         log.info("TASK_EVENT_SUBSCRIBE_REQUEST studentId={} projectId={} taskId={} afterSequence={}",
                 studentId, projectId, taskId, cursor);
-        Subscription subscription = new Subscription(taskId, emitter, cursor);
+        Subscription subscription = new Subscription(studentId, projectId, taskId, emitter, cursor);
         CopyOnWriteArraySet<Subscription> taskSubscriptions = subscriptions.computeIfAbsent(taskId, ignored -> new CopyOnWriteArraySet<>());
         taskSubscriptions.add(subscription);
         log.info("TASK_EVENT_SUBSCRIBER_REGISTERED taskId={} afterSequence={} subscriberCount={}",
@@ -55,15 +55,10 @@ public class AgentTaskEventSubscriptionService {
         emitter.onError(ignored -> remove(subscription, "client_error"));
 
         try {
-            List<AgentRunEvent> events = replayService.eventsAfter(studentId, projectId, taskId, cursor);
-            long lastSequence = cursor;
-            for (AgentRunEvent event : events) {
-                lastSequence = Math.max(lastSequence, event.getSequenceNumber() == null ? cursor : event.getSequenceNumber());
-                subscription.send(event.getSequenceNumber(), event.getEventType(), payload(event.getPayload()), isTerminalState(event.getState()));
-            }
+            int replayed = subscription.catchUp();
             long replayMs = (System.nanoTime() - replayStartedAt) / 1_000_000L;
             log.info("TASK_EVENT_REPLAY_COMPLETE taskId={} afterSequence={} replayed={} lastSequence={} replayMs={}",
-                    taskId, cursor, events.size(), lastSequence, replayMs);
+                    taskId, cursor, replayed, subscription.lastSequence(), replayMs);
         } catch (RuntimeException exception) {
             log.warn("TASK_EVENT_REPLAY_FAILED taskId={} afterSequence={} errorType={}",
                     taskId, cursor, exception.getClass().getSimpleName());
@@ -86,6 +81,23 @@ public class AgentTaskEventSubscriptionService {
                 taskId, eventType, taskSubscriptions.size());
         for (Subscription subscription : taskSubscriptions) {
             subscription.sendTransient(eventType, eventPayload);
+        }
+    }
+
+    /**
+     * 每个订阅实例都从数据库事件日志追赶自己的游标，避免 outbox 被其他 JVM 消费后本机 SSE 永久丢事件。
+     */
+    @Scheduled(fixedDelayString = "${labex.agent.task-event-poll-ms:250}")
+    public void pollDurableEvents() {
+        for (CopyOnWriteArraySet<Subscription> taskSubscriptions : subscriptions.values()) {
+            for (Subscription subscription : taskSubscriptions) {
+                try {
+                    subscription.catchUp();
+                } catch (RuntimeException exception) {
+                    log.warn("TASK_EVENT_DURABLE_POLL_FAILED taskId={} afterSequence={} errorType={}",
+                            subscription.taskId, subscription.lastSequence(), exception.getClass().getSimpleName());
+                }
+            }
         }
     }
 
@@ -160,16 +172,42 @@ public class AgentTaskEventSubscriptionService {
     }
 
     private final class Subscription {
+        private final Integer studentId;
+        private final Integer projectId;
         private final Long taskId;
         private final SseEmitter emitter;
         private final AgentSsePublisher publisher;
         private final AtomicLong lastSequence;
 
-        private Subscription(Long taskId, SseEmitter emitter, long afterSequence) {
+        private Subscription(Integer studentId, Integer projectId, Long taskId,
+                             SseEmitter emitter, long afterSequence) {
+            this.studentId = studentId;
+            this.projectId = projectId;
             this.taskId = taskId;
             this.emitter = emitter;
             this.publisher = new AgentSsePublisher(emitter);
             this.lastSequence = new AtomicLong(afterSequence);
+        }
+
+        private long lastSequence() {
+            return lastSequence.get();
+        }
+
+        private synchronized int catchUp() {
+            int delivered = 0;
+            List<AgentRunEvent> events = replayService.eventsAfter(
+                    studentId, projectId, taskId, lastSequence.get());
+            for (AgentRunEvent event : events) {
+                if (!sendPersisted(event.getSequenceNumber(), event.getEventType(),
+                        payload(event.getPayload()), isTerminalState(event.getState()))) {
+                    break;
+                }
+                delivered++;
+                if (isTerminalState(event.getState())) {
+                    break;
+                }
+            }
+            return delivered;
         }
 
         private void heartbeat() {
@@ -188,28 +226,53 @@ public class AgentTaskEventSubscriptionService {
             }
         }
 
-        private void send(Long sequenceNumber, String eventType, Object eventPayload, boolean terminal) {
+        private synchronized void send(Long sequenceNumber, String eventType, Object eventPayload, boolean terminal) {
             if (sequenceNumber == null || eventType == null || eventType.isBlank()) {
                 return;
             }
             long sequence = sequenceNumber;
-            while (true) {
-                long previous = lastSequence.get();
-                if (sequence <= previous) {
-                    return;
-                }
-                if (lastSequence.compareAndSet(previous, sequence)) {
-                    break;
-                }
+            if (sequence <= lastSequence.get()) {
+                return;
+            }
+            if (sequence > lastSequence.get() + 1L) {
+                catchUp();
+            }
+            if (sequence <= lastSequence.get()) {
+                return;
+            }
+            if (sequence != lastSequence.get() + 1L) {
+                log.info("TASK_EVENT_OUTBOX_DEFERRED_FOR_GAP taskId={} expectedSequence={} receivedSequence={}",
+                        taskId, lastSequence.get() + 1L, sequence);
+                return;
+            }
+            sendPersisted(sequenceNumber, eventType, eventPayload, terminal);
+        }
+
+        private boolean sendPersisted(Long sequenceNumber, String eventType, Object eventPayload, boolean terminal) {
+            if (sequenceNumber == null || eventType == null || eventType.isBlank()) {
+                return false;
+            }
+            long sequence = sequenceNumber;
+            long previous = lastSequence.get();
+            if (sequence <= previous) {
+                return true;
+            }
+            if (sequence != previous + 1L) {
+                log.info("TASK_EVENT_DURABLE_GAP taskId={} expectedSequence={} receivedSequence={}",
+                        taskId, previous + 1L, sequence);
+                return false;
             }
             try {
                 publisher.send(sequence, eventType, eventPayload == null ? Map.of() : eventPayload);
+                lastSequence.set(sequence);
                 if (terminal) {
                     remove(this, "terminal_state");
                     emitter.complete();
                 }
+                return true;
             } catch (IOException exception) {
                 remove(this, "durable_send_failed");
+                return false;
             }
         }
     }

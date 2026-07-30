@@ -576,6 +576,26 @@ public class StudentAgentController {
         return response;
     }
 
+    @PostMapping(value={"/network/approve"})
+    public Result<Map<String, Object>> approveNetwork(@PathVariable Integer projectId,
+                                                       @RequestBody Map<String, String> request,
+                                                       Authentication auth) {
+        try {
+            String requestId = request == null ? null : request.get("requestId");
+            String action = request == null ? null : request.get("action");
+            if (requestId == null || requestId.isBlank()) return Result.error("requestId is required");
+            boolean approved = "once".equalsIgnoreCase(action) || "allow_once".equalsIgnoreCase(action);
+            if (!approved && !"reject".equalsIgnoreCase(action)) return Result.error("Unknown network decision");
+            PermissionService.PermissionApprovalResult result = this.permissionService.reply(
+                    projectId, this.getStudentId(auth), requestId,
+                    approved ? "allow_once" : "reject", "");
+            return Result.success(Map.of("approved", result.isGranted(), "scope", "single_command",
+                    "feedback", result.getFeedback() == null ? "" : result.getFeedback()));
+        } catch (Exception e) {
+            return Result.error(e.getMessage());
+        }
+    }
+
     @PostMapping(value={"/question/reply"})
     public Result<Map<String, Object>> replyQuestion(@PathVariable Integer projectId, @RequestBody Map<String, String> request, Authentication auth) {
         try {

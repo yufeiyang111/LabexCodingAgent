@@ -13,7 +13,9 @@ import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.labexagent.worker.SandboxWorker;
+import com.labex.labexagent.worker.WorkerRunSpec;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -39,6 +41,27 @@ class AgentApprovedCommandExecutorTest {
         verify(worker).execute(any(), request.capture(), any());
         assertThat(request.getValue().command()).containsExactly("npm", "test");
         assertThat(request.getValue().workingDirectory()).isEqualTo(workspace.toRealPath());
+    }
+
+    @Test
+    void consumesNetworkGrantBeforeEnablingWorkerNetwork() throws Exception {
+        SandboxWorker worker = mock(SandboxWorker.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        when(network.consumeGrant(7, 12, 71L, "npm test")).thenReturn(true);
+        when(worker.execute(any(), any(), any())).thenReturn(new ProcessExecutionResult(
+                ExecutionStatus.SUCCEEDED, 0, 10, "ok", false));
+        AgentApprovedCommandExecutor executor = new AgentApprovedCommandExecutor(worker, network);
+        CommandApproval approval = consumedApproval();
+        approval.setCommandOptions("timeout=60;longRunning=false;network=true");
+        approval.setStudentId(7);
+        approval.setProjectId(12);
+
+        executor.execute(approval, project());
+
+        ArgumentCaptor<WorkerRunSpec> run = ArgumentCaptor.forClass(WorkerRunSpec.class);
+        verify(worker).execute(run.capture(), any(), any());
+        assertThat(run.getValue().policy().networkEnabled()).isTrue();
+        verify(network).consumeGrant(7, 12, 71L, "npm test");
     }
 
     @Test

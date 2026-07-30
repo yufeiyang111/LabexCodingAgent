@@ -1,4 +1,5 @@
 import { upsertDurableToolCallState } from './agentToolCallState.js'
+import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 
 function toolResultStatus(success, result) {
   if (success === false) return 'error'
@@ -8,7 +9,7 @@ function toolResultStatus(success, result) {
   return 'completed'
 }
 
-﻿export function useAgentEventTimeline(options) {
+export function useAgentEventTimeline(options) {
   const {
     recordTaskEventCursor,
     currentAgentSession,
@@ -117,6 +118,8 @@ function toolResultStatus(success, result) {
         scheduleAgentRender()
         break
       case 'COMMAND_APPROVAL_REQUIRED':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.resumeTaskEventsAfterStream = true
         attachCommandApproval(assistantMsg, data)
         scheduleAgentRender()
         break
@@ -130,28 +133,21 @@ function toolResultStatus(success, result) {
         updateCommandApprovalLifecycle(assistantMsg, type, data)
         scheduleAgentRender()
         break
-      case 'PERMISSION_ASK': {
-        const last = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1]
-        if (last && last.status === 'running' && last.name === data.toolName) {
-          last.status = 'waiting_approval'
-          last.permissionRequest = data
-          last.summary = data.summary || last.summary
-          scheduleAgentRender()
-          break
-        }
-        assistantMsg.toolCalls.push({
-          name: 'permission_ask',
-          args: { toolName: data.toolName, input: data.input },
-          summary: data.summary || `${data.toolName} 需要确认`,
-          result: null,
-          status: 'waiting_approval',
-          permissionRequest: data,
-          _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1)
-        })
+      case 'NETWORK_ACCESS_ASK':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.resumeTaskEventsAfterStream = true
+        attachDurableInteraction(assistantMsg, 'network', data)
         scheduleAgentRender()
         break
-      }
+      case 'PERMISSION_ASK':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.resumeTaskEventsAfterStream = true
+        attachDurableInteraction(assistantMsg, 'permission', data)
+        scheduleAgentRender()
+        break
       case 'USER_QUESTION':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.resumeTaskEventsAfterStream = true
         attachUserQuestion(assistantMsg, data)
         scheduleAgentRender()
         break
@@ -188,6 +184,11 @@ function toolResultStatus(success, result) {
         assistantMsg.completionEvidence = data
         scheduleAgentRender()
         break
+      case 'RUN_INTERACTION_RESUME_QUEUED':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        resolveDurableInteraction(assistantMsg, data)
+        scheduleAgentRender()
+        break
       case 'RUN_STATE_COMPLETED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
         assistantMsg.runState = data.state || 'completed'
@@ -202,7 +203,8 @@ function toolResultStatus(success, result) {
         break
       case 'TASK_PAUSED':
         assistantMsg.waitingForCommandApproval = data.reason === 'command_approval'
-        assistantMsg.resumeTaskEventsAfterStream = data.reason === 'workspace_checkout' && data.resumeAgentLoop === true
+        assistantMsg.resumeTaskEventsAfterStream = data.resumeAgentLoop === true
+          || ['workspace_checkout', 'command_approval', 'permission', 'network', 'question'].includes(data.reason)
         assistantMsg.isStreaming = false
         stopMessageTimer(assistantMsg)
         agentLoading.value = false

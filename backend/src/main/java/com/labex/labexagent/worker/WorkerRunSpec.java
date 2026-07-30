@@ -17,4 +17,12 @@ public record WorkerRunSpec(String runId, Path workspaceRoot, WorkerPolicy polic
     public static WorkerRunSpec forWorkspace(String runId, Path workspaceRoot) {
         return new WorkerRunSpec(runId, workspaceRoot, WorkerPolicy.defaults());
     }
+
+    public static WorkerRunSpec forWorkspace(String runId, Path workspaceRoot, boolean networkEnabled) {
+        return forWorkspace(runId, workspaceRoot).withNetworkEnabled(networkEnabled);
+    }
+
+    public WorkerRunSpec withNetworkEnabled(boolean networkEnabled) {
+        return new WorkerRunSpec(runId, workspaceRoot, policy.withNetworkEnabled(networkEnabled));
+    }
 }

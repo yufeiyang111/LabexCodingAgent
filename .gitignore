@@ -48,3 +48,12 @@ LabexAgent.md
 CLAUDE.md
 AGENTS.md
 docs/
+
+# 架构治理规则与执行计划必须进入版本控制
+!AGENTS.md
+!docs/
+!docs/coding-agent-industrialization/
+!docs/coding-agent-industrialization/opencode-alignment-status.md
+!docs/superpowers/
+!docs/superpowers/plans/
+!docs/superpowers/plans/2026-07-29-agent-runtime-state-convergence.md

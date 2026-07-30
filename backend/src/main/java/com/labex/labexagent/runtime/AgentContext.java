@@ -23,6 +23,8 @@ public class AgentContext {
     private String mode = "agent";
     private String stage = "intake";
     private boolean environmentRecovery;
+    /** 当前工具调用是否已消费一次性网络授权；仅在本轮执行期间有效。 */
+    private boolean networkEnabled;
     private CancellationToken cancellationToken = CancellationToken.none();
     private boolean unverifiedChanges;
     private int writeCount;
@@ -170,6 +172,8 @@ public class AgentContext {
     public void setStage(String stage) { this.stage = stage == null || stage.isBlank() ? "intake" : stage; }
     public boolean isEnvironmentRecovery() { return environmentRecovery; }
     public void setEnvironmentRecovery(boolean value) { this.environmentRecovery = value; }
+    public boolean isNetworkEnabled() { return networkEnabled; }
+    public void setNetworkEnabled(boolean value) { this.networkEnabled = value; }
     public CancellationToken getCancellationToken() { return cancellationToken; }
     public void setCancellationToken(CancellationToken cancellationToken) {
         this.cancellationToken = cancellationToken == null ? CancellationToken.none() : cancellationToken;

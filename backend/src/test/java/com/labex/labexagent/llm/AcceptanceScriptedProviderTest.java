@@ -73,6 +73,16 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void recognizesApprovedPermissionContinuationAsResolved() {
+        List<LlmProvider.StreamChunk> resumed = stream(
+                "[acceptance:permission] permission continuation",
+                "Durable continuation context: Resolution status: approved");
+
+        assertTrue(resumed.stream().noneMatch(chunk -> "tool_call".equals(chunk.type())));
+        assertTrue(text(resumed).contains("tool permission decision resumed"));
+    }
+
+    @Test
     void keepsConversationMarkersIsolatedAndHonorsCancellation() {
         String first = text(stream("[acceptance:isolation:A-ONLY]"));
         String second = text(stream("[acceptance:isolation:B-ONLY]"));

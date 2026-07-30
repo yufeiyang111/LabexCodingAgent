@@ -1,6 +1,8 @@
 package com.labex.labexagent.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.verify;
 
 import com.labex.labexagent.service.AgentTaskService;
@@ -19,8 +21,10 @@ class AgentInteractionPauserTest {
 
         assertEquals("waiting_approval", permission.state());
         assertEquals("waiting_user", question.state());
-        verify(tasks).updateTask(7L, "waiting_approval", permission.title(), permission.detail());
-        verify(tasks).updateTask(8L, "waiting_user", question.title(), question.detail());
+        verify(tasks).updateTask(eq(7L), eq("waiting_approval"), eq(permission.title()), eq(permission.detail()),
+                startsWith("task-7-pause-"));
+        verify(tasks).updateTask(eq(8L), eq("waiting_user"), eq(question.title()), eq(question.detail()),
+                startsWith("task-8-pause-"));
     }
 }
 

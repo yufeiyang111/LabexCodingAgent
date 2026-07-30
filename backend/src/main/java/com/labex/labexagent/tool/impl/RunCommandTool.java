@@ -33,7 +33,7 @@ implements AgentTool {
     }
 
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("shell").description("\u6267\u884c\u4e00\u6761\u53d7\u9650\u76f4\u63a5\u547d\u4ee4\uff1b\u4e0d\u652f\u6301\u7ba1\u9053\u3001\u91cd\u5b9a\u5411\u3001\u53d8\u91cf\u3001\u547d\u4ee4\u66ff\u6362\u3001\u5f15\u53f7\u548c\u591a\u547d\u4ee4\u4e32\u8054\u3002\u5371\u9669\u547d\u4ee4\u9700\u8981\u7528\u6237\u786e\u8ba4\u3002").stringProperty("command", "\u8981\u6267\u884c\u7684\u76f4\u63a5\u547d\u4ee4", true).stringProperty("working_directory", "\u5de5\u4f5c\u76ee\u5f55\uff08\u76f8\u5bf9\u4e8e\u9879\u76ee\u6839\u76ee\u5f55\uff09", false).intProperty("timeout_seconds", "\u8d85\u65f6\u65f6\u95f4\uff08\u9ed8\u8ba460\u79d2\uff09", false).build();
+        return ToolDefinition.builder().name("shell").description("\u6267\u884c\u4e00\u6761\u53d7\u9650\u76f4\u63a5\u547d\u4ee4\uff1b\u4e0d\u652f\u6301\u7ba1\u9053\u3001\u91cd\u5b9a\u5411\u3001\u53d8\u91cf\u3001\u547d\u4ee4\u66ff\u6362\u3001\u5f15\u53f7\u548c\u591a\u547d\u4ee4\u4e32\u8054\u3002\u5371\u9669\u547d\u4ee4\u9700\u8981\u7528\u6237\u786e\u8ba4\u3002").stringProperty("command", "\u8981\u6267\u884c\u7684\u76f4\u63a5\u547d\u4ee4", true).stringProperty("working_directory", "\u5de5\u4f5c\u76ee\u5f55\uff08\u76f8\u5bf9\u4e8e\u9879\u76ee\u6839\u76ee\u5f55\uff09", false).intProperty("timeout_seconds", "\u8d85\u65f6\u65f6\u95f4\uff08\u9ed8\u8ba460\u79d2\uff09", false).booleanProperty("network", "\u662f\u5426\u8bf7\u6c42\u5f53\u524d\u547d\u4ee4\u542f\u7528\u7f51\u7edc\uff1b\u542f\u7528\u524d\u5fc5\u987b\u7ecf\u7528\u6237\u4e00\u6b21\u6027\u5ba1\u6279", false).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
@@ -80,6 +80,6 @@ implements AgentTool {
         String runId = context.getTaskId() == null
                 ? "agent-" + context.getSessionId()
                 : "task-" + context.getTaskId();
-        return WorkerRunSpec.forWorkspace(runId, context.getWorkspaceRoot());
+        return WorkerRunSpec.forWorkspace(runId, context.getWorkspaceRoot(), context.isNetworkEnabled());
     }
 }

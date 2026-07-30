@@ -1,4 +1,5 @@
 import { upsertDurableToolCallState } from './agentToolCallState.js'
+import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyRunMessageSnapshot, applyRunPartSnapshot } from './agentRunPartState.js'
 import { nextTick as vueNextTick } from 'vue'
 
@@ -115,28 +116,22 @@ export function useAgentTaskRuntime(options) {
       task.toolCalls.forEach(state => upsertDurableToolCallState(message, state))
     }
     const pending = task?.pendingInteraction
-    if (pending?.status === 'waiting' && pending.interactionType === 'question') {
-      const request = {
-        ...pending,
-        ...(pending.requestPayload || {}),
-        requestId: pending.requestId || pending.interactionId,
-        taskId: pending.taskId || task.taskId,
-        conversationId: pending.conversationId || task.conversationId,
-        sessionId: pending.sessionId || task.sessionId
-      }
-      let call = message.toolCalls?.find(item => item?.questionRequest?.requestId === request.requestId)
-      if (!call) call = [...(message.toolCalls || [])].reverse().find(item => item?.name === 'question')
-      if (!call) {
-        message.toolCalls ||= []
-        call = { name: 'question', args: request, summary: request.summary || '等待用户回答', result: null,
-          status: 'waiting_user', toolCallId: request.toolCallId || '', _order: (message._nextOrder = (message._nextOrder || 0) + 1) }
-        message.toolCalls.push(call)
-      }
-      call.status = 'waiting_user'
-      call.durableStatus = 'waiting_user'
-      call.questionRequest = request
-      call.summary = request.summary || call.summary || '等待用户回答'
+    if (pending?.status !== 'waiting') return
+    const request = {
+      ...pending,
+      ...(pending.requestPayload || {}),
+      requestId: pending.requestId || pending.interactionId,
+      taskId: pending.taskId || task.taskId,
+      conversationId: pending.conversationId || task.conversationId,
+      sessionId: pending.sessionId || task.sessionId
     }
+    const taskStatus = String(task?.status || '').toLowerCase()
+    if (!['waiting_user', 'waiting_approval'].includes(taskStatus)) {
+      // 恢复队列已接管任务时，交互行可能仍短暂保持 waiting；状态机优先，不能把旧审批卡重新渲染出来。
+      resolveDurableInteraction(message, request)
+      return
+    }
+    attachDurableInteraction(message, pending.interactionType, request)
   }
 
   async function recoverActiveTaskForConversation(conversationId) {
@@ -235,13 +230,23 @@ export function useAgentTaskRuntime(options) {
   }
 
   async function resumeTaskEventSubscription(taskId, assistantMsg, conversationId = currentAgentSession.value?.conversationId) {
-    const task = (await api.agentActiveTask(projectId.value, conversationId))?.data
-    if (!task || Number(task.taskId) !== Number(taskId) || task.conversationId !== conversationId
-        || (currentAgentSession.value?.sessionId && task.sessionId !== currentAgentSession.value.sessionId)) {
-      throw new Error('Agent task is no longer active')
+    let task = null
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const candidate = (await api.agentActiveTask(projectId.value, conversationId))?.data || null
+      if (candidate && Number(candidate.taskId) === Number(taskId) && candidate.conversationId === conversationId
+          && (!currentAgentSession.value?.sessionId || candidate.sessionId === currentAgentSession.value.sessionId)) {
+        task = candidate
+        break
+      }
+      if (candidate && (Number(candidate.taskId) !== Number(taskId) || isTerminalAgentTask(candidate))) break
+      await wait(250)
     }
+    if (!task) throw new Error('Agent task is no longer active')
     assistantMsg.taskId = task.taskId
+    reconcileRecoveredToolCalls(assistantMsg, task)
+    reconcileRecoveredCommandApproval(assistantMsg, task)
     assistantMsg.isStreaming = true
+    if (assistantMsg.timing) assistantMsg.timing.isRunning = true
     agentLoading.value = true
     void subscribeToTaskEvents(task, assistantMsg)
   }

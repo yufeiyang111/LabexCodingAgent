@@ -72,7 +72,7 @@ public class AgentRunResumeScheduler {
         }
         return switch (interaction.getInteractionType()) {
             case "question" -> "answered".equals(interaction.getStatus()) || "cancelled".equals(interaction.getStatus());
-            case "permission" -> "approved".equals(interaction.getStatus()) || "rejected".equals(interaction.getStatus());
+            case "permission", "network" -> "approved".equals(interaction.getStatus()) || "rejected".equals(interaction.getStatus());
             default -> false;
         };
     }
@@ -82,18 +82,40 @@ public class AgentRunResumeScheduler {
     }
 
     private AgentStreamRequest continuationRequest(AgentTask task, AgentRunInteraction interaction) {
-        String continuation = """
-                A pending user interaction has been resolved.
-                Interaction type: %s
-                Resolution status: %s
-                Original interaction payload: %s
-                User response payload: %s
-                Do not automatically repeat the tool call that was waiting for interaction. Reassess the current workspace and choose the next safe action.
-                """.formatted(
-                interaction.getInteractionType(),
-                interaction.getStatus(),
-                compact(interaction.getRequestPayload()),
-                compact(interaction.getResponsePayload()));
+        String continuation;
+        if ("network".equals(interaction.getInteractionType())
+                && interaction.getRequestPayload() != null
+                && interaction.getRequestPayload().contains("offline_failure_retry")) {
+            String retryInstruction = "approved".equals(interaction.getStatus())
+                    ? "Network approval was granted. Retry exactly the command in the original payload once, with the tool argument network=true; do not change the command or run a different command."
+                    : "Network approval was not granted. Do not retry the failed command with network access; reassess the workspace and use a safe offline alternative.";
+            continuation = """
+                    A pending user interaction has been resolved.
+                    Interaction type: %s
+                    Resolution status: %s
+                    Original interaction payload: %s
+                    User response payload: %s
+                    %s
+                    """.formatted(
+                    interaction.getInteractionType(),
+                    interaction.getStatus(),
+                    compact(interaction.getRequestPayload()),
+                    compact(interaction.getResponsePayload()),
+                    retryInstruction);
+        } else {
+            continuation = """
+                    A pending user interaction has been resolved.
+                    Interaction type: %s
+                    Resolution status: %s
+                    Original interaction payload: %s
+                    User response payload: %s
+                    Do not automatically repeat the tool call that was waiting for interaction. Reassess the current workspace and choose the next safe action.
+                    """.formatted(
+                    interaction.getInteractionType(),
+                    interaction.getStatus(),
+                    compact(interaction.getRequestPayload()),
+                    compact(interaction.getResponsePayload()));
+        }
         return AgentRunContinuationRequestFactory.fromTask(task, continuation);
     }
 

@@ -142,6 +142,6 @@ public class RunTestsTool implements AgentTool {
 
     private WorkerRunSpec workerRun(AgentContext context) {
         String runId = context.getTaskId() == null ? "agent-" + context.getSessionId() : "task-" + context.getTaskId();
-        return WorkerRunSpec.forWorkspace(runId, context.getWorkspaceRoot());
+        return WorkerRunSpec.forWorkspace(runId, context.getWorkspaceRoot(), context.isNetworkEnabled());
     }
 }

@@ -1,4 +1,5 @@
 import { upsertDurableToolCallState } from './agentToolCallState.js'
+import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 
 function nextOrder(message) {
   message._nextOrder = (message._nextOrder || 0) + 1
@@ -256,18 +257,12 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       }
       break
     }
-    case 'PERMISSION_ASK': {
-      const toolCall = message.toolCalls?.at(-1)
-      if (toolCall?.status === 'running' && toolCall.name === data.toolName) {
-        toolCall.status = 'waiting_approval'
-        toolCall.permissionRequest = data
-        toolCall.summary = data.summary || toolCall.summary
-        break
-      }
-      message.toolCalls = message.toolCalls || []
-      message.toolCalls.push({ name: 'permission_ask', args: { toolName: data.toolName, input: data.input }, summary: data.summary || `${data.toolName} \u9700\u8981\u786e\u8ba4`, result: null, status: 'waiting_approval', permissionRequest: data, _order: nextOrder(message) })
+    case 'NETWORK_ACCESS_ASK':
+      attachDurableInteraction(message, 'network', data)
       break
-    }
+    case 'PERMISSION_ASK':
+      attachDurableInteraction(message, 'permission', data)
+      break
     case 'USER_QUESTION': callbacks.onUserQuestion?.(message, data); break
     case 'WORKSPACE_WAITING':
       message.taskId = data.taskId || message.taskId || null
@@ -291,6 +286,10 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'COMPLETION_EVIDENCE':
       message.taskId = data.taskId || message.taskId || null
       message.completionEvidence = data
+      break
+    case 'RUN_INTERACTION_RESUME_QUEUED':
+      message.taskId = data.taskId || message.taskId || null
+      resolveDurableInteraction(message, data)
       break
     case 'RUN_STATE_COMPLETED':
       message.taskId = data.taskId || message.taskId || null

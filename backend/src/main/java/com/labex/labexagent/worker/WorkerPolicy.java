@@ -28,6 +28,11 @@ public record WorkerPolicy(
         return new WorkerPolicy("labex-agent-sandbox:latest", 1_000, 1_024, 256, false);
     }
 
+    /** 返回具有指定网络能力的新策略，不修改默认的离线策略。 */
+    public WorkerPolicy withNetworkEnabled(boolean enabled) {
+        return new WorkerPolicy(containerImage, cpuMillis, memoryMegabytes, maxPids, enabled);
+    }
+
     public Map<String, String> safeEnvironment(Path workspace, Map<String, String> hostEnvironment) {
         Map<String, String> environment = new LinkedHashMap<>();
         for (String name : HOST_ENVIRONMENT_ALLOWLIST) {
