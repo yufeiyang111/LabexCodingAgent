@@ -833,12 +833,16 @@ public class AgentLoopEngine {
                                         } else {
                                             this.taskService.updateTask(task.getTaskId(), "running", runningStep, null);
                                         }
+                                        // Provider 请求、上下文预算和最终门禁必须使用同一份持久化投影。
+                                        List<Map<String, Object>> providerMessagesBeforeManagement = this.providerMessagesForBudget(
+                                                task.getTaskId(), msgs);
                                         ContextAdmissionDecision preCompactionAdmission = this.evaluateContextAdmission(
-                                                modelConfig, sysPrompt, tools, contextPrompt, msgs);
+                                                modelConfig, sysPrompt, tools, contextPrompt, providerMessagesBeforeManagement);
                                         if (preCompactionAdmission != null
                                                 && preCompactionAdmission.action() == ContextAdmissionDecision.Action.BLOCK_STATIC_OVERFLOW) {
                                             this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
-                                                    sysPrompt, tools, contextPrompt, msgs, "STATIC_ADMISSION_BLOCKED");
+                                                    sysPrompt, tools, contextPrompt, providerMessagesBeforeManagement,
+                                                    "STATIC_ADMISSION_BLOCKED");
                                             this.stopForContextLimit(sse, conv, task, project, request, ctx, runLog,
                                                     preCompactionAdmission, i, visibleLanguage, emitter);
                                             return;
@@ -847,16 +851,18 @@ public class AgentLoopEngine {
                                         ContextManagementResult contextManagement = this.manageContextBeforeModel(
                                                 msgs, sysPrompt, tools, contextWindowPolicy, request.getMessage(), ctx,
                                                 sse, conv, modelConfig, studentId, cancellationToken);
+                                        List<Map<String, Object>> providerMessages = this.providerMessagesForBudget(
+                                                task.getTaskId(), msgs);
                                         ContextAdmissionDecision admission = this.evaluateContextAdmission(
-                                                modelConfig, sysPrompt, tools, contextPrompt, msgs);
+                                                modelConfig, sysPrompt, tools, contextPrompt, providerMessages);
                                         this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
-                                                sysPrompt, tools, contextPrompt, msgs, contextManagement.strategy());
+                                                sysPrompt, tools, contextPrompt, providerMessages, contextManagement.strategy());
                                         AgentSsePublisher modelEventPublisher = sse;
                                         AgentConversation modelEventConversation = conv;
                                         int modelIteration = i;
                                         AgentModelTurnExecutor.ModelTurnRequest modelTurnRequest =
                                                 new AgentModelTurnExecutor.ModelTurnRequest(
-                                                        sysPrompt, this.transcriptProjectionService.loadProviderMessages(task.getTaskId()), tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
+                                                        sysPrompt, providerMessages, tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
                                                         visibleLanguage, cancellationToken, new AgentModelTurnExecutor.EventSink() {
                                                     @Override
                                                     public void durable(String eventType, Object data) throws Exception {
@@ -2677,6 +2683,18 @@ public class AgentLoopEngine {
         return total;
     }
 
+    /**
+     * 返回 Provider 将要读取的同一份消息投影、避免 admission/status 与实际请求使用不同历史。
+     * 旧构造函数只服务于不执行 Provider 的纯单元测试。生产运行必须由 durable projector 提供数据。
+     */
+    List<Map<String, Object>> providerMessagesForBudget(Long taskId,
+                                                        List<Map<String, Object>> inMemoryMessages) {
+        if (taskId == null || this.transcriptProjectionService == null) {
+            return inMemoryMessages == null ? List.of() : inMemoryMessages;
+        }
+        return this.transcriptProjectionService.loadProviderMessages(taskId);
+    }
+
     ContextAdmissionDecision evaluateContextAdmission(AgentModelConfig modelConfig,
                                                         String systemPrompt,
                                                         List<Map<String, Object>> tools,
@@ -2807,7 +2825,9 @@ public class AgentLoopEngine {
         if (policy == null || !policy.autoCompactionEnabled()) {
             return ContextManagementResult.none();
         }
-        int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, msgs,
+        List<Map<String, Object>> budgetMessages = this.providerMessagesForBudget(
+                context == null ? null : context.getTaskId(), msgs);
+        int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, budgetMessages,
                 activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
         TurnAwareContextPruner pruner = new TurnAwareContextPruner(this::estimateTokens);
         // durable transcript 已成为 Provider 事实源时，禁止只改内存的旧式 tool-result prune。
@@ -2823,7 +2843,9 @@ public class AgentLoopEngine {
         }
         if (decision.action() == ContextWindowSupervisor.Action.PRUNE) {
             TurnAwareContextPruner.Result prune = pruner.prune(msgs, policy.tailTurns(), policy.preserveRecentTokens());
-            int afterPrune = this.requestTokenEstimator.estimate(sysPrompt, tools, msgs,
+            List<Map<String, Object>> postPruneBudgetMessages = this.providerMessagesForBudget(
+                    context == null ? null : context.getTaskId(), msgs);
+            int afterPrune = this.requestTokenEstimator.estimate(sysPrompt, tools, postPruneBudgetMessages,
                     activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
             if (prune.changed()) {
                 this.sendEvent(sse, conversation, "CONTEXT_PRUNED", contextEvent("tool_result_prune", estimatedTokens,

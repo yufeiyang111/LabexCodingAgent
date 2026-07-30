@@ -3,6 +3,8 @@ package com.labex.labexagent.runtime;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentModelConfig;
 import java.lang.reflect.Constructor;
@@ -34,6 +36,22 @@ class AgentLoopEngineContextBudgetTest {
         assertFalse(AgentLoopEngine.hasContextCompactionProgress(1_200, 1_200));
         assertFalse(AgentLoopEngine.hasContextCompactionProgress(1_200, 1_240));
     }
+    @Test
+    void usesTheDurableProviderProjectionForBudgetAndAdmissionInputs() throws Exception {
+        AgentLoopEngine engine = newEngine();
+        AgentTranscriptProjectionService projection = mock(AgentTranscriptProjectionService.class);
+        List<Map<String, Object>> memoryMessages = List.of(Map.of("role", "user", "content", "memory"));
+        List<Map<String, Object>> durableMessages = List.of(Map.of("role", "user", "content", "durable"));
+        when(projection.loadProviderMessages(71L)).thenReturn(durableMessages);
+
+        var field = AgentLoopEngine.class.getDeclaredField("transcriptProjectionService");
+        field.setAccessible(true);
+        field.set(engine, projection);
+
+        assertEquals(durableMessages, engine.providerMessagesForBudget(71L, memoryMessages));
+        assertEquals(memoryMessages, engine.providerMessagesForBudget(null, memoryMessages));
+    }
+
     @Test
     void skipsProactivePruningWhenNoConfiguredInputBudgetExists() throws Exception {
         List<Map<String, Object>> messages = oversizedMessages();
