@@ -28,6 +28,26 @@ class AgentTranscriptProjectionServiceTest {
     }
 
     @Test
+    void providerLoaderReadsDurableProjectionWithoutAcceptingMemoryInput() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        List<Map<String, Object>> messages = List.of(Map.of("role", "user", "content", "durable"));
+        when(transcript.loadProjectableTranscript(7L)).thenReturn(messages);
+
+        assertThat(new AgentTranscriptProjectionService(transcript).loadProviderMessages(7L))
+                .isEqualTo(messages);
+    }
+
+    @Test
+    void providerLoaderFailsClosedWhenDurableProjectionIsEmpty() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        when(transcript.loadProjectableTranscript(7L)).thenReturn(List.of());
+
+        assertThatThrownBy(() -> new AgentTranscriptProjectionService(transcript).loadProviderMessages(7L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Durable Provider transcript is empty");
+    }
+
+    @Test
     void fallsBackToMemoryAndReportsMismatchInsteadOfSilentlyChangingPrompt() {
         AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
         when(transcript.loadProjectableTranscript(7L))

@@ -359,3 +359,47 @@ test('active task recovery collapses duplicate cards for one pending durable int
   assert.equal(cards.length, 1)
   assert.equal(cards[0].toolCallId, 'question-call')
 })
+
+test('active task recovery keeps a submitted interaction non-actionable while the backend snapshot is still waiting', async () => {
+  const waitingTask = {
+    taskId: 77,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'waiting_user',
+    lastEventSequence: 24,
+    pendingInteraction: {
+      interactionId: 'interaction-77',
+      requestId: 'interaction-77',
+      interactionType: 'question',
+      status: 'waiting',
+      taskId: 77,
+      conversationId: 'conversation-a',
+      sessionId: 'session-a',
+      toolCallId: 'question-call-77',
+      requestPayload: { question: 'Continue?', summary: 'Choose next step' }
+    }
+  }
+  let activeTaskCalls = 0
+  const state = harness({ api: {
+    agentActiveTask: async () => ({ data: ++activeTaskCalls === 1
+      ? waitingTask
+      : { ...waitingTask, status: 'completed', pendingInteraction: null } }),
+    agentTasks: async () => ({ data: [] })
+  } })
+  state.messages.value.push({
+    role: 'assistant', taskId: 77, toolCalls: [
+      {
+        name: 'question',
+        toolCallId: 'question-call-77',
+        status: 'running',
+        interactionStatus: 'resuming',
+        questionRequest: { requestId: 'interaction-77', question: 'Continue?' }
+      }
+    ], _nextOrder: 1, timing: {}
+  })
+
+  assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), true)
+
+  assert.equal(state.messages.value[0].toolCalls[0].status, 'running')
+  assert.equal(state.messages.value[0].toolCalls[0].durableStatus, 'resuming')
+})

@@ -8,6 +8,14 @@ function toolResultStatus(success, result) {
   if (text.includes('status=UNAVAILABLE')) return 'warning'
   return 'completed'
 }
+function resolveWaitingInteractions(assistantMsg) {
+  for (const call of assistantMsg?.toolCalls || []) {
+    if (!['waiting_user', 'waiting_approval'].includes(call.status) && call.interactionStatus !== 'resuming') continue
+    call.status = 'completed'
+    call.durableStatus = 'completed'
+    call.interactionStatus = 'resolved'
+  }
+}
 
 export function useAgentEventTimeline(options) {
   const {
@@ -192,6 +200,7 @@ export function useAgentEventTimeline(options) {
       case 'RUN_STATE_COMPLETED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
         assistantMsg.runState = data.state || 'completed'
+        resolveWaitingInteractions(assistantMsg)
         scheduleAgentRender()
         break
       case 'FINAL_DELTA':
@@ -216,6 +225,7 @@ export function useAgentEventTimeline(options) {
         })
         break
       case 'DONE':
+        resolveWaitingInteractions(assistantMsg)
         flushThinkingDisplay(assistantMsg)
         assistantMsg.isStreaming = false
         stopMessageTimer(assistantMsg)

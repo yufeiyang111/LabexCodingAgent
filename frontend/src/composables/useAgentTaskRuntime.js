@@ -125,6 +125,18 @@ export function useAgentTaskRuntime(options) {
       conversationId: pending.conversationId || task.conversationId,
       sessionId: pending.sessionId || task.sessionId
     }
+    const pendingRequestId = String(request.requestId || request.interactionId || '')
+    const resumingCall = message.toolCalls?.find(call => {
+      if (call?.interactionStatus !== 'resuming' || !pendingRequestId) return false
+      return ['questionRequest', 'permissionRequest', 'networkRequest'].some(field =>
+        String(call[field]?.requestId || call[field]?.interactionId || '') === pendingRequestId
+      )
+    })
+    if (resumingCall) {
+      // 用户已经提交交互，恢复订阅期间后端快照可能短暂仍为 waiting；不能把已提交的卡片重新渲染成可操作状态。
+      resolveDurableInteraction(message, request)
+      return
+    }
     const taskStatus = String(task?.status || '').toLowerCase()
     if (!['waiting_user', 'waiting_approval'].includes(taskStatus)) {
       // 恢复队列已接管任务时，交互行可能仍短暂保持 waiting；状态机优先，不能把旧审批卡重新渲染出来。

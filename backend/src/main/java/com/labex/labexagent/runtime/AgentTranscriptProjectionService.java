@@ -38,9 +38,10 @@ public final class AgentTranscriptProjectionService {
     }
 
     /**
-      * 持久化运行时边界说明。
-      * 持久化运行时边界说明。
+     * 兼容诊断接口：比较派生内存投影和 durable transcript。
+     * Provider 请求不得再调用此接口，避免把内存列表继续当成事实源。
      */
+    @Deprecated(forRemoval = true)
     public Projection projectForProvider(Long taskId, List<Map<String, Object>> inMemoryMessages) {
         if (this.transcriptService == null) {
             return new Projection(providerProjector.project(inMemoryMessages), Source.MEMORY,
@@ -69,6 +70,21 @@ public final class AgentTranscriptProjectionService {
         return new Projection(memoryProjection, Source.MEMORY, true,
                 "durable=" + durable.messages().size() + ",memory=" + memoryProjection.size()
                         + "," + durable.detail());
+    }
+
+    /**
+     * Provider 的唯一读取入口：从 durable transcript/compaction 投影直接构造请求消息。
+     * 缺少持久化事实时必须失败，而不是回退到内存缓存。
+     */
+    public List<Map<String, Object>> loadProviderMessages(Long taskId) {
+        if (this.transcriptService == null) {
+            throw new IllegalStateException("Durable Provider transcript service is unavailable");
+        }
+        Projection projection = loadDurableProjection(taskId);
+        if (projection.messages().isEmpty()) {
+            throw new IllegalStateException("Durable Provider transcript is empty for taskId=" + taskId);
+        }
+        return projection.messages();
     }
 
     /** JVM 重启时不依赖旧内存，直接从 transcript + latest compaction epoch 重建。 */

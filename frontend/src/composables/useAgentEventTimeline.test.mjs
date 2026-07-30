@@ -197,11 +197,19 @@ test('renders a context admission blocker as durable actionable state', () => {
 test('attaches server completion evidence before terminal completion', () => {
   const state = harness()
   const assistant = message()
+  assistant.toolCalls.push({
+    name: 'question',
+    status: 'waiting_user',
+    interactionStatus: 'resuming',
+    questionRequest: { requestId: 'question-22' }
+  })
   const evidence = { taskId: 22, changedFiles: ['src/App.vue'], successfulVerifications: ['npm run build'], failedVerifications: [], unresolvedRisks: [], satisfied: true }
   state.handleAgentEvent({ type: 'COMPLETION_EVIDENCE', data: evidence }, assistant)
   state.handleAgentEvent({ type: 'RUN_STATE_COMPLETED', data: { taskId: 22, state: 'completed' } }, assistant)
   assert.deepEqual(assistant.completionEvidence, evidence)
   assert.equal(assistant.runState, 'completed')
+  assert.equal(assistant.toolCalls[0].status, 'completed')
+  assert.equal(assistant.toolCalls[0].interactionStatus, 'resolved')
 })
 
 test('replays a durable thinking snapshot after a refresh during an active task', () => {

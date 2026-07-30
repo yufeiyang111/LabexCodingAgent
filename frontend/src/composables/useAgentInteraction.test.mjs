@@ -37,6 +37,30 @@ test('submits a rejected permission with a safe default feedback message', async
   }]])
 })
 
+test('accepts a durable interactionId when the live projection omitted requestId', async () => {
+  const { interaction, calls } = createHarness()
+  const call = { status: 'waiting_approval', permissionRequest: { interactionId: 'interaction-1' } }
+
+  const result = await interaction.submitPermissionDecision({ call, action: 'once', feedback: '' })
+
+  assert.deepEqual(result, { handled: true, success: true })
+  assert.deepEqual(calls, [['permission', 42, {
+    requestId: 'interaction-1', action: 'once', feedback: ''
+  }]])
+})
+
+test('accepts a durable question interactionId when requestId was not projected', async () => {
+  const { interaction, calls } = createHarness()
+  const call = { status: 'waiting_user', questionRequest: { interactionId: 'question-interaction-1' } }
+
+  const result = await interaction.submitQuestionReply({ call, action: 'answer', answer: '??' })
+
+  assert.deepEqual(result, { handled: true, success: true })
+  assert.deepEqual(calls, [['question', 42, {
+    requestId: 'question-interaction-1', action: 'answer', answer: '??'
+  }]])
+})
+
 test('submits network approval through the isolated one-time endpoint', async () => {
   const { interaction, calls } = createHarness({
     agentApproveNetwork: async (id, payload) => {

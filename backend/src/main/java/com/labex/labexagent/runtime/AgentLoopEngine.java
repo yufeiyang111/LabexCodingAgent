@@ -856,7 +856,7 @@ public class AgentLoopEngine {
                                         int modelIteration = i;
                                         AgentModelTurnExecutor.ModelTurnRequest modelTurnRequest =
                                                 new AgentModelTurnExecutor.ModelTurnRequest(
-                                                        sysPrompt, this.projectProviderMessages(task.getTaskId(), msgs), tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
+                                                        sysPrompt, this.transcriptProjectionService.loadProviderMessages(task.getTaskId()), tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
                                                         visibleLanguage, cancellationToken, new AgentModelTurnExecutor.EventSink() {
                                                     @Override
                                                     public void durable(String eventType, Object data) throws Exception {
@@ -2810,10 +2810,14 @@ public class AgentLoopEngine {
         int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, msgs,
                 activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
         TurnAwareContextPruner pruner = new TurnAwareContextPruner(this::estimateTokens);
+        // durable transcript 已成为 Provider 事实源时，禁止只改内存的旧式 tool-result prune。
+        // 该路径既无法重启恢复，也会让 Provider 请求与数据库投影分叉；统一走可持久化 compaction。
+        boolean durableProviderProjection = this.transcriptProjectionService != null;
+        boolean hasPrunableToolResult = !durableProviderProjection
+                && policy.pruningEnabled()
+                && pruner.hasPrunableHistoricalToolResult(msgs, policy.tailTurns(), policy.preserveRecentTokens());
         ContextWindowSupervisor.Decision decision = new ContextWindowSupervisor().decide(
-                policy, estimatedTokens,
-                policy.pruningEnabled() && pruner.hasPrunableHistoricalToolResult(
-                        msgs, policy.tailTurns(), policy.preserveRecentTokens()));
+                policy, estimatedTokens, hasPrunableToolResult);
         if (decision.action() == ContextWindowSupervisor.Action.NONE) {
             return ContextManagementResult.none();
         }
@@ -3434,15 +3438,6 @@ public class AgentLoopEngine {
         } else {
             this.toolCallJournalService.failed(taskId, toolCallId, toolName, arguments, iteration, detail);
         }
-    }
-
-    private List<Map<String, Object>> projectProviderMessages(Long taskId,
-                                                               List<Map<String, Object>> inMemoryMessages) {
-        if (this.transcriptProjectionService == null) {
-            // 持久化运行时边界说明。
-            return this.providerMessageProjector.project(inMemoryMessages);
-        }
-        return this.transcriptProjectionService.projectForProvider(taskId, inMemoryMessages).messages();
     }
 
     private void sendEvent(AgentSsePublisher sse, AgentConversation conv, String type, Object data) throws Exception {
