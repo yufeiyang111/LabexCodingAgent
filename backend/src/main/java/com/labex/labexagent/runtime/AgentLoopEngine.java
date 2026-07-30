@@ -23,6 +23,7 @@ import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTransitionKey;
 import com.labex.labexagent.run.AgentRunArtifactService;
+import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.CommandFailureGuard;
 import com.labex.labexagent.run.AgentRecoveryProperties;
@@ -170,6 +171,8 @@ public class AgentLoopEngine {
     private AgentRunFinalizer runFinalizer;
     private AgentRunArtifactService artifactService;
     private AgentToolCallJournalService toolCallJournalService;
+    private AgentRunTranscriptService transcriptService;
+    private AgentTranscriptProjectionService transcriptProjectionService;
 
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService) {
         this(s, t, c, cr, mm, oc, r, cs, ts, pf, mcs, tt, skillService, mcpServerService,
@@ -260,6 +263,16 @@ public class AgentLoopEngine {
     @Autowired(required = false)
     void setToolCallJournalService(AgentToolCallJournalService toolCallJournalService) {
         this.toolCallJournalService = toolCallJournalService;
+    }
+
+    @Autowired(required = false)
+    void setTranscriptService(AgentRunTranscriptService transcriptService) {
+        this.transcriptService = transcriptService;
+    }
+
+    @Autowired(required = false)
+    void setTranscriptProjectionService(AgentTranscriptProjectionService transcriptProjectionService) {
+        this.transcriptProjectionService = transcriptProjectionService;
     }
 
     @Autowired(required = false)
@@ -449,6 +462,67 @@ public class AgentLoopEngine {
         }
     }
 
+    /**
+     * 在保留现有 List 调用方式的同时，把每次 append 双写到 durable transcript。
+     * set/remove 属于后续 compaction epoch 的职责，本轮只记录追加事实。
+     */
+    private final class TranscriptMessageList extends ArrayList<Map<String, Object>> {
+        private final Long taskId;
+        private final long executionEpoch;
+        private long nextSequence;
+
+        private TranscriptMessageList(Long taskId, long executionEpoch) {
+            this.taskId = taskId;
+            this.executionEpoch = executionEpoch;
+            this.nextSequence = transcriptService == null ? 0L : transcriptService.nextSequence(taskId);
+        }
+
+        private void restore(List<Map<String, Object>> messages) {
+            super.clear();
+            if (messages == null) return;
+            for (Map<String, Object> message : messages) {
+                super.add(providerMessageProjector.copyMessage(message));
+            }
+        }
+
+        @Override
+        public boolean add(Map<String, Object> message) {
+            Map<String, Object> durableCopy = providerMessageProjector.copyMessage(message);
+            boolean added = super.add(durableCopy);
+            if (added && transcriptService != null) {
+                transcriptService.appendMessage(taskId, executionEpoch, nextSequence++, durableCopy);
+            }
+            return added;
+        }
+
+        @Override
+        public void add(int index, Map<String, Object> element) {
+            if (index != size()) {
+                throw new UnsupportedOperationException("Provider transcript only supports append order");
+            }
+            add(element);
+        }
+
+        @Override
+        public boolean addAll(Collection<? extends Map<String, Object>> messages) {
+            boolean changed = false;
+            if (messages == null) return false;
+            for (Map<String, Object> message : messages) {
+                changed |= add(message);
+            }
+            return changed;
+        }
+
+        @Override
+        public boolean addAll(int index, Collection<? extends Map<String, Object>> messages) {
+            if (index != size()) {
+                throw new UnsupportedOperationException("Provider transcript only supports append order");
+            }
+            return addAll(messages);
+        }
+    }
+
+
     /*
      * Enabled aggressive block sorting
      * Enabled unnecessary exception pruning
@@ -594,7 +668,8 @@ public class AgentLoopEngine {
             llmConfig = llmConfig.withPromptCacheKey(PromptCacheKeyFactory.forStablePrefix(
                     studentId, modelConfig.getConfigId(), llmConfig.baseUrl(), llmConfig.modelName(),
                     sysPrompt, GSON.toJson(tools)));
-            ArrayList<Map<String, Object>> msgs = new ArrayList<Map<String, Object>>();
+            long transcriptEpoch = task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch();
+            TranscriptMessageList msgs = new TranscriptMessageList(task.getTaskId(), transcriptEpoch);
             String activeFileContent = this.readActiveFile(studentId, projectId, request.getActivePath());
             String projectRules = this.readProjectRules(studentId, projectId);
             String projectIndex = this.readProjectIndex(studentId, projectId);
@@ -610,8 +685,25 @@ public class AgentLoopEngine {
             ContextUsageEstimator.PromptContext contextPrompt = ContextUsageEstimator.PromptContext.of(
                     projectRules, memoryContext, sessionContext, recentRunLog, checkpoint, globalSkills,
                     mcpContext, modePolicy, languagePolicy, initialContextMessage);
-            msgs.add(Map.of("role", "user", "content", initialContextMessage));
-            msgs.add(Map.of("role", "user", "content", request.getMessage()));
+            boolean transcriptRestored = false;
+            if (this.transcriptService != null) {
+                try {
+                    List<Map<String, Object>> persistedMessages = this.transcriptService.loadProjectableTranscript(task.getTaskId());
+                    if (!persistedMessages.isEmpty()) {
+                        msgs.restore(persistedMessages);
+                        transcriptRestored = true;
+                    }
+                } catch (RuntimeException transcriptFailure) {
+                    log.warn("Unable to restore durable Provider transcript taskId={}: {}", task.getTaskId(), transcriptFailure.getMessage());
+                }
+            }
+            if (!transcriptRestored) {
+                msgs.add(Map.of("role", "user", "content", initialContextMessage));
+                msgs.add(Map.of("role", "user", "content", request.getMessage()));
+            } else if (resumedRun && request.getMessage() != null && !request.getMessage().isBlank()) {
+                // 恢复请求中的用户回复是新的 durable turn，不能依赖旧进程内存。
+                msgs.add(Map.of("role", "user", "content", request.getMessage()));
+            }
             log.info("AGENT_CONTEXT_READY taskId={} buildMs={} systemPromptChars={} contextChars={} userChars={} toolCount={} toolSchemaChars={} estimatedContextTokens={}",
                     task.getTaskId(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - contextBuildStartedAt),
                     sysPrompt.length(), initialContextMessage.length(), request.getMessage() == null ? 0 : request.getMessage().length(),
@@ -646,7 +738,7 @@ public class AgentLoopEngine {
                                             boolean noProgressStop = "non_progress".equals(iterationDecision.reason());
                                             String stopReason = noProgressStop
                                                     ? this.localText(visibleLanguage,
-                                                            "?? " + iterationDecision.nonProgressIterations() + " ????????????????????????????????????????????",
+                                                            "连续 " + iterationDecision.nonProgressIterations() + " 次没有取得进展，已触发循环保护。",
                                                             "No confirmed progress was produced for " + iterationDecision.nonProgressIterations() + " consecutive model turns. Further requests were stopped; add guidance, switch strategy, or resume from the current progress.")
                                                     : this.localText(visibleLanguage,
                                                             "\u5df2\u8fbe\u5230\u914d\u7f6e\u7684\u6700\u7ec8\u4fdd\u9669\u4e0a\u9650 " + iterationDecision.configuredHardMax() + " \u8f6e\u3002\u8be5\u4e0a\u9650\u9ed8\u8ba4\u5173\u95ed\uff1b\u5f53\u524d\u8fd0\u884c\u5df2\u5b89\u5168\u505c\u6b62\u3002",
@@ -694,7 +786,7 @@ public class AgentLoopEngine {
                                         int modelIteration = i;
                                         AgentModelTurnExecutor.ModelTurnRequest modelTurnRequest =
                                                 new AgentModelTurnExecutor.ModelTurnRequest(
-                                                        sysPrompt, this.providerMessageProjector.project(msgs), tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
+                                                        sysPrompt, this.projectProviderMessages(task.getTaskId(), msgs), tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
                                                         visibleLanguage, cancellationToken, new AgentModelTurnExecutor.EventSink() {
                                                     @Override
                                                     public void durable(String eventType, Object data) throws Exception {
@@ -2963,6 +3055,25 @@ public class AgentLoopEngine {
             this.toolCallJournalService.completed(taskId, toolCallId, toolName, arguments, iteration, detail);
         } else {
             this.toolCallJournalService.failed(taskId, toolCallId, toolName, arguments, iteration, detail);
+        }
+    }
+
+    private List<Map<String, Object>> projectProviderMessages(Long taskId,
+                                                               List<Map<String, Object>> inMemoryMessages) {
+        if (this.transcriptProjectionService == null) {
+            return this.providerMessageProjector.project(inMemoryMessages);
+        }
+        try {
+            AgentTranscriptProjectionService.Projection projection =
+                    this.transcriptProjectionService.project(taskId, inMemoryMessages);
+            if (projection.shadowMismatch()) {
+                log.warn("AGENT_TRANSCRIPT_SHADOW_MISMATCH taskId={} detail={}", taskId, projection.detail());
+            }
+            return projection.messages();
+        } catch (RuntimeException transcriptFailure) {
+            log.warn("AGENT_TRANSCRIPT_PROJECTION_FAILED taskId={} errorType={} message={}", taskId,
+                    transcriptFailure.getClass().getSimpleName(), transcriptFailure.getMessage());
+            return this.providerMessageProjector.project(inMemoryMessages);
         }
     }
 

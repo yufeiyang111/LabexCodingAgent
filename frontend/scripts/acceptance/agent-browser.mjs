@@ -302,6 +302,22 @@ async function runScenario() {
   if (!questionCard || !questionCard.text.includes('\u662f\u5426\u7ee7\u7eed\u771f\u5b9e\u9a8c\u6536\uff1f') || questionCard.optionCount < 1) {
     throw new Error(`Question reply component was not hydrated: ${JSON.stringify(questionCard)}`)
   }
+  const waitingTasks = await api(`/student/projects/${projectId}/agent/tasks`)
+  const waitingTask = [...waitingTasks]
+    .sort((left, right) => Number(right.taskId) - Number(left.taskId))
+    .find(task => task.status === 'waiting_user')
+  if (!waitingTask?.conversationId) {
+    throw new Error(`No durable waiting_user task was found: ${JSON.stringify(waitingTasks)}`)
+  }
+  const activeTask = await api(`/student/projects/${projectId}/agent/conversations/${encodeURIComponent(waitingTask.conversationId)}/active-task`)
+  const providerMessages = (activeTask?.runMessages || []).filter(message => String(message.messageKey || '').startsWith('provider:'))
+  const providerParts = (activeTask?.parts || []).filter(part => String(part.partKey || '').startsWith('provider:'))
+  if (providerMessages.length < 3) {
+    throw new Error(`Durable Provider transcript messages were not persisted: ${JSON.stringify(providerMessages)}`)
+  }
+  if (!providerParts.some(part => part.partType === 'tool_call' && part.toolCallId)) {
+    throw new Error(`Durable Provider tool-call part was not persisted: ${JSON.stringify(providerParts)}`)
+  }
   await client.evaluate(`document.querySelector('.tc-question .tc-option-btn')?.click()`)
   await client.evaluate(`document.querySelector('.tc-question .tc-approval-btn.primary')?.click()`)
   await waitFor(
@@ -382,6 +398,8 @@ async function runScenario() {
     conversationIsolation: true,
     refreshReplayDeduplicated: true,
     questionReplyComponent: true,
+    durableProviderMessages: providerMessages.length,
+    durableProviderParts: providerParts.length,
     cursorKeys: cursorKeys.length,
     staticContextBlockerCard: true,
     completionEvidenceCard: true,

@@ -1,0 +1,385 @@
+package com.labex.labexagent.run;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.labex.entity.AgentRunMessage;
+import com.labex.entity.AgentRunPart;
+import com.labex.entity.AgentTask;
+import com.labex.mapper.AgentRunMessageMapper;
+import com.labex.mapper.AgentRunPartMapper;
+import com.labex.mapper.AgentTaskMapper;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * Agent Provider transcript 的持久化边界。
+ *
+ * <p>该服务只使用 Run Message/Part 作为事实源：Message 保存 role/content，
+ * assistant 的 tool_calls 和 tool 的执行结果分别保存为可重建 Part/Message。
+ * Provider 请求可以从这里重新构造，不依赖某个 JVM 中仍然存活的 msgs 列表。</p>
+ */
+@Service
+public class AgentRunTranscriptService {
+    private static final Gson GSON = new Gson();
+    private static final String PROVIDER_KEY_PREFIX = "provider:";
+
+    private final AgentRunMessageMapper messageMapper;
+    private final AgentRunPartMapper partMapper;
+    private final AgentTaskMapper taskMapper;
+
+    public AgentRunTranscriptService(AgentRunMessageMapper messageMapper,
+                                     AgentRunPartMapper partMapper,
+                                     AgentTaskMapper taskMapper) {
+        this.messageMapper = messageMapper;
+        this.partMapper = partMapper;
+        this.taskMapper = taskMapper;
+    }
+
+    /** 以稳定序号追加一条 Provider message；重复恢复只更新同一个 key。 */
+    @Transactional(rollbackFor = Exception.class)
+    public void appendMessage(Long taskId, long executionEpoch, long sequence, Map<String, Object> providerMessage) {
+        if (taskId == null || taskId <= 0 || providerMessage == null) {
+            return;
+        }
+        String role = stringValue(providerMessage.get("role"));
+        if (role.isBlank()) {
+            throw new IllegalArgumentException("Provider transcript message role is required");
+        }
+        String key = providerKey(executionEpoch, sequence);
+        AgentRunMessage message = upsertMessage(taskId, key, sequence, role,
+                stringValue(providerMessage.get("content")), messageMetadata(executionEpoch, providerMessage));
+        if ("assistant".equalsIgnoreCase(role)) {
+            appendAssistantToolParts(taskId, message, executionEpoch, sequence, providerMessage);
+        } else if ("tool".equalsIgnoreCase(role)) {
+            appendToolResultPart(taskId, message, executionEpoch, sequence, providerMessage);
+        }
+    }
+
+    /** 将当前持久化 transcript 按 Provider 协议重建。 */
+    public List<Map<String, Object>> loadProjectableTranscript(Long taskId) {
+        if (taskId == null || taskId <= 0) {
+            return List.of();
+        }
+        List<AgentRunMessage> messages = messageMapper.selectList(new LambdaQueryWrapper<AgentRunMessage>()
+                .eq(AgentRunMessage::getTaskId, taskId)
+                .likeRight(AgentRunMessage::getMessageKey, PROVIDER_KEY_PREFIX)
+                .orderByAsc(AgentRunMessage::getSequenceNumber)
+                .orderByAsc(AgentRunMessage::getRunMessageId));
+        if (messages == null || messages.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (AgentRunMessage message : messages) {
+            String role = stringValue(message.getRole());
+            if ("assistant".equalsIgnoreCase(role)) {
+                result.add(rebuildAssistant(message, taskId));
+            } else if ("tool".equalsIgnoreCase(role)) {
+                result.add(rebuildTool(message));
+            } else {
+                result.add(simpleMessage(role, message.getContent()));
+            }
+        }
+        return protocolSafeProjection(result);
+    }
+
+    /**
+     * 恢复时只返回完整 turn。审批或进程中断留下的半个 tool batch 不能发送给 Provider，
+     * 否则会产生 orphan/missing tool result 协议错误；开放批次仍保留在数据库中供恢复器处理。
+     */
+    private List<Map<String, Object>> protocolSafeProjection(List<Map<String, Object>> messages) {
+        List<Map<String, Object>> projected = new ArrayList<>();
+        int index = 0;
+        while (index < messages.size()) {
+            Map<String, Object> message = messages.get(index);
+            String role = stringValue(message.get("role"));
+            if (!"assistant".equalsIgnoreCase(role)
+                    || !(message.get("tool_calls") instanceof List<?> calls)
+                    || calls.isEmpty()) {
+                if ("tool".equalsIgnoreCase(role)) {
+                    throw new IllegalStateException("Orphan durable tool result at message index " + index);
+                }
+                projected.add(message);
+                index++;
+                continue;
+            }
+
+            Set<String> pendingToolCalls = new LinkedHashSet<>();
+            for (Object rawCall : calls) {
+                if (rawCall instanceof Map<?, ?> call) {
+                    String id = stringValue(call.get("id"));
+                    if (!id.isBlank()) pendingToolCalls.add(id);
+                }
+            }
+            List<Map<String, Object>> batch = new ArrayList<>();
+            batch.add(message);
+            int cursor = index + 1;
+            while (cursor < messages.size() && !pendingToolCalls.isEmpty()) {
+                Map<String, Object> candidate = messages.get(cursor);
+                if (!"tool".equalsIgnoreCase(stringValue(candidate.get("role")))) {
+                    break;
+                }
+                pendingToolCalls.remove(stringValue(candidate.get("tool_call_id")));
+                batch.add(candidate);
+                cursor++;
+            }
+            if (pendingToolCalls.isEmpty()) {
+                projected.addAll(batch);
+            }
+            // 未完成批次整体跳过；cursor 指向的后续 user/assistant turn 仍继续参与恢复投影。
+            index = cursor;
+        }
+        return List.copyOf(projected);
+    }
+
+    /** 当前 transcript 的下一个追加序号，用于恢复进程后的幂等续写。 */
+    public long nextSequence(Long taskId) {
+        if (taskId == null || taskId <= 0) {
+            return 0L;
+        }
+        List<AgentRunMessage> messages = messageMapper.selectList(new LambdaQueryWrapper<AgentRunMessage>()
+                .eq(AgentRunMessage::getTaskId, taskId)
+                .likeRight(AgentRunMessage::getMessageKey, PROVIDER_KEY_PREFIX)
+                .orderByDesc(AgentRunMessage::getSequenceNumber)
+                .last("LIMIT 1"));
+        if (messages == null || messages.isEmpty() || messages.get(0).getSequenceNumber() == null) {
+            return 0L;
+        }
+        return messages.get(0).getSequenceNumber() + 1L;
+    }
+
+    /** 判断数据库 transcript 是否已经具备可发送给 Provider 的完整协议。 */
+    public boolean hasProjectableTranscript(Long taskId) {
+        try {
+            return !loadProjectableTranscript(taskId).isEmpty();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private AgentRunMessage upsertMessage(Long taskId, String key, long sequence, String role,
+                                          String content, Map<String, Object> metadata) {
+        AgentRunMessage message = messageMapper.selectOne(new LambdaQueryWrapper<AgentRunMessage>()
+                .eq(AgentRunMessage::getTaskId, taskId)
+                .eq(AgentRunMessage::getMessageKey, key)
+                .last("LIMIT 1"));
+        AgentTask task = taskMapper.selectById(taskId);
+        if (message == null) {
+            message = new AgentRunMessage();
+            message.setTaskId(taskId);
+            message.setMessageKey(key);
+            message.setCreateTime(LocalDateTime.now());
+            if (task != null) {
+                message.setConversationId(task.getConversationId());
+                message.setStudentId(task.getStudentId());
+                message.setProjectId(task.getProjectId());
+            }
+        }
+        message.setSequenceNumber(sequence);
+        message.setRole(role);
+        message.setStatus("tool".equalsIgnoreCase(role) ? "completed" : "durable");
+        message.setContent(limit(content, 12_000));
+        message.setMetadata(GSON.toJson(metadata));
+        message.setUpdateTime(LocalDateTime.now());
+        if (message.getRunMessageId() == null) {
+            messageMapper.insert(message);
+        } else {
+            messageMapper.updateById(message);
+        }
+        return message;
+    }
+
+    private void appendAssistantToolParts(Long taskId, AgentRunMessage message, long epoch,
+                                          long sequence, Map<String, Object> providerMessage) {
+        Object rawCalls = providerMessage.get("tool_calls");
+        if (!(rawCalls instanceof List<?> calls)) {
+            return;
+        }
+        for (int index = 0; index < calls.size(); index++) {
+            if (!(calls.get(index) instanceof Map<?, ?> rawCall)) {
+                throw new IllegalArgumentException("assistant tool_calls must contain objects");
+            }
+            String id = stringValue(rawCall.get("id"));
+            String type = stringValue(rawCall.get("type"));
+            Object rawFunction = rawCall.get("function");
+            if (id.isBlank() || !(rawFunction instanceof Map<?, ?> function)) {
+                throw new IllegalArgumentException("assistant tool_call id and function are required");
+            }
+            String name = stringValue(function.get("name"));
+            String arguments = stringValue(function.get("arguments"));
+            if (name.isBlank()) {
+                throw new IllegalArgumentException("assistant tool_call function.name is required");
+            }
+            LinkedHashMap<String, Object> call = new LinkedHashMap<>();
+            call.put("id", id);
+            call.put("type", type.isBlank() ? "function" : type);
+            call.put("function", Map.of("name", name, "arguments", arguments));
+            upsertPart(taskId, message, toolCallKey(epoch, sequence, index, id),
+                    sequence * 1000L + index, "tool_call", "pending", id, name, call, "");
+        }
+    }
+
+    private void appendToolResultPart(Long taskId, AgentRunMessage message, long epoch,
+                                      long sequence, Map<String, Object> providerMessage) {
+        String toolCallId = stringValue(providerMessage.get("tool_call_id"));
+        String toolName = stringValue(providerMessage.get("name"));
+        if (toolCallId.isBlank() || toolName.isBlank()) {
+            throw new IllegalArgumentException("tool message tool_call_id and name are required");
+        }
+        String content = stringValue(providerMessage.get("content"));
+        upsertPart(taskId, message, toolResultKey(epoch, sequence, toolCallId), sequence,
+                "tool_result", "completed", toolCallId, toolName, providerMessage, content);
+        completeMatchingToolCallPart(taskId, toolCallId, content);
+    }
+
+    private void completeMatchingToolCallPart(Long taskId, String toolCallId, String output) {
+        List<AgentRunPart> calls = partMapper.selectList(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .eq(AgentRunPart::getToolCallId, toolCallId)
+                .eq(AgentRunPart::getPartType, "tool_call"));
+        if (calls == null) return;
+        for (AgentRunPart call : calls) {
+            call.setStatus("completed");
+            call.setOutputText(limit(output, 8_000));
+            call.setUpdateTime(LocalDateTime.now());
+            partMapper.updateById(call);
+        }
+    }
+
+    private AgentRunPart upsertPart(Long taskId, AgentRunMessage message, String key, long sequence,
+                                    String partType, String status, String toolCallId, String toolName,
+                                    Object input, String output) {
+        AgentRunPart part = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .eq(AgentRunPart::getPartKey, key)
+                .last("LIMIT 1"));
+        AgentTask task = taskMapper.selectById(taskId);
+        if (part == null) {
+            part = new AgentRunPart();
+            part.setTaskId(taskId);
+            part.setPartKey(key);
+            part.setCreateTime(LocalDateTime.now());
+            if (task != null) {
+                part.setConversationId(task.getConversationId());
+                part.setStudentId(task.getStudentId());
+                part.setProjectId(task.getProjectId());
+            }
+        }
+        part.setMessageId(message.getRunMessageId());
+        part.setSequenceNumber(sequence);
+        part.setPartType(partType);
+        part.setStatus(status);
+        part.setToolCallId(toolCallId);
+        part.setToolName(toolName);
+        part.setInputJson(GSON.toJson(input == null ? Map.of() : input));
+        part.setOutputText(limit(output, 8_000));
+        part.setMetadata(GSON.toJson(Map.of("provider", true, "partType", partType)));
+        part.setUpdateTime(LocalDateTime.now());
+        if (part.getPartId() == null) {
+            partMapper.insert(part);
+        } else {
+            partMapper.updateById(part);
+        }
+        return part;
+    }
+
+    private Map<String, Object> rebuildAssistant(AgentRunMessage message, Long taskId) {
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        result.put("role", "assistant");
+        result.put("content", message.getContent() == null ? "" : message.getContent());
+        List<AgentRunPart> calls = partMapper.selectList(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .eq(AgentRunPart::getMessageId, message.getRunMessageId())
+                .eq(AgentRunPart::getPartType, "tool_call")
+                .orderByAsc(AgentRunPart::getSequenceNumber)
+                .orderByAsc(AgentRunPart::getPartId));
+        if (calls != null && !calls.isEmpty()) {
+            List<Map<String, Object>> toolCalls = new ArrayList<>();
+            for (AgentRunPart part : calls) {
+                if (!"completed".equalsIgnoreCase(part.getStatus())
+                        && !"pending".equalsIgnoreCase(part.getStatus())) {
+                    throw new IllegalStateException("Provider tool call part is not recoverable: " + part.getPartKey());
+                }
+                Map<String, Object> parsed = parseObject(part.getInputJson());
+                if (parsed.isEmpty()) {
+                    throw new IllegalStateException("Provider tool call arguments are missing: " + part.getPartKey());
+                }
+                toolCalls.add(parsed);
+            }
+            result.put("tool_calls", toolCalls);
+        }
+        return result;
+    }
+
+    private Map<String, Object> rebuildTool(AgentRunMessage message) {
+        Map<String, Object> metadata = parseObject(message.getMetadata());
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        result.put("role", "tool");
+        result.put("tool_call_id", stringValue(metadata.get("tool_call_id")));
+        result.put("name", stringValue(metadata.get("name")));
+        result.put("content", message.getContent() == null ? "" : message.getContent());
+        return result;
+    }
+
+    private Map<String, Object> messageMetadata(long epoch, Map<String, Object> providerMessage) {
+        LinkedHashMap<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("provider", true);
+        metadata.put("executionEpoch", epoch);
+        if (providerMessage.containsKey("tool_call_id")) {
+            metadata.put("tool_call_id", providerMessage.get("tool_call_id"));
+        }
+        if (providerMessage.containsKey("name")) {
+            metadata.put("name", providerMessage.get("name"));
+        }
+        return metadata;
+    }
+
+    private Map<String, Object> simpleMessage(String role, String content) {
+        return Map.of("role", role, "content", content == null ? "" : content);
+    }
+
+    private Map<String, Object> parseObject(String raw) {
+        if (raw == null || raw.isBlank()) return Map.of();
+        try {
+            JsonElement element = JsonParser.parseString(raw);
+            if (!element.isJsonObject()) return Map.of();
+            return GSON.fromJson(element, Map.class);
+        } catch (RuntimeException ignored) {
+            return Map.of();
+        }
+    }
+
+    private String providerKey(long epoch, long sequence) {
+        return PROVIDER_KEY_PREFIX + epoch + ":message:" + sequence;
+    }
+
+    private String toolCallKey(long epoch, long sequence, int index, String id) {
+        return PROVIDER_KEY_PREFIX + epoch + ":tool-call:" + sequence + ":" + index + ":" + safeKey(id);
+    }
+
+    private String toolResultKey(long epoch, long sequence, String id) {
+        return PROVIDER_KEY_PREFIX + epoch + ":tool-result:" + sequence + ":" + safeKey(id);
+    }
+
+    private String safeKey(String value) {
+        String normalized = value.replaceAll("[^A-Za-z0-9._-]", "_");
+        return normalized.length() <= 72 ? normalized : normalized.substring(0, 72);
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private String limit(String value, int max) {
+        if (value == null) return "";
+        return value.length() <= max ? value : value.substring(0, max) + "\n...truncated...";
+    }
+}
