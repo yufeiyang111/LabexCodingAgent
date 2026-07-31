@@ -12,33 +12,23 @@ import org.springframework.stereotype.Service;
 public final class AgentTranscriptProjectionService {
     private final AgentRunTranscriptService transcriptService;
     private final AgentProviderMessageProjector providerProjector;
-    private AgentCompactionService compactionService;
+    private final AgentCompactionService compactionService;
 
     @Autowired
-    public AgentTranscriptProjectionService(AgentRunTranscriptService transcriptService) {
-        this(transcriptService, new AgentProviderMessageProjector(), null);
-    }
-
-    @Autowired(required = false)
-    void setCompactionService(AgentCompactionService compactionService) {
-        this.compactionService = compactionService;
-    }
-
-    AgentTranscriptProjectionService(AgentRunTranscriptService transcriptService,
-                                     AgentProviderMessageProjector providerProjector) {
-        this(transcriptService, providerProjector, null);
-    }
-
-    AgentTranscriptProjectionService(AgentRunTranscriptService transcriptService,
-                                     AgentProviderMessageProjector providerProjector,
-                                     AgentCompactionService compactionService) {
+    public AgentTranscriptProjectionService(AgentRunTranscriptService transcriptService,
+                                             AgentProviderMessageProjector providerProjector,
+                                             AgentCompactionService compactionService) {
         if (transcriptService == null) {
             throw new IllegalArgumentException("Durable Provider transcript service is required");
         }
         this.transcriptService = transcriptService;
-        this.providerProjector = providerProjector == null
-                ? new AgentProviderMessageProjector()
-                : providerProjector;
+        if (providerProjector == null) {
+            throw new IllegalArgumentException("Provider transcript projector is required");
+        }
+        if (compactionService == null) {
+            throw new IllegalArgumentException("Compaction service is required for Provider projection");
+        }
+        this.providerProjector = providerProjector;
         this.compactionService = compactionService;
     }
 
@@ -67,20 +57,18 @@ public final class AgentTranscriptProjectionService {
         if (taskId == null || taskId <= 0) {
             throw new IllegalArgumentException("Durable Provider transcript requires a positive taskId");
         }
-        if (compactionService != null) {
-            java.util.Optional<AgentCompactionService.Projection> compacted = interactionResume
+        java.util.Optional<AgentCompactionService.Projection> compacted = interactionResume
                     ? compactionService.projectLatestForInteractionResume(taskId,
                     boundary -> transcriptService.loadProjectableTranscriptForInteractionResumeAfter(taskId, boundary))
                     : compactionService.projectLatest(taskId,
                     boundary -> transcriptService.loadProjectableTranscriptAfter(taskId, boundary));
-            if (compacted.isPresent()) {
-                AgentCompactionService.Projection value = compacted.orElseThrow();
-                return new DurableProjection(interactionResume
-                                ? providerProjector.copyMessages(value.messages())
-                                : providerProjector.project(value.messages()),
-                        "compaction_epoch=" + value.compactionEpoch()
-                                + ",source_max_sequence=" + value.sourceMaxSequence());
-            }
+        if (compacted.isPresent()) {
+            AgentCompactionService.Projection value = compacted.orElseThrow();
+            return new DurableProjection(interactionResume
+                            ? providerProjector.copyMessages(value.messages())
+                            : providerProjector.project(value.messages()),
+                    "compaction_epoch=" + value.compactionEpoch()
+                            + ",source_max_sequence=" + value.sourceMaxSequence());
         }
         return new DurableProjection(interactionResume
                         ? providerProjector.copyMessages(

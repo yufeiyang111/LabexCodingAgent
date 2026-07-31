@@ -29,7 +29,7 @@ class AgentTranscriptProjectionServiceTest {
         List<Map<String, Object>> messages = List.of(Map.of("role", "user", "content", "durable"));
         when(transcript.loadProjectableTranscript(7L)).thenReturn(messages);
 
-        assertThat(new AgentTranscriptProjectionService(transcript).loadProviderMessages(7L))
+        assertThat(service(transcript).loadProviderMessages(7L))
                 .isEqualTo(messages);
     }
 
@@ -38,7 +38,7 @@ class AgentTranscriptProjectionServiceTest {
         AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
         when(transcript.loadProjectableTranscript(7L)).thenReturn(List.of());
 
-        assertThatThrownBy(() -> new AgentTranscriptProjectionService(transcript).loadProviderMessages(7L))
+        assertThatThrownBy(() -> service(transcript).loadProviderMessages(7L))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Durable Provider transcript is empty");
     }
@@ -47,7 +47,7 @@ class AgentTranscriptProjectionServiceTest {
     void rejectsMissingDurableTaskIdentity() {
         AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
 
-        assertThatThrownBy(() -> new AgentTranscriptProjectionService(transcript).loadDurableProjection(null))
+        assertThatThrownBy(() -> service(transcript).loadDurableProjection(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("positive taskId");
     }
@@ -70,5 +70,10 @@ class AgentTranscriptProjectionServiceTest {
 
         assertThat(restored.messages()).isEqualTo(compacted);
         assertThat(restored.detail()).contains("compaction_epoch=2");
+    }
+
+    private AgentTranscriptProjectionService service(AgentRunTranscriptService transcript) {
+        return new AgentTranscriptProjectionService(transcript, new AgentProviderMessageProjector(),
+                mock(AgentCompactionService.class));
     }
 }
