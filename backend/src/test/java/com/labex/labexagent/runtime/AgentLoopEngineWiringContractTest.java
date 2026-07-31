@@ -32,6 +32,8 @@ class AgentLoopEngineWiringContractTest {
         assertTrue(source.contains("void setRunFinalizer"));
         assertTrue(source.contains("void setArtifactService"));
         assertTrue(source.contains("void setToolCallJournalService"));
+        assertFalse(source.contains("toolCallJournalService == null"));
+        assertFalse(source.contains("toolCallJournalService != null"));
         assertTrue(source.contains("void setContextCompactionServices"));
         assertTrue(source.contains("void setProjectCheckoutLeaseServices"));
     }

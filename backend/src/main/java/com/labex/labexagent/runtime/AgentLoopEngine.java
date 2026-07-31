@@ -274,7 +274,7 @@ public class AgentLoopEngine {
 
     @Autowired
     void setToolCallJournalService(AgentToolCallJournalService toolCallJournalService) {
-        this.toolCallJournalService = toolCallJournalService;
+        this.toolCallJournalService = requireRuntimeDependency(toolCallJournalService, "toolCallJournalService");
     }
 
     @Autowired
@@ -3379,7 +3379,7 @@ public class AgentLoopEngine {
     private void journalRemainingBatchSkipped(Long taskId,
                                               List<AgentModelTurnExecutor.NativeToolCall> calls,
                                               int startIndex, int iteration, String reason) {
-        if (this.toolCallJournalService == null || calls == null || startIndex >= calls.size()) return;
+        if (calls == null || startIndex >= calls.size()) return;
         for (int index = Math.max(0, startIndex); index < calls.size(); index++) {
             AgentModelTurnExecutor.NativeToolCall call = calls.get(index);
             JsonObject arguments = this.parseArgs(call.toolArguments());
@@ -3390,22 +3390,16 @@ public class AgentLoopEngine {
     }
 
     private void journalToolPending(Long taskId, String toolCallId, String toolName, Object arguments, int iteration) {
-        if (this.toolCallJournalService != null) {
-            this.toolCallJournalService.pending(taskId, toolCallId, toolName, arguments, iteration);
-        }
+        this.toolCallJournalService.pending(taskId, toolCallId, toolName, arguments, iteration);
     }
 
     private void journalToolRunning(Long taskId, String toolCallId, String toolName, Object arguments, int iteration) {
-        if (this.toolCallJournalService != null) {
-            this.toolCallJournalService.running(taskId, toolCallId, toolName, arguments, iteration);
-        }
+        this.toolCallJournalService.running(taskId, toolCallId, toolName, arguments, iteration);
     }
 
     private void journalToolWaitingApproval(Long taskId, String toolCallId, String toolName, Object arguments,
                                             int iteration, String approvalId) {
-        if (this.toolCallJournalService != null) {
-            this.toolCallJournalService.waitingApproval(taskId, toolCallId, toolName, arguments, iteration, approvalId);
-        }
+        this.toolCallJournalService.waitingApproval(taskId, toolCallId, toolName, arguments, iteration, approvalId);
     }
 
     private void publishUserQuestion(AgentSsePublisher sse, AgentConversation conv, ToolResult result) throws Exception {
@@ -3451,10 +3445,8 @@ public class AgentLoopEngine {
     private void journalToolWaitingInteraction(Long taskId, String toolCallId, String toolName, Object arguments,
                                                 int iteration, String requestId, String interactionType, String detail,
                                                 Map<String, Object> interactionPayload) {
-        if (this.toolCallJournalService != null) {
-            this.toolCallJournalService.waitingInteraction(taskId, toolCallId, toolName, arguments, iteration,
-                    requestId, interactionType, detail, interactionPayload);
-        }
+        this.toolCallJournalService.waitingInteraction(taskId, toolCallId, toolName, arguments, iteration,
+                requestId, interactionType, detail, interactionPayload);
     }
 
     private String interactionWaitingState(ToolResult result) {
@@ -3464,14 +3456,11 @@ public class AgentLoopEngine {
 
     private void journalToolBlocked(Long taskId, String toolCallId, String toolName, Object arguments,
                                     int iteration, String detail) {
-        if (this.toolCallJournalService != null) {
-            this.toolCallJournalService.blocked(taskId, toolCallId, toolName, arguments, iteration, detail);
-        }
+        this.toolCallJournalService.blocked(taskId, toolCallId, toolName, arguments, iteration, detail);
     }
 
     private void journalToolFinished(Long taskId, String toolCallId, String toolName, Object arguments,
                                      int iteration, ToolResult result) {
-        if (this.toolCallJournalService == null) return;
         String detail = result == null ? "" : result.getContent();
         if (result != null && result.isSuccess()) {
             this.toolCallJournalService.completed(taskId, toolCallId, toolName, arguments, iteration, detail);

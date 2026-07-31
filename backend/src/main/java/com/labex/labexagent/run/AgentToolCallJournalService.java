@@ -1,11 +1,13 @@
 package com.labex.labexagent.run;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonParseException;
 import com.labex.entity.AgentRunArtifact;
 import com.labex.entity.AgentRunPart;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -22,18 +24,13 @@ public class AgentToolCallJournalService {
     private final AgentRunLifecycleService lifecycleService;
     private final AgentRunPartService partService;
 
-    public AgentToolCallJournalService(AgentRunArtifactService artifactService,
-                                       AgentRunLifecycleService lifecycleService) {
-        this(artifactService, lifecycleService, null);
-    }
-
     @Autowired
     public AgentToolCallJournalService(AgentRunArtifactService artifactService,
                                        AgentRunLifecycleService lifecycleService,
                                        AgentRunPartService partService) {
-        this.artifactService = artifactService;
-        this.lifecycleService = lifecycleService;
-        this.partService = partService;
+        this.artifactService = Objects.requireNonNull(artifactService, "artifactService is required");
+        this.lifecycleService = Objects.requireNonNull(lifecycleService, "lifecycleService is required");
+        this.partService = Objects.requireNonNull(partService, "partService is required");
     }
 
     public void pending(Long taskId, String toolCallId, String toolName, Object arguments, int iteration) {
@@ -114,8 +111,8 @@ public class AgentToolCallJournalService {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> state = GSON.fromJson(artifact.getContent(), Map.class);
                 if (state != null) latest.put(artifact.getArtifactPath(), state);
-            } catch (RuntimeException ignored) {
-                // 工具调用状态会落到现有运行产物，刷新后可以恢复 pending 和终态。
+            } catch (JsonParseException ignored) {
+                // ?????? artifact??? durable Part ????????
             }
         }
         return latest.values().stream().toList();
@@ -133,19 +130,17 @@ public class AgentToolCallJournalService {
                     current.getOrDefault("arguments", Map.of()), iteration, detail);
             return;
         }
-        if (partService != null) {
-            AgentRunPart part = partService.resolveExistingToolCall(taskId, toolCallId, status, detail);
-            if (part != null) {
-                lifecycleService.appendEvent(taskId, "TOOL_CALL_STATE", Map.of(
-                        "taskId", taskId,
-                        "toolCallId", toolCallId,
-                        "tool", part.getToolName() == null ? "tool" : part.getToolName(),
-                        "status", status,
-                        "detail", detail == null ? "" : truncate(detail),
-                        "partId", part.getPartId(),
-                        "partKey", part.getPartKey()),
-                        "tool-call-state-part-" + part.getPartId() + "-" + status);
-            }
+        AgentRunPart part = partService.resolveExistingToolCall(taskId, toolCallId, status, detail);
+        if (part != null) {
+            lifecycleService.appendEvent(taskId, "TOOL_CALL_STATE", Map.of(
+                    "taskId", taskId,
+                    "toolCallId", toolCallId,
+                    "tool", part.getToolName() == null ? "tool" : part.getToolName(),
+                    "status", status,
+                    "detail", detail == null ? "" : truncate(detail),
+                    "partId", part.getPartId(),
+                    "partKey", part.getPartKey()),
+                    "tool-call-state-part-" + part.getPartId() + "-" + status);
         }
     }
 
@@ -168,44 +163,18 @@ public class AgentToolCallJournalService {
             payload.put("interactionPayload", new LinkedHashMap<>(extraPayload));
         }
 
-        AgentRunArtifact artifact = null;
-        try {
-            artifact = artifactService.recordDeterministic(
-                    taskId, ARTIFACT_TYPE, toolCallId, GSON.toJson(payload));
-        } catch (RuntimeException ignored) {
-            // 兼容旧数据库或 artifact 写入失败时，仍然继续尝试写入新的 Part。
-        }
+        AgentRunPart part = partService.upsertToolCall(taskId, toolCallId, status, toolName,
+                arguments, iteration, detail);
+        AgentRunArtifact artifact = artifactService.recordDeterministic(
+                taskId, ARTIFACT_TYPE, toolCallId, GSON.toJson(payload));
 
-        AgentRunPart part = null;
-        try {
-            if (partService != null) {
-                part = partService.upsertToolCall(taskId, toolCallId, status, toolName,
-                        arguments, iteration, detail);
-            }
-        } catch (RuntimeException ignored) {
-            // Part 写入失败不能反向破坏工具执行；任务事件仍然提供恢复线索。
-        }
-
-        try {
-            Map<String, Object> event = new LinkedHashMap<>(payload);
-            event.put("taskId", taskId);
-            if (artifact != null) event.put("artifactId", artifact.getArtifactId());
-            if (part != null) {
-                event.put("partId", part.getPartId());
-                event.put("partKey", part.getPartKey());
-            }
-            String eventKey;
-            if (part != null && part.getPartId() != null) {
-                eventKey = "tool-call-state-part-" + part.getPartId() + "-" + status;
-            } else if (artifact != null && artifact.getArtifactId() != null) {
-                eventKey = "tool-call-state-" + artifact.getArtifactId();
-            } else {
-                eventKey = "tool-call-state-" + toolCallId + "-" + status + "-" + iteration;
-            }
-            lifecycleService.appendEvent(taskId, "TOOL_CALL_STATE", event, eventKey);
-        } catch (RuntimeException ignored) {
-            // 日志记录不能反向破坏工具执行；SSE 和任务状态仍然由主流程负责。
-        }
+        Map<String, Object> event = new LinkedHashMap<>(payload);
+        event.put("taskId", taskId);
+        event.put("artifactId", artifact.getArtifactId());
+        event.put("partId", part.getPartId());
+        event.put("partKey", part.getPartKey());
+        String eventKey = "tool-call-state-part-" + part.getPartId() + "-" + status;
+        lifecycleService.appendEvent(taskId, "TOOL_CALL_STATE", event, eventKey);
     }
 
     private String truncate(String value) {
