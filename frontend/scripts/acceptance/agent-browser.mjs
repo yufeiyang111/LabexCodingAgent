@@ -264,14 +264,22 @@ async function sendMessage(message) {
     textarea.focus();
     return true;
   })()`)
-  await waitFor(
+  const waitForReadyComposer = () => waitFor(
     () => client.evaluate(`(() => {
       const textarea = document.querySelector('.ai-input-text-area textarea');
       const submit = document.querySelector('button.ai-submit-btn');
-      return textarea?.value === ${encoded} && Boolean(submit) && !submit.disabled;
+      return textarea?.value === ${encoded}
+        && !textarea.disabled
+        && Boolean(submit)
+        && !submit.disabled
+        && !document.querySelector('.ai-generating-indicator');
     })()`),
     'agent composer readiness'
   )
+  await waitForReadyComposer()
+  // 页面刷新后 active-task 恢复可能稍晚于输入框挂载；要求 composer 连续稳定后再发送。
+  await delay(350)
+  await waitForReadyComposer()
   // 通过输入框的真实 Enter 键路径触发 Vue 事件，避免脚本 click() 在刷新后丢失处理器。
   await client.send('Input.dispatchKeyEvent', {
     type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13
@@ -285,7 +293,8 @@ async function sendMessage(message) {
     return textarea?.value === '' && document.body.innerText.includes(${visiblePrefix});
   })()`)
   if (!submittedByKeyboard) {
-    // ?????????????????????????????????? Vue ????????????
+    // 刷新后的首次合成按键偶尔会丢失；等待真正的发送按钮恢复后走完整鼠标事件链。
+    await waitForReadyComposer()
     await clickElement('button.ai-submit-btn', { label: 'agent submit button fallback' })
   }
   await waitFor(

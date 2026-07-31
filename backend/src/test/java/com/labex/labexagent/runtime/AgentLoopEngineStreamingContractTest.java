@@ -32,11 +32,14 @@ class AgentLoopEngineStreamingContractTest {
     @Test
     void providerRequestsUseDurableTranscriptAsTheOnlyInputSource() {
         assertTrue(source.contains("providerMessagesForBudget("));
-        assertTrue(source.contains("transcriptProjectionService.loadProviderMessages(taskId)"));
+        assertTrue(source.contains("requireTranscriptProjectionService().loadProviderMessages(taskId)"));
         assertTrue(source.contains("sysPrompt, providerMessages, tools, llmProvider"));
         assertFalse(source.contains("projectProviderMessages("));
         assertFalse(source.contains("projectForProvider(taskId, inMemoryMessages).messages()"));
         assertFalse(source.contains("return this.providerMessageProjector.project(inMemoryMessages);"));
+        assertFalse(source.contains("return inMemoryMessages"));
+        assertFalse(source.contains("List<Map<String, Object>> inMemoryMessages"));
+        assertFalse(source.contains("? this.transcriptService.loadProjectableTranscript"));
     }
 
     @Test

@@ -283,12 +283,12 @@ public class AgentLoopEngine {
         this.toolCallJournalService = toolCallJournalService;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setTranscriptService(AgentRunTranscriptService transcriptService) {
         this.transcriptService = transcriptService;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setTranscriptProjectionService(AgentTranscriptProjectionService transcriptProjectionService) {
         this.transcriptProjectionService = transcriptProjectionService;
     }
@@ -503,7 +503,7 @@ public class AgentLoopEngine {
         private TranscriptMessageList(Long taskId, long executionEpoch) {
             this.taskId = taskId;
             this.executionEpoch = executionEpoch;
-            this.nextSequence = transcriptService == null ? 0L : transcriptService.nextSequence(taskId);
+            this.nextSequence = requireTranscriptService().nextSequence(taskId);
         }
 
         private void restore(List<Map<String, Object>> messages) {
@@ -532,8 +532,8 @@ public class AgentLoopEngine {
         public boolean add(Map<String, Object> message) {
             Map<String, Object> durableCopy = providerMessageProjector.copyMessage(message);
             boolean added = super.add(durableCopy);
-            if (added && transcriptService != null) {
-                transcriptService.appendMessage(taskId, executionEpoch, nextSequence++, durableCopy);
+            if (added) {
+                requireTranscriptService().appendMessage(taskId, executionEpoch, nextSequence++, durableCopy);
             }
             return added;
         }
@@ -735,26 +735,20 @@ public class AgentLoopEngine {
                     projectRules, memoryContext, sessionContext, recentRunLog, checkpoint, globalSkills,
                     mcpContext, modePolicy, languagePolicy, initialContextMessage);
             boolean transcriptRestored = false;
-            if (this.transcriptService != null) {
-                try {
-                    List<Map<String, Object>> persistedMessages = resumedRun
-                            && request.getResumeInteractionId() != null
-                            ? (this.transcriptProjectionService == null
-                            ? this.transcriptService.loadProjectableTranscriptForInteractionResume(task.getTaskId())
-                            : this.transcriptProjectionService.loadDurableProjectionForInteractionResume(task.getTaskId()).messages())
-                            : (this.transcriptProjectionService == null
-                            ? this.transcriptService.loadProjectableTranscript(task.getTaskId())
-                            : this.transcriptProjectionService.loadDurableProjection(task.getTaskId()).messages());
-                    if (!persistedMessages.isEmpty()) {
-                        msgs.restore(persistedMessages);
-                        transcriptRestored = true;
-                    }
-                } catch (RuntimeException transcriptFailure) {
-                    if (resumedRun) {
-                        throw transcriptFailure;
-                    }
-                    log.warn("Unable to restore durable Provider transcript taskId={}: {}", task.getTaskId(), transcriptFailure.getMessage());
+            try {
+                AgentTranscriptProjectionService durableProjector = this.requireTranscriptProjectionService();
+                List<Map<String, Object>> persistedMessages = resumedRun
+                        && request.getResumeInteractionId() != null
+                        ? durableProjector.loadDurableProjectionForInteractionResume(task.getTaskId()).messages()
+                        : durableProjector.loadDurableProjection(task.getTaskId()).messages();
+                if (!persistedMessages.isEmpty()) {
+                    msgs.restore(persistedMessages);
+                    transcriptRestored = true;
                 }
+            } catch (RuntimeException transcriptFailure) {
+                throw new IllegalStateException(
+                        "Unable to restore durable Provider transcript for taskId=" + task.getTaskId(),
+                        transcriptFailure);
             }
             if (!transcriptRestored) {
                 msgs.add(Map.of("role", "user", "content", initialContextMessage));
@@ -762,8 +756,8 @@ public class AgentLoopEngine {
             } else if (resumedRun) {
                 if (request.getResumeInteractionId() != null && this.runInteractionService != null) {
                     AgentRunInteraction interaction = this.runInteractionService.findById(request.getResumeInteractionId());
-                    List<Map<String, Object>> toolResults = this.transcriptService == null
-                            ? List.of() : this.transcriptService.resolvedInteractionToolResults(interaction, msgs);
+                    List<Map<String, Object>> toolResults = this.requireTranscriptService()
+                            .resolvedInteractionToolResults(interaction, msgs);
                     msgs.addAll(toolResults);
                 }
                 if (request.getMessage() != null && !request.getMessage().isBlank()) {
@@ -832,8 +826,7 @@ public class AgentLoopEngine {
                                             this.taskService.updateTask(task.getTaskId(), "running", runningStep, null);
                                         }
                                         // Provider 请求、上下文预算和最终门禁必须使用同一份持久化投影。
-                                        List<Map<String, Object>> providerMessagesBeforeManagement = this.providerMessagesForBudget(
-                                                task.getTaskId(), msgs);
+                                        List<Map<String, Object>> providerMessagesBeforeManagement = this.providerMessagesForBudget(task.getTaskId());
                                         ContextAdmissionDecision preCompactionAdmission = this.evaluateContextAdmission(
                                                 modelConfig, sysPrompt, tools, contextPrompt, providerMessagesBeforeManagement);
                                         if (preCompactionAdmission != null
@@ -849,8 +842,7 @@ public class AgentLoopEngine {
                                         ContextManagementResult contextManagement = this.manageContextBeforeModel(
                                                 msgs, sysPrompt, tools, contextWindowPolicy, request.getMessage(), ctx,
                                                 sse, conv, modelConfig, studentId, cancellationToken);
-                                        List<Map<String, Object>> providerMessages = this.providerMessagesForBudget(
-                                                task.getTaskId(), msgs);
+                                        List<Map<String, Object>> providerMessages = this.providerMessagesForBudget(task.getTaskId());
                                         ContextAdmissionDecision admission = this.evaluateContextAdmission(
                                                 modelConfig, sysPrompt, tools, contextPrompt, providerMessages);
                                         this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
@@ -2686,16 +2678,26 @@ public class AgentLoopEngine {
         return total;
     }
 
-    /**
-     * 返回 Provider 将要读取的同一份消息投影、避免 admission/status 与实际请求使用不同历史。
-     * 旧构造函数只服务于不执行 Provider 的纯单元测试。生产运行必须由 durable projector 提供数据。
-     */
-    List<Map<String, Object>> providerMessagesForBudget(Long taskId,
-                                                        List<Map<String, Object>> inMemoryMessages) {
-        if (taskId == null || this.transcriptProjectionService == null) {
-            return inMemoryMessages == null ? List.of() : inMemoryMessages;
+    /** Provider 请求、预算与 admission 只读取 durable transcript，缺失运行身份时明确失败。 */
+    List<Map<String, Object>> providerMessagesForBudget(Long taskId) {
+        if (taskId == null || taskId <= 0) {
+            throw new IllegalStateException("Provider projection requires a positive durable taskId");
         }
-        return this.transcriptProjectionService.loadProviderMessages(taskId);
+        return this.requireTranscriptProjectionService().loadProviderMessages(taskId);
+    }
+
+    private AgentRunTranscriptService requireTranscriptService() {
+        if (this.transcriptService == null) {
+            throw new IllegalStateException("Durable Provider transcript service is unavailable");
+        }
+        return this.transcriptService;
+    }
+
+    private AgentTranscriptProjectionService requireTranscriptProjectionService() {
+        if (this.transcriptProjectionService == null) {
+            throw new IllegalStateException("Durable Provider transcript projector is unavailable");
+        }
+        return this.transcriptProjectionService;
     }
 
     ContextAdmissionDecision evaluateContextAdmission(AgentModelConfig modelConfig,
@@ -2828,8 +2830,7 @@ public class AgentLoopEngine {
         if (policy == null || !policy.autoCompactionEnabled()) {
             return ContextManagementResult.none();
         }
-        List<Map<String, Object>> budgetMessages = this.providerMessagesForBudget(
-                context == null ? null : context.getTaskId(), msgs);
+        List<Map<String, Object>> budgetMessages = this.providerMessagesForBudget(context == null ? null : context.getTaskId());
         int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, budgetMessages,
                 activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
         TurnAwareContextPruner pruner = new TurnAwareContextPruner(this::estimateTokens);
@@ -2846,8 +2847,7 @@ public class AgentLoopEngine {
         }
         if (decision.action() == ContextWindowSupervisor.Action.PRUNE) {
             TurnAwareContextPruner.Result prune = pruner.prune(msgs, policy.tailTurns(), policy.preserveRecentTokens());
-            List<Map<String, Object>> postPruneBudgetMessages = this.providerMessagesForBudget(
-                    context == null ? null : context.getTaskId(), msgs);
+            List<Map<String, Object>> postPruneBudgetMessages = this.providerMessagesForBudget(context == null ? null : context.getTaskId());
             int afterPrune = this.requestTokenEstimator.estimate(sysPrompt, tools, postPruneBudgetMessages,
                     activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
             if (prune.changed()) {

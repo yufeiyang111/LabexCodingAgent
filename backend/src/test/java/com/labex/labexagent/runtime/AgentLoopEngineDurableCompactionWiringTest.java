@@ -13,7 +13,8 @@ class AgentLoopEngineDurableCompactionWiringTest {
         String source = Files.readString(Path.of(
                 "src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));
 
-        assertTrue(source.contains("transcriptProjectionService.loadDurableProjection(task.getTaskId())"));
+        assertTrue(source.contains("AgentTranscriptProjectionService durableProjector = this.requireTranscriptProjectionService()"));
+        assertTrue(source.contains("durableProjector.loadDurableProjection(task.getTaskId())"));
         assertTrue(source.contains("private void replaceProjection(List<Map<String, Object>> messages)"));
         assertTrue(source.contains("super.addAll(copies)"));
         assertTrue(source.contains("compactionService.start("));
