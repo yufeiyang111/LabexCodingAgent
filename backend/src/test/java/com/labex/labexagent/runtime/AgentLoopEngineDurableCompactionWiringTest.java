@@ -1,5 +1,6 @@
 package com.labex.labexagent.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -22,5 +23,10 @@ class AgentLoopEngineDurableCompactionWiringTest {
         assertTrue(source.contains("compactionService.fail("));
         assertTrue(source.contains("requestTokenEstimator.estimate("));
         assertTrue(source.contains("ContextOverflowRecoveryPolicy"));
+        assertFalse(source.contains("this.compactionService == null ?"));
+        assertFalse(source.contains("this.compactionService != null"));
+        assertFalse(source.contains("this.transcriptService == null || taskId == null"));
+        assertFalse(source.contains("this.transcriptProjectionService != null"));
+        assertFalse(source.contains("this.compactionAgent == null"));
     }
 }

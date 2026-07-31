@@ -2717,6 +2717,13 @@ public class AgentLoopEngine {
         return this.requireTranscriptProjectionService().loadProviderMessages(taskId);
     }
 
+    private AgentCompactionService requireCompactionService() {
+        if (this.compactionService == null) {
+            throw new IllegalStateException("Durable compaction service is unavailable");
+        }
+        return this.compactionService;
+    }
+
     private AgentRunTranscriptService requireTranscriptService() {
         if (this.transcriptService == null) {
             throw new IllegalStateException("Durable Provider transcript service is unavailable");
@@ -2861,37 +2868,15 @@ public class AgentLoopEngine {
         if (policy == null || !policy.autoCompactionEnabled()) {
             return ContextManagementResult.none();
         }
+        this.requireTranscriptProjectionService();
         List<Map<String, Object>> budgetMessages = this.providerMessagesForBudget(context == null ? null : context.getTaskId());
         int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, budgetMessages,
                 activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
-        TurnAwareContextPruner pruner = new TurnAwareContextPruner(this::estimateTokens);
-        // durable transcript 已成为 Provider 事实源时，禁止只改内存的旧式 tool-result prune。
-        // 该路径既无法重启恢复，也会让 Provider 请求与数据库投影分叉；统一走可持久化 compaction。
-        boolean durableProviderProjection = this.transcriptProjectionService != null;
-        boolean hasPrunableToolResult = !durableProviderProjection
-                && policy.pruningEnabled()
-                && pruner.hasPrunableHistoricalToolResult(msgs, policy.tailTurns(), policy.preserveRecentTokens());
+        // Provider transcript ????????????? AgentLoopEngine ???????????
         ContextWindowSupervisor.Decision decision = new ContextWindowSupervisor().decide(
-                policy, estimatedTokens, hasPrunableToolResult);
+                policy, estimatedTokens, false);
         if (decision.action() == ContextWindowSupervisor.Action.NONE) {
             return ContextManagementResult.none();
-        }
-        if (decision.action() == ContextWindowSupervisor.Action.PRUNE) {
-            TurnAwareContextPruner.Result prune = pruner.prune(msgs, policy.tailTurns(), policy.preserveRecentTokens());
-            List<Map<String, Object>> postPruneBudgetMessages = this.providerMessagesForBudget(context == null ? null : context.getTaskId());
-            int afterPrune = this.requestTokenEstimator.estimate(sysPrompt, tools, postPruneBudgetMessages,
-                    activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
-            if (prune.changed()) {
-                this.sendEvent(sse, conversation, "CONTEXT_PRUNED", contextEvent("tool_result_prune", estimatedTokens,
-                        afterPrune, Map.of("prunedToolResults", prune.prunedToolResults(),
-                                "retainedTurns", prune.retainedTurns())));
-            }
-            if (afterPrune <= policy.softLimitTokens()) {
-                log.info("Context preflight pruned {} historical tool results; estimatedTokens {} -> {}, softLimit={}",
-                        prune.prunedToolResults(), estimatedTokens, afterPrune, policy.softLimitTokens());
-                return prune.changed() ? new ContextManagementResult(true, "TOOL_RESULT_PRUNE")
-                        : ContextManagementResult.none();
-            }
         }
         return this.compactContextWithFallback(msgs, sysPrompt, tools, userRequest, context, sse, conversation,
                 activeModelConfig, studentId, cancellationToken, policy.tailTurns(), policy.preserveRecentTokens(),
@@ -2917,24 +2902,24 @@ public class AgentLoopEngine {
         if (!selection.changed()) {
             return ContextManagementResult.none();
         }
-        Long taskId = context == null ? null : context.getTaskId();
-        String previousSummary = this.compactionService == null ? ""
-                : this.compactionService.previousSummary(taskId);
+        AgentCompactionService compactionService = this.requireCompactionService();
+        AgentRunTranscriptService transcriptService = this.requireTranscriptService();
+        if (context == null || context.getTaskId() == null || context.getProject() == null) {
+            throw new IllegalStateException("Durable compaction requires task, project, and execution context");
+        }
+        Long taskId = context.getTaskId();
+        String previousSummary = compactionService.previousSummary(taskId);
         List<Map<String, Object>> headForSummary = this.compactionHead(selection.compactedHead(), previousSummary);
-        long sourceMaxSequence = this.transcriptService == null || taskId == null
-                ? -1L : this.transcriptService.nextSequence(taskId) - 1L;
+        long sourceMaxSequence = transcriptService.nextSequence(taskId) - 1L;
         long executionEpoch = msgs instanceof TranscriptMessageList transcriptMessages
                 ? transcriptMessages.executionEpoch() : 0L;
-        AgentCompactionRecord compactionRecord = null;
-        if (this.compactionService != null && context != null && context.getProject() != null && taskId != null) {
-            compactionRecord = this.compactionService.start(new AgentCompactionService.StartRequest(
-                    taskId, context.getConversationId(), context.getStudentId(), context.getProject().getProjectId(),
-                    executionEpoch, trigger, previousSummary, selection, sourceMaxSequence, tokensBefore,
-                    activeModelConfig == null || activeModelConfig.getContextWindowTokens() == null
-                            ? 0 : activeModelConfig.getContextWindowTokens(),
-                    activeModelConfig == null || activeModelConfig.getMaxTokens() == null
-                            ? 0 : activeModelConfig.getMaxTokens()));
-        }
+        AgentCompactionRecord compactionRecord = compactionService.start(new AgentCompactionService.StartRequest(
+                taskId, context.getConversationId(), context.getStudentId(), context.getProject().getProjectId(),
+                executionEpoch, trigger, previousSummary, selection, sourceMaxSequence, tokensBefore,
+                activeModelConfig == null || activeModelConfig.getContextWindowTokens() == null
+                        ? 0 : activeModelConfig.getContextWindowTokens(),
+                activeModelConfig == null || activeModelConfig.getMaxTokens() == null
+                        ? 0 : activeModelConfig.getMaxTokens()));
         Map<String, Object> startDetails = new LinkedHashMap<>();
         startDetails.put("keepRecentTurns", Math.max(1, keepRecentTurns));
         startDetails.put("retainedTurns", selection.retainedTurns());
@@ -2944,20 +2929,16 @@ public class AgentLoopEngine {
         this.sendEvent(sse, conversation, "COMPACTION_STARTED",
                 contextEvent(trigger, tokensBefore, tokensBefore, startDetails));
 
-        CompactionAgent.Result modelResult = this.compactionAgent == null
-                ? CompactionAgent.Result.failure("Compaction agent is unavailable")
-                : this.compactionAgent.compact(studentId, activeModelConfig, headForSummary,
-                        userRequest, context, cancellationToken);
+        CompactionAgent.Result modelResult = this.compactionAgent.compact(studentId, activeModelConfig, headForSummary,
+                userRequest, context, cancellationToken);
         if (modelResult.success()) {
             List<Map<String, Object>> projected = selection.projectedWithSummary(modelResult.checkpoint());
             int afterTokens = this.estimateProviderRequestTokens(sysPrompt, tools, projected, activeModelConfig);
             if (afterTokens < tokensBefore) {
                 this.replaceProviderProjection(msgs, projected);
-                if (compactionRecord != null) {
-                    this.compactionService.complete(compactionRecord, modelResult.checkpoint(), afterTokens);
-                }
+                compactionService.complete(compactionRecord, modelResult.checkpoint(), afterTokens);
                 Map<String, Object> details = compactionModelDetails(modelResult);
-                if (compactionRecord != null) details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+                details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
                 this.sendCompactionSummary(sse, conversation, modelResult.checkpoint(),
                         contextEvent("model", tokensBefore, afterTokens, details));
                 this.sendEvent(sse, conversation, "COMPACTION_COMPLETED",
@@ -2968,7 +2949,7 @@ public class AgentLoopEngine {
         }
         Map<String, Object> modelFailure = new LinkedHashMap<>();
         modelFailure.put("reason", modelResult.reason());
-        if (compactionRecord != null) modelFailure.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+        modelFailure.put("compactionEpoch", compactionRecord.getCompactionEpoch());
         this.sendEvent(sse, conversation, "COMPACTION_FAILED",
                 contextEvent("model", tokensBefore, tokensBefore, modelFailure));
 
@@ -2979,12 +2960,10 @@ public class AgentLoopEngine {
             int afterTokens = this.estimateProviderRequestTokens(sysPrompt, tools, projected, activeModelConfig);
             if (afterTokens < tokensBefore) {
                 this.replaceProviderProjection(msgs, projected);
-                if (compactionRecord != null) {
-                    this.compactionService.complete(compactionRecord, deterministicCheckpoint, afterTokens);
-                }
+                compactionService.complete(compactionRecord, deterministicCheckpoint, afterTokens);
                 Map<String, Object> details = new LinkedHashMap<>();
                 details.put("reason", modelResult.reason());
-                if (compactionRecord != null) details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+                details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
                 this.sendCompactionSummary(sse, conversation, deterministicCheckpoint,
                         contextEvent("deterministic_fallback", tokensBefore, afterTokens, details));
                 this.sendEvent(sse, conversation, "COMPACTION_COMPLETED",
@@ -2992,9 +2971,7 @@ public class AgentLoopEngine {
                 return new ContextManagementResult(true, "DETERMINISTIC_CHECKPOINT");
             }
         }
-        if (compactionRecord != null) {
-            this.compactionService.fail(compactionRecord, modelResult.reason());
-        }
+        compactionService.fail(compactionRecord, modelResult.reason());
         return ContextManagementResult.none();
     }
 
