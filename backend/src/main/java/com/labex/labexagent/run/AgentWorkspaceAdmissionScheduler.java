@@ -32,13 +32,6 @@ public class AgentWorkspaceAdmissionScheduler {
     private final AgentRunLifecycleService lifecycleService;
     private final AgentRunExecutionLeaseService executionLeaseService;
 
-    public AgentWorkspaceAdmissionScheduler(AgentTaskMapper taskMapper, AgentTaskService taskService,
-                                            @Lazy AgentLoopEngine agentLoopEngine,
-                                            StudentProjectService studentProjectService,
-                                            ProjectCheckoutLeaseService checkoutLeaseService) {
-        this(taskMapper, taskService, agentLoopEngine, studentProjectService, checkoutLeaseService, null, null);
-    }
-
     @org.springframework.beans.factory.annotation.Autowired
     public AgentWorkspaceAdmissionScheduler(AgentTaskMapper taskMapper, AgentTaskService taskService,
                                             @Lazy AgentLoopEngine agentLoopEngine,
@@ -77,20 +70,6 @@ public class AgentWorkspaceAdmissionScheduler {
             workspace = BackgroundRunWorkspaceResolver.resolve(workspace, task.getBackgroundWorktree());
         }
         if (!checkoutLeaseService.isAvailable(task.getProjectId(), workspace)) return false;
-        if (lifecycleService == null || executionLeaseService == null) {
-            if (!taskService.beginWorkspaceResume(task.getTaskId())) return false;
-            AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task,
-                    "The shared project checkout is available again. Reassess the current workspace before making further changes.");
-            try {
-                agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true);
-                return true;
-            } catch (RuntimeException exception) {
-                log.warn("Unable to enqueue workspace-waiting taskId={}; it will remain recoverable", task.getTaskId(), exception);
-                taskService.waitForWorkspace(task.getTaskId(), "Waiting for project checkout",
-                        "Agent queue rejected workspace continuation", null);
-                return false;
-            }
-        }
         AgentRunLifecycleService.DispatchClaim claim = lifecycleService.claimDispatch(
                 task.getTaskId(),
                 AgentRunState.WAITING_WORKSPACE,

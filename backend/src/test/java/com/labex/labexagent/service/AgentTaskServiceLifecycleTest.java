@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.mapper.AgentChangeSetMapper;
@@ -202,18 +203,25 @@ class AgentTaskServiceLifecycleTest {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.RUNNING), eq(AgentRunState.WAITING_ENVIRONMENT),
                 any(), any(), any(), any(), any())).thenReturn(true);
-        when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_ENVIRONMENT), eq(AgentRunState.QUEUED),
-                any(), any(), any(), any(), any())).thenReturn(true);
+        AgentRunExecutionLeaseService executionLeases = mock(AgentRunExecutionLeaseService.class);
+        when(executionLeases.instanceId()).thenReturn("instance-a");
+        when(executionLeases.leaseDurationMs()).thenReturn(30_000L);
+        AgentRunExecutionLeaseService.ExecutionLease lease = new AgentRunExecutionLeaseService.ExecutionLease(
+                72L, "instance-a", 1L, java.time.LocalDateTime.now().plusSeconds(30));
+        when(lifecycle.claimDispatch(eq(72L), eq(AgentRunState.WAITING_ENVIRONMENT), eq(AgentRunState.QUEUED),
+                eq("RUN_ENVIRONMENT_RESUME"), any(), any(), any(), any(), eq("instance-a"), any(Long.class)))
+                .thenReturn(new AgentRunLifecycleService.DispatchClaim(lease));
         AgentTaskService service = new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class), lifecycle);
+        service.setExecutionLeaseService(executionLeases);
 
         org.junit.jupiter.api.Assertions.assertTrue(service.waitForEnvironment(72L, "Waiting", "DNS failed", "DNS_UNAVAILABLE"));
-        org.junit.jupiter.api.Assertions.assertTrue(service.beginEnvironmentResume(72L));
+        org.junit.jupiter.api.Assertions.assertNotNull(service.claimEnvironmentResume(72L));
 
         verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.RUNNING), eq(AgentRunState.WAITING_ENVIRONMENT),
                 eq("RUN_ENVIRONMENT_BLOCKED"), any(), eq("Waiting"), eq("DNS failed"), any());
-        verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_ENVIRONMENT), eq(AgentRunState.QUEUED),
-                any(), any(), any(), any(), any());
+        verify(lifecycle).claimDispatch(eq(72L), eq(AgentRunState.WAITING_ENVIRONMENT), eq(AgentRunState.QUEUED),
+                eq("RUN_ENVIRONMENT_RESUME"), any(), eq("Queued for resume"), any(), any(), eq("instance-a"), any(Long.class));
     }
 
     @Test
@@ -224,20 +232,28 @@ class AgentTaskServiceLifecycleTest {
         waiting.setStatus("waiting_user");
         when(taskMapper.selectById(72L)).thenReturn(waiting);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.RECOVERING),
-                eq("RUN_INTERACTION_RESUME_QUEUED"), any(), any(), any(), any())).thenReturn(true);
+        AgentRunExecutionLeaseService executionLeases = mock(AgentRunExecutionLeaseService.class);
+        when(executionLeases.instanceId()).thenReturn("instance-a");
+        when(executionLeases.leaseDurationMs()).thenReturn(30_000L);
+        AgentRunExecutionLeaseService.ExecutionLease lease = new AgentRunExecutionLeaseService.ExecutionLease(
+                72L, "instance-a", 1L, java.time.LocalDateTime.now().plusSeconds(30));
+        when(lifecycle.claimDispatch(eq(72L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.RECOVERING),
+                eq("RUN_INTERACTION_RESUME_QUEUED"), any(), eq("Resuming"), eq("User response persisted"), any(),
+                eq("instance-a"), any(Long.class)))
+                .thenReturn(new AgentRunLifecycleService.DispatchClaim(lease));
         AgentTaskService service = new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class), lifecycle);
+        service.setExecutionLeaseService(executionLeases);
 
-        org.junit.jupiter.api.Assertions.assertTrue(service.beginInteractionResume(
+        org.junit.jupiter.api.Assertions.assertNotNull(service.claimInteractionResume(
                 72L, "interaction-72", "Resuming", "User response persisted"));
 
         @SuppressWarnings("rawtypes")
         ArgumentCaptor<java.util.Map> payload = ArgumentCaptor.forClass(java.util.Map.class);
-        verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.RECOVERING),
+        verify(lifecycle).claimDispatch(eq(72L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.RECOVERING),
                 eq("RUN_INTERACTION_RESUME_QUEUED"), payload.capture(), eq("Resuming"),
                 eq("User response persisted"), eq(com.labex.labexagent.run.AgentRunTransitionKey.forInteractionResume(
-                        72L, "interaction-72")));
+                        72L, "interaction-72")), eq("instance-a"), any(Long.class));
         assertEquals("interaction-72", payload.getValue().get("interactionId"));
     }
 

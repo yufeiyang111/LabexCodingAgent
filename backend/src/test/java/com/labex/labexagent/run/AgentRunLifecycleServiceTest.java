@@ -233,10 +233,12 @@ class AgentRunLifecycleServiceTest {
         }).when(eventMapper).insert(any(AgentRunEvent.class));
         AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
 
-        boolean claimed = service.beginScheduledRetry(
-                71L, 1, java.time.LocalDateTime.of(2026, 7, 23, 10, 0, 1), "model-retry-start-71-1");
+        AgentRunLifecycleService.DispatchClaim claimed = service.claimScheduledRetry(
+                71L, 1, java.time.LocalDateTime.of(2026, 7, 23, 10, 0, 1),
+                "model-retry-start-71-1", "instance-a", 30_000L);
 
-        assertTrue(claimed);
+        assertTrue(claimed != null);
+        assertEquals("instance-a", claimed.lease().owner());
         assertEquals("recovering", task.getStatus());
         assertEquals(null, task.getNextRetryAt());
     }

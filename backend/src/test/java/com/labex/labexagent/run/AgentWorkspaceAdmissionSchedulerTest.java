@@ -28,6 +28,8 @@ class AgentWorkspaceAdmissionSchedulerTest {
         AgentTaskMapper mapper = mock(AgentTaskMapper.class);
         AgentTaskService tasks = mock(AgentTaskService.class);
         AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunExecutionLeaseService executionLeases = mock(AgentRunExecutionLeaseService.class);
         StudentProjectService projects = mock(StudentProjectService.class);
         ProjectCheckoutLeaseService leases = mock(ProjectCheckoutLeaseService.class);
         AgentTask task = new AgentTask();
@@ -36,12 +38,19 @@ class AgentWorkspaceAdmissionSchedulerTest {
         StudentProject project = new StudentProject(); project.setWorkspacePath(Files.createDirectories(workspace).toString());
         when(projects.getOwnedProject(7, 12)).thenReturn(project);
         when(leases.isAvailable(eq(12), any())).thenReturn(true);
-        when(tasks.beginWorkspaceResume(71L)).thenReturn(true);
-        AgentWorkspaceAdmissionScheduler scheduler = new AgentWorkspaceAdmissionScheduler(mapper, tasks, engine, projects, leases);
+        when(executionLeases.instanceId()).thenReturn("instance-a");
+        when(executionLeases.leaseDurationMs()).thenReturn(30_000L);
+        AgentRunExecutionLeaseService.ExecutionLease lease = new AgentRunExecutionLeaseService.ExecutionLease(
+                71L, "instance-a", 2L, java.time.LocalDateTime.now().plusSeconds(30));
+        when(lifecycle.claimDispatch(eq(71L), eq(AgentRunState.WAITING_WORKSPACE), eq(AgentRunState.QUEUED),
+                any(), any(), any(), any(), any(), eq("instance-a"), org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(new AgentRunLifecycleService.DispatchClaim(lease));
+        AgentWorkspaceAdmissionScheduler scheduler = new AgentWorkspaceAdmissionScheduler(
+                mapper, tasks, engine, projects, leases, lifecycle, executionLeases);
 
         boolean resumed = scheduler.resume(task);
 
         assertThat(resumed).isTrue();
-        verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
+        verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true), eq(lease));
     }
 }

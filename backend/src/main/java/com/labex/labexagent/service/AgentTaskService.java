@@ -254,40 +254,10 @@ public class AgentTaskService {
         return finalized;
     }
 
-    /**
-     * Moves a resolved user interaction into recovery before a new worker reacquires the project checkout.
-     * The run is not marked running until the worker actually owns all required leases.
-     */
     @Autowired(required = false)
     void setExecutionLeaseService(AgentRunExecutionLeaseService executionLeaseService) {
         this.executionLeaseService = executionLeaseService;
     }
-    @Transactional(rollbackFor = Exception.class)
-    public boolean beginInteractionResume(Long taskId, String interactionId, String currentStep, String summary) {
-        if (taskId == null || interactionId == null || interactionId.isBlank()) return false;
-        if (this.lifecycleService == null) {
-            this.updateTask(taskId, "recovering", currentStep, summary);
-            return true;
-        }
-        AgentTask task = this.task(taskId);
-        if (task == null) return false;
-        AgentRunState current = this.runState(task.getStatus());
-        if (current == AgentRunState.RECOVERING) return true;
-        if (current != AgentRunState.WAITING_USER && current != AgentRunState.WAITING_APPROVAL) return false;
-        Map<String, Object> payload = new LinkedHashMap<>(
-                this.taskUpdatePayload("recovering", currentStep, summary));
-        payload.put("interactionId", interactionId);
-        return this.lifecycleService.transitionIfCurrent(
-                taskId,
-                current,
-                AgentRunState.RECOVERING,
-                "RUN_INTERACTION_RESUME_QUEUED",
-                payload,
-                currentStep,
-                summary,
-                AgentRunTransitionKey.forInteractionResume(taskId, interactionId));
-    }
-
     /** 为已解决交互创建一次性的持久化 dispatch claim。 */
     @Transactional(rollbackFor = Exception.class)
     public AgentRunLifecycleService.DispatchClaim claimInteractionResume(Long taskId, String interactionId,
@@ -328,11 +298,6 @@ public class AgentTaskService {
                         "blockerCode", blockerCode == null ? "UNKNOWN" : blockerCode));
     }
 
-    @Transactional(rollbackFor = Exception.class)
-    public boolean beginWorkspaceResume(Long taskId) {
-        return resumeExternalCondition(taskId, AgentRunState.WAITING_WORKSPACE, "workspace-resume");
-    }
-
     /** 为外部阻塞解除创建带租约的 queued dispatch。 */
     @Transactional(rollbackFor = Exception.class)
     public AgentRunLifecycleService.DispatchClaim claimWorkspaceResume(Long taskId) {
@@ -365,11 +330,6 @@ public class AgentTaskService {
                 executionLeaseService.instanceId(),
                 executionLeaseService.leaseDurationMs());
     }
-    @Transactional(rollbackFor = Exception.class)
-    public boolean beginEnvironmentResume(Long taskId) {
-        return resumeExternalCondition(taskId, AgentRunState.WAITING_ENVIRONMENT, "environment-resume");
-    }
-
     private boolean waitForExternalCondition(Long taskId, AgentRunState waitingState, String persistedStatus,
                                              String eventType, String currentStep, String summary,
                                              Map<String, Object> extraPayload) {
@@ -389,21 +349,6 @@ public class AgentTaskService {
         payload.putAll(extraPayload);
         return this.lifecycleService.transitionIfCurrent(taskId, current, waitingState, eventType, payload,
                 currentStep, summary, AgentRunTransitionKey.forTaskUpdate(taskId, persistedStatus, currentStep, summary));
-    }
-
-    private boolean resumeExternalCondition(Long taskId, AgentRunState waitingState, String operation) {
-        if (taskId == null) return false;
-        if (this.lifecycleService == null) {
-            this.updateTask(taskId, "queued", "Queued for resume", "External blocker cleared");
-            return true;
-        }
-        AgentTask task = this.task(taskId);
-        if (task == null || this.runState(task.getStatus()) != waitingState) return false;
-        return this.lifecycleService.transitionIfCurrent(taskId, waitingState, AgentRunState.QUEUED,
-                "RUN_" + operation.toUpperCase(java.util.Locale.ROOT).replace('-', '_'),
-                this.taskUpdatePayload("queued", "Queued for resume", "External blocker cleared"),
-                "Queued for resume", "External blocker cleared",
-                operation + "-" + taskId + "-" + longValueOrZero(task.getLastEventSequence()));
     }
 
     @Transactional(rollbackFor = Exception.class)

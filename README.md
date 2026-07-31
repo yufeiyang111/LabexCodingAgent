@@ -289,14 +289,20 @@ java -jar target/labex-agent-backend-*.jar
 
 ### Fresh release start after runtime state changes
 
-When changing Java enums, state machines, or other runtime-linkage types, stop the old backend process completely. Do not rely on IDE HotSwap. On Windows, build and run one fresh artifact with:
+When changing Java enums, state machines, or other runtime-linkage types, stop the old backend process completely. Do not rely on IDE HotSwap. On Windows, the release launcher now checks for an existing Labex backend JVM **before building** and refuses to continue if one is still running:
 
 ```powershell
 cd backend
 .\scripts\start-release.ps1
 ```
 
-This avoids mixing old and new class files. See `docs/agent-context-provider-smoke-test.md` for a safe real-provider context smoke test.
+To run only the startup fence without building or launching a process:
+
+```powershell
+.\scripts\start-release.ps1 -PreflightOnly
+```
+
+The launcher fence covers starts performed through this script. A manually launched old JAR or an IDE process outside the launcher must still be stopped by the operator; it is not possible for this script to control an unmanaged deployment. See `docs/agent-context-provider-smoke-test.md` for a safe real-provider context smoke test.
 
 Current OpenCode-style runtime alignment, Session/Message/Part persistence, recovery invariants, and acceptance evidence are documented in [`docs/coding-agent-industrialization/opencode-alignment-status.md`](docs/coding-agent-industrialization/opencode-alignment-status.md).
 

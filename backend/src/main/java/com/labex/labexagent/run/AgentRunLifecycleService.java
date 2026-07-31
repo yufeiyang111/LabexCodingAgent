@@ -222,12 +222,6 @@ public class AgentRunLifecycleService {
                 idempotencyKey, owner, leaseDurationMs);
     }
 
-    /** 兼容旧调用方；新的 scheduler 必须使用带实例 owner 的 claimScheduledRetry。 */
-    @Transactional(rollbackFor = Exception.class)
-    public boolean beginScheduledRetry(Long taskId, int retryAttempt, LocalDateTime now, String idempotencyKey) {
-        return claimScheduledRetry(taskId, retryAttempt, now, idempotencyKey, "legacy-retry-scheduler", 30_000L) != null;
-    }
-
     private TransitionResult transitionInternal(Long taskId, AgentRunState expectedState, AgentRunState targetState,
                                                  String eventType, Object payload, String currentStep, String summary,
                                                  String idempotencyKey, Map<String, Object> extraAssignments) {
