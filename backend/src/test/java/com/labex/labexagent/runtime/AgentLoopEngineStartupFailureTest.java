@@ -19,7 +19,7 @@ class AgentLoopEngineStartupFailureTest {
         AgentLoopEngine engine = new AgentLoopEngine(
                 null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null,
-                null);
+                null, null, null, null, null, null);
 
         engine.reportStartupFailure(publisher, "en", new IllegalStateException("model configuration unavailable"));
 

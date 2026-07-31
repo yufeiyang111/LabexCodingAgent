@@ -11,7 +11,7 @@ class AgentLoopEngineLanguageTest {
         AgentLoopEngine engine = new AgentLoopEngine(
                 null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null,
-                null);
+                null, null, null, null, null, null);
         Method method = AgentLoopEngine.class.getDeclaredMethod("finalResponseSummary", String.class);
         method.setAccessible(true);
 

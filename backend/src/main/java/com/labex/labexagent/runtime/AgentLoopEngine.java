@@ -186,18 +186,6 @@ public class AgentLoopEngine {
     private AgentCompactionService compactionService;
     private AgentRequestTokenEstimator requestTokenEstimator;
 
-    public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService) {
-        this(s, t, c, cr, mm, oc, r, cs, ts, pf, mcs, tt, skillService, mcpServerService,
-                permissionService, gitSnapshotService, diffService, contextOrchestrator,
-                postEditHookService, metricsService, interactionService, null, null, null, null, null);
-    }
-
-    public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService, AgentRunLifecycleService runLifecycleService) {
-        this(s, t, c, cr, mm, oc, r, cs, ts, pf, mcs, tt, skillService, mcpServerService,
-                permissionService, gitSnapshotService, diffService, contextOrchestrator,
-                postEditHookService, metricsService, interactionService, runLifecycleService, null, null, null, null);
-    }
-
     @Autowired
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService, AgentRunLifecycleService runLifecycleService, CommandApprovalService commandApprovalService, ContextUsageEstimator contextUsageEstimator, ContextUsageRegistry contextUsageRegistry, CompactionAgent compactionAgent) {
         this.studentProjectService = s;
