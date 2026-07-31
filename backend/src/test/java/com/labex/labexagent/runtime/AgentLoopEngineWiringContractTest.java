@@ -32,6 +32,15 @@ class AgentLoopEngineWiringContractTest {
         assertTrue(source.contains("void setRunFinalizer"));
         assertTrue(source.contains("void setArtifactService"));
         assertTrue(source.contains("void setToolCallJournalService"));
+        assertTrue(source.contains("void setRunInteractionService"));
+        assertTrue(source.contains("void setTranscriptService"));
+        assertTrue(source.contains("void setTranscriptProjectionService"));
+        assertFalse(source.contains("runInteractionService != null"));
+        assertTrue(source.contains("this.transcriptService = requireRuntimeDependency"));
+        assertTrue(source.contains("this.transcriptProjectionService = requireRuntimeDependency"));
+        assertTrue(source.contains("this.runInteractionService = requireRuntimeDependency"));
+        assertFalse(source.contains("runFinalizer == null"));
+        assertFalse(source.contains("artifactService == null || context"));
         assertFalse(source.contains("toolCallJournalService == null"));
         assertFalse(source.contains("toolCallJournalService != null"));
         assertTrue(source.contains("void setContextCompactionServices"));

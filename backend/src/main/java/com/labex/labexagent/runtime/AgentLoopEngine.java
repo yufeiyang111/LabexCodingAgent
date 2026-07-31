@@ -259,17 +259,17 @@ public class AgentLoopEngine {
 
     @Autowired
     void setTaskEventSubscriptionService(AgentTaskEventSubscriptionService taskEventSubscriptionService) {
-        this.taskEventSubscriptionService = taskEventSubscriptionService;
+        this.taskEventSubscriptionService = requireRuntimeDependency(taskEventSubscriptionService, "taskEventSubscriptionService");
     }
 
     @Autowired
     void setRunFinalizer(AgentRunFinalizer runFinalizer) {
-        this.runFinalizer = runFinalizer;
+        this.runFinalizer = requireRuntimeDependency(runFinalizer, "runFinalizer");
     }
 
     @Autowired
     void setArtifactService(AgentRunArtifactService artifactService) {
-        this.artifactService = artifactService;
+        this.artifactService = requireRuntimeDependency(artifactService, "artifactService");
     }
 
     @Autowired
@@ -279,16 +279,16 @@ public class AgentLoopEngine {
 
     @Autowired
     void setTranscriptService(AgentRunTranscriptService transcriptService) {
-        this.transcriptService = transcriptService;
+        this.transcriptService = requireRuntimeDependency(transcriptService, "transcriptService");
     }
 
     @Autowired
     void setTranscriptProjectionService(AgentTranscriptProjectionService transcriptProjectionService) {
-        this.transcriptProjectionService = transcriptProjectionService;
+        this.transcriptProjectionService = requireRuntimeDependency(transcriptProjectionService, "transcriptProjectionService");
     }
     @Autowired
     void setRunInteractionService(AgentRunInteractionService runInteractionService) {
-        this.runInteractionService = runInteractionService;
+        this.runInteractionService = requireRuntimeDependency(runInteractionService, "runInteractionService");
     }
 
     @Autowired
@@ -785,7 +785,7 @@ public class AgentLoopEngine {
                 msgs.add(Map.of("role", "user", "content", initialContextMessage));
                 msgs.add(Map.of("role", "user", "content", request.getMessage()));
             } else if (resumedRun) {
-                if (request.getResumeInteractionId() != null && this.runInteractionService != null) {
+                if (request.getResumeInteractionId() != null) {
                     AgentRunInteraction interaction = this.runInteractionService.findById(request.getResumeInteractionId());
                     List<Map<String, Object>> toolResults = this.requireTranscriptService()
                             .resolvedInteractionToolResults(interaction, msgs);
@@ -1278,9 +1278,8 @@ public class AgentLoopEngine {
                                 // Model reasoning is already streamed by AgentModelTurnExecutor.
                                 this.appendRunLog(runLog, "\n## Final response\n\n" + this.safeLogText(ft) + "\n");
                                 log.info("Iteration {}: final response ({} chars)", i, ft.length());
-                                AgentRunFinalizer.CompletionAssessment completion = this.runFinalizer == null
-                                        ? null : this.runFinalizer.assess(task.getTaskId(), studentId, projectId,
-                                                ctx.hasTrustedVerification());
+                                AgentRunFinalizer.CompletionAssessment completion = this.runFinalizer.assess(
+                                        task.getTaskId(), studentId, projectId, ctx.hasTrustedVerification());
                                 if (completion != null) {
                                     this.sendEvent(sse, conv, "COMPLETION_EVIDENCE", completion.evidence().toPayload());
                                     if (!completion.allowed()) {
@@ -1904,7 +1903,7 @@ public class AgentLoopEngine {
         return result;
     }
     private void recordToolFailure(AgentContext context, String toolName, String toolCallId, String content) {
-        if (artifactService == null || context == null || context.getTaskId() == null) {
+        if (context == null || context.getTaskId() == null) {
             return;
         }
         try {
