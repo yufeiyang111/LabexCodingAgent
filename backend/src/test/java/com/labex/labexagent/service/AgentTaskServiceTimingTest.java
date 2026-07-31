@@ -14,6 +14,9 @@ import com.labex.entity.StudentProject;
 import com.labex.mapper.AgentChangeSetMapper;
 import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.labexagent.run.BackgroundRunWorktreeService;
+import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 
@@ -75,7 +78,7 @@ class AgentTaskServiceTimingTest {
     }
 
     private AgentTaskService service(AgentTaskMapper taskMapper) {
-        return new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class), mock(AgentFileChangeMapper.class));
+        return newTaskService(taskMapper, mock(AgentChangeSetMapper.class), mock(AgentFileChangeMapper.class));
     }
 
     private AgentTask task(String status, LocalDateTime submittedAt) {
@@ -85,5 +88,13 @@ class AgentTaskServiceTimingTest {
         task.setSubmittedAt(submittedAt);
         task.setActiveElapsedMs(0L);
         return task;
+    }
+
+    private AgentTaskService newTaskService(AgentTaskMapper taskMapper,
+                                            AgentChangeSetMapper changeSetMapper,
+                                            AgentFileChangeMapper fileChangeMapper) {
+        return new AgentTaskService(taskMapper, changeSetMapper, fileChangeMapper,
+                mock(AgentRunLifecycleService.class), mock(AgentRunExecutionLeaseService.class),
+                mock(BackgroundRunWorktreeService.class));
     }
 }

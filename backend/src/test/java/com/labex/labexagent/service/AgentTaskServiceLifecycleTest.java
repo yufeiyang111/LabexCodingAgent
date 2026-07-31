@@ -15,6 +15,7 @@ import com.labex.entity.StudentProject;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunState;
+import com.labex.labexagent.run.BackgroundRunWorktreeService;
 import com.labex.mapper.AgentChangeSetMapper;
 import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.mapper.AgentTaskMapper;
@@ -31,7 +32,7 @@ class AgentTaskServiceLifecycleTest {
             return 1;
         }).when(taskMapper).insert(any(AgentTask.class));
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 taskMapper,
                 mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class),
@@ -49,7 +50,7 @@ class AgentTaskServiceLifecycleTest {
     @Test
     void usesDifferentOccurrenceKeysWhenTheSameStatePayloadHappensAgain() {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 mock(AgentTaskMapper.class),
                 mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class),
@@ -68,7 +69,7 @@ class AgentTaskServiceLifecycleTest {
     @Test
     void acceptsAResumeScopedIdempotencyKeyForTheFirstRunningTransition() {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 mock(AgentTaskMapper.class),
                 mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class),
@@ -97,7 +98,7 @@ class AgentTaskServiceLifecycleTest {
             task.setStatus("completed");
             return null;
         }).when(lifecycle).transition(eq(72L), eq(AgentRunState.COMPLETED), any(), any(), any(), any(), any());
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 taskMapper,
                 mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class),
@@ -121,10 +122,11 @@ class AgentTaskServiceLifecycleTest {
         task.setActiveElapsedMs(120L);
         when(taskMapper.selectById(72L)).thenReturn(task);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 taskMapper,
                 mock(AgentChangeSetMapper.class),
-                mock(AgentFileChangeMapper.class));
+                mock(AgentFileChangeMapper.class),
+                mock(AgentRunLifecycleService.class));
 
         service.startTiming(72L, java.time.LocalDateTime.of(2026, 7, 23, 10, 1));
 
@@ -146,7 +148,7 @@ class AgentTaskServiceLifecycleTest {
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         when(lifecycle.scheduleModelRetry(eq(72L), eq(1), any(), any(), any(), any(), any())).thenReturn(true);
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 taskMapper,
                 mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class),
@@ -178,7 +180,7 @@ class AgentTaskServiceLifecycleTest {
                 any(), any(), any(), any(), any())).thenReturn(true);
         when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.CANCELLING), eq(AgentRunState.CANCELLED),
                 any(), any(), any(), any(), any())).thenReturn(true);
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 taskMapper,
                 mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class),
@@ -211,9 +213,8 @@ class AgentTaskServiceLifecycleTest {
         when(lifecycle.claimDispatch(eq(72L), eq(AgentRunState.WAITING_ENVIRONMENT), eq(AgentRunState.QUEUED),
                 eq("RUN_ENVIRONMENT_RESUME"), any(), any(), any(), any(), eq("instance-a"), any(Long.class)))
                 .thenReturn(new AgentRunLifecycleService.DispatchClaim(lease));
-        AgentTaskService service = new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class),
-                mock(AgentFileChangeMapper.class), lifecycle);
-        service.setExecutionLeaseService(executionLeases);
+        AgentTaskService service = newTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class), lifecycle, executionLeases);
 
         org.junit.jupiter.api.Assertions.assertTrue(service.waitForEnvironment(72L, "Waiting", "DNS failed", "DNS_UNAVAILABLE"));
         org.junit.jupiter.api.Assertions.assertNotNull(service.claimEnvironmentResume(72L));
@@ -241,9 +242,8 @@ class AgentTaskServiceLifecycleTest {
                 eq("RUN_INTERACTION_RESUME_QUEUED"), any(), eq("Resuming"), eq("User response persisted"), any(),
                 eq("instance-a"), any(Long.class)))
                 .thenReturn(new AgentRunLifecycleService.DispatchClaim(lease));
-        AgentTaskService service = new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class),
-                mock(AgentFileChangeMapper.class), lifecycle);
-        service.setExecutionLeaseService(executionLeases);
+        AgentTaskService service = newTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class), lifecycle, executionLeases);
 
         org.junit.jupiter.api.Assertions.assertNotNull(service.claimInteractionResume(
                 72L, "interaction-72", "Resuming", "User response persisted"));
@@ -260,7 +260,7 @@ class AgentTaskServiceLifecycleTest {
     @Test
     void routesKnownRunStatesThroughTheLifecycleService() {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 mock(AgentTaskMapper.class),
                 mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class),
@@ -276,5 +276,22 @@ class AgentTaskServiceLifecycleTest {
                 eq("Preparing workspace"),
                 eq("Worker accepted run"),
                 any());
+    }
+
+    private AgentTaskService newTaskService(AgentTaskMapper taskMapper,
+                                            AgentChangeSetMapper changeSetMapper,
+                                            AgentFileChangeMapper fileChangeMapper,
+                                            AgentRunLifecycleService lifecycle) {
+        return newTaskService(taskMapper, changeSetMapper, fileChangeMapper, lifecycle,
+                mock(AgentRunExecutionLeaseService.class));
+    }
+
+    private AgentTaskService newTaskService(AgentTaskMapper taskMapper,
+                                            AgentChangeSetMapper changeSetMapper,
+                                            AgentFileChangeMapper fileChangeMapper,
+                                            AgentRunLifecycleService lifecycle,
+                                            AgentRunExecutionLeaseService executionLeases) {
+        return new AgentTaskService(taskMapper, changeSetMapper, fileChangeMapper, lifecycle,
+                executionLeases, mock(BackgroundRunWorktreeService.class));
     }
 }

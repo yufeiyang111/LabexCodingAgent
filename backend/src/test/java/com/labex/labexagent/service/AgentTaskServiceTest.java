@@ -16,6 +16,9 @@ import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentChangeSetMapper;
 import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.labexagent.run.BackgroundRunWorktreeService;
+import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -45,7 +48,7 @@ class AgentTaskServiceTest {
         active.setTaskId(72L);
         active.setStatus("running");
         when(taskMapper.selectOne(org.mockito.ArgumentMatchers.any(LambdaQueryWrapper.class))).thenReturn(active);
-        AgentTaskService service = new AgentTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+        AgentTaskService service = newTaskService(taskMapper, mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class));
 
         AgentTask result = service.findLatestActiveTask(7, 12, "conversation-71");
@@ -67,7 +70,7 @@ class AgentTaskServiceTest {
     @SuppressWarnings("unchecked")
     void listPendingChangesIncludesConflictedChanges() {
         AgentFileChangeMapper fileChangeMapper = mock(AgentFileChangeMapper.class);
-        AgentTaskService service = new AgentTaskService(
+        AgentTaskService service = newTaskService(
                 mock(AgentTaskMapper.class),
                 mock(AgentChangeSetMapper.class),
                 fileChangeMapper);
@@ -80,5 +83,13 @@ class AgentTaskServiceTest {
         query.getSqlSegment();
 
         assertTrue(query.getParamNameValuePairs().containsValue("conflicted"));
+    }
+
+    private AgentTaskService newTaskService(AgentTaskMapper taskMapper,
+                                            AgentChangeSetMapper changeSetMapper,
+                                            AgentFileChangeMapper fileChangeMapper) {
+        return new AgentTaskService(taskMapper, changeSetMapper, fileChangeMapper,
+                mock(AgentRunLifecycleService.class), mock(AgentRunExecutionLeaseService.class),
+                mock(BackgroundRunWorktreeService.class));
     }
 }

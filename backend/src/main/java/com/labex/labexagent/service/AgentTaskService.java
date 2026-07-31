@@ -36,27 +36,20 @@ public class AgentTaskService {
     private final AgentChangeSetMapper changeSetMapper;
     private final AgentFileChangeMapper fileChangeMapper;
     private final AgentRunLifecycleService lifecycleService;
+    private final AgentRunExecutionLeaseService executionLeaseService;
     private final BackgroundRunWorktreeService backgroundWorktreeService;
-    private AgentRunExecutionLeaseService executionLeaseService;
-
-    public AgentTaskService(AgentTaskMapper taskMapper, AgentChangeSetMapper changeSetMapper, AgentFileChangeMapper fileChangeMapper) {
-        this(taskMapper, changeSetMapper, fileChangeMapper, null, null);
-    }
 
     @Autowired
     public AgentTaskService(AgentTaskMapper taskMapper, AgentChangeSetMapper changeSetMapper,
                             AgentFileChangeMapper fileChangeMapper,
-                            AgentRunLifecycleService lifecycleService) {
-        this(taskMapper, changeSetMapper, fileChangeMapper, lifecycleService, null);
-    }
-
-    public AgentTaskService(AgentTaskMapper taskMapper, AgentChangeSetMapper changeSetMapper,
-                            AgentFileChangeMapper fileChangeMapper, AgentRunLifecycleService lifecycleService,
+                            AgentRunLifecycleService lifecycleService,
+                            AgentRunExecutionLeaseService executionLeaseService,
                             BackgroundRunWorktreeService backgroundWorktreeService) {
         this.taskMapper = taskMapper;
         this.changeSetMapper = changeSetMapper;
         this.fileChangeMapper = fileChangeMapper;
         this.lifecycleService = lifecycleService;
+        this.executionLeaseService = executionLeaseService;
         this.backgroundWorktreeService = backgroundWorktreeService;
     }
 
@@ -119,9 +112,7 @@ public class AgentTaskService {
                 throw new IllegalStateException("background worktree allocation failed", e);
             }
         }
-        if (this.lifecycleService != null) {
-            this.lifecycleService.initialize(task, payload, "task-" + task.getTaskId() + "-queued");
-        }
+        this.lifecycleService.initialize(task, payload, "task-" + task.getTaskId() + "-queued");
         return task;
     }
 
@@ -143,31 +134,20 @@ public class AgentTaskService {
             this.pauseTiming(taskId, now);
         }
         AgentRunState runState = this.runState(status);
-        if (this.lifecycleService != null && runState != null) {
-            this.lifecycleService.transition(
-                    taskId,
-                    runState,
-                    "RUN_STATE_" + runState.name(),
-                    this.taskUpdatePayload(status, currentStep, summary),
-                    currentStep,
-                    summary,
-                    idempotencyKey);
-            if (this.isTerminalState(status)) {
-                this.finishTimingIfTerminal(taskId, now);
-            }
-            return;
+        if (runState == null) {
+            throw new IllegalArgumentException("Unknown agent task state: " + status);
         }
-        LambdaUpdateWrapper<AgentTask> update = new LambdaUpdateWrapper<AgentTask>().eq(AgentTask::getTaskId, taskId).set(AgentTask::getUpdateTime, LocalDateTime.now());
-        if (status != null) {
-            update.set(AgentTask::getStatus, status);
+        this.lifecycleService.transition(
+                taskId,
+                runState,
+                "RUN_STATE_" + runState.name(),
+                this.taskUpdatePayload(status, currentStep, summary),
+                currentStep,
+                summary,
+                idempotencyKey);
+        if (this.isTerminalState(status)) {
+            this.finishTimingIfTerminal(taskId, now);
         }
-        if (currentStep != null) {
-            update.set(AgentTask::getCurrentStep, currentStep);
-        }
-        if (summary != null) {
-            update.set(AgentTask::getSummary, summary);
-        }
-        this.taskMapper.update(null, update);
     }
 
     /**
@@ -178,10 +158,6 @@ public class AgentTaskService {
     public boolean requestCancellation(Long taskId, String currentStep, String summary) {
         if (taskId == null) {
             return false;
-        }
-        if (this.lifecycleService == null) {
-            this.updateTask(taskId, "cancelling", currentStep, summary);
-            return true;
         }
         AgentTask task = this.task(taskId);
         if (task == null) {
@@ -213,10 +189,6 @@ public class AgentTaskService {
     public boolean finalizeCancellation(Long taskId, String currentStep, String summary) {
         if (taskId == null) {
             return false;
-        }
-        if (this.lifecycleService == null) {
-            this.updateTask(taskId, "cancelled", currentStep, summary);
-            return true;
         }
         AgentTask task = this.task(taskId);
         if (task == null) {
@@ -254,16 +226,11 @@ public class AgentTaskService {
         return finalized;
     }
 
-    @Autowired(required = false)
-    void setExecutionLeaseService(AgentRunExecutionLeaseService executionLeaseService) {
-        this.executionLeaseService = executionLeaseService;
-    }
     /** 为已解决交互创建一次性的持久化 dispatch claim。 */
     @Transactional(rollbackFor = Exception.class)
     public AgentRunLifecycleService.DispatchClaim claimInteractionResume(Long taskId, String interactionId,
                                                                           String currentStep, String summary) {
-        if (taskId == null || interactionId == null || interactionId.isBlank()
-                || lifecycleService == null || executionLeaseService == null) return null;
+        if (taskId == null || interactionId == null || interactionId.isBlank()) return null;
         AgentTask task = this.task(taskId);
         if (task == null) return null;
         AgentRunState current = this.runState(task.getStatus());
@@ -314,7 +281,7 @@ public class AgentTaskService {
     private AgentRunLifecycleService.DispatchClaim claimExternalResume(Long taskId, AgentRunState waitingState,
                                                                          String operation, String eventType,
                                                                          String reason) {
-        if (taskId == null || lifecycleService == null || executionLeaseService == null) return null;
+        if (taskId == null) return null;
         AgentTask task = this.task(taskId);
         if (task == null || this.runState(task.getStatus()) != waitingState) return null;
         Map<String, Object> payload = new LinkedHashMap<>(this.taskUpdatePayload("queued", "Queued for resume", reason));
@@ -334,10 +301,6 @@ public class AgentTaskService {
                                              String eventType, String currentStep, String summary,
                                              Map<String, Object> extraPayload) {
         if (taskId == null) return false;
-        if (this.lifecycleService == null) {
-            this.updateTask(taskId, persistedStatus, currentStep, summary);
-            return true;
-        }
         AgentTask task = this.task(taskId);
         if (task == null) return false;
         AgentRunState current = this.runState(task.getStatus());
@@ -353,7 +316,7 @@ public class AgentTaskService {
 
     @Transactional(rollbackFor = Exception.class)
     public ModelRetrySchedule scheduleModelRetry(Long taskId, int maximumAttempts, long delayMs, String reason) {
-        if (taskId == null || this.lifecycleService == null) {
+        if (taskId == null) {
             return null;
         }
         AgentTask task = this.task(taskId);
@@ -390,7 +353,7 @@ public class AgentTaskService {
     @Transactional(rollbackFor = Exception.class)
     public boolean cancelScheduledRetry(Integer studentId, Integer projectId, Long taskId) {
         AgentTask task = getOwnedTask(studentId, projectId, taskId);
-        return task != null && lifecycleService != null && lifecycleService.cancelScheduledRetry(taskId,
+        return task != null && lifecycleService.cancelScheduledRetry(taskId,
                 Map.of("studentId", studentId, "projectId", projectId), "retry-cancel-" + taskId);
     }
 
