@@ -232,7 +232,7 @@ public class AgentLoopEngine {
         this.commandClassifier = new CommandClassifier();
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setNetworkAccessService(NetworkAccessService networkAccessService) {
         this.networkAccessService = networkAccessService;
     }
@@ -244,7 +244,7 @@ public class AgentLoopEngine {
         this.leaseHeartbeatService = leaseHeartbeatService;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setRunProcessors(AgentModelTurnExecutor modelTurnExecutor,
                           AgentToolTurnExecutor toolTurnExecutor,
                           AgentToolCallBatchProtocol toolCallBatchProtocol,
@@ -263,22 +263,22 @@ public class AgentLoopEngine {
         if (interactionPauser != null) this.interactionPauser = interactionPauser;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setTaskEventSubscriptionService(AgentTaskEventSubscriptionService taskEventSubscriptionService) {
         this.taskEventSubscriptionService = taskEventSubscriptionService;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setRunFinalizer(AgentRunFinalizer runFinalizer) {
         this.runFinalizer = runFinalizer;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setArtifactService(AgentRunArtifactService artifactService) {
         this.artifactService = artifactService;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setToolCallJournalService(AgentToolCallJournalService toolCallJournalService) {
         this.toolCallJournalService = toolCallJournalService;
     }
@@ -292,39 +292,39 @@ public class AgentLoopEngine {
     void setTranscriptProjectionService(AgentTranscriptProjectionService transcriptProjectionService) {
         this.transcriptProjectionService = transcriptProjectionService;
     }
-    @Autowired(required = false)
+    @Autowired
     void setRunInteractionService(AgentRunInteractionService runInteractionService) {
         this.runInteractionService = runInteractionService;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setContextCompactionServices(AgentCompactionService compactionService,
                                       AgentRequestTokenEstimator requestTokenEstimator) {
         this.compactionService = compactionService;
         if (requestTokenEstimator != null) this.requestTokenEstimator = requestTokenEstimator;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setCommandFailureGuard(CommandFailureGuard commandFailureGuard) {
         if (commandFailureGuard != null) this.commandFailureGuard = commandFailureGuard;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setRecoveryProperties(AgentRecoveryProperties recoveryProperties) {
         if (recoveryProperties != null) this.recoveryProperties = recoveryProperties;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setLoopProperties(AgentLoopProperties loopProperties) {
         if (loopProperties != null) this.loopProperties = loopProperties;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setWorkspaceLeaseService(WorkspaceLeaseService workspaceLeaseService) {
         this.workspaceLeaseService = workspaceLeaseService;
     }
 
-    @Autowired(required = false)
+    @Autowired
     void setProjectCheckoutLeaseServices(ProjectCheckoutLeaseService projectCheckoutLeaseService,
                                          ProjectCheckoutLeaseHeartbeatService projectCheckoutLeaseHeartbeatService) {
         this.projectCheckoutLeaseService = projectCheckoutLeaseService;
