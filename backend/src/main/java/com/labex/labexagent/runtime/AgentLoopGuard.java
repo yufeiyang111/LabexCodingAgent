@@ -28,7 +28,10 @@ public final class AgentLoopGuard {
     private int nonProgressIterations;
 
     public AgentLoopGuard(AgentLoopProperties properties) {
-        this.properties = properties == null ? new AgentLoopProperties() : properties;
+        if (properties == null) {
+            throw new IllegalArgumentException("AgentLoopProperties is required");
+        }
+        this.properties = properties;
     }
 
     public IterationDecision beforeIteration(int iteration) {
