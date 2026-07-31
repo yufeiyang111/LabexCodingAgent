@@ -147,10 +147,32 @@ function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds))
 }
 
-async function waitForRestartContinuation() {
-  if (!restartHandoffDir) return false
-  await mkdir(restartHandoffDir, { recursive: true })
-  const continuationFile = join(restartHandoffDir, 'continue.signal')
+
+async function clickElement(selector, { containsText = '', label = selector } = {}) {
+  await client.evaluate(`(() => {
+    const candidates = Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
+    const element = candidates.find(candidate => {
+      if (candidate.disabled) return false
+      if (!${JSON.stringify(containsText)}) return true
+      const scope = candidate.closest('.tc-question, .tc-approval, .ai-session-dropdown') || candidate
+      return (scope.innerText || '').includes(${JSON.stringify(containsText)})
+    })
+    if (!element) throw new Error(${JSON.stringify(`${label} not found`)})
+    const rect = element.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) throw new Error(${JSON.stringify(`${label} is not visible`)})
+    element.scrollIntoView({ block: 'center', inline: 'center' })
+    element.focus?.()
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      const EventType = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent
+      element.dispatchEvent(new EventType(type, { bubbles: true, cancelable: true, composed: true, view: window, button: 0 }))
+    }
+  })()`)
+}
+
+async function waitForRestartContinuation(handoffDir) {
+  if (!handoffDir) return false
+  await mkdir(handoffDir, { recursive: true })
+  const continuationFile = join(handoffDir, 'continue.signal')
   await waitFor(async () => {
     try {
       await access(continuationFile)
@@ -232,21 +254,38 @@ async function waitForAgentIdle(label = 'agent terminal state') {
 
 async function sendMessage(message) {
   const encoded = JSON.stringify(message)
+  const visiblePrefix = JSON.stringify(message.slice(0, 96))
   await client.evaluate(`(() => {
     const textarea = document.querySelector('.ai-input-text-area textarea');
     if (!textarea) throw new Error('Agent textarea missing');
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
     setter.call(textarea, ${encoded});
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    textarea.focus();
     return true;
   })()`)
-  await delay(100)
-  await client.evaluate(`(() => {
-    const button = document.querySelector('button.ai-submit-btn[title^="发送"]');
-    if (!button || button.disabled) throw new Error('Agent submit button unavailable');
-    button.click();
-    return true;
-  })()`)
+  await waitFor(
+    () => client.evaluate(`(() => {
+      const textarea = document.querySelector('.ai-input-text-area textarea');
+      const submit = document.querySelector('button.ai-submit-btn');
+      return textarea?.value === ${encoded} && Boolean(submit) && !submit.disabled;
+    })()`),
+    'agent composer readiness'
+  )
+  // 通过输入框的真实 Enter 键路径触发 Vue 事件，避免脚本 click() 在刷新后丢失处理器。
+  await client.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13
+  })
+  await client.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13
+  })
+  await waitFor(
+    () => client.evaluate(`(() => {
+      const textarea = document.querySelector('.ai-input-text-area textarea');
+      return textarea?.value === '' && document.body.innerText.includes(${visiblePrefix});
+    })()`),
+    `submitted user message ${message.slice(0, 96)}`
+  )
 }
 
 async function bodyIncludes(text) {
@@ -258,9 +297,9 @@ async function markerCount(text) {
 }
 
 async function createNewConversation() {
-  await client.evaluate(`document.querySelector('.ai-session-select')?.click()`)
+  await clickElement('.ai-session-select', { label: 'conversation selector' })
   await waitFor(() => client.evaluate(`Boolean(document.querySelector('.ai-session-new'))`), 'new conversation action')
-  await client.evaluate(`document.querySelector('.ai-session-new').click()`)
+  await clickElement('.ai-session-new', { label: 'new conversation action' })
   await waitFor(() => client.evaluate(`!document.querySelector('.ai-session-dropdown')`), 'conversation menu close')
 }
 
@@ -351,8 +390,9 @@ async function runScenario() {
   if (!providerParts.some(part => part.partType === 'tool_call' && part.toolCallId)) {
     throw new Error(`Durable Provider tool-call part was not persisted: ${JSON.stringify(providerParts)}`)
   }
-  await client.evaluate(`document.querySelector('.tc-question .tc-option-btn')?.click()`)
-  await client.evaluate(`document.querySelector('.tc-question .tc-approval-btn.primary')?.click()`)
+  await clickElement('.tc-question .tc-option-btn', { label: 'question option' })
+  await waitFor(() => client.evaluate(`Boolean(document.querySelector('.tc-question textarea')?.value?.trim())`), 'question answer selection')
+  await clickElement('.tc-question .tc-approval-btn.primary', { label: 'question answer submit' })
   await waitFor(
     () => client.evaluate(`!document.querySelector('.tc-question') && document.body.innerText.includes('durable user-question interaction resumed')`),
     'question reply completion'
@@ -385,7 +425,7 @@ async function runScenario() {
       conversationId: permissionTask.conversationId,
       interactionId: interactionProjection?.pendingInteraction?.interactionId || null
     }, null, 2), 'utf8')
-    await waitForRestartContinuation()
+    await waitForRestartContinuation(interactionRestartHandoffDir)
     const restartedInteractionProjection = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
     if (Number(restartedInteractionProjection?.taskId) !== Number(permissionTask.taskId)
         || restartedInteractionProjection?.status !== 'waiting_approval'
@@ -397,10 +437,7 @@ async function runScenario() {
     await waitFor(() => client.evaluate(`Boolean(document.querySelector('.tc-approval'))`), 'approval after backend restart')
     restartInteractionVerified = true
   }
-  await client.evaluate(`(() => {
-    const card = Array.from(document.querySelectorAll('.tc-approval')).find(item => item.innerText.includes('需要确认后才能继续执行'))
-    card?.querySelector('.tc-approval-btn.primary')?.click()
-  })()`)
+  await clickElement('.tc-approval .tc-approval-btn.primary', { containsText: '需要确认后才能继续执行', label: 'permission approval' })
   await waitFor(async () => {
     const task = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
     return task && task.status !== 'waiting_approval'
@@ -450,8 +487,9 @@ async function runScenario() {
     () => client.evaluate(`Boolean(document.querySelector('.tc-question'))`),
     'durable compaction question component'
   )
-  await client.evaluate(`document.querySelector('.tc-question .tc-option-btn')?.click()`)
-  await client.evaluate(`document.querySelector('.tc-question .tc-approval-btn.primary')?.click()`)
+  await clickElement('.tc-question .tc-option-btn', { label: 'question option' })
+  await waitFor(() => client.evaluate(`Boolean(document.querySelector('.tc-question textarea')?.value?.trim())`), 'question answer selection')
+  await clickElement('.tc-question .tc-approval-btn.primary', { label: 'question answer submit' })
   await waitFor(
     () => client.evaluate(`Boolean(document.querySelector('.ai-context-management-card.is-completed'))`),
     'durable compaction completion card'
@@ -497,7 +535,7 @@ async function runScenario() {
       conversationId: compactionTask.conversationId,
       compactionEpoch: completedCompaction.compactionEpoch
     }, null, 2), 'utf8')
-    await waitForRestartContinuation()
+    await waitForRestartContinuation(restartHandoffDir)
     let restartedProjection = null
     await waitFor(async () => {
       try {
@@ -520,6 +558,29 @@ async function runScenario() {
       })}`)
     }
     restartProjectionVerified = true
+  }
+
+  const streamBreakPriorTasks = await api(`/student/projects/${projectId}/agent/tasks`)
+  const streamBreakPriorTaskIds = new Set(streamBreakPriorTasks.map(task => Number(task.taskId)))
+  await createNewConversation()
+  await sendMessage('[acceptance:stream-break]')
+  await waitFor(
+    () => bodyIncludes('Partial response before the scripted provider connection closes.'),
+    'partial provider response before stream interruption'
+  )
+  await waitForAgentIdle('stream interruption terminal UI state')
+  let streamBreakTask = null
+  await waitFor(async () => {
+    const tasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    const candidate = tasks
+      .filter(task => !streamBreakPriorTaskIds.has(Number(task.taskId)))
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))[0]
+    if (!candidate) return false
+    streamBreakTask = candidate
+    return ['retrying', 'failed', 'completed', 'cancelled'].includes(String(candidate.status))
+  }, 'durable stream interruption state')
+  if (!streamBreakTask || ['completed', 'cancelled'].includes(String(streamBreakTask.status))) {
+    throw new Error(`Provider stream interruption was treated as a successful completion: ${JSON.stringify(streamBreakTask)}`)
   }
 
   const tinyConfig = await api('/student/model-configs', {
@@ -605,6 +666,7 @@ async function runScenario() {
     compactionTokensBefore: completedCompaction.estimatedTokensBefore,
     compactionTokensAfter: completedCompaction.estimatedTokensAfter,
     compactionProviderMessages: compactionProviderMessages.length,
+    providerStreamInterruptionHandled: true,
     restartProjectionVerified,
     restartInteractionVerified,
     staticContextBlockerCard: true,
@@ -627,7 +689,7 @@ try {
   try {
     page = await client?.evaluate(`({ url: location.href, title: document.title, body: document.body?.innerText?.slice(0, 1200) || '' })`)
   } catch {
-    // ???????????????? CDP ???
+    // 页面已关闭时忽略 CDP 诊断失败。
   }
   const failure = redactEvidence({
     error: error?.message || String(error),

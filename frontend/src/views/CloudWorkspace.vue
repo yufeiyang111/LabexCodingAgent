@@ -1288,7 +1288,7 @@ async function sendMessage() {
   }
 
   messages.value.push({ role: 'user', content: q, timestamp: Date.now() })
-  messages.value.push({ role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), timing: createMessageTiming() })
+  messages.value.push({ role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), conversationId: currentAgentSession.value?.conversationId || null, timing: createMessageTiming() })
   const assistantMsg = messages.value[messages.value.length - 1]
   agentInput.value = ''; agentLoading.value = true
   userScrolled.value = false
@@ -1543,7 +1543,7 @@ async function handleCommandApproval(payload) {
           assistantMsg.waitingForCommandApproval = false
           assistantMsg.isStreaming = true
           agentLoading.value = true
-          void replayResumedAgent(taskId, assistantMsg)
+          void replayResumedAgent(taskId, assistantMsg, approval.conversationId || assistantMsg.conversationId)
         }
       }
       return
@@ -1590,7 +1590,7 @@ ${executionData.output}`
         assistantMsg.waitingForCommandApproval = false
         assistantMsg.isStreaming = true
         agentLoading.value = true
-        void replayResumedAgent(taskId, assistantMsg)
+        void replayResumedAgent(taskId, assistantMsg, approval.conversationId || assistantMsg.conversationId)
       }
     }
   } catch (error) {
@@ -1625,10 +1625,10 @@ async function retryEnvironmentTask(assistantMsg) {
   }
 }
 
-async function replayResumedAgent(taskId, assistantMsg) {
+async function replayResumedAgent(taskId, assistantMsg, conversationId) {
   try {
-    logTaskRecovery('TASK_EVENT_RESUME_WAITING', { taskId })
-    await resumeTaskEventSubscription(taskId, assistantMsg)
+    logTaskRecovery('TASK_EVENT_RESUME_WAITING', { taskId, conversationId: conversationId || assistantMsg?.conversationId || currentAgentSession.value?.conversationId || null })
+    await resumeTaskEventSubscription(taskId, assistantMsg, conversationId)
   } catch (error) {
     assistantMsg.error = '恢复 Agent 任务失败：' + (error?.message || '未知错误')
     if (!assistantMsg.content) assistantMsg.content = assistantMsg.error
@@ -1649,7 +1649,7 @@ async function handlePermissionDecision(payload) {
     assistantMsg.isStreaming = true
     if (assistantMsg.timing) assistantMsg.timing.isRunning = true
     agentLoading.value = true
-    void replayResumedAgent(taskId, assistantMsg)
+    void replayResumedAgent(taskId, assistantMsg, request?.conversationId || assistantMsg.conversationId)
   }
 }
 
@@ -1666,7 +1666,7 @@ async function handleQuestionReply(payload) {
     if (assistantMsg && taskId) {
       assistantMsg.isStreaming = true
       agentLoading.value = true
-      void replayResumedAgent(taskId, assistantMsg)
+      void replayResumedAgent(taskId, assistantMsg, call?.questionRequest?.conversationId || assistantMsg.conversationId)
     }
   }
 }

@@ -45,6 +45,7 @@ class AgentLoopEngineParallelToolCallTest {
                     "", true, null, "call-read", 0, null));
             onChunk.accept(new StreamChunk("tool_call", "", "list_files", "{\"path\":\"src\"}",
                     "", true, null, "call-list", 1, null));
+            onChunk.accept(new StreamChunk("done", "", null, null, null, true, null));
         }
     }
 }

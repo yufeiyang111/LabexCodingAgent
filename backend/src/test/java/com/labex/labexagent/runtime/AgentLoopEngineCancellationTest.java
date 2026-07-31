@@ -63,6 +63,7 @@ class AgentLoopEngineCancellationTest {
                                List<Map<String, Object>> tools, LlmConfig config,
                                java.util.function.Consumer<StreamChunk> onChunk) {
             onChunk.accept(new StreamChunk("text_delta", "ok", null, null, null, false, null));
+            onChunk.accept(new StreamChunk("done", "", null, null, null, true, null));
         }
 
         @Override
@@ -72,6 +73,7 @@ class AgentLoopEngineCancellationTest {
                                java.util.function.Consumer<StreamChunk> onChunk) {
             this.cancellationToken = cancellationToken;
             onChunk.accept(new StreamChunk("text_delta", "ok", null, null, null, false, null));
+            onChunk.accept(new StreamChunk("done", "", null, null, null, true, null));
         }
     }
 }

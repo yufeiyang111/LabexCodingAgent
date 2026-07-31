@@ -216,8 +216,11 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       const toolCall = message.toolCalls?.at(-1)
       if (toolCall) {
         toolCall.result = data.result || data.content
-        const preservesWaitingQuestion = toolCall.questionRequest && data.success === false
-        toolCall.status = preservesWaitingQuestion ? 'waiting_user' : toolResultStatus(data.success, toolCall.result)
+        const preservesWaitingInteraction = data.success === false
+          && (toolCall.questionRequest || toolCall.permissionRequest || toolCall.networkRequest)
+        toolCall.status = preservesWaitingInteraction
+          ? (toolCall.permissionRequest || toolCall.networkRequest ? 'waiting_approval' : 'waiting_user')
+          : toolResultStatus(data.success, toolCall.result)
         toolCall.verificationStatus = toolCall.status === 'warning' ? 'UNAVAILABLE' : ''
         toolCall.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
           truncated: data.modelProjectionTruncated === true }

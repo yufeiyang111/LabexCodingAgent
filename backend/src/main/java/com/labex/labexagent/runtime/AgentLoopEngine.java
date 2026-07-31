@@ -1057,14 +1057,13 @@ public class AgentLoopEngine {
                                                 return;
                                             }
                                             if (res.isInteractionRequired()) {
-                                                this.journalToolWaitingUser(task.getTaskId(), toolCallId, tn, publicArgs, i,
-                                                        res.getInteractionRequestId(), res.getContent(), res.getInteractionPayload());
+                                                this.journalToolResult(task.getTaskId(), toolCallId, tn, publicArgs, i, res);
                                             } else {
                                                 this.journalToolFinished(task.getTaskId(), toolCallId, tn, publicArgs, i, res);
                                             }
                                             this.appendToolResult(runLog, res);
                                             this.writeAgentCheckpoint(project, request, task, ctx,
-                                                    res.isInteractionRequired() ? "waiting_user" : (res.isSuccess() ? "tool_success" : "tool_failed"),
+                                                    res.isInteractionRequired() ? this.interactionWaitingState(res) : (res.isSuccess() ? "tool_success" : "tool_failed"),
                                                     "Tool `" + this.safeLogText(tn) + "` returned.", tn,
                                                     this.compactToolResultForCheckpoint(tn, res), runLog);
                                             this.sendObserve(sse, conv, i, tn, res, task.getTaskId());
@@ -1182,7 +1181,7 @@ public class AgentLoopEngine {
                                     }
                                     this.journalToolResult(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, res);
                                     this.appendToolResult(runLog, res);
-                                    this.writeAgentCheckpoint(project, request, task, ctx, res.isInteractionRequired() ? "waiting_user" : (res.isSuccess() ? "tool_success" : "tool_failed"), "Recovered and executed tool `" + this.safeLogText(invTool) + "`.", invTool, this.compactToolResultForCheckpoint(invTool, res), runLog);
+                                    this.writeAgentCheckpoint(project, request, task, ctx, res.isInteractionRequired() ? this.interactionWaitingState(res) : (res.isSuccess() ? "tool_success" : "tool_failed"), "Recovered and executed tool `" + this.safeLogText(invTool) + "`.", invTool, this.compactToolResultForCheckpoint(invTool, res), runLog);
                                     this.sendObserve(sse, conv, i, invTool, res, task.getTaskId());
                                     if (("create_plan".equals(invTool) || "plan".equals(invTool) || "todo_write".equals(invTool) || "todowrite".equals(invTool)) && (planJson2 = ctx.getPlanJson()) != null && !planJson2.isBlank()) {
                                         this.sendEvent(sse, conv, "PLAN_UPDATE", Map.of("plan", ctx.getPlan(), "summary", ctx.getPlanSummary(), "planJson", planJson2));
@@ -1682,20 +1681,15 @@ public class AgentLoopEngine {
                     return ToolResult.failed(denyMsg);
                 case ASK:
                     PermissionRule askRule = eval.getMatchedRule();
-                    PermissionApprovalRequest approval = this.requestToolApproval(
+                    return this.requestToolApproval(
                             ctx,
-                            sse,
-                            conv,
                             name,
                             inputStr,
                             this.toolNarrator.visibleActionSummary(name, args, visibleLanguage),
                             askRule != null ? askRule.getPermission() : "*",
-                            askRule != null ? askRule.getPattern() : "*"
+                            askRule != null ? askRule.getPattern() : "*",
+                            visibleLanguage
                     );
-                    return ToolResult.interactionRequired(
-                            this.localText(visibleLanguage, "正在等待用户批准。", "Waiting for user approval."),
-                            approval.getRequestId(),
-                            "permission");
                 case ALLOW:
                     break;
             }
@@ -2068,7 +2062,8 @@ public class AgentLoopEngine {
         return options;
     }
 
-    private PermissionApprovalRequest requestToolApproval(AgentContext ctx, AgentSsePublisher sse, AgentConversation conv, String toolName, String input, String summary, String permission, String pattern) throws Exception {
+    private ToolResult requestToolApproval(AgentContext ctx, String toolName, String input, String summary,
+                                           String permission, String pattern, String visibleLanguage) throws Exception {
         PermissionApprovalRequest approval = permissionService.beginApproval(
                 ctx.getProject().getProjectId(),
                 ctx.getStudentId(),
@@ -2081,19 +2076,22 @@ public class AgentLoopEngine {
                 permission,
                 pattern
         );
-        LinkedHashMap<String, Object> data = new LinkedHashMap<>();
-        data.put("requestId", approval.getRequestId());
-        data.put("taskId", ctx.getTaskId());
-        data.put("projectId", ctx.getProject().getProjectId());
-        data.put("sessionId", approval.getSessionId());
-        data.put("toolName", approval.getToolName());
-        data.put("input", approval.getInput());
-        data.put("summary", approval.getSummary());
-        data.put("matchedRulePermission", approval.getMatchedRulePermission());
-        data.put("matchedRulePattern", approval.getMatchedRulePattern());
-        data.put("createdAt", approval.getCreatedAt());
-        this.sendEvent(sse, conv, "PERMISSION_ASK", data);
-        return approval;
+        LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+        payload.put("requestId", approval.getRequestId());
+        payload.put("interactionType", "permission");
+        payload.put("taskId", ctx.getTaskId());
+        payload.put("projectId", ctx.getProject().getProjectId());
+        payload.put("conversationId", ctx.getConversationId());
+        payload.put("sessionId", approval.getSessionId());
+        payload.put("toolName", approval.getToolName());
+        payload.put("input", approval.getInput());
+        payload.put("summary", approval.getSummary());
+        payload.put("matchedRulePermission", approval.getMatchedRulePermission());
+        payload.put("matchedRulePattern", approval.getMatchedRulePattern());
+        payload.put("createdAt", approval.getCreatedAt());
+        return ToolResult.interactionRequired(
+                this.localText(visibleLanguage, "正在等待用户审批。", "Waiting for user approval."),
+                approval.getRequestId(), "permission").withInteractionPayload(payload);
     }
 
     static String commandApprovalIdempotencyKey(AgentContext context, String toolCallId) {
@@ -2528,7 +2526,7 @@ public class AgentLoopEngine {
         if (lower.contains("http 429") || lower.contains("rate limit") || lower.contains("too many requests")) {
             return false;
         }
-        return lower.contains("temporarily unavailable") || lower.contains("connection reset") || lower.contains("handshake") || lower.contains("remote host terminated") || lower.contains("connection aborted") || lower.contains("connection closed") || lower.contains("ssl") || lower.contains("tls") || lower.contains("eof") || lower.contains("503") || lower.contains("502") || lower.contains("504");
+        return lower.contains("temporarily unavailable") || lower.contains("connection reset") || lower.contains("handshake") || lower.contains("remote host terminated") || lower.contains("connection aborted") || lower.contains("connection closed") || lower.contains("stream ended before terminal event") || lower.contains("ssl") || lower.contains("tls") || lower.contains("eof") || lower.contains("503") || lower.contains("502") || lower.contains("504");
     }
 
     private String extractThinking(String c) {
@@ -3429,19 +3427,26 @@ public class AgentLoopEngine {
     private void journalToolResult(Long taskId, String toolCallId, String toolName, Object arguments,
                                    int iteration, ToolResult result) {
         if (result != null && result.isInteractionRequired()) {
-            this.journalToolWaitingUser(taskId, toolCallId, toolName, arguments, iteration,
-                    result.getInteractionRequestId(), result.getContent(), result.getInteractionPayload());
+            this.journalToolWaitingInteraction(taskId, toolCallId, toolName, arguments, iteration,
+                    result.getInteractionRequestId(), result.getInteractionType(), result.getContent(),
+                    result.getInteractionPayload());
             return;
         }
         this.journalToolFinished(taskId, toolCallId, toolName, arguments, iteration, result);
     }
 
-    private void journalToolWaitingUser(Long taskId, String toolCallId, String toolName, Object arguments,
-                                        int iteration, String requestId, String detail, Map<String, Object> interactionPayload) {
+    private void journalToolWaitingInteraction(Long taskId, String toolCallId, String toolName, Object arguments,
+                                                int iteration, String requestId, String interactionType, String detail,
+                                                Map<String, Object> interactionPayload) {
         if (this.toolCallJournalService != null) {
-            this.toolCallJournalService.waitingUser(taskId, toolCallId, toolName, arguments, iteration,
-                    requestId, detail, interactionPayload);
+            this.toolCallJournalService.waitingInteraction(taskId, toolCallId, toolName, arguments, iteration,
+                    requestId, interactionType, detail, interactionPayload);
         }
+    }
+
+    private String interactionWaitingState(ToolResult result) {
+        String type = result == null ? "" : String.valueOf(result.getInteractionType());
+        return "permission".equals(type) || "network".equals(type) ? "waiting_approval" : "waiting_user";
     }
 
     private void journalToolBlocked(Long taskId, String toolCallId, String toolName, Object arguments,

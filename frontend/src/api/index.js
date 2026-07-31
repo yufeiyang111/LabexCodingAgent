@@ -75,6 +75,9 @@ export const projectApi = {
   agentTasks(projectId) {
     return request.get('/student/projects/' + projectId + '/agent/tasks')
   },
+  agentTask(projectId, taskId) {
+    return request.get('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId))
+  },
   agentActiveTask(projectId, conversationId) {
     return request.get('/student/projects/' + projectId + '/agent/conversations/' + encodeURIComponent(conversationId) + '/active-task')
   },

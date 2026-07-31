@@ -47,6 +47,7 @@ public class AgentRunPartService {
         if (taskId == null || taskId <= 0 || toolCallId == null || toolCallId.isBlank()) {
             return null;
         }
+        syncProviderToolCallState(taskId, toolCallId, status, detail);
         String messageStatus = switch (status == null ? "" : status) {
             case "waiting_approval", "waiting_user" -> "waiting";
             case "completed", "skipped" -> "completed";
@@ -60,7 +61,23 @@ public class AgentRunPartService {
                 toolName, arguments, detail, iteration);
     }
 
-    /** 将非工具事件投影为可回放 Part，逐步替代 AgentMessage 的事件大杂烩。 */
+    /** 同步 Provider tool_call Part 的生命周期，保证等待交互在 JVM 重启后仍可恢复。 */
+    private void syncProviderToolCallState(Long taskId, String toolCallId, String status, String detail) {
+        List<AgentRunPart> providerCalls = partMapper.selectList(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .eq(AgentRunPart::getToolCallId, toolCallId)
+                .eq(AgentRunPart::getPartType, "tool_call"));
+        if (providerCalls == null || providerCalls.isEmpty()) return;
+        LocalDateTime now = LocalDateTime.now();
+        for (AgentRunPart providerCall : providerCalls) {
+            providerCall.setStatus(status == null || status.isBlank() ? "error" : status);
+            providerCall.setOutputText(limit(detail));
+            providerCall.setUpdateTime(now);
+            partMapper.updateById(providerCall);
+        }
+    }
+
+    /** 更新已存在的工具 Part，用于命令审批等延后终态的持久化。 */
     @Transactional(rollbackFor = Exception.class)
     public AgentRunPart resolveExistingToolCall(Long taskId, String toolCallId, String status, String detail) {
         if (taskId == null || taskId <= 0 || toolCallId == null || toolCallId.isBlank()) return null;

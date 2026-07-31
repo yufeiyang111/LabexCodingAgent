@@ -49,13 +49,22 @@ export function upsertDurableToolCallState(message, state = {}) {
   call.args = state.arguments || call.args || {}
   call.durableStatus = state.status || call.durableStatus || 'pending'
   if (state.interactionPayload && typeof state.interactionPayload === 'object') {
-    call.questionRequest = { ...(call.questionRequest || {}), ...state.interactionPayload }
+    const type = String(state.interactionPayload.interactionType || 'question')
+    const field = type === 'permission' ? 'permissionRequest'
+      : type === 'network' ? 'networkRequest' : 'questionRequest'
+    call[field] = { ...(call[field] || {}), ...state.interactionPayload }
   }
+  const waitingApproval = call.permissionRequest || call.networkRequest
   if (call.questionRequest && call.durableStatus === 'waiting_user') {
     call.status = 'waiting_user'
+  } else if (waitingApproval && call.durableStatus === 'waiting_approval') {
+    call.status = 'waiting_approval'
   } else if (call.questionRequest && call.durableStatus === 'error') {
     // Keep a pending question visible when an older event reports error.
     call.status = 'waiting_user'
+  } else if (waitingApproval && call.durableStatus === 'error') {
+    // Keep a pending approval visible when a pre-pause observation reports failure.
+    call.status = 'waiting_approval'
   } else {
     call.status = visibleToolCallStatus(call.durableStatus)
   }

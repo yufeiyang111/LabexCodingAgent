@@ -241,20 +241,58 @@ export function useAgentTaskRuntime(options) {
     }
   }
 
-  async function resumeTaskEventSubscription(taskId, assistantMsg, conversationId = currentAgentSession.value?.conversationId) {
+  async function resumeTaskEventSubscription(taskId, assistantMsg, conversationId = assistantMsg?.conversationId || currentAgentSession.value?.conversationId) {
     let task = null
+    let resolvedConversationId = conversationId || null
+    const activeTaskLookup = async () => {
+      if (!resolvedConversationId) return null
+      return (await api.agentActiveTask(projectId.value, resolvedConversationId))?.data || null
+    }
+    const durableTaskLookup = async () => {
+      if (typeof api.agentTask !== 'function') return null
+      return (await api.agentTask(projectId.value, taskId))?.data || null
+    }
+
     for (let attempt = 0; attempt < 20; attempt++) {
-      const candidate = (await api.agentActiveTask(projectId.value, conversationId))?.data || null
-      if (candidate && Number(candidate.taskId) === Number(taskId) && candidate.conversationId === conversationId
-          && (!currentAgentSession.value?.sessionId || candidate.sessionId === currentAgentSession.value.sessionId)) {
+      const candidate = await activeTaskLookup()
+      if (candidate && Number(candidate.taskId) === Number(taskId)
+          && (!resolvedConversationId || candidate.conversationId === resolvedConversationId)
+          && (!currentAgentSession.value?.sessionId || !candidate.sessionId
+            || candidate.sessionId === currentAgentSession.value.sessionId)) {
         task = candidate
         break
       }
       if (candidate && (Number(candidate.taskId) !== Number(taskId) || isTerminalAgentTask(candidate))) break
+
+      // 会话 UI 尚未恢复时，按持久化 taskId 兜底查询，避免请求 active-task/undefined。
+      const snapshot = await durableTaskLookup()
+      if (snapshot && Number(snapshot.taskId) === Number(taskId)) {
+        if (resolvedConversationId && snapshot.conversationId !== resolvedConversationId) {
+          throw new Error('Agent task belongs to a different conversation')
+        }
+        if (currentAgentSession.value?.conversationId
+            && snapshot.conversationId !== currentAgentSession.value.conversationId) {
+          throw new Error('Agent task belongs to a different conversation')
+        }
+        if (currentAgentSession.value?.sessionId && snapshot.sessionId
+            && snapshot.sessionId !== currentAgentSession.value.sessionId) {
+          throw new Error('Agent task belongs to a different session')
+        }
+        resolvedConversationId = snapshot.conversationId || resolvedConversationId
+        task = snapshot
+        break
+      }
       await wait(250)
     }
     if (!task) throw new Error('Agent task is no longer active')
+    if (!currentAgentSession.value?.conversationId) {
+      currentAgentSession.value = {
+        conversationId: task.conversationId,
+        sessionId: task.sessionId
+      }
+    }
     assistantMsg.taskId = task.taskId
+    assistantMsg.conversationId = task.conversationId
     reconcileRecoveredToolCalls(assistantMsg, task)
     reconcileRecoveredCommandApproval(assistantMsg, task)
     assistantMsg.isStreaming = true

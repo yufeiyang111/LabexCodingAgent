@@ -47,6 +47,7 @@ export function useAgentEventTimeline(options) {
       case 'SESSION':
         currentAgentSession.value = data
         assistantMsg.taskId = data.taskId || null
+        assistantMsg.conversationId = data.conversationId || assistantMsg.conversationId || null
         if (assistantMsg.timing) assistantMsg.timing.taskId = assistantMsg.taskId
         break
       case 'THINK_START':
@@ -112,8 +113,11 @@ export function useAgentEventTimeline(options) {
         if (assistantMsg.toolCalls.length > 0) {
           const last = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1]
           last.result = data.result || data.content
-          const preservesWaitingQuestion = last.questionRequest && data.success === false
-          last.status = preservesWaitingQuestion ? 'waiting_user' : toolResultStatus(data.success, last.result)
+          const preservesWaitingInteraction = data.success === false
+            && (last.questionRequest || last.permissionRequest || last.networkRequest)
+          last.status = preservesWaitingInteraction
+            ? (last.permissionRequest || last.networkRequest ? 'waiting_approval' : 'waiting_user')
+            : toolResultStatus(data.success, last.result)
           last.verificationStatus = last.status === 'warning' ? 'UNAVAILABLE' : ''
           last.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
             truncated: data.modelProjectionTruncated === true }

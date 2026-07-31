@@ -70,12 +70,12 @@ test('direct SSE events persist cursors through the extracted task runtime', () 
 })
 
 test('question replies reconnect the same durable task after the backend resumes it', () => {
-  assert.match(source, /async function handleQuestionReply\(payload\) \{[\s\S]*?if \(result\.success\)[\s\S]*?replayResumedAgent\(taskId, assistantMsg\)/)
+  assert.match(source, /async function handleQuestionReply\(payload\) \{[\s\S]*?if \(result\.success\)[\s\S]*?replayResumedAgent\(taskId, assistantMsg(?:, [^)]+)?\)/)
   assert.match(source, /const taskId = call\?\.questionRequest\?\.taskId \|\| assistantMsg\?\.taskId/)
 })
 
 test('command approval continuation reconnects through the extracted durable task runtime', () => {
-  assert.match(source, /async function replayResumedAgent\(taskId, assistantMsg\) \{[\s\S]*?resumeTaskEventSubscription\(taskId, assistantMsg\)/)
+  assert.match(source, /async function replayResumedAgent\(taskId, assistantMsg(?:, conversationId)?\) \{[\s\S]*?resumeTaskEventSubscription\(taskId, assistantMsg(?:, conversationId)?\)/)
   assert.match(runtimeSource, /async function subscribeToTaskEvents\(initialTask, assistantMsg\) \{[\s\S]*?await subscribeAgent\(projectId\.value, task\.taskId,/)
   assert.match(runtimeSource, /const cursor = storedCursor == null[\s\S]*?sequenceNumber\(task\.lastEventSequence\)/)
   assert.match(runtimeSource, /Number\(active\.taskId\) !== Number\(initialTask\.taskId\)/)
@@ -112,13 +112,13 @@ test('CloudWorkspace keeps styles external without the broken scoped src compila
 })
 
 test('all resolved user interactions reconnect the existing task event stream', () => {
-  assert.match(source, /async function handlePermissionDecision\(payload\)[\s\S]*?const result = await submitPermissionDecision\(payload\)[\s\S]*?replayResumedAgent\(taskId, assistantMsg\)/)
+  assert.match(source, /async function handlePermissionDecision\(payload\)[\s\S]*?const result = await submitPermissionDecision\(payload\)[\s\S]*?replayResumedAgent\(taskId, assistantMsg(?:, [^)]+)?\)/)
   assert.doesNotMatch(source, /!payload\?\.call\?\.networkRequest\) return/)
-  assert.match(source, /async function handleQuestionReply\(payload\)[\s\S]*?if \(result\.success[\s\S]*?replayResumedAgent\(taskId, assistantMsg\)/)
+  assert.match(source, /async function handleQuestionReply\(payload\)[\s\S]*?if \(result\.success[\s\S]*?replayResumedAgent\(taskId, assistantMsg(?:, [^)]+)?\)/)
 })
 
 test('recoverable workspace pause hands the initial stream off to durable task subscription', () => {
   assert.match(timelineSource, /resumeTaskEventsAfterStream = data\.resumeAgentLoop === true/)
   assert.match(source, /const shouldResumeTaskEvents = stillOwnsConversation[\s\S]*?assistantMsg\.resumeTaskEventsAfterStream === true/)
-  assert.match(source, /shouldResumeTaskEvents[\s\S]*?replayResumedAgent\(assistantMsg\.taskId, assistantMsg\)/)
+  assert.match(source, /shouldResumeTaskEvents[\s\S]*?replayResumedAgent\(assistantMsg\.taskId, assistantMsg(?:, [^)]+)?\)/)
 })

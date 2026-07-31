@@ -11,6 +11,7 @@ import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -78,6 +79,30 @@ class AgentRunPartServiceTest {
         assertThat(result.getStatus()).isEqualTo("completed");
         assertThat(result.getOutputText()).isEqualTo("passed");
         verify(parts).updateById(existing);
+    }
+
+    @Test
+    void synchronizesWaitingStateToTheProviderToolCallPart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunPart providerCall = new AgentRunPart();
+        providerCall.setPartId(92L);
+        providerCall.setPartKey("provider:0:tool-call:2:0:call-1");
+        providerCall.setPartType("tool_call");
+        providerCall.setToolCallId("call-1");
+        providerCall.setInputJson("{\"id\":\"call-1\",\"type\":\"function\"}");
+        when(parts.selectList(any())).thenReturn(List.of(providerCall));
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        new AgentRunPartService(parts, tasks)
+                .upsertToolCall(7L, "call-1", "waiting_approval", "read_file",
+                        Map.of("path", ".env"), 2, "Waiting for user approval.");
+
+        assertThat(providerCall.getStatus()).isEqualTo("waiting_approval");
+        assertThat(providerCall.getInputJson()).contains("call-1");
+        assertThat(providerCall.getOutputText()).isEqualTo("Waiting for user approval.");
+        verify(parts).updateById(providerCall);
     }
 
     private AgentTask task() {

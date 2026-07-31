@@ -30,6 +30,26 @@ test('durable status maps to existing visual card states', () => {
   assert.equal(visibleToolCallStatus('interrupted'), 'interrupted')
 })
 
+test('durable waiting_approval state preserves a permission request for the approval card', () => {
+  const message = { toolCalls: [], _nextOrder: 0 }
+  upsertDurableToolCallState(message, {
+    toolCallId: 'permission-1',
+    tool: 'read_file',
+    arguments: { file_path: '.env' },
+    status: 'waiting_approval',
+    interactionPayload: {
+      requestId: 'request-permission-1',
+      interactionType: 'permission',
+      toolName: 'read_file',
+      summary: 'Approval required'
+    }
+  })
+
+  assert.equal(message.toolCalls[0].status, 'waiting_approval')
+  assert.equal(message.toolCalls[0].permissionRequest.requestId, 'request-permission-1')
+  assert.equal(message.toolCalls[0].questionRequest, undefined)
+})
+
 test('durable waiting_user state preserves the question request for the reply card', () => {
   const message = { toolCalls: [], _nextOrder: 0 }
   upsertDurableToolCallState(message, {

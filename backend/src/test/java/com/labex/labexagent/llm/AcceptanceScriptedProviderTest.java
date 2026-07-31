@@ -99,6 +99,15 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void canSimulateAStreamThatClosesBeforeTheTerminalEvent() {
+        List<LlmProvider.StreamChunk> chunks = stream("[acceptance:stream-break] truncated provider response");
+
+        assertTrue(text(chunks).contains("Partial response before"));
+        assertTrue(chunks.stream().noneMatch(chunk -> "done".equals(chunk.type())));
+        assertTrue(chunks.stream().noneMatch(chunk -> "error".equals(chunk.type())));
+    }
+
+    @Test
     void emitsPermissionAndCompletionEvidenceScenariosDeterministically() {
         LlmProvider.StreamChunk permission = stream("[acceptance:permission] permission scenario").stream()
                 .filter(chunk -> "tool_call".equals(chunk.type()))

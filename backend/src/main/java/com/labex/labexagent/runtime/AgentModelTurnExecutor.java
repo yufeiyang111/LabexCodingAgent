@@ -68,6 +68,7 @@ public final class AgentModelTurnExecutor {
         AtomicReference<String> error = new AtomicReference<>();
         AtomicReference<Map<String, Object>> usage = new AtomicReference<>(Map.of());
         boolean[] cancelled = {false};
+        boolean[] terminalEvent = {false};
         boolean[] thinkingStarted = {false};
         int[] lastThinkingCheckpointLength = {0};
         long[] lastThinkingCheckpointAt = {System.nanoTime()};
@@ -78,7 +79,10 @@ public final class AgentModelTurnExecutor {
                 request.cancellationToken(), chunk -> {
                     try {
                         switch (chunk.eventType()) {
-                            case CANCELLED -> cancelled[0] = true;
+                            case CANCELLED -> {
+                                cancelled[0] = true;
+                                terminalEvent[0] = true;
+                            }
                             case THINKING_DELTA -> {
                                 if (!thinkingStarted[0]) {
                                     request.eventSink().durable("THINK_START", Map.of(
@@ -123,8 +127,20 @@ public final class AgentModelTurnExecutor {
                                 toolCalls.put(index, chunk);
                                 if (chunk.usage() != null) usage.set(chunk.usage());
                             }
-                            case ERROR -> error.set(chunk.content());
-                            case USAGE, DONE -> {
+                            case ERROR -> {
+                                terminalEvent[0] = true;
+                                String failureMessage = chunk.content();
+                                if ((failureMessage == null || failureMessage.isBlank()) && chunk.failure() != null) {
+                                    failureMessage = chunk.failure().message();
+                                }
+                                error.set(failureMessage == null || failureMessage.isBlank()
+                                        ? "Provider returned an unspecified stream error" : failureMessage);
+                            }
+                            case USAGE -> {
+                                if (chunk.usage() != null) usage.set(chunk.usage());
+                            }
+                            case DONE -> {
+                                terminalEvent[0] = true;
                                 if (chunk.usage() != null) usage.set(chunk.usage());
                             }
                             case UNKNOWN -> log.debug("Ignoring unknown provider event type={}", chunk.type());
@@ -147,6 +163,10 @@ public final class AgentModelTurnExecutor {
             future.cancel(true);
             Throwable cause = failure.getCause() == null ? failure : failure.getCause();
             error.set(cause.getMessage());
+        }
+
+        if (error.get() == null && !cancelled[0] && !terminalEvent[0]) {
+            error.set("Provider stream ended before terminal event; response may be truncated.");
         }
 
         if (thinkingStarted[0]) {

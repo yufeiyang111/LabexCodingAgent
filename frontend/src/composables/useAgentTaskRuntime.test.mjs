@@ -251,6 +251,44 @@ test('approval resume waits for the same durable task to become active', async (
   assert.equal(assistant.toolCalls[0].permissionRequest.requestId, 'permission-75')
 })
 
+test('interaction resume resolves by durable task id when the UI session identity is temporarily empty', async () => {
+  const task = {
+    taskId: 79,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'waiting_approval',
+    lastEventSequence: 6,
+    toolCalls: [],
+    parts: [],
+    pendingInteraction: {
+      interactionId: 'permission-79', requestId: 'permission-79', taskId: 79,
+      conversationId: 'conversation-a', sessionId: 'session-a',
+      interactionType: 'permission', status: 'waiting', toolName: 'run_tests', summary: '运行测试'
+    }
+  }
+  const activeTaskCalls = []
+  const state = harness({ api: {
+    agentActiveTask: async (_projectId, conversationId) => {
+      activeTaskCalls.push(conversationId)
+      return { data: { ...task, status: 'completed', pendingInteraction: null } }
+    },
+    agentTask: async (_projectId, taskId) => {
+      assert.equal(taskId, 79)
+      return { data: task }
+    },
+    agentTasks: async () => ({ data: [] })
+  } })
+  state.currentAgentSession.value = null
+  const assistant = { role: 'assistant', taskId: 79, conversationId: null, isStreaming: false, timing: { isRunning: false } }
+
+  await state.runtime.resumeTaskEventSubscription(79, assistant)
+  await Promise.resolve()
+
+  assert.deepEqual(activeTaskCalls, ['conversation-a'])
+  assert.deepEqual(state.currentAgentSession.value, { conversationId: 'conversation-a', sessionId: 'session-a' })
+  assert.equal(assistant.conversationId, 'conversation-a')
+})
+
 test('explicit invalidation immediately releases loading ownership from the detached conversation', () => {
   const state = harness()
   state.agentLoading.value = true

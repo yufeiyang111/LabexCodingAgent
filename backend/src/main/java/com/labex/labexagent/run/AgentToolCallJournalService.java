@@ -52,11 +52,24 @@ public class AgentToolCallJournalService {
 
     public void waitingUser(Long taskId, String toolCallId, String toolName, Object arguments,
                             int iteration, String requestId, String detail, Map<String, Object> interactionPayload) {
+        waitingInteraction(taskId, toolCallId, toolName, arguments, iteration, requestId,
+                "question", detail, interactionPayload);
+    }
+
+    /**
+     * 根据交互类型持久化正确的等待状态和交互载荷。
+     */
+    public void waitingInteraction(Long taskId, String toolCallId, String toolName, Object arguments,
+                                   int iteration, String requestId, String interactionType, String detail,
+                                   Map<String, Object> interactionPayload) {
+        String type = "permission".equals(interactionType) || "network".equals(interactionType)
+                ? interactionType : "question";
+        String status = "question".equals(type) ? "waiting_user" : "waiting_approval";
         Map<String, Object> payload = new LinkedHashMap<>();
         if (interactionPayload != null) payload.putAll(interactionPayload);
         payload.put("requestId", requestId == null ? "" : requestId);
-        payload.put("interactionType", "question");
-        record(taskId, toolCallId, "waiting_user", toolName, arguments, iteration, detail, payload);
+        payload.put("interactionType", type);
+        record(taskId, toolCallId, status, toolName, arguments, iteration, detail, payload);
     }
 
     public void completed(Long taskId, String toolCallId, String toolName, Object arguments,

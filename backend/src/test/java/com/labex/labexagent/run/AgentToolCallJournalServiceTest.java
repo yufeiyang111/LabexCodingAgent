@@ -67,6 +67,26 @@ class AgentToolCallJournalServiceTest {
     }
 
     @Test
+    void permissionInteractionIsPersistedAsWaitingApprovalInsteadOfAQuestion() {
+        AgentRunArtifactService artifacts = mock(AgentRunArtifactService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        AgentRunArtifact artifact = new AgentRunArtifact();
+        artifact.setArtifactId(94L);
+        when(artifacts.recordDeterministic(eq(7L), eq("tool_call_state"), eq("call-permission"), any()))
+                .thenReturn(artifact);
+
+        AgentToolCallJournalService journal = new AgentToolCallJournalService(artifacts, lifecycle, parts);
+        journal.waitingInteraction(7L, "call-permission", "read_file", Map.of("file_path", ".env"), 1,
+                "request-permission", "permission", "Waiting for user approval.",
+                Map.of("requestId", "request-permission", "interactionType", "permission"));
+
+        verify(parts).upsertToolCall(eq(7L), eq("call-permission"), eq("waiting_approval"), eq("read_file"),
+                any(), eq(1), eq("Waiting for user approval."));
+        verify(lifecycle).appendEvent(eq(7L), eq("TOOL_CALL_STATE"), any(), eq("tool-call-state-94"));
+    }
+
+    @Test
     void skippedCallIsPersistedAsAnExplicitTerminalState() {
         AgentRunArtifactService artifacts = mock(AgentRunArtifactService.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);

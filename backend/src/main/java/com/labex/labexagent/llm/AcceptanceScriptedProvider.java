@@ -97,6 +97,13 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         onChunk.accept(new StreamChunk("thinking_delta", "Acceptance runtime scenario selected. ",
                 null, null, null, false, null, null, null, null));
 
+        if (prompt.contains("[acceptance:stream-break]")) {
+            onChunk.accept(new StreamChunk("text_delta",
+                    "Partial response before the scripted provider connection closes.",
+                    null, null, null, false, null, null, null, null));
+            return;
+        }
+
         if (prompt.contains("[acceptance:tool]") && !prompt.contains("[Tool list_files result]")) {
             emitTool(onChunk, "list_files", "{\"path\":\"\"}", "acceptance-tool-list");
             return;

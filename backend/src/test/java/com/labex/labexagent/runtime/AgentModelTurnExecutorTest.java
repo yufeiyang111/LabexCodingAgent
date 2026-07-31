@@ -48,6 +48,7 @@ class AgentModelTurnExecutorTest {
         LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {
             callback.accept(chunk("tool_call", "", "read_file", "{\"file_path\":\"a.txt\"}", Map.of("total_tokens", 4), "native-1", 0));
             callback.accept(chunk("tool_call", "", "list_files", "{}", null, "native-2", 1));
+            callback.accept(chunk("done", "", null, null, null));
         });
 
         AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request(provider, new ArrayList<>()));
@@ -61,6 +62,20 @@ class AgentModelTurnExecutorTest {
         assertEquals("native-2", result.toolCalls().get(1).toolCallId());
         assertEquals(1, result.toolCalls().get(1).toolCallIndex());
         assertEquals(2, ((List<?>) result.toMap().get("toolCalls")).size());
+    }
+
+    @Test
+    void rejectsAProviderStreamThatEndsWithoutATerminalEvent() throws Exception {
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
+        LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {
+            callback.accept(chunk("text_delta", "partial response", null, null, null));
+        });
+
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request(provider, new ArrayList<>()));
+
+        assertEquals(AgentModelTurnExecutor.ResultType.ERROR, result.type());
+        assertTrue(result.message().toLowerCase().contains("terminal event"));
+        assertTrue(result.content().contains("partial response"));
     }
 
     @Test
