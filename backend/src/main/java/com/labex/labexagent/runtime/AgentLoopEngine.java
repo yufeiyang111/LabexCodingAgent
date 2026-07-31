@@ -2871,7 +2871,7 @@ public class AgentLoopEngine {
         List<Map<String, Object>> budgetMessages = this.providerMessagesForBudget(context == null ? null : context.getTaskId());
         int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, budgetMessages,
                 activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
-        // Provider transcript ????????????? AgentLoopEngine ???????????
+        // The durable Provider transcript is authoritative; do not prune the in-memory copy.
         ContextWindowSupervisor.Decision decision = new ContextWindowSupervisor().decide(
                 policy, estimatedTokens, false);
         if (decision.action() == ContextWindowSupervisor.Action.NONE) {

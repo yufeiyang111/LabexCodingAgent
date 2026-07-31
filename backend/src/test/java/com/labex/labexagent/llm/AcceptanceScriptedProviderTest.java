@@ -190,6 +190,16 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void recognizesFailedCommandApprovalContinuationAsResolved() {
+        String resumed = text(stream(
+                "[acceptance:approval] failed command continuation",
+                "Durable continuation context: Resolution status: failed"));
+
+        assertTrue(resumed.contains("rejected") || resumed.contains("approved"));
+        assertFalse(resumed.isEmpty());
+    }
+
+    @Test
     void supportsABoundedCheckoutHoldScenario() {
         String previous = System.getProperty("labex.acceptance.hold.ms");
         System.setProperty("labex.acceptance.hold.ms", "1");

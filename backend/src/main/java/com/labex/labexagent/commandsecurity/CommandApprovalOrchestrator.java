@@ -6,6 +6,7 @@ import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentRunContinuationRequestFactory;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.CommandFailureGuard;
@@ -39,17 +40,20 @@ public class CommandApprovalOrchestrator {
     private final AgentTaskService taskService;
     private final AgentLoopEngine agentLoopEngine;
     private final AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
+    private final AgentToolCallJournalService toolCallJournalService;
+    private final AgentRunTranscriptService transcriptService;
     private CommandFailureGuard commandFailureGuard = new CommandFailureGuard(1, 2);
-    private AgentToolCallJournalService toolCallJournalService;
     private final NetworkAccessService networkAccessService;
 
     public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
                                        AgentApprovedCommandExecutor executor, StudentProjectService projectService,
                                        AgentRunLifecycleService lifecycleService, AgentTaskService taskService,
                                        @Lazy AgentLoopEngine agentLoopEngine,
-                                       AgentProjectMetadataRefreshScheduler metadataRefreshScheduler) {
+                                       AgentProjectMetadataRefreshScheduler metadataRefreshScheduler,
+                                       AgentToolCallJournalService toolCallJournalService,
+                                       AgentRunTranscriptService transcriptService) {
         this(approvalService, auditService, executor, projectService, lifecycleService, taskService,
-                agentLoopEngine, metadataRefreshScheduler, null);
+                agentLoopEngine, metadataRefreshScheduler, null, toolCallJournalService, transcriptService);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -58,7 +62,9 @@ public class CommandApprovalOrchestrator {
                                        AgentRunLifecycleService lifecycleService, AgentTaskService taskService,
                                        @Lazy AgentLoopEngine agentLoopEngine,
                                        AgentProjectMetadataRefreshScheduler metadataRefreshScheduler,
-                                       NetworkAccessService networkAccessService) {
+                                       NetworkAccessService networkAccessService,
+                                       AgentToolCallJournalService toolCallJournalService,
+                                       AgentRunTranscriptService transcriptService) {
         this.approvalService = approvalService;
         this.auditService = auditService;
         this.executor = executor;
@@ -68,16 +74,15 @@ public class CommandApprovalOrchestrator {
         this.agentLoopEngine = agentLoopEngine;
         this.metadataRefreshScheduler = metadataRefreshScheduler;
         this.networkAccessService = networkAccessService;
+        this.toolCallJournalService = Objects.requireNonNull(toolCallJournalService,
+                "toolCallJournalService is required for durable command approval continuation");
+        this.transcriptService = Objects.requireNonNull(transcriptService,
+                "transcriptService is required for durable command approval continuation");
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setCommandFailureGuard(CommandFailureGuard commandFailureGuard) {
         if (commandFailureGuard != null) this.commandFailureGuard = commandFailureGuard;
-    }
-
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    void setToolCallJournalService(AgentToolCallJournalService toolCallJournalService) {
-        this.toolCallJournalService = toolCallJournalService;
     }
 
     public DecisionResult decide(Integer studentId, Integer projectId, String approvalId,
@@ -296,22 +301,25 @@ public class CommandApprovalOrchestrator {
     }
 
     private void closeApprovedToolCall(CommandApproval approval, boolean succeeded, ProcessExecutionResult result) {
-        if (toolCallJournalService == null || approval == null) return;
+        if (approval == null) return;
         String output = result == null ? "" : CommandRedactor.redact(result.output());
         String detail = "status=" + (succeeded ? "completed" : "failed")
                 + "\nexit=" + (result == null || result.exitCode() == null ? "none" : result.exitCode())
                 + (output == null || output.isBlank() ? "" : "\n" + output);
-        if (succeeded) {
-            toolCallJournalService.completedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
-        } else {
-            toolCallJournalService.failedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
-        }
+        resolveApprovedToolCall(approval, detail);
     }
 
     private void failApprovedToolCall(CommandApproval approval, String detail) {
-        if (toolCallJournalService != null && approval != null) {
-            toolCallJournalService.failedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
+        if (approval != null) {
+            resolveApprovedToolCall(approval, detail == null ? "status=interrupted" : detail);
         }
+    }
+
+    private void resolveApprovedToolCall(CommandApproval approval, String detail) {
+        transcriptService.appendDeferredToolResult(approval.getTaskId(), approval.getToolCallId(), "", detail);
+        // The protocol terminal state is completed even when the command outcome is failed.
+        // The redacted result content retains the command outcome for the model and UI.
+        toolCallJournalService.completedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
     }
 
     private void resumeAgentLoop(CommandApproval approval, String resolutionStatus, ProcessExecutionResult result) {

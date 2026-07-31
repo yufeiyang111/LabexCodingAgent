@@ -12,6 +12,7 @@ import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.runtime.AgentLoopEngine;
@@ -41,11 +42,11 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
         when(approvals.decide(7, 12, "approval-71", false, "decision-71")).thenReturn(rejected);
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(rejected);
+        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit,
                 mock(AgentApprovedCommandExecutor.class), mock(StudentProjectService.class), lifecycle, tasks, engine,
-                mock(AgentProjectMetadataRefreshScheduler.class));
-        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
-        orchestrator.setToolCallJournalService(toolCalls);
+                mock(AgentProjectMetadataRefreshScheduler.class), toolCalls, transcript);
 
         CommandApprovalOrchestrator.DecisionResult result = orchestrator.decide(
                 7, 12, "approval-71", false, "decision-71");
@@ -55,7 +56,9 @@ class CommandApprovalOrchestratorTest {
                 any(), any(), any(), any());
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_APPROVAL_REJECTED"), any(), any());
         verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
-        verify(toolCalls).failedExisting(eq(71L), eq("tool-71"),
+        verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
+                eq("Command approval was rejected"));
+        verify(toolCalls).completedExisting(eq(71L), eq("tool-71"),
                 eq("Command approval was rejected"));
     }
 
@@ -82,10 +85,10 @@ class CommandApprovalOrchestratorTest {
                 ExecutionStatus.SUCCEEDED, 0, 12L, "tests passed", false));
         when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
         AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
-        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
-                projects, lifecycle, tasks, engine, metadataRefresh);
         AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
-        orchestrator.setToolCallJournalService(toolCalls);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
+                projects, lifecycle, tasks, engine, metadataRefresh, toolCalls, transcript);
 
         CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
 
@@ -97,6 +100,8 @@ class CommandApprovalOrchestratorTest {
         verify(metadataRefresh).schedule(eq(7), eq(12), eq("command_approval"));
         verify(projects, never()).refreshProjectMetadata(eq(7), eq(12));
         verify(lifecycle, never()).transition(eq(71L), eq(AgentRunState.COMPLETED), any(), any(), any(), any(), any());
+        verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
+                org.mockito.ArgumentMatchers.contains("tests passed"));
         verify(toolCalls).completedExisting(eq(71L), eq("tool-71"),
                 org.mockito.ArgumentMatchers.contains("tests passed"));
     }
@@ -118,7 +123,8 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(currentApproval);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals,
                 mock(CommandAuditService.class), executor, projects, lifecycle, mock(AgentTaskService.class), engine,
-                mock(AgentProjectMetadataRefreshScheduler.class));
+                mock(AgentProjectMetadataRefreshScheduler.class), mock(AgentToolCallJournalService.class),
+                mock(AgentRunTranscriptService.class));
 
         CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
 
@@ -145,7 +151,8 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(oldApproval, currentApproval);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals,
                 mock(CommandAuditService.class), mock(AgentApprovedCommandExecutor.class), mock(StudentProjectService.class),
-                lifecycle, mock(AgentTaskService.class), engine, mock(AgentProjectMetadataRefreshScheduler.class));
+                lifecycle, mock(AgentTaskService.class), engine, mock(AgentProjectMetadataRefreshScheduler.class),
+                mock(AgentToolCallJournalService.class), mock(AgentRunTranscriptService.class));
 
         CommandApprovalOrchestrator.DecisionResult result = orchestrator.decide(7, 12, "approval-71", false, "decision-71");
 

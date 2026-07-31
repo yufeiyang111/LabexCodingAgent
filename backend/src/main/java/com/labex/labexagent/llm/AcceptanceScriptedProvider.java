@@ -231,6 +231,7 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 || lower.contains("resolution status: approved")
                 || lower.contains("resolution status: rejected")
                 || lower.contains("resolution status: cancelled")
+                || lower.contains("resolution status: failed")
                 || lower.contains("persisted user response is ready");
     }
 

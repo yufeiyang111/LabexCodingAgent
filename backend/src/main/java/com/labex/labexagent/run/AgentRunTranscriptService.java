@@ -407,7 +407,45 @@ public class AgentRunTranscriptService {
         return messages.get(0).getSequenceNumber() + 1L;
     }
 
-    /** 判断数据库 transcript 是否已经具备可发送给 Provider 的完整协议。 */
+        /** 将 Agent 主循环之外完成的工具结果追加回唯一的 Provider transcript。 */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean appendDeferredToolResult(Long taskId, String toolCallId, String toolName, String content) {
+        if (taskId == null || taskId <= 0 || toolCallId == null || toolCallId.isBlank()) {
+            throw new IllegalArgumentException("taskId and toolCallId are required for a deferred tool result");
+        }
+        AgentRunPart existingResult = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .eq(AgentRunPart::getToolCallId, toolCallId)
+                .eq(AgentRunPart::getPartType, "tool_result")
+                .last("LIMIT 1"));
+        if (existingResult != null) {
+            return false;
+        }
+        AgentRunPart toolCall = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .eq(AgentRunPart::getToolCallId, toolCallId)
+                .eq(AgentRunPart::getPartType, "tool_call")
+                .last("LIMIT 1"));
+        if (toolCall == null) {
+            throw new IllegalStateException("Deferred tool result has no matching tool call: " + toolCallId);
+        }
+        AgentTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new IllegalStateException("Deferred tool result has no owning task: " + taskId);
+        }
+        String resolvedToolName = toolName == null || toolName.isBlank() ? toolCall.getToolName() : toolName;
+        if (resolvedToolName == null || resolvedToolName.isBlank()) {
+            throw new IllegalStateException("Deferred tool result has no tool name: " + toolCallId);
+        }
+        long epoch = task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch();
+        appendMessage(taskId, epoch, nextSequence(taskId), Map.of(
+                "role", "tool",
+                "tool_call_id", toolCallId,
+                "name", resolvedToolName,
+                "content", content == null ? "" : content));
+        return true;
+    }
+
     public boolean hasProjectableTranscript(Long taskId) {
         try {
             return !loadProjectableTranscript(taskId).isEmpty();

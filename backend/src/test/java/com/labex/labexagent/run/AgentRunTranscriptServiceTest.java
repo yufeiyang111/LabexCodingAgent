@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentRunInteraction;
@@ -230,6 +231,45 @@ class AgentRunTranscriptServiceTest {
                 .appendMessage(7L, 1L, 0L, malformed))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("tool_call_id");
+    }
+
+    @Test
+    void persistsDeferredCommandResultAsTheMissingProviderToolMessage() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunPart call = toolCallPart(91L, 41L, "approval-call", "run_tests", "waiting_approval", 8L);
+        AgentTask task = task();
+        task.setExecutionEpoch(5L);
+        when(parts.selectOne(any())).thenReturn(null, call, null);
+        when(parts.selectList(any())).thenReturn(List.of(call));
+        when(messages.selectList(any())).thenReturn(List.of(
+                message(41L, "provider:4:message:8", 8L, "assistant", "")));
+        when(messages.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task);
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(92L);
+            return 1;
+        });
+        when(parts.insert(any(AgentRunPart.class))).thenAnswer(invocation -> {
+            AgentRunPart part = invocation.getArgument(0);
+            part.setPartId(93L);
+            return 1;
+        });
+
+        boolean appended = new AgentRunTranscriptService(messages, parts, tasks)
+                .appendDeferredToolResult(7L, "approval-call", "run_tests", "status=failed\nexit=128");
+
+        assertThat(appended).isTrue();
+        AgentRunMessage result = capturedMessage(messages);
+        assertThat(result.getMessageKey()).isEqualTo("provider:5:message:9");
+        assertThat(result.getRole()).isEqualTo("tool");
+        assertThat(result.getContent()).contains("status=failed");
+        verify(parts).updateById(org.mockito.ArgumentMatchers.argThat(part ->
+                "approval-call".equals(part.getToolCallId())
+                        && "completed".equals(part.getStatus())
+                        && part.getOutputText().contains("exit=128")));
     }
 
     private AgentRunPart toolCallPart(Long partId, Long messageId, String toolCallId,

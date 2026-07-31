@@ -112,7 +112,7 @@ public class AgentToolCallJournalService {
                 Map<String, Object> state = GSON.fromJson(artifact.getContent(), Map.class);
                 if (state != null) latest.put(artifact.getArtifactPath(), state);
             } catch (JsonParseException ignored) {
-                // ?????? artifact??? durable Part ????????
+                // Malformed legacy artifacts are ignored; the durable Part remains authoritative.
             }
         }
         return latest.values().stream().toList();
