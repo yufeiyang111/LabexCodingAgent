@@ -22,6 +22,15 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 class AgentSsePublisherDurabilityTest {
 
     @Test
+    void rejectsDurableSendBeforeTheRunIsBound() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter);
+
+        assertThrows(IllegalStateException.class, () -> publisher.send("THINK", Map.of()));
+        verify(emitter, never()).send(any(SseEmitter.SseEventBuilder.class));
+    }
+
+    @Test
     void persistsAnEventBeforeWritingItToTheSseConnection() throws Exception {
         SseEmitter emitter = mock(SseEmitter.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);

@@ -411,7 +411,7 @@ public class AgentLoopEngine {
             }
             try {
                 String queueLanguage = VisibleLanguageResolver.resolve(request.getMessage(), null).code();
-                new AgentSsePublisher(emitter).send("ERROR", Map.of("message", this.localText(queueLanguage,
+                new AgentSsePublisher(emitter).sendTransient("ERROR", Map.of("message", this.localText(queueLanguage,
                         "Agent \u961f\u5217\u7e41\u5fd9\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002", "Agent queue is busy. Please retry shortly.")));
             } catch (Exception ignored) {
                 // Ignore a best-effort SSE error notification failure.
@@ -607,7 +607,7 @@ public class AgentLoopEngine {
     private void runLoop(Integer studentId, Integer projectId, AgentStreamRequest request, SseEmitter emitter,
                          AgentRunExecutionLeaseService.ExecutionLease preclaimedLease) {
         AgentSsePublisher sse = new AgentSsePublisher(emitter,
-                this.taskEventSubscriptionService == null ? null : this.taskEventSubscriptionService::publishTransient);
+                this.taskEventSubscriptionService::publishTransient);
         AgentConversation conv = null;
         AgentTask task = null;
         AgentContext ctx = null;
@@ -682,9 +682,7 @@ public class AgentLoopEngine {
             } else if (preclaimedLease != null) {
                 throw new IllegalStateException("Preclaimed agent dispatch requires execution lease service");
             }
-            if (this.runLifecycleService != null) {
-                sse.bindRun(this.runLifecycleService, task.getTaskId());
-            }
+            sse.bindRun(this.runLifecycleService, task.getTaskId());
             if (this.projectCheckoutLeaseService != null) {
                 Path checkoutWorkspace = this.checkoutWorkspace(project, task);
                 ProjectCheckoutLeaseService.AcquireResult admission = this.projectCheckoutLeaseService.acquire(

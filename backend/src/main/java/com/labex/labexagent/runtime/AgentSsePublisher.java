@@ -35,8 +35,8 @@ public class AgentSsePublisher {
 
     public void send(String type, Object data) throws IOException {
         if (this.lifecycleService == null || this.taskId == null) {
-            this.send(null, type, data);
-            return;
+            throw new IllegalStateException(
+                    "Durable SSE events require a bound agent run before they can be sent");
         }
         AgentRunEvent event = this.lifecycleService.appendEvent(
                 this.taskId,
@@ -47,7 +47,7 @@ public class AgentSsePublisher {
             return;
         }
         try {
-            this.send(event.getSequenceNumber(), type, data);
+            this.sendFrame(event.getSequenceNumber(), type, data);
         } catch (IOException ignored) {
             this.connectionClosed = true;
         }
@@ -65,7 +65,7 @@ public class AgentSsePublisher {
             return;
         }
         try {
-            this.send(null, type, data);
+            this.sendFrame(null, type, data);
         } catch (IOException e) {
             this.connectionClosed = true;
             throw e;
@@ -77,7 +77,11 @@ public class AgentSsePublisher {
         void publish(Long taskId, String type, Object data);
     }
 
-    public void send(Long sequenceNumber, String type, Object data) throws IOException {
+    public void sendPersisted(Long sequenceNumber, String type, Object data) throws IOException {
+        this.sendFrame(sequenceNumber, type, data);
+    }
+
+    private void sendFrame(Long sequenceNumber, String type, Object data) throws IOException {
         SseEmitter.SseEventBuilder event = SseEmitter.event()
                 .name(type)
                 .data(GSON.toJson(new AgentEvent(type, data)));

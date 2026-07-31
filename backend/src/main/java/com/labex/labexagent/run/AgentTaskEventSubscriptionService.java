@@ -220,7 +220,7 @@ public class AgentTaskEventSubscriptionService {
 
         private void sendTransient(String eventType, Object eventPayload) {
             try {
-                publisher.send(null, eventType, eventPayload == null ? Map.of() : eventPayload);
+                publisher.sendTransient(eventType, eventPayload == null ? Map.of() : eventPayload);
             } catch (IOException exception) {
                 remove(this, "transient_send_failed");
             }
@@ -263,7 +263,7 @@ public class AgentTaskEventSubscriptionService {
                 return false;
             }
             try {
-                publisher.send(sequence, eventType, eventPayload == null ? Map.of() : eventPayload);
+                publisher.sendPersisted(sequence, eventType, eventPayload == null ? Map.of() : eventPayload);
                 lastSequence.set(sequence);
                 if (terminal) {
                     remove(this, "terminal_state");

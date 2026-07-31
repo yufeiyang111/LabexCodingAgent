@@ -209,7 +209,7 @@ public class StudentAgentController {
             AgentSsePublisher publisher = new AgentSsePublisher(emitter);
             for (AgentRunEvent event : this.eventReplayService.eventsAfter(
                     this.getStudentId(auth), projectId, taskId, afterSequence)) {
-                publisher.send(event.getSequenceNumber(), event.getEventType(), this.eventPayload(event.getPayload()));
+                publisher.sendPersisted(event.getSequenceNumber(), event.getEventType(), this.eventPayload(event.getPayload()));
             }
             emitter.complete();
         } catch (Exception e) {
