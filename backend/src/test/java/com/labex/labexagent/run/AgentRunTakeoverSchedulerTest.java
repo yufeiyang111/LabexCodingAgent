@@ -35,7 +35,7 @@ class AgentRunTakeoverSchedulerTest {
         assertTrue(scheduler.takeover(task));
         assertFalse(scheduler.takeover(task));
 
-        verify(engine, times(1)).resume(eq(7), eq(12), any(), eq(71L), eq(true));
+        verify(engine, times(1)).resume(eq(7), eq(12), any(), eq(71L), eq(true), any(AgentRunExecutionLeaseService.ExecutionLease.class));
     }
 
     @Test
@@ -56,7 +56,7 @@ class AgentRunTakeoverSchedulerTest {
         order.verify(lifecycle).claimRecovery(71L, AgentRunState.RUNNING, "instance-new", 30_000L);
         order.verify(lifecycle).transition(eq(71L), eq(AgentRunState.FAILED), eq("RUN_RECOVERY_TAKEOVER_FAILED"),
                 any(), any(), any(), any());
-        verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean());
+        verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean(), any(AgentRunExecutionLeaseService.ExecutionLease.class));
         verify(leases).release(any(AgentRunExecutionLeaseService.ExecutionLease.class));
     }
 
@@ -70,14 +70,14 @@ class AgentRunTakeoverSchedulerTest {
         when(leases.leaseDurationMs()).thenReturn(30_000L);
         when(lifecycle.claimRecovery(71L, AgentRunState.RUNNING, "instance-new", 30_000L)).thenReturn(claim());
         org.mockito.Mockito.doThrow(new IllegalStateException("queue rejected"))
-                .when(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
+                .when(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true), any(AgentRunExecutionLeaseService.ExecutionLease.class));
         AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine);
 
         assertFalse(scheduler.takeover(task));
 
         InOrder order = inOrder(lifecycle, engine);
         order.verify(lifecycle).claimRecovery(71L, AgentRunState.RUNNING, "instance-new", 30_000L);
-        order.verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
+        order.verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true), any(AgentRunExecutionLeaseService.ExecutionLease.class));
         order.verify(lifecycle).transition(eq(71L), eq(AgentRunState.FAILED), eq("RUN_RECOVERY_TAKEOVER_FAILED"),
                 any(), any(), any(), any());
         verify(leases).release(any(AgentRunExecutionLeaseService.ExecutionLease.class));

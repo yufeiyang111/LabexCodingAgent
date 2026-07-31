@@ -39,7 +39,7 @@ public class AgentRunTakeoverScheduler {
         try {
             AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task,
                     "An expired execution lease was taken over. Reassess the workspace and continue without replaying uncertain side effects.");
-            engine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true);
+            engine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true, lease);
             return true;
         } catch (RuntimeException failure) {
             return failClaimedTakeover(task, lease, "Unable to enqueue recovered task: " + failure.getMessage());

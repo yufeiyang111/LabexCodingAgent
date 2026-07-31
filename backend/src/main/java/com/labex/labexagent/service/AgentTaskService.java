@@ -9,6 +9,7 @@ import com.labex.entity.AgentChangeSet;
 import com.labex.entity.AgentFileChange;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.run.AgentRunTransitionKey;
@@ -36,6 +37,7 @@ public class AgentTaskService {
     private final AgentFileChangeMapper fileChangeMapper;
     private final AgentRunLifecycleService lifecycleService;
     private final BackgroundRunWorktreeService backgroundWorktreeService;
+    private AgentRunExecutionLeaseService executionLeaseService;
 
     public AgentTaskService(AgentTaskMapper taskMapper, AgentChangeSetMapper changeSetMapper, AgentFileChangeMapper fileChangeMapper) {
         this(taskMapper, changeSetMapper, fileChangeMapper, null, null);
@@ -256,6 +258,10 @@ public class AgentTaskService {
      * Moves a resolved user interaction into recovery before a new worker reacquires the project checkout.
      * The run is not marked running until the worker actually owns all required leases.
      */
+    @Autowired(required = false)
+    void setExecutionLeaseService(AgentRunExecutionLeaseService executionLeaseService) {
+        this.executionLeaseService = executionLeaseService;
+    }
     @Transactional(rollbackFor = Exception.class)
     public boolean beginInteractionResume(Long taskId, String interactionId, String currentStep, String summary) {
         if (taskId == null || interactionId == null || interactionId.isBlank()) return false;
@@ -282,6 +288,30 @@ public class AgentTaskService {
                 AgentRunTransitionKey.forInteractionResume(taskId, interactionId));
     }
 
+    /** 为已解决交互创建一次性的持久化 dispatch claim。 */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunLifecycleService.DispatchClaim claimInteractionResume(Long taskId, String interactionId,
+                                                                          String currentStep, String summary) {
+        if (taskId == null || interactionId == null || interactionId.isBlank()
+                || lifecycleService == null || executionLeaseService == null) return null;
+        AgentTask task = this.task(taskId);
+        if (task == null) return null;
+        AgentRunState current = this.runState(task.getStatus());
+        if (current != AgentRunState.WAITING_USER && current != AgentRunState.WAITING_APPROVAL) return null;
+        Map<String, Object> payload = new LinkedHashMap<>(this.taskUpdatePayload("recovering", currentStep, summary));
+        payload.put("interactionId", interactionId);
+        return lifecycleService.claimDispatch(
+                taskId,
+                current,
+                AgentRunState.RECOVERING,
+                "RUN_INTERACTION_RESUME_QUEUED",
+                payload,
+                currentStep,
+                summary,
+                AgentRunTransitionKey.forInteractionResume(taskId, interactionId),
+                executionLeaseService.instanceId(),
+                executionLeaseService.leaseDurationMs());
+    }
     /** Places a task behind the active task that owns the same project checkout. */
     @Transactional(rollbackFor = Exception.class)
     public boolean waitForWorkspace(Long taskId, String currentStep, String summary, Long blockingTaskId) {
@@ -303,6 +333,38 @@ public class AgentTaskService {
         return resumeExternalCondition(taskId, AgentRunState.WAITING_WORKSPACE, "workspace-resume");
     }
 
+    /** 为外部阻塞解除创建带租约的 queued dispatch。 */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunLifecycleService.DispatchClaim claimWorkspaceResume(Long taskId) {
+        return claimExternalResume(taskId, AgentRunState.WAITING_WORKSPACE, "workspace-resume",
+                "RUN_WORKSPACE_RESUME", "The shared project checkout is available again.");
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunLifecycleService.DispatchClaim claimEnvironmentResume(Long taskId) {
+        return claimExternalResume(taskId, AgentRunState.WAITING_ENVIRONMENT, "environment-resume",
+                "RUN_ENVIRONMENT_RESUME", "The dependency environment is available again.");
+    }
+
+    private AgentRunLifecycleService.DispatchClaim claimExternalResume(Long taskId, AgentRunState waitingState,
+                                                                         String operation, String eventType,
+                                                                         String reason) {
+        if (taskId == null || lifecycleService == null || executionLeaseService == null) return null;
+        AgentTask task = this.task(taskId);
+        if (task == null || this.runState(task.getStatus()) != waitingState) return null;
+        Map<String, Object> payload = new LinkedHashMap<>(this.taskUpdatePayload("queued", "Queued for resume", reason));
+        return lifecycleService.claimDispatch(
+                taskId,
+                waitingState,
+                AgentRunState.QUEUED,
+                eventType,
+                payload,
+                "Queued for resume",
+                reason,
+                operation + "-" + taskId + "-" + longValueOrZero(task.getLastEventSequence()),
+                executionLeaseService.instanceId(),
+                executionLeaseService.leaseDurationMs());
+    }
     @Transactional(rollbackFor = Exception.class)
     public boolean beginEnvironmentResume(Long taskId) {
         return resumeExternalCondition(taskId, AgentRunState.WAITING_ENVIRONMENT, "environment-resume");

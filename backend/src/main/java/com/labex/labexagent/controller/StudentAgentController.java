@@ -309,13 +309,21 @@ public class StudentAgentController {
             Integer studentId = this.getStudentId(auth);
             com.labex.entity.AgentTask task = this.taskService.getOwnedTask(studentId, projectId, taskId);
             if (task == null) return Result.error("Agent task not found");
-            if (!this.taskService.beginEnvironmentResume(taskId)) {
-                return Result.error("Agent task is not waiting for environment recovery");
+            com.labex.labexagent.run.AgentRunLifecycleService.DispatchClaim claim =
+                    this.taskService.claimEnvironmentResume(taskId);
+            if (claim == null) {
+                return Result.error("Agent task is not waiting for environment recovery or is already being resumed");
             }
             AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task,
                     "The user indicated the dependency environment is restored. "
                             + "Re-run only the previously blocked verification and reassess the workspace before modifying files.");
-            this.agentLoopEngine.resume(studentId, projectId, request, taskId, true);
+            try {
+                this.agentLoopEngine.resume(studentId, projectId, request, taskId, true, claim.lease());
+            } catch (RuntimeException queueFailure) {
+                this.taskService.waitForEnvironment(taskId, "Waiting for environment recovery",
+                        "Agent queue rejected environment continuation", "ENVIRONMENT_RESUME_QUEUE_REJECTED");
+                return Result.error(queueFailure.getMessage());
+            }
             return Result.success(Map.of("taskId", taskId, "status", "queued"));
         } catch (Exception exception) {
             return Result.error(exception.getMessage());

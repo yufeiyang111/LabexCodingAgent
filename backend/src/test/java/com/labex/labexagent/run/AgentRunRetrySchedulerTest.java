@@ -33,14 +33,19 @@ class AgentRunRetrySchedulerTest {
         task.setRetryAttempts(1);
         task.setNextRetryAt(LocalDateTime.of(2026, 7, 23, 10, 0));
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
-        when(lifecycle.beginScheduledRetry(eq(71L), eq(1), any(), eq("model-retry-start-71-1"))).thenReturn(true);
         AgentRunExecutionLeaseService executionLeases = mock(AgentRunExecutionLeaseService.class);
+        when(executionLeases.instanceId()).thenReturn("instance-a");
+        when(executionLeases.leaseDurationMs()).thenReturn(30_000L);
+        AgentRunExecutionLeaseService.ExecutionLease lease = new AgentRunExecutionLeaseService.ExecutionLease(
+                71L, "instance-a", 2L, LocalDateTime.of(2026, 7, 23, 10, 1));
+        when(lifecycle.claimScheduledRetry(eq(71L), eq(1), any(), eq("model-retry-start-71-1"), eq("instance-a"), eq(30_000L)))
+                .thenReturn(new AgentRunLifecycleService.DispatchClaim(lease));
         AgentRunRetryScheduler scheduler = new AgentRunRetryScheduler(taskMapper, lifecycle, executionLeases, engine);
 
         int resumed = scheduler.resumeDueRetries(LocalDateTime.of(2026, 7, 23, 10, 0, 1));
 
         assertEquals(1, resumed);
-        verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
+        verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true), eq(lease));
     }
 
     @Test
@@ -64,7 +69,7 @@ class AgentRunRetrySchedulerTest {
         int resumed = scheduler.resumeDueRetries(LocalDateTime.of(2026, 7, 23, 10, 0, 1));
 
         assertEquals(0, resumed);
-        verify(lifecycle, never()).beginScheduledRetry(any(), any(Integer.class), any(), any());
-        verify(engine, never()).resume(any(), any(), any(), any(), any(Boolean.class));
+        verify(lifecycle, never()).claimScheduledRetry(any(), any(Integer.class), any(), any(), any(), any(Long.class));
+        verify(engine, never()).resume(any(), any(), any(), any(), any(Boolean.class), any(AgentRunExecutionLeaseService.ExecutionLease.class));
     }
 }

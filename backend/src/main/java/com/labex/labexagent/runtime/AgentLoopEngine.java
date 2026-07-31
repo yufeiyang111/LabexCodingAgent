@@ -332,7 +332,7 @@ public class AgentLoopEngine {
     }
 
     public SseEmitter start(Integer studentId, Integer projectId, AgentStreamRequest request) {
-        return this.enqueue(studentId, projectId, request, false);
+        return this.enqueue(studentId, projectId, request, false, null);
     }
 
     public SseEmitter resume(Integer studentId, Integer projectId, AgentStreamRequest request, Long taskId) {
@@ -345,6 +345,13 @@ public class AgentLoopEngine {
      */
     public SseEmitter resume(Integer studentId, Integer projectId, AgentStreamRequest request, Long taskId,
                              boolean failWhenQueueRejected) {
+        return this.resume(studentId, projectId, request, taskId, failWhenQueueRejected, null);
+    }
+
+    /** 将数据库事务内领取的执行租约交接给实际运行线程，避免入队后再竞争一次。 */
+    public SseEmitter resume(Integer studentId, Integer projectId, AgentStreamRequest request, Long taskId,
+                             boolean failWhenQueueRejected,
+                             AgentRunExecutionLeaseService.ExecutionLease preclaimedLease) {
         if (request == null || taskId == null) {
             throw new IllegalArgumentException("A continuation request and task ID are required");
         }
@@ -352,7 +359,7 @@ public class AgentLoopEngine {
             this.commandFailureGuard.reset(taskId);
         }
         request.setResumeTaskId(taskId);
-        return this.enqueue(studentId, projectId, request, failWhenQueueRejected);
+        return this.enqueue(studentId, projectId, request, failWhenQueueRejected, preclaimedLease);
     }
 
     private boolean isEnvironmentRecoveryRequest(String message) {
@@ -363,15 +370,19 @@ public class AgentLoopEngine {
                 || normalized.contains("环境恢复后重试");
     }
     private SseEmitter enqueue(Integer studentId, Integer projectId, AgentStreamRequest request,
-                               boolean failWhenQueueRejected) {
+                               boolean failWhenQueueRejected,
+                               AgentRunExecutionLeaseService.ExecutionLease preclaimedLease) {
         SseEmitter emitter = new SseEmitter(Long.valueOf(0L));
         request.setSubmittedAt(LocalDateTime.now());
         String sid = request.getSessionId() != null && !request.getSessionId().isBlank()
                 ? request.getSessionId() : UUID.randomUUID().toString();
         request.setSessionId(sid);
         try {
-            AGENT_EXECUTOR.execute(() -> this.runLoop(studentId, projectId, request, emitter));
+            AGENT_EXECUTOR.execute(() -> this.runLoop(studentId, projectId, request, emitter, preclaimedLease));
         } catch (RuntimeException queueFailure) {
+            if (preclaimedLease != null && this.executionLeaseService != null) {
+                this.executionLeaseService.release(preclaimedLease);
+            }
             if (failWhenQueueRejected) {
                 throw new IllegalStateException("Unable to enqueue agent continuation", queueFailure);
             }
@@ -570,7 +581,8 @@ public class AgentLoopEngine {
      * Enabled unnecessary exception pruning
      * Enabled aggressive exception aggregation
      */
-    private void runLoop(Integer studentId, Integer projectId, AgentStreamRequest request, SseEmitter emitter) {
+    private void runLoop(Integer studentId, Integer projectId, AgentStreamRequest request, SseEmitter emitter,
+                         AgentRunExecutionLeaseService.ExecutionLease preclaimedLease) {
         AgentSsePublisher sse = new AgentSsePublisher(emitter,
                 this.taskEventSubscriptionService == null ? null : this.taskEventSubscriptionService::publishTransient);
         AgentConversation conv = null;
@@ -632,10 +644,20 @@ public class AgentLoopEngine {
                         request.isBackgroundRun(), request.getSubmittedAt());
             }
             if (this.executionLeaseService != null) {
-                executionLease = this.executionLeaseService.acquire(task.getTaskId());
-                if (executionLease == null) {
-                    throw new IllegalStateException("Agent run is already owned by another active worker");
+                if (preclaimedLease != null) {
+                    if (!task.getTaskId().equals(preclaimedLease.taskId())
+                            || !this.executionLeaseService.renew(preclaimedLease)) {
+                        throw new IllegalStateException("Preclaimed agent dispatch lease is no longer valid");
+                    }
+                    executionLease = preclaimedLease;
+                } else {
+                    executionLease = this.executionLeaseService.acquire(task.getTaskId());
+                    if (executionLease == null) {
+                        throw new IllegalStateException("Agent run is already owned by another active worker");
+                    }
                 }
+            } else if (preclaimedLease != null) {
+                throw new IllegalStateException("Preclaimed agent dispatch requires execution lease service");
             }
             if (this.runLifecycleService != null) {
                 sse.bindRun(this.runLifecycleService, task.getTaskId());

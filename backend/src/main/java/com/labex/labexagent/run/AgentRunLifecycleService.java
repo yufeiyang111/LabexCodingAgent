@@ -82,7 +82,10 @@ public class AgentRunLifecycleService {
         LocalDateTime now = LocalDateTime.now(); long epoch = valueOrZero(task.getExecutionEpoch()) + 1L; LocalDateTime expires = now.plusNanos(Math.max(5_000L, leaseDurationMs) * 1_000_000L);
         String key = "recovery-takeover-" + taskId + "-" + epoch;
         AgentRunEvent existing = findByIdempotencyKey(taskId, key);
-        if (existing != null) return new RecoveryClaim(owner, epoch, expires);
+        if (existing != null) {
+            validateIdempotentReplay(existing, AgentRunState.RECOVERING, "RUN_RECOVERY_TAKEOVER");
+            return null;
+        }
         AgentRunStateMachine.requireTransition(expectedState, AgentRunState.RECOVERING);
         long seq = nextSequence(task);
         long version = valueOrZero(task.getRunVersion()) + 1L;
@@ -94,6 +97,99 @@ public class AgentRunLifecycleService {
         if(eventMapper.insert(event)!=1||event.getEventId()==null) throw new IllegalStateException("Unable to persist recovery takeover event"); persistOutbox(event,Map.of("owner",owner,"epoch",epoch),now); return new RecoveryClaim(owner,epoch,expires);
     }
 
+    /**
+     * 在同一个事务中领取恢复 dispatch：状态、版本、执行租约、事件和 outbox 必须一起成功。
+     * 返回 null 表示本次调用没有取得新的 dispatch，不允许调用方再次入队。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public DispatchClaim claimDispatch(Long taskId, AgentRunState expectedState, AgentRunState targetState,
+                                       String eventType, Object payload, String currentStep, String summary,
+                                       String idempotencyKey, String owner, long leaseDurationMs) {
+        require(taskId, "taskId");
+        require(expectedState, "expectedState");
+        require(targetState, "targetState");
+        require(eventType, "eventType");
+        require(idempotencyKey, "idempotencyKey");
+        require(owner, "owner");
+
+        AgentTask task = taskMapper.selectByTaskIdForUpdate(taskId);
+        if (task == null || AgentRunState.fromPersistedStatus(task.getStatus()) != expectedState) {
+            return null;
+        }
+        AgentRunEvent existing = findByIdempotencyKey(taskId, idempotencyKey);
+        if (existing != null) {
+            validateIdempotentReplay(existing, targetState, eventType);
+            return null;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        boolean activeLease = task.getExecutionOwner() != null
+                && !task.getExecutionOwner().isBlank()
+                && task.getExecutionLeaseExpiresAt() != null
+                && task.getExecutionLeaseExpiresAt().isAfter(now);
+        if (activeLease) {
+            return null;
+        }
+        AgentRunStateMachine.requireTransition(expectedState, targetState);
+        long nextSequence = nextSequence(task);
+        long expectedVersion = valueOrZero(task.getRunVersion());
+        long nextVersion = expectedVersion + 1L;
+        long epoch = valueOrZero(task.getExecutionEpoch()) + 1L;
+        LocalDateTime expiresAt = now.plusNanos(Math.max(5_000L, leaseDurationMs) * 1_000_000L);
+        UpdateWrapper<AgentTask> update = new UpdateWrapper<AgentTask>()
+                .eq("task_id", taskId)
+                .eq("status", expectedState.persistedStatus())
+                .eq("run_version", expectedVersion)
+                .and(wrapper -> wrapper.isNull("execution_owner")
+                        .or().isNull("execution_lease_expires_at")
+                        .or().le("execution_lease_expires_at", now))
+                .set("status", targetState.persistedStatus())
+                .set("last_event_sequence", nextSequence)
+                .set("run_version", nextVersion)
+                .set("execution_owner", owner)
+                .set("execution_epoch", epoch)
+                .set("execution_lease_expires_at", expiresAt)
+                .set("execution_heartbeat_at", now)
+                .set("update_time", now);
+        if (currentStep != null) update.set("current_step", currentStep);
+        if (summary != null) update.set("summary", summary);
+        if (targetState == AgentRunState.QUEUED || targetState == AgentRunState.RECOVERING) {
+            update.set("next_retry_at", null);
+        }
+        if (taskMapper.update(null, update) != 1) {
+            return null;
+        }
+
+        AgentRunEvent event = new AgentRunEvent();
+        event.setTaskId(task.getTaskId());
+        event.setStudentId(task.getStudentId());
+        event.setProjectId(task.getProjectId());
+        event.setSequenceNumber(nextSequence);
+        event.setState(targetState.persistedStatus());
+        event.setEventType(eventType);
+        event.setPayload(GSON.toJson(payload));
+        event.setIdempotencyKey(idempotencyKey);
+        event.setCreateTime(now);
+        if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
+            throw new IllegalStateException("Unable to persist agent dispatch event");
+        }
+        persistOutbox(event, payload, now);
+        recordEventPartBestEffort(taskId, eventType, payload, nextSequence);
+
+        task.setStatus(targetState.persistedStatus());
+        task.setLastEventSequence(nextSequence);
+        task.setRunVersion(nextVersion);
+        task.setExecutionOwner(owner);
+        task.setExecutionEpoch(epoch);
+        task.setExecutionLeaseExpiresAt(expiresAt);
+        task.setExecutionHeartbeatAt(now);
+        task.setUpdateTime(now);
+        if (currentStep != null) task.setCurrentStep(currentStep);
+        if (summary != null) task.setSummary(summary);
+        if (targetState == AgentRunState.QUEUED || targetState == AgentRunState.RECOVERING) {
+            task.setNextRetryAt(null);
+        }
+        return new DispatchClaim(new AgentRunExecutionLeaseService.ExecutionLease(taskId, owner, epoch, expiresAt));
+    }
     @Transactional(rollbackFor = Exception.class)
     public boolean beginRecovery(Long taskId, AgentRunState expectedState, Object payload, String idempotencyKey) {
         return transitionInternal(taskId, expectedState, AgentRunState.RECOVERING, "RUN_RECOVERY_TAKEOVER", payload,
@@ -117,12 +213,19 @@ public class AgentRunLifecycleService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public boolean beginScheduledRetry(Long taskId, int retryAttempt, LocalDateTime now, String idempotencyKey) {
+    public DispatchClaim claimScheduledRetry(Long taskId, int retryAttempt, LocalDateTime now, String idempotencyKey,
+                                             String owner, long leaseDurationMs) {
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
         Map<String, Object> payload = Map.of("attempt", retryAttempt, "resumedAt", effectiveNow.toString());
-        return transitionInternal(taskId, AgentRunState.RETRYING, AgentRunState.RECOVERING,
+        return claimDispatch(taskId, AgentRunState.RETRYING, AgentRunState.RECOVERING,
                 "RUN_MODEL_RETRY_STARTED", payload, "Claiming model retry", "Retry attempt " + retryAttempt,
-                idempotencyKey, java.util.Collections.singletonMap("next_retry_at", null)) != null;
+                idempotencyKey, owner, leaseDurationMs);
+    }
+
+    /** 兼容旧调用方；新的 scheduler 必须使用带实例 owner 的 claimScheduledRetry。 */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean beginScheduledRetry(Long taskId, int retryAttempt, LocalDateTime now, String idempotencyKey) {
+        return claimScheduledRetry(taskId, retryAttempt, now, idempotencyKey, "legacy-retry-scheduler", 30_000L) != null;
     }
 
     private TransitionResult transitionInternal(Long taskId, AgentRunState expectedState, AgentRunState targetState,
@@ -342,6 +445,8 @@ public class AgentRunLifecycleService {
             throw new IllegalArgumentException(name + " is required");
         }
     }
+
+    public record DispatchClaim(AgentRunExecutionLeaseService.ExecutionLease lease) { }
 
     public record RecoveryClaim(String owner, long epoch, LocalDateTime expiresAt) { }
 

@@ -306,6 +306,29 @@ class AgentRunLifecycleServiceTest {
     }
 
     @Test
+    void doesNotReturnASecondRecoveryClaimWhenTheTakeoverEventWasAlreadyPersisted() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        AgentRunEvent existing = new AgentRunEvent();
+        existing.setState(AgentRunState.RECOVERING.persistedStatus());
+        existing.setEventType("RUN_RECOVERY_TAKEOVER");
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(existing);
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        AgentRunLifecycleService.RecoveryClaim claim = service.claimRecovery(
+                71L, AgentRunState.RUNNING, "instance-new", 30_000L);
+
+        assertEquals(null, claim);
+        verify(taskMapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+    }
+
+    @Test
     void refusesAnUnexpiredForeignLeaseWithoutWritingTakeoverEvent() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);

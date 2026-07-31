@@ -29,16 +29,30 @@ public class AgentWorkspaceAdmissionScheduler {
     private final AgentLoopEngine agentLoopEngine;
     private final StudentProjectService studentProjectService;
     private final ProjectCheckoutLeaseService checkoutLeaseService;
+    private final AgentRunLifecycleService lifecycleService;
+    private final AgentRunExecutionLeaseService executionLeaseService;
 
     public AgentWorkspaceAdmissionScheduler(AgentTaskMapper taskMapper, AgentTaskService taskService,
                                             @Lazy AgentLoopEngine agentLoopEngine,
                                             StudentProjectService studentProjectService,
                                             ProjectCheckoutLeaseService checkoutLeaseService) {
+        this(taskMapper, taskService, agentLoopEngine, studentProjectService, checkoutLeaseService, null, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentWorkspaceAdmissionScheduler(AgentTaskMapper taskMapper, AgentTaskService taskService,
+                                            @Lazy AgentLoopEngine agentLoopEngine,
+                                            StudentProjectService studentProjectService,
+                                            ProjectCheckoutLeaseService checkoutLeaseService,
+                                            AgentRunLifecycleService lifecycleService,
+                                            AgentRunExecutionLeaseService executionLeaseService) {
         this.taskMapper = taskMapper;
         this.taskService = taskService;
         this.agentLoopEngine = agentLoopEngine;
         this.studentProjectService = studentProjectService;
         this.checkoutLeaseService = checkoutLeaseService;
+        this.lifecycleService = lifecycleService;
+        this.executionLeaseService = executionLeaseService;
     }
 
     @Scheduled(fixedDelayString = "${labex-agent.workspace-admission-poll-interval-ms:1000}")
@@ -63,17 +77,48 @@ public class AgentWorkspaceAdmissionScheduler {
             workspace = BackgroundRunWorkspaceResolver.resolve(workspace, task.getBackgroundWorktree());
         }
         if (!checkoutLeaseService.isAvailable(task.getProjectId(), workspace)) return false;
-        if (!taskService.beginWorkspaceResume(task.getTaskId())) return false;
+        if (lifecycleService == null || executionLeaseService == null) {
+            if (!taskService.beginWorkspaceResume(task.getTaskId())) return false;
+            AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task,
+                    "The shared project checkout is available again. Reassess the current workspace before making further changes.");
+            try {
+                agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true);
+                return true;
+            } catch (RuntimeException exception) {
+                log.warn("Unable to enqueue workspace-waiting taskId={}; it will remain recoverable", task.getTaskId(), exception);
+                taskService.waitForWorkspace(task.getTaskId(), "Waiting for project checkout",
+                        "Agent queue rejected workspace continuation", null);
+                return false;
+            }
+        }
+        AgentRunLifecycleService.DispatchClaim claim = lifecycleService.claimDispatch(
+                task.getTaskId(),
+                AgentRunState.WAITING_WORKSPACE,
+                AgentRunState.QUEUED,
+                "RUN_WORKSPACE_RESUME",
+                java.util.Map.of("reason", "Project checkout is available again"),
+                "Queued for resume",
+                "The shared project checkout is available again.",
+                "workspace-resume-" + task.getTaskId() + "-" + valueOrZero(task.getLastEventSequence()),
+                executionLeaseService.instanceId(),
+                executionLeaseService.leaseDurationMs());
+        if (claim == null) return false;
         AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task,
                 "The shared project checkout is available again. Reassess the current workspace before making further changes.");
         try {
-            agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true);
+            agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), request, task.getTaskId(), true,
+                    claim.lease());
             return true;
         } catch (RuntimeException exception) {
             log.warn("Unable to enqueue workspace-waiting taskId={}; it will remain recoverable", task.getTaskId(), exception);
             taskService.waitForWorkspace(task.getTaskId(), "Waiting for project checkout",
                     "Agent queue rejected workspace continuation", null);
+            executionLeaseService.release(claim.lease());
             return false;
         }
     }
+    private long valueOrZero(Long value) {
+        return value == null ? 0L : value;
+    }
+
 }

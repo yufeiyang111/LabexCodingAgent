@@ -71,13 +71,15 @@ public class AgentRunRetryScheduler {
         if (attempt <= 0 || executionLeaseService.hasActiveLease(task, now)) {
             return false;
         }
-        boolean claimed = lifecycleService.beginScheduledRetry(
-                task.getTaskId(), attempt, now, "model-retry-start-" + task.getTaskId() + "-" + attempt);
-        if (!claimed) {
+        AgentRunLifecycleService.DispatchClaim claim = lifecycleService.claimScheduledRetry(
+                task.getTaskId(), attempt, now, "model-retry-start-" + task.getTaskId() + "-" + attempt,
+                executionLeaseService.instanceId(), executionLeaseService.leaseDurationMs());
+        if (claim == null) {
             return false;
         }
         try {
-            agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), continuationRequest(task), task.getTaskId(), true);
+            agentLoopEngine.resume(task.getStudentId(), task.getProjectId(), continuationRequest(task), task.getTaskId(), true,
+                    claim.lease());
             return true;
         } catch (RuntimeException exception) {
             log.error("Unable to resume scheduled model retry taskId={}", task.getTaskId(), exception);

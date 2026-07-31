@@ -39,12 +39,13 @@ public class AgentRunResumeScheduler {
 
         AgentStreamRequest request = continuationRequest(task, interaction);
         request.setResumeInteractionId(interaction.getInteractionId());
-        if (!taskService.beginInteractionResume(
+        AgentRunLifecycleService.DispatchClaim claim = taskService.claimInteractionResume(
                 task.getTaskId(),
                 interaction.getInteractionId(),
                 "Resuming after user response",
-                "A persisted user response is ready")) {
-            log.warn("AGENT_INTERACTION_RESUME_TRANSITION_REJECTED interactionId={} taskId={} taskStatus={}",
+                "A persisted user response is ready");
+        if (claim == null) {
+            log.warn("AGENT_INTERACTION_RESUME_CLAIM_REJECTED interactionId={} taskId={} taskStatus={}",
                     interaction.getInteractionId(), task.getTaskId(), task.getStatus());
             return false;
         }
@@ -58,7 +59,8 @@ public class AgentRunResumeScheduler {
         try {
             log.info("AGENT_INTERACTION_RESUME_ENQUEUED interactionId={} taskId={} continuationChars={}",
                     interaction.getInteractionId(), resumedTask.getTaskId(), request.getMessage() == null ? 0 : request.getMessage().length());
-            agentLoopEngine.resume(resumedTask.getStudentId(), resumedTask.getProjectId(), request, resumedTask.getTaskId(), true);
+            agentLoopEngine.resume(resumedTask.getStudentId(), resumedTask.getProjectId(), request, resumedTask.getTaskId(), true,
+                    claim.lease());
             return true;
         } catch (RuntimeException exception) {
             taskService.updateTask(task.getTaskId(), "failed", "Unable to resume after user response",
