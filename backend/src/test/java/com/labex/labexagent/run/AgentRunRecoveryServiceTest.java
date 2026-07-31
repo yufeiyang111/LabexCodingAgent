@@ -22,7 +22,7 @@ class AgentRunRecoveryServiceTest {
         AgentTask task = task(71L, AgentRunState.QUEUED);
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
         when(taskMapper.updateById(task)).thenReturn(1);
-        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle);
+        AgentRunRecoveryService service = newRecoveryService(taskMapper, lifecycle, mock(AgentRunTakeoverScheduler.class));
 
         int recovered = service.recoverInterruptedRuns();
 
@@ -46,8 +46,7 @@ class AgentRunRecoveryServiceTest {
         AgentTask task = task(71L, AgentRunState.RUNNING);
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
         when(takeoverScheduler.takeover(task)).thenReturn(true);
-        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle);
-        service.setTakeoverScheduler(takeoverScheduler);
+        AgentRunRecoveryService service = newRecoveryService(taskMapper, lifecycle, takeoverScheduler);
 
         int recovered = service.recoverInterruptedRuns();
 
@@ -65,7 +64,7 @@ class AgentRunRecoveryServiceTest {
         AgentTask task = task(72L, AgentRunState.WAITING_APPROVAL);
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
         when(taskMapper.updateById(task)).thenReturn(1);
-        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle);
+        AgentRunRecoveryService service = newRecoveryService(taskMapper, lifecycle, mock(AgentRunTakeoverScheduler.class));
 
         int recovered = service.recoverInterruptedRuns();
 
@@ -90,7 +89,7 @@ class AgentRunRecoveryServiceTest {
         task.setNextRetryAt(java.time.LocalDateTime.of(2026, 7, 23, 10, 1));
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
         when(taskMapper.updateById(task)).thenReturn(1);
-        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle);
+        AgentRunRecoveryService service = newRecoveryService(taskMapper, lifecycle, mock(AgentRunTakeoverScheduler.class));
 
         int recovered = service.recoverInterruptedRuns();
 
@@ -108,5 +107,13 @@ class AgentRunRecoveryServiceTest {
         task.setStatus(state.persistedStatus());
         task.setRecoveryAttempts(0);
         return task;
+    }
+
+    private AgentRunRecoveryService newRecoveryService(AgentTaskMapper taskMapper,
+                                                       AgentRunLifecycleService lifecycle,
+                                                       AgentRunTakeoverScheduler takeoverScheduler) {
+        return new AgentRunRecoveryService(taskMapper, lifecycle,
+                mock(AgentRunExecutionLeaseService.class), takeoverScheduler,
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class));
     }
 }

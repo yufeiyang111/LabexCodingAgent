@@ -29,10 +29,6 @@ public class AgentRunPartService {
     private final AgentTaskMapper taskMapper;
     private final AgentRunMessageService messageService;
 
-    public AgentRunPartService(AgentRunPartMapper partMapper, AgentTaskMapper taskMapper) {
-        this(partMapper, taskMapper, null);
-    }
-
     @Autowired
     public AgentRunPartService(AgentRunPartMapper partMapper, AgentTaskMapper taskMapper,
                                AgentRunMessageService messageService) {
@@ -54,9 +50,8 @@ public class AgentRunPartService {
             case "error", "environment_blocked", "interrupted" -> "error";
             default -> "streaming";
         };
-        AgentRunMessage message = messageService == null ? null
-                : messageService.upsertAssistantTurn(taskId, iteration, messageStatus);
-        return upsertPart(taskId, message == null ? null : message.getRunMessageId(),
+        AgentRunMessage message = messageService.upsertAssistantTurn(taskId, iteration, messageStatus);
+        return upsertPart(taskId, message.getRunMessageId(),
                 "tool:" + toolCallId.trim(), "tool", status, toolCallId,
                 toolName, arguments, detail, iteration);
     }
@@ -90,7 +85,7 @@ public class AgentRunPartService {
         part.setOutputText(limit(detail));
         part.setUpdateTime(LocalDateTime.now());
         partMapper.updateById(part);
-        if (messageService != null && part.getSequenceNumber() != null) {
+        if (part.getSequenceNumber() != null) {
             String messageStatus = "completed".equals(part.getStatus()) || "skipped".equals(part.getStatus())
                     ? "completed" : "error";
             messageService.upsertAssistantTurn(taskId, part.getSequenceNumber(), messageStatus);
@@ -103,9 +98,8 @@ public class AgentRunPartService {
         if (taskId == null || eventType == null || eventType.isBlank() || !supportsEventPart(eventType)) return null;
         Map<String, Object> data = payload instanceof Map<?, ?> map
                 ? copyMap(map) : Map.of("value", payload == null ? "" : payload);
-        AgentRunMessage message = messageService == null ? null
-                : messageService.recordEventMessage(taskId, eventType, data, sequence);
-        Long messageId = message == null ? null : message.getRunMessageId();
+        AgentRunMessage message = messageService.recordEventMessage(taskId, eventType, data, sequence);
+        Long messageId = message.getRunMessageId();
         return switch (eventType) {
             case "THINK" -> upsertPart(taskId, messageId, "reasoning:" + sequence, "reasoning", "completed",
                     null, null, data, text(data, "message", "content"), sequence);

@@ -21,26 +21,21 @@ public class AgentRunRecoveryService {
 
     private final AgentTaskMapper taskMapper;
     private final AgentRunLifecycleService lifecycleService;
-    private AgentRunExecutionLeaseService executionLeaseService;
-    private AgentRunTakeoverScheduler takeoverScheduler;
-    private AgentRunPartService partService;
-    private AgentRunMessageService messageService;
+    private final AgentRunExecutionLeaseService executionLeaseService;
+    private final AgentRunTakeoverScheduler takeoverScheduler;
+    private final AgentRunPartService partService;
+    private final AgentRunMessageService messageService;
 
-    public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService) {
+    @Autowired
+    public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
+                                   AgentRunExecutionLeaseService executionLeaseService,
+                                   AgentRunTakeoverScheduler takeoverScheduler,
+                                   AgentRunPartService partService,
+                                   AgentRunMessageService messageService) {
         this.taskMapper = taskMapper;
         this.lifecycleService = lifecycleService;
-    }
-
-    @Autowired(required = false)
-    void setExecutionLeaseService(AgentRunExecutionLeaseService executionLeaseService) {
         this.executionLeaseService = executionLeaseService;
-    }
-
-    @Autowired(required = false)
-    void setTakeoverScheduler(AgentRunTakeoverScheduler takeoverScheduler) { this.takeoverScheduler = takeoverScheduler; }
-
-    @Autowired(required = false)
-    void setRunParts(AgentRunPartService partService, AgentRunMessageService messageService) {
+        this.takeoverScheduler = takeoverScheduler;
         this.partService = partService;
         this.messageService = messageService;
     }
@@ -70,7 +65,7 @@ public class AgentRunRecoveryService {
     }
 
     private void recover(AgentTask task) {
-        if (executionLeaseService != null && executionLeaseService.hasActiveLease(task, java.time.LocalDateTime.now())) {
+        if (executionLeaseService.hasActiveLease(task, java.time.LocalDateTime.now())) {
             lifecycleService.appendEvent(
                     task.getTaskId(),
                     "RUN_RECOVERY_ACTIVE_LEASE",
@@ -81,7 +76,7 @@ public class AgentRunRecoveryService {
         }
         AgentRunState state = AgentRunState.fromPersistedStatus(task.getStatus());
         sealInterruptedParts(task, state);
-        if (takeoverScheduler != null && (state == AgentRunState.QUEUED || state == AgentRunState.PREPARING || state == AgentRunState.RUNNING) && takeoverScheduler.takeover(task)) return;
+        if ((state == AgentRunState.QUEUED || state == AgentRunState.PREPARING || state == AgentRunState.RUNNING) && takeoverScheduler.takeover(task)) return;
         int attempts = valueOrZero(task.getRecoveryAttempts()) + 1;
         task.setRecoveryAttempts(attempts);
         if (taskMapper.updateById(task) != 1) {
@@ -137,15 +132,11 @@ public class AgentRunRecoveryService {
 
     private void sealInterruptedParts(AgentTask task, AgentRunState state) {
         String reason = "Agent service restarted before this model turn completed";
-        if (partService != null) {
-            partService.interruptOpenParts(task.getTaskId(), reason);
-        }
-        if (messageService != null) {
-            boolean waiting = state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER
-                    || state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT
-                    || state == AgentRunState.RETRYING;
-            messageService.markOpenMessages(task.getTaskId(), waiting ? "waiting" : "interrupted", reason);
-        }
+        partService.interruptOpenParts(task.getTaskId(), reason);
+        boolean waiting = state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER
+                || state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT
+                || state == AgentRunState.RETRYING;
+        messageService.markOpenMessages(task.getTaskId(), waiting ? "waiting" : "interrupted", reason);
     }
 
     private int valueOrZero(Integer value) {

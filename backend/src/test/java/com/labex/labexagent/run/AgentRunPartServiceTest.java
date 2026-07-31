@@ -2,6 +2,9 @@ package com.labex.labexagent.run;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -31,7 +34,7 @@ class AgentRunPartServiceTest {
             return 1;
         });
 
-        AgentRunPart result = new AgentRunPartService(parts, tasks)
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messageService())
                 .upsertToolCall(7L, "call-1", "running", "run_tests",
                         Map.of("strategy", "test"), 3, "");
 
@@ -71,7 +74,7 @@ class AgentRunPartServiceTest {
         when(parts.selectOne(any())).thenReturn(existing);
         when(tasks.selectById(7L)).thenReturn(task());
 
-        AgentRunPart result = new AgentRunPartService(parts, tasks)
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messageService())
                 .upsertToolCall(7L, "call-1", "completed", "run_tests",
                         Map.of("strategy", "test"), 3, "passed");
 
@@ -95,7 +98,7 @@ class AgentRunPartServiceTest {
         when(parts.selectOne(any())).thenReturn(null);
         when(tasks.selectById(7L)).thenReturn(task());
 
-        new AgentRunPartService(parts, tasks)
+        new AgentRunPartService(parts, tasks, messageService())
                 .upsertToolCall(7L, "call-1", "waiting_approval", "read_file",
                         Map.of("path", ".env"), 2, "Waiting for user approval.");
 
@@ -112,5 +115,13 @@ class AgentRunPartServiceTest {
         task.setStudentId(11);
         task.setProjectId(22);
         return task;
+    }
+
+    private AgentRunMessageService messageService() {
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(41L);
+        when(messages.upsertAssistantTurn(anyLong(), anyLong(), anyString())).thenReturn(message);
+        return messages;
     }
 }
