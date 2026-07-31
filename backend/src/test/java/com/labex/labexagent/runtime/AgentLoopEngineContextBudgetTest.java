@@ -8,6 +8,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentModelConfig;
+import com.labex.labexagent.service.AgentTaskService;
+import com.labex.labexagent.tool.ToolRegistry;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -93,7 +95,14 @@ class AgentLoopEngineContextBudgetTest {
 
     private AgentLoopEngine newEngine() throws Exception {
         Constructor<?> constructor = AgentLoopEngine.class.getConstructors()[0];
-        return (AgentLoopEngine) constructor.newInstance(new Object[constructor.getParameterCount()]);
+        AgentLoopEngine engine = (AgentLoopEngine) constructor.newInstance(new Object[constructor.getParameterCount()]);
+        engine.setRunProcessors(new AgentModelTurnExecutor(),
+                new AgentToolTurnExecutor(mock(ToolRegistry.class)),
+                new AgentToolCallBatchProtocol(), new AgentProviderMessageProjector(),
+                new AgentToolNarrator(), new com.labex.labexagent.tool.ToolSelectionPolicy(),
+                new ContextAdmissionService(), new ContextAdmissionGate(),
+                new AgentInteractionPauser(mock(AgentTaskService.class)));
+        return engine;
     }
 
     private List<Map<String, Object>> oversizedMessages() {

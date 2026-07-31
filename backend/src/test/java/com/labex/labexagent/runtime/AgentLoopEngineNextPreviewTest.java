@@ -28,6 +28,7 @@ import com.labex.labexagent.service.AgentPostEditHookService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.TokenTracker;
 import com.labex.labexagent.tool.ToolRegistry;
+import com.labex.labexagent.tool.ToolSelectionPolicy;
 import com.labex.rag.config.RagConfig;
 import com.labex.rag.llm.MiniMaxChat;
 import com.labex.rag.llm.OllamaChat;
@@ -100,6 +101,10 @@ class AgentLoopEngineNextPreviewTest {
                 mock(GitSnapshotService.class), mock(DiffService.class), contextOrchestrator,
                 mock(AgentPostEditHookService.class), mock(AgentMetricsService.class), mock(AgentInteractionService.class),
                 null, null, new ContextUsageEstimator(), usageRegistry, null);
+        engine.setRunProcessors(new AgentModelTurnExecutor(), new AgentToolTurnExecutor(tools),
+                new AgentToolCallBatchProtocol(), new AgentProviderMessageProjector(), new AgentToolNarrator(),
+                new ToolSelectionPolicy(), new ContextAdmissionService(), new ContextAdmissionGate(),
+                new AgentInteractionPauser(tasks));
 
         ContextUsageSnapshot preview = engine.previewNextRequest(7, 3, "conversation", 17,
                 "src/App.vue", "build", "draft request");

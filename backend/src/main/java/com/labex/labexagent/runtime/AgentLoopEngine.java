@@ -132,13 +132,13 @@ public class AgentLoopEngine {
     private AgentToolTurnExecutor toolTurnExecutor;
     private final AgentContextManager contextManager;
     private final AgentCancellationRegistry cancellationRegistry;
-    private AgentModelTurnExecutor modelTurnExecutor = new AgentModelTurnExecutor(PROVIDER_FIRST_EVENT_TIMEOUT_MS);
-    private AgentToolCallBatchProtocol toolCallBatchProtocol = new AgentToolCallBatchProtocol();
-    private AgentProviderMessageProjector providerMessageProjector = new AgentProviderMessageProjector();
-    private AgentToolNarrator toolNarrator = new AgentToolNarrator();
-    private ToolSelectionPolicy toolSelectionPolicy = new ToolSelectionPolicy();
-    private ContextAdmissionService contextAdmissionService = new ContextAdmissionService();
-    private ContextAdmissionGate contextAdmissionGate = new ContextAdmissionGate();
+    private AgentModelTurnExecutor modelTurnExecutor;
+    private AgentToolCallBatchProtocol toolCallBatchProtocol;
+    private AgentProviderMessageProjector providerMessageProjector;
+    private AgentToolNarrator toolNarrator;
+    private ToolSelectionPolicy toolSelectionPolicy;
+    private ContextAdmissionService contextAdmissionService;
+    private ContextAdmissionGate contextAdmissionGate;
     private final MiniMaxChat miniMaxChat;
     private final OllamaChat ollamaChat;
     private final RagConfig ragConfig;
@@ -202,7 +202,6 @@ public class AgentLoopEngine {
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService, AgentRunLifecycleService runLifecycleService, CommandApprovalService commandApprovalService, ContextUsageEstimator contextUsageEstimator, ContextUsageRegistry contextUsageRegistry, CompactionAgent compactionAgent) {
         this.studentProjectService = s;
         this.toolRegistry = t;
-        this.toolTurnExecutor = new AgentToolTurnExecutor(t);
         this.contextManager = c;
         this.cancellationRegistry = cr;
         this.miniMaxChat = mm;
@@ -210,7 +209,6 @@ public class AgentLoopEngine {
         this.ragConfig = r;
         this.conversationService = cs;
         this.taskService = ts;
-        this.interactionPauser = new AgentInteractionPauser(ts);
         this.providerFactory = pf;
         this.modelConfigService = mcs;
         this.tokenTracker = tt;
@@ -248,19 +246,28 @@ public class AgentLoopEngine {
     void setRunProcessors(AgentModelTurnExecutor modelTurnExecutor,
                           AgentToolTurnExecutor toolTurnExecutor,
                           AgentToolCallBatchProtocol toolCallBatchProtocol,
+                          AgentProviderMessageProjector providerMessageProjector,
                           AgentToolNarrator toolNarrator,
                           ToolSelectionPolicy toolSelectionPolicy,
                           ContextAdmissionService contextAdmissionService,
                           ContextAdmissionGate contextAdmissionGate,
                           AgentInteractionPauser interactionPauser) {
-        if (modelTurnExecutor != null) this.modelTurnExecutor = modelTurnExecutor;
-        if (toolTurnExecutor != null) this.toolTurnExecutor = toolTurnExecutor;
-        if (toolCallBatchProtocol != null) this.toolCallBatchProtocol = toolCallBatchProtocol;
-        if (toolNarrator != null) this.toolNarrator = toolNarrator;
-        if (toolSelectionPolicy != null) this.toolSelectionPolicy = toolSelectionPolicy;
-        if (contextAdmissionService != null) this.contextAdmissionService = contextAdmissionService;
-        if (contextAdmissionGate != null) this.contextAdmissionGate = contextAdmissionGate;
-        if (interactionPauser != null) this.interactionPauser = interactionPauser;
+        this.modelTurnExecutor = requireProcessor(modelTurnExecutor, "modelTurnExecutor");
+        this.toolTurnExecutor = requireProcessor(toolTurnExecutor, "toolTurnExecutor");
+        this.toolCallBatchProtocol = requireProcessor(toolCallBatchProtocol, "toolCallBatchProtocol");
+        this.providerMessageProjector = requireProcessor(providerMessageProjector, "providerMessageProjector");
+        this.toolNarrator = requireProcessor(toolNarrator, "toolNarrator");
+        this.toolSelectionPolicy = requireProcessor(toolSelectionPolicy, "toolSelectionPolicy");
+        this.contextAdmissionService = requireProcessor(contextAdmissionService, "contextAdmissionService");
+        this.contextAdmissionGate = requireProcessor(contextAdmissionGate, "contextAdmissionGate");
+        this.interactionPauser = requireProcessor(interactionPauser, "interactionPauser");
+    }
+
+    private <T> T requireProcessor(T processor, String name) {
+        if (processor == null) {
+            throw new IllegalArgumentException(name + " is required");
+        }
+        return processor;
     }
 
     @Autowired
