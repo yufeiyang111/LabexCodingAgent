@@ -43,6 +43,20 @@ public class AgentInteractionService {
             String question,
             String summary,
             List<String> options) {
+        return beginQuestion(projectId, studentId, sessionId, taskId, conversationId, null,
+                question, summary, options);
+    }
+
+    public UserQuestionRequest beginQuestion(
+            Integer projectId,
+            Integer studentId,
+            String sessionId,
+            Long taskId,
+            String conversationId,
+            String toolCallId,
+            String question,
+            String summary,
+            List<String> options) {
         String requestId = UUID.randomUUID().toString();
         UserQuestionRequest request = new UserQuestionRequest(
                 requestId,
@@ -51,6 +65,7 @@ public class AgentInteractionService {
                 sessionId,
                 taskId,
                 conversationId,
+                toolCallId,
                 question,
                 summary,
                 options == null ? List.of() : List.copyOf(options),
@@ -89,6 +104,9 @@ public class AgentInteractionService {
         payload.put("question", request.question());
         payload.put("summary", request.summary());
         payload.put("options", request.options());
+        if (request.toolCallId() != null && !request.toolCallId().isBlank()) {
+            payload.put("toolCallId", request.toolCallId());
+        }
         runInteractionService.createWaiting(new AgentRunInteractionService.WaitingInteraction(
                 request.requestId(),
                 request.taskId(),
@@ -143,6 +161,7 @@ public class AgentInteractionService {
             String sessionId,
             Long taskId,
             String conversationId,
+            String toolCallId,
             String question,
             String summary,
             List<String> options,

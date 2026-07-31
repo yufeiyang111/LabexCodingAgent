@@ -49,13 +49,14 @@ class NetworkAccessServiceTest {
 
         NetworkAccessService.NetworkAccessRequest request = service.begin(
                 7, 12, 71L, "conversation-1", "session-1", "shell",
-                "cargo test", "offline retry", "offline_failure_retry", true, "tool-call-1", List.of());
+                "cargo test", "offline retry", "offline_failure_retry", true, "attempt-1", "tool-call-1", List.of());
 
         ArgumentCaptor<AgentRunInteractionService.WaitingInteraction> captor =
                 ArgumentCaptor.forClass(AgentRunInteractionService.WaitingInteraction.class);
         verify(interactions).createWaiting(captor.capture());
         assertThat(request.payload().get("requestKind")).isEqualTo("offline_failure_retry");
         assertThat(request.payload().get("retryable")).isEqualTo(true);
+        assertThat(request.payload().get("toolCallId")).isEqualTo("tool-call-1");
         assertThat(captor.getValue().idempotencyKey()).startsWith("network-access:v2:71:");
     }
 

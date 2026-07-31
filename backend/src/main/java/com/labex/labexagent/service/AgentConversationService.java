@@ -123,7 +123,10 @@ public class AgentConversationService {
     }
 
     public List<AgentConversation> list(Integer studentId, Integer projectId) {
-        return this.conversationMapper.selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.labex.entity.AgentConversation>().eq(com.labex.entity.AgentConversation::getStudentId, studentId).eq(com.labex.entity.AgentConversation::getProjectId, projectId).eq(com.labex.entity.AgentConversation::getStatus, 1).orderByDesc(com.labex.entity.AgentConversation::getUpdateTime));
+        return this.conversationMapper.selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.labex.entity.AgentConversation>().eq(com.labex.entity.AgentConversation::getStudentId, studentId).eq(com.labex.entity.AgentConversation::getProjectId, projectId).eq(com.labex.entity.AgentConversation::getStatus, 1)
+                .orderByDesc(com.labex.entity.AgentConversation::getUpdateTime)
+                .orderByDesc(com.labex.entity.AgentConversation::getCreateTime)
+                .orderByDesc(com.labex.entity.AgentConversation::getConversationId));
     }
 
     public List<AgentMessage> messages(Integer studentId, Integer projectId, String conversationId) {

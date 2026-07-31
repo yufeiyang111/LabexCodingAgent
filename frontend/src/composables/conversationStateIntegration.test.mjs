@@ -29,3 +29,11 @@ test('CloudWorkspace keeps a visible file-tree error instead of rendering a fail
   assert.match(source, /v-if="treeError"/)
   assert.match(files, /treeNextOffset\.value = null/)
 })
+
+test('workspace startup restores the persisted conversation instead of assuming the first list item', async () => {
+  const source = await readFile(new URL('../views/CloudWorkspace.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /const startupConversation = resolveStartupConversation\(\)/)
+  assert.match(source, /await selectConversation\(startupConversation, \{ explicit: false \}\)/)
+  assert.doesNotMatch(source, /selectConversation\(conversations\.value\[0\]/)
+})

@@ -158,6 +158,68 @@ class AgentRunTranscriptServiceTest {
     }
 
     @Test
+    void resolvesEveryToolCallInABatchAfterInteractionPause() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessage user = message(1L, "provider:4:message:0", 0L, "user", "start");
+        AgentRunMessage assistant = message(2L, "provider:4:message:1", 1L, "assistant", "");
+        AgentRunPart approvalCall = toolCallPart(11L, 2L, "call-approval", "read_file", "waiting_approval", 1000L);
+        AgentRunPart skippedCall = toolCallPart(12L, 2L, "call-skipped", "grep", "skipped", 1001L);
+        skippedCall.setOutputText("Skipped because another call is waiting for approval.");
+        when(messages.selectList(any())).thenReturn(List.of(user, assistant));
+        when(parts.selectList(any())).thenReturn(List.of(approvalCall, skippedCall));
+
+        AgentRunInteraction interaction = new AgentRunInteraction();
+        interaction.setTaskId(7L);
+        interaction.setInteractionId("permission-1");
+        interaction.setInteractionType("permission");
+        interaction.setStatus("approved");
+        interaction.setRequestPayload("{\"toolName\":\"read_file\"}");
+        interaction.setResponsePayload("{\"action\":\"allow_once\"}");
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        List<Map<String, Object>> projection = service.loadProjectableTranscriptForInteractionResume(7L);
+        List<Map<String, Object>> results = service.resolvedInteractionToolResults(interaction, projection);
+
+        assertThat(results).extracting(result -> result.get("tool_call_id"))
+                .containsExactly("call-approval", "call-skipped");
+        assertThat(String.valueOf(results.get(0).get("content"))).contains("approved");
+        assertThat(String.valueOf(results.get(1).get("content"))).contains("skipped").contains("Skipped because");
+    }
+
+    @Test
+    void selectsTheInteractionToolCallByDurableIdentityWhenToolNamesRepeat() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessage user = message(1L, "provider:4:message:0", 0L, "user", "start");
+        AgentRunMessage assistant = message(2L, "provider:4:message:1", 1L, "assistant", "");
+        AgentRunPart skippedCall = toolCallPart(11L, 2L, "call-skipped", "read_file", "skipped", 1000L);
+        skippedCall.setOutputText("Skipped because another call is waiting for approval.");
+        AgentRunPart approvalCall = toolCallPart(12L, 2L, "call-approval", "read_file", "waiting_approval", 1001L);
+        when(messages.selectList(any())).thenReturn(List.of(user, assistant));
+        when(parts.selectList(any())).thenReturn(List.of(skippedCall, approvalCall));
+
+        AgentRunInteraction interaction = new AgentRunInteraction();
+        interaction.setTaskId(7L);
+        interaction.setInteractionId("permission-duplicate-name");
+        interaction.setInteractionType("permission");
+        interaction.setStatus("approved");
+        interaction.setRequestPayload("{\"toolName\":\"read_file\",\"toolCallId\":\"call-approval\"}");
+        interaction.setResponsePayload("{\"action\":\"allow_once\"}");
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        List<Map<String, Object>> projection = service.loadProjectableTranscriptForInteractionResume(7L);
+        List<Map<String, Object>> results = service.resolvedInteractionToolResults(interaction, projection);
+
+        assertThat(results).extracting(result -> result.get("tool_call_id"))
+                .containsExactly("call-skipped", "call-approval");
+        assertThat(String.valueOf(results.get(0).get("content"))).contains("skipped");
+        assertThat(String.valueOf(results.get(1).get("content"))).contains("approved");
+    }
+
+    @Test
     void rejectsMalformedToolMessageBeforeWritingFact() {
         AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
         AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
@@ -168,6 +230,23 @@ class AgentRunTranscriptServiceTest {
                 .appendMessage(7L, 1L, 0L, malformed))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("tool_call_id");
+    }
+
+    private AgentRunPart toolCallPart(Long partId, Long messageId, String toolCallId,
+                                              String toolName, String status, Long sequence) {
+        AgentRunPart part = new AgentRunPart();
+        part.setPartId(partId);
+        part.setTaskId(7L);
+        part.setMessageId(messageId);
+        part.setPartKey("provider:4:tool-call:1:" + sequence + ":" + toolCallId);
+        part.setPartType("tool_call");
+        part.setToolCallId(toolCallId);
+        part.setToolName(toolName);
+        part.setStatus(status);
+        part.setSequenceNumber(sequence);
+        part.setInputJson("{\"id\":\"" + toolCallId + "\",\"type\":\"function\",\"function\":{\"name\":\""
+                + toolName + "\",\"arguments\":\"{}\"}}");
+        return part;
     }
 
     private AgentTask task() {

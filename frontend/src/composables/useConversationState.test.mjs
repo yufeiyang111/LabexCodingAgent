@@ -5,6 +5,15 @@ import { ref } from 'vue'
 const conversationModule = await import('./useConversationState.js').catch(() => ({}))
 const { useConversationState } = conversationModule
 
+function memoryStorage(initial = {}) {
+  const values = new Map(Object.entries(initial))
+  return {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: key => values.delete(key)
+  }
+}
+
 function createHarness(overrides = {}) {
   const projectId = ref(42)
   const messages = ref([])
@@ -43,20 +52,44 @@ function createHarness(overrides = {}) {
       if (type === 'FINAL_DELTA') message.content += data.delta || ''
     },
     onHistoryLoaded() { notifications.push('history-loaded') },
-    createSessionId: () => 'generated-session'
+    createSessionId: () => 'generated-session',
+    storage: overrides.storage || memoryStorage()
   })
   return { state, api, messages, sessionChanges, tokenUsage, agentLoading, currentAgentSession, changesRefreshKey, replayedEvents, notifications }
 }
 
-test('loads conversations in newest-first order and exposes the selected title', async () => {
+test('loads conversations in server order and exposes the selected title', async () => {
   assert.equal(typeof useConversationState, 'function')
   const { state, currentAgentSession } = createHarness()
 
   await state.loadConversations()
-  assert.deepEqual(state.conversations.value.map(item => item.conversationId), ['newer', 'older'])
+  assert.deepEqual(state.conversations.value.map(item => item.conversationId), ['older', 'newer'])
 
   currentAgentSession.value = { conversationId: 'older' }
   assert.equal(state.currentSessionName.value, '旧会话')
+})
+
+test('restores the last selected conversation after refresh and clears it for an explicit new session', async () => {
+  const storage = memoryStorage({ 'labex-agent:selected-conversation:42': 'conversation-b' })
+  const { state } = createHarness({
+    storage,
+    api: {
+      agentConversations: async () => ({ data: [
+        { conversationId: 'conversation-a', title: '?? A' },
+        { conversationId: 'conversation-b', title: '?? B' }
+      ] }),
+      agentMessages: async () => ({ data: [] })
+    }
+  })
+
+  await state.loadConversations()
+  assert.equal(state.resolveStartupConversation()?.conversationId, 'conversation-b')
+
+  await state.loadConversationMessages('conversation-b')
+  assert.equal(storage.getItem('labex-agent:selected-conversation:42'), 'conversation-b')
+
+  state.createNewSession()
+  assert.equal(storage.getItem('labex-agent:selected-conversation:42'), null)
 })
 
 test('rebuilds persisted conversation messages without owning the event reducer', async () => {

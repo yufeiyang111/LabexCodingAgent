@@ -91,8 +91,9 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         }
 
         String prompt = flatten(messages);
-        log.info("ACCEPTANCE_PROVIDER_STREAM model={} compactionMarker={} interactionResolved={} listResult={}",
-                config == null ? "" : config.modelName(), prompt.contains("[acceptance:compaction]"),
+        log.info("ACCEPTANCE_PROVIDER_STREAM model={} messageCount={} compactionMarker={} permissionBatchMarker={} interactionResolved={} listResult={}",
+                config == null ? "" : config.modelName(), messages == null ? 0 : messages.size(),
+                prompt.contains("[acceptance:compaction]"), prompt.contains("[acceptance:permission-batch]"),
                 hasResumedInteraction(prompt, "waiting_user"), prompt.contains("[Tool list_files result]"));
         onChunk.accept(new StreamChunk("thinking_delta", "Acceptance runtime scenario selected. ",
                 null, null, null, false, null, null, null, null));
@@ -121,6 +122,15 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             emitTool(onChunk, "list_files",
                     "{\"path\":\"\",\"padding\":\"" + COMPACTION_PADDING + "\"}",
                     "acceptance-compaction-large-tool-call");
+            return;
+        }
+        if (prompt.contains("[acceptance:permission-batch]")
+                && !hasResumedInteraction(prompt, "waiting_approval")) {
+            emitToolBatch(onChunk, List.of(
+                    new ScriptedToolCall("read_file", "{\"file_path\":\".env\"}",
+                            "acceptance-permission-batch-read"),
+                    new ScriptedToolCall("list_files", "{\"path\":\"\"}",
+                            "acceptance-permission-batch-list")));
             return;
         }
         if (prompt.contains("[acceptance:permission]") && !hasResumedInteraction(prompt, "waiting_approval")) {
@@ -196,8 +206,15 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
     }
 
     private void emitTool(Consumer<StreamChunk> onChunk, String name, String arguments, String id) {
-        onChunk.accept(new StreamChunk("tool_call", "", name, arguments, null, false, USAGE,
-                id, 0, null));
+        emitToolBatch(onChunk, List.of(new ScriptedToolCall(name, arguments, id)));
+    }
+
+    private void emitToolBatch(Consumer<StreamChunk> onChunk, List<ScriptedToolCall> calls) {
+        for (int index = 0; index < calls.size(); index++) {
+            ScriptedToolCall call = calls.get(index);
+            onChunk.accept(new StreamChunk("tool_call", "", call.name(), call.arguments(), null, false, USAGE,
+                    call.id(), index, null));
+        }
         onChunk.accept(new StreamChunk("done", "", null, null, null, true, USAGE,
                 null, null, null));
     }
@@ -257,6 +274,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                     + "**Verification**\n- Approval ownership stayed bound to its request and the Agent emitted a final structured result.\n"
                     + "**Risk**\n- The disposable acceptance project may contain a failed git command observation by design.";
         }
+        if (prompt.contains("[acceptance:permission-batch]")) {
+            return "## Summary\n**Completed**\n- The multi-tool permission batch resumed the original task.\n"
+                    + "**Verification**\n- The approved call and skipped companion call both produced durable Provider tool results in their original order.\n"
+                    + "**Risk**\n- This deterministic batch is available only in the acceptance profile.";
+        }
         if (prompt.contains("[acceptance:permission]")) {
             return "## Summary\n**Completed**\n- The tool permission decision resumed the original task.\n"
                     + "**Verification**\n- The acceptance run reached a final reply after the .env read decision.\n"
@@ -270,6 +292,9 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         return "## Summary\n**Completed**\n- Conversation isolation marker: `" + isolation + "`.\n"
                 + "**Verification**\n- The reply was derived only from messages supplied to this provider invocation; no shared mutable session state exists.\n"
                 + "**Risk**\n- This is an acceptance-only deterministic response and does not validate an external model service.";
+    }
+
+    private record ScriptedToolCall(String name, String arguments, String id) {
     }
 
     private String flatten(List<Map<String, Object>> messages) {

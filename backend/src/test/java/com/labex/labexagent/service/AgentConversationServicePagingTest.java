@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentMessage;
@@ -16,6 +17,7 @@ import java.util.List;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class AgentConversationServicePagingTest {
 
@@ -42,6 +44,23 @@ class AgentConversationServicePagingTest {
         assertEquals(List.of(40L, 41L, 50L, 51L), page.events().stream().map(AgentMessage::getMessageId).toList());
         assertTrue(page.hasMore());
         assertEquals(40L, page.nextBeforeMessageId());
+    }
+
+    @Test
+    void listsConversationsUsingDeterministicServerOrdering() {
+        AgentConversationMapper conversationMapper = org.mockito.Mockito.mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = org.mockito.Mockito.mock(AgentMessageMapper.class);
+        when(conversationMapper.selectList(any())).thenReturn(List.of());
+        AgentConversationService service = new AgentConversationService(conversationMapper, messageMapper,
+                org.mockito.Mockito.mock(RagConfig.class));
+
+        service.list(7, 3);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<AgentConversation>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        org.mockito.Mockito.verify(conversationMapper).selectList(captor.capture());
+        String sql = captor.getValue().getSqlSegment().replaceAll("\s+", " ").toLowerCase();
+        assertTrue(sql.contains("order by update_time desc,create_time desc,conversation_id desc"), sql);
     }
 
     private static void initializeEntityMetadata(Class<?> entityType) {

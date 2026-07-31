@@ -37,27 +37,25 @@ public class AgentRunExecutionLeaseService {
         if (task == null || isTerminal(task.getStatus()) || instanceId.isBlank()) {
             return null;
         }
-        boolean sameActiveOwner = instanceId.equals(task.getExecutionOwner())
+        boolean activeLease = task.getExecutionOwner() != null
+                && !task.getExecutionOwner().isBlank()
                 && task.getExecutionLeaseExpiresAt() != null
                 && task.getExecutionLeaseExpiresAt().isAfter(effectiveNow);
-        long epoch = sameActiveOwner ? valueOrZero(task.getExecutionEpoch()) : valueOrZero(task.getExecutionEpoch()) + 1L;
+        if (activeLease) {
+            return null;
+        }
+        long epoch = valueOrZero(task.getExecutionEpoch()) + 1L;
         LocalDateTime expiresAt = effectiveNow.plusNanos(leaseDurationMs * 1_000_000L);
         UpdateWrapper<AgentTask> update = new UpdateWrapper<AgentTask>()
                 .eq("task_id", taskId)
                 .notIn("status", "completed", "failed", "cancelled")
+                .and(wrapper -> wrapper.isNull("execution_owner")
+                        .or().isNull("execution_lease_expires_at")
+                        .or().le("execution_lease_expires_at", effectiveNow))
                 .set("execution_owner", instanceId)
                 .set("execution_epoch", epoch)
                 .set("execution_lease_expires_at", expiresAt)
                 .set("execution_heartbeat_at", effectiveNow);
-        if (sameActiveOwner) {
-            update.eq("execution_owner", instanceId)
-                    .eq("execution_epoch", valueOrZero(task.getExecutionEpoch()))
-                    .gt("execution_lease_expires_at", effectiveNow);
-        } else {
-            update.and(wrapper -> wrapper.isNull("execution_owner")
-                    .or().isNull("execution_lease_expires_at")
-                    .or().le("execution_lease_expires_at", effectiveNow));
-        }
         if (taskMapper.update(null, update) != 1) {
             return null;
         }

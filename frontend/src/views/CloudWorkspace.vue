@@ -1177,11 +1177,12 @@ onMounted(async () => {
   ])
   await loadRoot()
   void secondaryResources.then(async () => {
+    const startupConversation = resolveStartupConversation()
     if (conversationSelectionGuard.isCurrent(startupConversationSelection)
       && !currentAgentSession.value
       && messages.value.length === 0
-      && conversations.value.length > 0) {
-      await selectConversation(conversations.value[0], { explicit: false })
+      && startupConversation) {
+      await selectConversation(startupConversation, { explicit: false })
     }
   })
 })
@@ -1743,6 +1744,7 @@ const {
   loadingOlderMessages,
   clearConversationState,
   loadConversations,
+  resolveStartupConversation,
   createNewSession: resetConversation,
   selectConversation: selectConversationState,
   loadConversationMessages: loadConversationMessagesState,

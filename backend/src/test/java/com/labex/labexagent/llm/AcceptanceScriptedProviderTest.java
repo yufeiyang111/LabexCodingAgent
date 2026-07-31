@@ -63,6 +63,23 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void emitsAStableMultiToolPermissionBatch() {
+        List<LlmProvider.StreamChunk> chunks = stream("[acceptance:permission-batch] verify batch resume");
+        List<LlmProvider.StreamChunk> calls = chunks.stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .toList();
+
+        assertEquals(2, calls.size());
+        assertEquals("read_file", calls.get(0).toolName());
+        assertEquals("acceptance-permission-batch-read", calls.get(0).toolCallId());
+        assertEquals(0, calls.get(0).toolCallIndex());
+        assertEquals("list_files", calls.get(1).toolName());
+        assertEquals("acceptance-permission-batch-list", calls.get(1).toolCallId());
+        assertEquals(1, calls.get(1).toolCallIndex());
+        assertTrue(chunks.stream().anyMatch(chunk -> "done".equals(chunk.type())));
+    }
+
+    @Test
     void recognizesTheDurableQuestionContinuationAsResolved() {
         List<LlmProvider.StreamChunk> resumed = stream(
                 "[acceptance:question] question continuation",

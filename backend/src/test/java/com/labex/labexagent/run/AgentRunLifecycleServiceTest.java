@@ -216,6 +216,32 @@ class AgentRunLifecycleServiceTest {
     }
 
     @Test
+    void claimsADueRetryAsRecoveringUntilTheWorkerOwnsItsExecutionLease() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RETRYING);
+        task.setRetryAttempts(1);
+        task.setNextRetryAt(java.time.LocalDateTime.of(2026, 7, 23, 10, 0));
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(905L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        boolean claimed = service.beginScheduledRetry(
+                71L, 1, java.time.LocalDateTime.of(2026, 7, 23, 10, 0, 1), "model-retry-start-71-1");
+
+        assertTrue(claimed);
+        assertEquals("recovering", task.getStatus());
+        assertEquals(null, task.getNextRetryAt());
+    }
+
+    @Test
     void cancelsRetryAndClearsItsScheduledDeadline() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);

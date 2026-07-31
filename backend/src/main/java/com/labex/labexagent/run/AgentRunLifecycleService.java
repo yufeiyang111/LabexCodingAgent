@@ -120,8 +120,8 @@ public class AgentRunLifecycleService {
     public boolean beginScheduledRetry(Long taskId, int retryAttempt, LocalDateTime now, String idempotencyKey) {
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
         Map<String, Object> payload = Map.of("attempt", retryAttempt, "resumedAt", effectiveNow.toString());
-        return transitionInternal(taskId, AgentRunState.RETRYING, AgentRunState.RUNNING,
-                "RUN_MODEL_RETRY_STARTED", payload, "Retrying model request", "Retry attempt " + retryAttempt,
+        return transitionInternal(taskId, AgentRunState.RETRYING, AgentRunState.RECOVERING,
+                "RUN_MODEL_RETRY_STARTED", payload, "Claiming model retry", "Retry attempt " + retryAttempt,
                 idempotencyKey, java.util.Collections.singletonMap("next_retry_at", null)) != null;
     }
 

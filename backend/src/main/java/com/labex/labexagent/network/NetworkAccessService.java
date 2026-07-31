@@ -38,6 +38,15 @@ public class NetworkAccessService {
                                       String conversationId, String sessionId, String toolName,
                                       String request, String summary, String requestKind,
                                       boolean retryable, String attemptKey, List<String> domains) {
+        return begin(studentId, projectId, taskId, conversationId, sessionId, toolName, request, summary,
+                requestKind, retryable, attemptKey, attemptKey, domains);
+    }
+
+    public NetworkAccessRequest begin(Integer studentId, Integer projectId, Long taskId,
+                                      String conversationId, String sessionId, String toolName,
+                                      String request, String summary, String requestKind,
+                                      boolean retryable, String attemptKey, String toolCallId,
+                                      List<String> domains) {
         require(studentId, "studentId");
         require(projectId, "projectId");
         require(taskId, "taskId");
@@ -55,6 +64,9 @@ public class NetworkAccessService {
         payload.put("requestDigest", requestDigest);
         payload.put("requestKind", normalizedKind);
         payload.put("retryable", retryable);
+        if (toolCallId != null && !toolCallId.isBlank()) {
+            payload.put("toolCallId", toolCallId);
+        }
         payload.put("summary", summary == null ? "Agent \u8bf7\u6c42\u4f7f\u7528\u7f51\u7edc\u5b8c\u6210\u5f53\u524d\u547d\u4ee4" : summary);
         payload.put("domains", domains == null ? List.of() : List.copyOf(domains));
         payload.put("scope", SCOPE);

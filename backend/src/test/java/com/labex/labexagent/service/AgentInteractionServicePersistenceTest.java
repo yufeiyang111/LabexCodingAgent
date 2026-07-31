@@ -1,5 +1,6 @@
 package com.labex.labexagent.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -12,6 +13,7 @@ import com.labex.labexagent.run.AgentRunInteractionService;
 import com.labex.labexagent.run.AgentRunResumeScheduler;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class AgentInteractionServicePersistenceTest {
 
@@ -21,9 +23,13 @@ class AgentInteractionServicePersistenceTest {
         AgentInteractionService service = new AgentInteractionService(interactions);
 
         AgentInteractionService.UserQuestionRequest request = service.beginQuestion(
-                12, 7, "session-1", 71L, "conversation-1", "Continue?", "Need input", List.of("yes", "no"));
+                12, 7, "session-1", 71L, "conversation-1", "tool-call-71",
+                "Continue?", "Need input", List.of("yes", "no"));
 
-        verify(interactions).createWaiting(any(AgentRunInteractionService.WaitingInteraction.class));
+        ArgumentCaptor<AgentRunInteractionService.WaitingInteraction> captor =
+                ArgumentCaptor.forClass(AgentRunInteractionService.WaitingInteraction.class);
+        verify(interactions).createWaiting(captor.capture());
+        assertEquals("tool-call-71", ((java.util.Map<?, ?>) captor.getValue().requestPayload()).get("toolCallId"));
         assertTrue(request.requestId() != null && !request.requestId().isBlank());
     }
 

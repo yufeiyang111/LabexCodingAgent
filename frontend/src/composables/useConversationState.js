@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 function emptyTokenUsage() {
   return {
@@ -26,8 +26,22 @@ function createAssistantMessage() {
   }
 }
 
-function sortNewestFirst(conversations) {
-  return [...conversations].sort((left, right) => new Date(right.createTime) - new Date(left.createTime))
+export function createConversationSelectionStore(projectId, storage = globalThis.sessionStorage) {
+  const key = () => `labex-agent:selected-conversation:${projectId.value}`
+  return {
+    read() {
+      if (!storage || projectId.value == null) return null
+      return storage.getItem(key())
+    },
+    save(conversationId) {
+      if (!storage || projectId.value == null || !conversationId) return
+      storage.setItem(key(), String(conversationId))
+    },
+    clear() {
+      if (!storage || projectId.value == null) return
+      storage.removeItem(key())
+    }
+  }
 }
 
 export function useConversationState({
@@ -40,7 +54,8 @@ export function useConversationState({
   currentAgentSession,
   replayHistoryEvent,
   onHistoryLoaded,
-  createSessionId = () => crypto.randomUUID()
+  createSessionId = () => crypto.randomUUID(),
+  storage = globalThis.sessionStorage
 }) {
   const conversations = ref([])
   const historyEvents = ref([])
@@ -48,6 +63,12 @@ export function useConversationState({
   const loadingOlderMessages = ref(false)
   const nextBeforeMessageId = ref(null)
   let historyRequestVersion = 0
+  const selectionStore = createConversationSelectionStore(projectId, storage)
+  watch(
+    () => currentAgentSession.value?.conversationId,
+    conversationId => selectionStore.save(conversationId),
+    { flush: 'sync' }
+  )
   const currentSessionName = computed(() => {
     const conversationId = currentAgentSession.value?.conversationId
     if (!conversationId) return '新会话'
@@ -63,6 +84,7 @@ export function useConversationState({
     loadingOlderMessages.value = false
     nextBeforeMessageId.value = null
     currentAgentSession.value = null
+    selectionStore.clear()
     sessionChanges.value = []
     tokenUsage.value = emptyTokenUsage()
   }
@@ -70,11 +92,21 @@ export function useConversationState({
   async function loadConversations() {
     try {
       const response = await api.agentConversations(projectId.value)
-      conversations.value = sortNewestFirst(response.data || [])
+      conversations.value = [...(response.data || [])]
       return conversations.value
     } catch {
       return conversations.value
     }
+  }
+
+  function resolveStartupConversation() {
+    const selectedConversationId = selectionStore.read()
+    if (selectedConversationId) {
+      const selectedConversation = conversations.value.find(item => item.conversationId === selectedConversationId)
+      if (selectedConversation) return selectedConversation
+      selectionStore.clear()
+    }
+    return conversations.value[0] || null
   }
 
   function createNewSession() {
@@ -237,6 +269,7 @@ export function useConversationState({
     loadingOlderMessages,
     clearConversationState,
     loadConversations,
+    resolveStartupConversation,
     createNewSession,
     selectConversation,
     loadConversationMessages,

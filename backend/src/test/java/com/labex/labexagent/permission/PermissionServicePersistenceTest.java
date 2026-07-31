@@ -1,5 +1,6 @@
 package com.labex.labexagent.permission;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -11,6 +12,7 @@ import com.labex.entity.AgentRunInteraction;
 import com.labex.labexagent.run.AgentRunInteractionService;
 import com.labex.labexagent.run.AgentRunResumeScheduler;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 class PermissionServicePersistenceTest {
@@ -21,12 +23,16 @@ class PermissionServicePersistenceTest {
         PermissionService service = new PermissionService(mock(JdbcTemplate.class), interactions);
 
         PermissionApprovalRequest request = service.beginApproval(
-                12, 7, 71L, "conversation-1", "session-1", "shell", "npm test", "Run tests", "shell", "npm test");
+                12, 7, 71L, "conversation-1", "session-1", "shell", "npm test", "Run tests", "shell", "npm test",
+                "tool-call-71");
         PermissionService.PermissionApprovalResult result = service.reply(
                 12, 7, request.getRequestId(), "allow_once", "");
 
         assertTrue(result.isGranted());
-        verify(interactions).createWaiting(any(AgentRunInteractionService.WaitingInteraction.class));
+        ArgumentCaptor<AgentRunInteractionService.WaitingInteraction> captor =
+                ArgumentCaptor.forClass(AgentRunInteractionService.WaitingInteraction.class);
+        verify(interactions).createWaiting(captor.capture());
+        assertEquals("tool-call-71", ((java.util.Map<?, ?>) captor.getValue().requestPayload()).get("toolCallId"));
         verify(interactions).respond(eq(7), eq(12), eq(request.getRequestId()), eq("approved"), any());
     }
 

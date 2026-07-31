@@ -279,6 +279,15 @@ async function sendMessage(message) {
   await client.send('Input.dispatchKeyEvent', {
     type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13
   })
+  await delay(350)
+  const submittedByKeyboard = await client.evaluate(`(() => {
+    const textarea = document.querySelector('.ai-input-text-area textarea');
+    return textarea?.value === '' && document.body.innerText.includes(${visiblePrefix});
+  })()`)
+  if (!submittedByKeyboard) {
+    // ?????????????????????????????????? Vue ????????????
+    await clickElement('button.ai-submit-btn', { label: 'agent submit button fallback' })
+  }
   await waitFor(
     () => client.evaluate(`(() => {
       const textarea = document.querySelector('.ai-input-text-area textarea');
@@ -401,7 +410,7 @@ async function runScenario() {
   await createNewConversation()
   const tasksBeforePermission = await api(`/student/projects/${projectId}/agent/tasks`)
   const permissionPriorTaskIds = new Set(tasksBeforePermission.map(task => Number(task.taskId)))
-  await sendMessage('[acceptance:permission]')
+  await sendMessage('[acceptance:permission-batch]')
   await waitFor(
     () => client.evaluate(`Array.from(document.querySelectorAll('.tc-approval')).some(card => card.innerText.includes('需要确认后才能继续执行'))`),
     'permission approval component'
@@ -415,21 +424,52 @@ async function runScenario() {
       .find(task => task.status === 'waiting_approval' && !permissionPriorTaskIds.has(Number(task.taskId)))
     return Boolean(permissionTask?.taskId)
   }, 'durable waiting_approval task')
+  const permissionBatchCallIds = [
+    'acceptance-permission-batch-read',
+    'acceptance-permission-batch-list'
+  ]
+  const permissionProjection = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
+  const pendingPermissionCalls = (permissionProjection?.parts || [])
+    .filter(part => String(part.partKey || '').startsWith('provider:')
+      && part.partType === 'tool_call'
+      && permissionBatchCallIds.includes(part.toolCallId))
+  const pendingPermissionStatuses = Object.fromEntries(
+    pendingPermissionCalls.map(part => [part.toolCallId, part.status])
+  )
+  if (pendingPermissionStatuses['acceptance-permission-batch-read'] !== 'waiting_approval'
+      || pendingPermissionStatuses['acceptance-permission-batch-list'] !== 'skipped') {
+    throw new Error(`Multi-tool permission batch was not durably paused: ${JSON.stringify(pendingPermissionCalls)}`)
+  }
+  if (permissionProjection?.pendingInteraction?.requestPayload?.toolCallId
+      && permissionProjection.pendingInteraction.requestPayload.toolCallId !== 'acceptance-permission-batch-read') {
+    throw new Error(`Permission interaction points at the wrong tool call: ${JSON.stringify(permissionProjection.pendingInteraction)}`)
+  }
+
   let restartInteractionVerified = false
   if (interactionRestartHandoffDir) {
     await mkdir(interactionRestartHandoffDir, { recursive: true })
-    const interactionProjection = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
+    const interactionProjection = permissionProjection
     await writeFile(join(interactionRestartHandoffDir, 'ready.json'), JSON.stringify({
       projectId,
       taskId: permissionTask.taskId,
       conversationId: permissionTask.conversationId,
-      interactionId: interactionProjection?.pendingInteraction?.interactionId || null
+      interactionId: interactionProjection?.pendingInteraction?.interactionId || null,
+      toolCallIds: permissionBatchCallIds
     }, null, 2), 'utf8')
     await waitForRestartContinuation(interactionRestartHandoffDir)
     const restartedInteractionProjection = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
+    const restartedPermissionCalls = (restartedInteractionProjection?.parts || [])
+      .filter(part => String(part.partKey || '').startsWith('provider:')
+        && part.partType === 'tool_call'
+        && permissionBatchCallIds.includes(part.toolCallId))
+    const restartedPermissionStatuses = Object.fromEntries(
+      restartedPermissionCalls.map(part => [part.toolCallId, part.status])
+    )
     if (Number(restartedInteractionProjection?.taskId) !== Number(permissionTask.taskId)
         || restartedInteractionProjection?.status !== 'waiting_approval'
-        || restartedInteractionProjection?.pendingInteraction?.status !== 'waiting') {
+        || restartedInteractionProjection?.pendingInteraction?.status !== 'waiting'
+        || restartedPermissionStatuses['acceptance-permission-batch-read'] !== 'waiting_approval'
+        || restartedPermissionStatuses['acceptance-permission-batch-list'] !== 'skipped') {
       throw new Error(`Restart interaction projection mismatch: ${JSON.stringify(restartedInteractionProjection)}`)
     }
     await client.send('Page.reload', { ignoreCache: true })
@@ -445,8 +485,8 @@ async function runScenario() {
   await client.send('Page.reload', { ignoreCache: true })
   await waitForWorkspace()
   await waitFor(
-    () => bodyIncludes('tool permission decision resumed the original task'),
-    'permission same-task completion after refresh'
+    () => bodyIncludes('multi-tool permission batch resumed the original task'),
+    'multi-tool permission same-task completion after refresh'
   )
   const permissionTasksAfter = await api(`/student/projects/${projectId}/agent/tasks`)
   const createdPermissionTasks = permissionTasksAfter.filter(task => !permissionPriorTaskIds.has(Number(task.taskId)))
@@ -456,6 +496,24 @@ async function runScenario() {
   const completedPermissionTask = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
   if (!['completed', 'failed', 'cancelled'].includes(completedPermissionTask?.status)) {
     throw new Error(`Permission task did not reach a durable terminal state: ${JSON.stringify(completedPermissionTask)}`)
+  }
+  const completedPermissionParts = completedPermissionTask?.parts || []
+  const completedPermissionCalls = completedPermissionParts
+    .filter(part => String(part.partKey || '').startsWith('provider:')
+      && part.partType === 'tool_call'
+      && permissionBatchCallIds.includes(part.toolCallId))
+  const completedPermissionResults = completedPermissionParts
+    .filter(part => String(part.partKey || '').startsWith('provider:')
+      && part.partType === 'tool_result'
+      && permissionBatchCallIds.includes(part.toolCallId))
+  if (completedPermissionCalls.length !== 2
+      || completedPermissionCalls.some(part => part.status !== 'completed')
+      || completedPermissionResults.length !== 2
+      || completedPermissionResults.map(part => part.toolCallId).join(',') !== permissionBatchCallIds.join(',')) {
+    throw new Error(`Multi-tool permission batch did not close every Provider call: ${JSON.stringify({
+      calls: completedPermissionCalls,
+      results: completedPermissionResults
+    })}`)
   }
 
   await createNewConversation()
@@ -658,6 +716,7 @@ async function runScenario() {
     refreshReplayDeduplicated: true,
     questionReplyComponent: true,
     permissionApprovalRefreshRecovery: true,
+    multiToolPermissionBatchProtocolComplete: true,
     durableProviderMessages: providerMessages.length,
     durableProviderParts: providerParts.length,
     cursorKeys: cursorKeys.length,

@@ -21,12 +21,15 @@ public class AgentRunRetryScheduler {
 
     private final AgentTaskMapper taskMapper;
     private final AgentRunLifecycleService lifecycleService;
+    private final AgentRunExecutionLeaseService executionLeaseService;
     private final AgentLoopEngine agentLoopEngine;
 
     public AgentRunRetryScheduler(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
+                                  AgentRunExecutionLeaseService executionLeaseService,
                                   @Lazy AgentLoopEngine agentLoopEngine) {
         this.taskMapper = taskMapper;
         this.lifecycleService = lifecycleService;
+        this.executionLeaseService = executionLeaseService;
         this.agentLoopEngine = agentLoopEngine;
     }
 
@@ -65,7 +68,7 @@ public class AgentRunRetryScheduler {
             return false;
         }
         int attempt = valueOrZero(task.getRetryAttempts());
-        if (attempt <= 0) {
+        if (attempt <= 0 || executionLeaseService.hasActiveLease(task, now)) {
             return false;
         }
         boolean claimed = lifecycleService.beginScheduledRetry(

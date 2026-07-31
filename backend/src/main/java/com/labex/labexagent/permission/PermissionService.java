@@ -101,6 +101,14 @@ public class PermissionService {
                                                     String conversationId, String sessionId, String toolName,
                                                     String input, String summary, String matchedRulePermission,
                                                     String matchedRulePattern) {
+        return beginApproval(projectId, studentId, taskId, conversationId, sessionId, toolName, input, summary,
+                matchedRulePermission, matchedRulePattern, null);
+    }
+
+    public PermissionApprovalRequest beginApproval(Integer projectId, Integer studentId, Long taskId,
+                                                    String conversationId, String sessionId, String toolName,
+                                                    String input, String summary, String matchedRulePermission,
+                                                    String matchedRulePattern, String toolCallId) {
         PermissionApprovalRequest request = beginApproval(
                 projectId, sessionId, toolName, input, summary, matchedRulePermission, matchedRulePattern);
         if (runInteractionService == null) {
@@ -113,6 +121,9 @@ public class PermissionService {
             payload.put("summary", summary);
             payload.put("matchedRulePermission", matchedRulePermission);
             payload.put("matchedRulePattern", matchedRulePattern);
+            if (toolCallId != null && !toolCallId.isBlank()) {
+                payload.put("toolCallId", toolCallId);
+            }
             runInteractionService.createWaiting(new AgentRunInteractionService.WaitingInteraction(
                     request.getRequestId(), taskId, conversationId, sessionId, studentId, projectId,
                     "permission", payload, "permission-" + request.getRequestId(),

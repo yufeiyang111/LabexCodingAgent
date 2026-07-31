@@ -134,6 +134,7 @@ public class AgentRunTranscriptService {
         if (interaction == null || transcript == null || transcript.isEmpty()) {
             return null;
         }
+        String expectedToolCallId = expectedToolCallId(interaction);
         String expectedToolName = expectedToolName(interaction);
         UnresolvedToolCall selected = null;
         for (Map<String, Object> message : transcript) {
@@ -153,19 +154,28 @@ public class AgentRunTranscriptService {
                 if (id.isBlank() || name.isBlank() || hasToolResult(transcript, id)) {
                     continue;
                 }
-                if (selected == null || name.equals(expectedToolName)) {
+                if (!expectedToolCallId.isBlank() && expectedToolCallId.equals(id)) {
+                    selected = new UnresolvedToolCall(id, name);
+                    break;
+                }
+                if (expectedToolCallId.isBlank() && (selected == null || name.equals(expectedToolName))) {
                     selected = new UnresolvedToolCall(id, name);
                 }
-                if (!expectedToolName.isBlank() && name.equals(expectedToolName)) {
+                if (expectedToolCallId.isBlank() && !expectedToolName.isBlank() && name.equals(expectedToolName)) {
                     break;
                 }
             }
-            if (selected != null && !expectedToolName.isBlank()
-                    && selected.name().equals(expectedToolName)) {
+            if (selected != null && ((!expectedToolCallId.isBlank() && selected.id().equals(expectedToolCallId))
+                    || (expectedToolCallId.isBlank() && !expectedToolName.isBlank()
+                    && selected.name().equals(expectedToolName)))) {
                 break;
             }
         }
         if (selected == null) {
+            if (!expectedToolCallId.isBlank()) {
+                throw new IllegalStateException("Interaction tool call is missing from durable transcript: "
+                        + expectedToolCallId);
+            }
             return null;
         }
         LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -174,6 +184,75 @@ public class AgentRunTranscriptService {
         result.put("name", selected.name());
         result.put("content", interactionResultContent(interaction));
         return result;
+    }
+
+    /** 为交互暂停的整个 tool batch 生成协议完整、顺序稳定的 tool result? */
+    public List<Map<String, Object>> resolvedInteractionToolResults(
+            AgentRunInteraction interaction, List<Map<String, Object>> transcript) {
+        if (interaction == null || transcript == null || transcript.isEmpty()) return List.of();
+        List<UnresolvedToolCall> unresolved = new ArrayList<>();
+        for (Map<String, Object> message : transcript) {
+            if (!"assistant".equalsIgnoreCase(stringValue(message.get("role")))) continue;
+            if (!(message.get("tool_calls") instanceof List<?> calls)) continue;
+            for (Object rawCall : calls) {
+                if (!(rawCall instanceof Map<?, ?> call)) continue;
+                String id = stringValue(call.get("id"));
+                String name = functionName(call);
+                if (!id.isBlank() && !name.isBlank() && !hasToolResult(transcript, id)) {
+                    unresolved.add(new UnresolvedToolCall(id, name));
+                }
+            }
+        }
+        if (unresolved.isEmpty()) return List.of();
+        String expectedId = expectedToolCallId(interaction);
+        String expectedName = expectedToolName(interaction);
+        UnresolvedToolCall selected;
+        if (!expectedId.isBlank()) {
+            selected = unresolved.stream()
+                    .filter(call -> expectedId.equals(call.id()))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Interaction tool call is missing from durable transcript: " + expectedId));
+        } else {
+            selected = unresolved.stream()
+                    .filter(call -> expectedName.isBlank() || expectedName.equals(call.name()))
+                    .findFirst()
+                    .orElse(unresolved.get(0));
+        }
+        Map<String, AgentRunPart> partsByCall = new LinkedHashMap<>();
+        List<AgentRunPart> durableParts = partMapper.selectList(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, interaction.getTaskId())
+                .eq(AgentRunPart::getPartType, "tool_call"));
+        if (durableParts != null) {
+            for (AgentRunPart part : durableParts) {
+                if (part.getToolCallId() != null) partsByCall.put(part.getToolCallId(), part);
+            }
+        }
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (UnresolvedToolCall call : unresolved) {
+            String content;
+            if (call.id().equals(selected.id())) {
+                content = interactionResultContent(interaction);
+            } else {
+                AgentRunPart part = partsByCall.get(call.id());
+                String status = part == null ? "" : stringValue(part.getStatus()).toLowerCase();
+                if (!Set.of("skipped", "interrupted", "error", "completed").contains(status)) {
+                    throw new IllegalStateException("Companion tool call is not terminal for interaction resume: " + call.id());
+                }
+                Map<String, Object> synthetic = new LinkedHashMap<>();
+                synthetic.put("status", status);
+                synthetic.put("reason", "not_executed_after_interaction_pause");
+                synthetic.put("detail", part.getOutputText() == null ? "" : part.getOutputText());
+                content = limit(GSON.toJson(synthetic), 8_000);
+            }
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            result.put("role", "tool");
+            result.put("tool_call_id", call.id());
+            result.put("name", call.name());
+            result.put("content", content);
+            results.add(result);
+        }
+        return List.copyOf(results);
     }
 
     private List<Map<String, Object>> protocolSafeProjection(List<Map<String, Object>> messages) {
@@ -269,13 +348,20 @@ public class AgentRunTranscriptService {
         return "waiting_user".equalsIgnoreCase(status)
                 || "waiting_approval".equalsIgnoreCase(status)
                 || "running".equalsIgnoreCase(status)
-                || "error".equalsIgnoreCase(status);
+                || "error".equalsIgnoreCase(status)
+                || "skipped".equalsIgnoreCase(status)
+                || "interrupted".equalsIgnoreCase(status);
     }
 
     private boolean hasToolResult(List<Map<String, Object>> transcript, String toolCallId) {
         return transcript.stream().anyMatch(message ->
                 "tool".equalsIgnoreCase(stringValue(message.get("role")))
                         && toolCallId.equals(stringValue(message.get("tool_call_id"))));
+    }
+
+    private String expectedToolCallId(AgentRunInteraction interaction) {
+        Map<String, Object> payload = parseObject(interaction.getRequestPayload());
+        return stringValue(payload.get("toolCallId"));
     }
 
     private String expectedToolName(AgentRunInteraction interaction) {

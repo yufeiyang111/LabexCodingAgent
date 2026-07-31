@@ -762,11 +762,9 @@ public class AgentLoopEngine {
             } else if (resumedRun) {
                 if (request.getResumeInteractionId() != null && this.runInteractionService != null) {
                     AgentRunInteraction interaction = this.runInteractionService.findById(request.getResumeInteractionId());
-                    Map<String, Object> toolResult = this.transcriptService == null
-                            ? null : this.transcriptService.resolvedInteractionToolResult(interaction, msgs);
-                    if (toolResult != null) {
-                        msgs.add(toolResult);
-                    }
+                    List<Map<String, Object>> toolResults = this.transcriptService == null
+                            ? List.of() : this.transcriptService.resolvedInteractionToolResults(interaction, msgs);
+                    msgs.addAll(toolResults);
                 }
                 if (request.getMessage() != null && !request.getMessage().isBlank()) {
                     // 持久化运行时边界说明。
@@ -999,7 +997,7 @@ public class AgentLoopEngine {
                                             AgentLoopGuard.ToolDecision loopDecision = loopGuard.beforeToolCall(tn, ta);
                                             if (loopDecision.action() != AgentLoopGuard.ToolAction.ALLOW) {
                                                 String loopMessage = this.loopGuardMessage(loopDecision, tn, visibleLanguage);
-                                                ToolResult blockedResult = this.loopGuardResult(loopDecision, tn, ctx, visibleLanguage, loopMessage);
+                                                ToolResult blockedResult = this.loopGuardResult(loopDecision, tn, toolCallId, ctx, visibleLanguage, loopMessage);
                                                 this.journalToolResult(task.getTaskId(), toolCallId, tn, publicArgs, i, blockedResult);
                                                 msgs.add(this.toolCallBatchProtocol.toolResultMessage(call,
                                                         "[Tool " + tn + " result]\n" + loopMessage));
@@ -1136,7 +1134,7 @@ public class AgentLoopEngine {
                                     AgentLoopGuard.ToolDecision recoveredLoopDecision = loopGuard.beforeToolCall(invTool, parsedArgs);
                                     if (recoveredLoopDecision.action() != AgentLoopGuard.ToolAction.ALLOW) {
                                         String loopMessage = this.loopGuardMessage(recoveredLoopDecision, invTool, visibleLanguage);
-                                        ToolResult blockedResult = this.loopGuardResult(recoveredLoopDecision, invTool, ctx, visibleLanguage, loopMessage);
+                                        ToolResult blockedResult = this.loopGuardResult(recoveredLoopDecision, invTool, recoveredToolCallId, ctx, visibleLanguage, loopMessage);
                                         this.journalToolResult(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, blockedResult);
                                         String visibleSignature = invTool + ":" + this.toolNarrator.toolTarget(this.safeTool(invTool), publicArgs);
                                         this.appendRunLog(runLog, "\n- " + loopMessage + "\n");
@@ -1614,7 +1612,7 @@ public class AgentLoopEngine {
         if (!resolution.allowed()) return resolution.rejection();
         AgentTool t = resolution.tool();
         if ("question".equals(this.safeTool(name))) {
-            return this.askUserQuestion(args, ctx, visibleLanguage);
+            return this.askUserQuestion(args, ctx, toolCallId, visibleLanguage);
         }
         String guardedCommand = this.commandForGuard(name, args, ctx);
         String guardedWorkingDirectory = this.commandWorkingDirectoryForArgs(name, ctx.getWorkspaceRoot(), args);
@@ -1688,6 +1686,7 @@ public class AgentLoopEngine {
                             this.toolNarrator.visibleActionSummary(name, args, visibleLanguage),
                             askRule != null ? askRule.getPermission() : "*",
                             askRule != null ? askRule.getPattern() : "*",
+                            toolCallId,
                             visibleLanguage
                     );
                 case ALLOW:
@@ -1959,8 +1958,8 @@ public class AgentLoopEngine {
                 "Loop protection detected " + pattern + " involving tool `" + safeName + "`. This call was blocked; the agent must change the tool, target, scope, or verification strategy.");
     }
 
-    private ToolResult loopGuardResult(AgentLoopGuard.ToolDecision decision, String toolName, AgentContext ctx,
-                                       String visibleLanguage, String loopMessage) {
+    private ToolResult loopGuardResult(AgentLoopGuard.ToolDecision decision, String toolName, String toolCallId,
+                                       AgentContext ctx, String visibleLanguage, String loopMessage) {
         if (decision.action() != AgentLoopGuard.ToolAction.REQUEST_USER) {
             return ToolResult.failed(loopMessage);
         }
@@ -1974,10 +1973,10 @@ public class AgentLoopEngine {
         options.add(this.localText(visibleLanguage, "\u5141\u8bb8\u91cd\u65b0\u5c1d\u8bd5\u8be5\u8c03\u7528", "Allow this call to be retried"));
         options.add(this.localText(visibleLanguage, "\u505c\u6b62\u5e76\u603b\u7ed3\u5f53\u524d\u8fdb\u5ea6", "Stop and summarize current progress"));
         question.add("options", options);
-        return this.askUserQuestion(question, ctx, visibleLanguage);
+        return this.askUserQuestion(question, ctx, toolCallId, visibleLanguage);
     }
 
-    private ToolResult askUserQuestion(JsonObject args, AgentContext ctx, String visibleLanguage) {
+    private ToolResult askUserQuestion(JsonObject args, AgentContext ctx, String toolCallId, String visibleLanguage) {
         String question = ToolSupport.stringArg(args, "question", "").trim();
         if (question.isBlank()) {
             return ToolResult.failed(this.localText(visibleLanguage, "question 参数不能为空", "question is required"));
@@ -1994,24 +1993,27 @@ public class AgentLoopEngine {
                     ctx.getSessionId(),
                     ctx.getTaskId(),
                     ctx.getConversationId(),
+                    toolCallId,
                     question,
                     summary,
                     options
             );
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("requestId", request.requestId());
+            payload.put("interactionType", "question");
+            payload.put("question", request.question());
+            payload.put("summary", request.summary());
+            payload.put("options", request.options());
+            payload.put("projectId", request.projectId());
+            payload.put("sessionId", request.sessionId());
+            payload.put("taskId", request.taskId());
+            payload.put("conversationId", request.conversationId());
+            payload.put("toolCallId", request.toolCallId() == null ? "" : request.toolCallId());
+            payload.put("createdAt", request.createdAt());
             return ToolResult.interactionRequired(
-                    this.localText(visibleLanguage, "正在等待用户输入。", "Waiting for user input."),
+                    this.localText(visibleLanguage, "\u6b63\u5728\u7b49\u5f85\u7528\u6237\u8f93\u5165\u3002", "Waiting for user input."),
                     request.requestId(),
-                    "question").withInteractionPayload(Map.of(
-                            "requestId", request.requestId(),
-                            "interactionType", "question",
-                            "question", request.question(),
-                            "summary", request.summary(),
-                            "options", request.options(),
-                            "projectId", request.projectId(),
-                            "sessionId", request.sessionId(),
-                            "taskId", request.taskId(),
-                            "conversationId", request.conversationId(),
-                            "createdAt", request.createdAt()));
+                    "question").withInteractionPayload(payload);
         } catch (Exception e) {
             return ToolResult.failed(this.localText(visibleLanguage, "用户问题处理失败：" + e.getMessage(), "User question failed: " + e.getMessage()));
         }
@@ -2063,7 +2065,8 @@ public class AgentLoopEngine {
     }
 
     private ToolResult requestToolApproval(AgentContext ctx, String toolName, String input, String summary,
-                                           String permission, String pattern, String visibleLanguage) throws Exception {
+                                           String permission, String pattern, String toolCallId,
+                                           String visibleLanguage) throws Exception {
         PermissionApprovalRequest approval = permissionService.beginApproval(
                 ctx.getProject().getProjectId(),
                 ctx.getStudentId(),
@@ -2074,7 +2077,8 @@ public class AgentLoopEngine {
                 input,
                 summary,
                 permission,
-                pattern
+                pattern,
+                toolCallId
         );
         LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
         payload.put("requestId", approval.getRequestId());
@@ -2088,6 +2092,7 @@ public class AgentLoopEngine {
         payload.put("summary", approval.getSummary());
         payload.put("matchedRulePermission", approval.getMatchedRulePermission());
         payload.put("matchedRulePattern", approval.getMatchedRulePattern());
+        payload.put("toolCallId", toolCallId == null ? "" : toolCallId);
         payload.put("createdAt", approval.getCreatedAt());
         return ToolResult.interactionRequired(
                 this.localText(visibleLanguage, "正在等待用户审批。", "Waiting for user approval."),
@@ -2248,7 +2253,7 @@ public class AgentLoopEngine {
             NetworkAccessService.NetworkAccessRequest approval = this.networkAccessService.begin(
                     ctx.getStudentId(), ctx.getProject().getProjectId(), ctx.getTaskId(), ctx.getConversationId(),
                     ctx.getSessionId(), toolName, request, summary, requestKind, retryable, attemptKey,
-                    this.networkAccessService.domainsFor(toolName, request));
+                    toolCallId, this.networkAccessService.domainsFor(toolName, request));
             LinkedHashMap<String, Object> event = new LinkedHashMap<>(approval.payload());
             event.put("requestId", approval.requestId());
             event.put("taskId", ctx.getTaskId());

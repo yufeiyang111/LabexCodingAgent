@@ -33,6 +33,20 @@ class AgentRunExecutionLeaseServiceTest {
     }
 
     @Test
+    void refusesASecondWorkerEvenWhenTheUnexpiredLeaseHasTheSameInstanceOwner() {
+        AgentTaskMapper mapper = mock(AgentTaskMapper.class);
+        AgentTask task = task();
+        task.setExecutionOwner("instance-a");
+        task.setExecutionEpoch(4L);
+        task.setExecutionLeaseExpiresAt(LocalDateTime.of(2026, 7, 23, 10, 1));
+        when(mapper.selectById(71L)).thenReturn(task);
+        when(mapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        AgentRunExecutionLeaseService service = new AgentRunExecutionLeaseService(mapper, "instance-a", 30_000L);
+
+        assertNull(service.acquire(71L, LocalDateTime.of(2026, 7, 23, 10, 0)));
+    }
+
+    @Test
     void refusesToRunWhenAnotherUnexpiredOwnerWinsTheCompareAndSet() {
         AgentTaskMapper mapper = mock(AgentTaskMapper.class);
         AgentTask task = task();
