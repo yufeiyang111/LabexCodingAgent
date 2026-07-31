@@ -20,8 +20,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.stereotype.Service;
 
 /** 按会话和任务持久化可恢复的 Agent 执行状态。 */
+@Service
 public final class AgentCheckpointStore {
     private static final int VERSION = 1;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();

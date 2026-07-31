@@ -3,12 +3,14 @@ package com.labex.labexagent.commandsecurity;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
+import org.springframework.stereotype.Service;
 
 /**
  * Pure fail-closed policy for a deliberately small direct-command grammar. It never parses or
  * executes shell grammar: unsupported executables, quoting, escaping, control characters, and
  * shell syntax are blocked rather than guessed at.
  */
+@Service
 public final class CommandClassifier {
     public static final String POLICY_VERSION = "command-policy-v1";
     private static final Pattern CONTROL_CHARACTER = Pattern.compile("[\\p{Cntrl}]");

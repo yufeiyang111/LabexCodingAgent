@@ -163,14 +163,14 @@ public class AgentLoopEngine {
     private final ContextUsageEstimator contextUsageEstimator;
     private final ContextUsageRegistry contextUsageRegistry;
     private final CompactionAgent compactionAgent;
-    private final CommandClassifier commandClassifier;
-    private CommandFailureGuard commandFailureGuard = new CommandFailureGuard(1, 2);
-    private AgentRecoveryProperties recoveryProperties = new AgentRecoveryProperties();
-    private AgentLoopProperties loopProperties = new AgentLoopProperties();
+    private CommandClassifier commandClassifier;
+    private CommandFailureGuard commandFailureGuard;
+    private AgentRecoveryProperties recoveryProperties;
+    private AgentLoopProperties loopProperties;
 
     @Value("${labex-agent.acceptance.auto-approve-verification:false}")
     private boolean acceptanceAutoApproveVerification;
-    private final AgentCheckpointStore checkpointStore = new AgentCheckpointStore();
+    private AgentCheckpointStore checkpointStore;
     private AgentRunExecutionLeaseService executionLeaseService;
     private AgentRunLeaseHeartbeatService leaseHeartbeatService;
     private WorkspaceLeaseService workspaceLeaseService;
@@ -184,7 +184,7 @@ public class AgentLoopEngine {
     private AgentRunInteractionService runInteractionService;
     private AgentTranscriptProjectionService transcriptProjectionService;
     private AgentCompactionService compactionService;
-    private AgentRequestTokenEstimator requestTokenEstimator = new AgentRequestTokenEstimator();
+    private AgentRequestTokenEstimator requestTokenEstimator;
 
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService) {
         this(s, t, c, cr, mm, oc, r, cs, ts, pf, mcs, tt, skillService, mcpServerService,
@@ -227,7 +227,6 @@ public class AgentLoopEngine {
         this.contextUsageEstimator = contextUsageEstimator;
         this.contextUsageRegistry = contextUsageRegistry;
         this.compactionAgent = compactionAgent;
-        this.commandClassifier = new CommandClassifier();
     }
 
     @Autowired
@@ -307,23 +306,40 @@ public class AgentLoopEngine {
     @Autowired
     void setContextCompactionServices(AgentCompactionService compactionService,
                                       AgentRequestTokenEstimator requestTokenEstimator) {
-        this.compactionService = compactionService;
-        if (requestTokenEstimator != null) this.requestTokenEstimator = requestTokenEstimator;
+        this.compactionService = requireRuntimeDependency(compactionService, "compactionService");
+        this.requestTokenEstimator = requireRuntimeDependency(requestTokenEstimator, "requestTokenEstimator");
+    }
+
+    @Autowired
+    void setCommandClassifier(CommandClassifier commandClassifier) {
+        this.commandClassifier = requireRuntimeDependency(commandClassifier, "commandClassifier");
+    }
+
+    @Autowired
+    void setCheckpointStore(AgentCheckpointStore checkpointStore) {
+        this.checkpointStore = requireRuntimeDependency(checkpointStore, "checkpointStore");
     }
 
     @Autowired
     void setCommandFailureGuard(CommandFailureGuard commandFailureGuard) {
-        if (commandFailureGuard != null) this.commandFailureGuard = commandFailureGuard;
+        this.commandFailureGuard = requireRuntimeDependency(commandFailureGuard, "commandFailureGuard");
     }
 
     @Autowired
     void setRecoveryProperties(AgentRecoveryProperties recoveryProperties) {
-        if (recoveryProperties != null) this.recoveryProperties = recoveryProperties;
+        this.recoveryProperties = requireRuntimeDependency(recoveryProperties, "recoveryProperties");
     }
 
     @Autowired
     void setLoopProperties(AgentLoopProperties loopProperties) {
-        if (loopProperties != null) this.loopProperties = loopProperties;
+        this.loopProperties = requireRuntimeDependency(loopProperties, "loopProperties");
+    }
+
+    private <T> T requireRuntimeDependency(T dependency, String name) {
+        if (dependency == null) {
+            throw new IllegalArgumentException(name + " is required");
+        }
+        return dependency;
     }
 
     @Autowired

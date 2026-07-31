@@ -4,11 +4,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Locale;
+import org.springframework.stereotype.Service;
 
 /**
  * Versioned canonicalization for command-approval binding. It normalizes presentation-only
  * whitespace but preserves every execution-affecting request field in the SHA-256 input.
  */
+@Service
 public final class CommandNormalizer {
     public static final String VERSION = "command-normalizer-v1";
 
