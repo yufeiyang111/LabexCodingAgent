@@ -24,6 +24,31 @@ $runId = [Guid]::NewGuid().ToString('N')
 $logRoot = Join-Path ([IO.Path]::GetTempPath()) "labex-agent-acceptance-$runId"
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $workspaceRoot = Join-Path $repoRoot "workspaces\acceptance-$runId"
+$databaseRoot = Join-Path $workspaceRoot '.acceptance-db'
+$h2SchemaPath = Join-Path $databaseRoot 'schema-h2.sql'
+$h2JarPath = Join-Path $databaseRoot 'h2.jar'
+$h2ServerProcess = $null
+$h2PortProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$h2PortProbe.Start()
+$h2ServerPort = ([Net.IPEndPoint]$h2PortProbe.LocalEndpoint).Port
+$h2PortProbe.Stop()
+New-Item -ItemType Directory -Force -Path $databaseRoot | Out-Null
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$backendArchive = [IO.Compression.ZipFile]::OpenRead($JarPath)
+try {
+    $h2Entry = $backendArchive.Entries | Where-Object { $_.FullName -like 'BOOT-INF/lib/h2-*.jar' } | Select-Object -First 1
+    if (-not $h2Entry) { throw 'Packaged backend does not contain the H2 runtime.' }
+    [IO.Compression.ZipFileExtensions]::ExtractToFile($h2Entry, $h2JarPath, $true)
+} finally {
+    $backendArchive.Dispose()
+}
+$schemaSource = Join-Path $repoRoot 'backend\src\main\resources\sql\schema.sql'
+$schemaText = [IO.File]::ReadAllText($schemaSource, [Text.Encoding]::UTF8)
+$mysqlPrefixIndex = 'pattern(191)'
+if (-not $schemaText.Contains($mysqlPrefixIndex)) {
+    throw 'MySQL schema compatibility marker pattern(191) was not found.'
+}
+[IO.File]::WriteAllText($h2SchemaPath, $schemaText.Replace($mysqlPrefixIndex, 'pattern'), [Text.UTF8Encoding]::new($false))
 $backendProcess = $null
 $token = $null
 $projectId = $null
@@ -46,6 +71,7 @@ $evidence = [ordered]@{
     completionEvidence = $false
     unverifiedEditRejected = $false
     normalProfileProviderIsolation = $false
+    isolatedDatabase = $false
     cleanup = $false
 }
 
@@ -66,6 +92,37 @@ function Assert-PortFree {
     param([int]$Port)
     if (-not (Test-PortFree -Port $Port)) {
         throw "验收端口 $Port 已被其他进程占用，脚本拒绝接管。"
+    }
+}
+
+function Start-AcceptanceDatabase {
+    Assert-PortFree -Port $h2ServerPort
+    $stdout = Join-Path $logRoot 'h2-server-out.log'
+    $stderr = Join-Path $logRoot 'h2-server-err.log'
+    $arguments = @(
+        '-cp', $h2JarPath, 'org.h2.tools.Server', '-tcp', '-tcpPort', [string]$h2ServerPort,
+        '-baseDir', $databaseRoot, '-ifNotExists'
+    )
+    $script:h2ServerProcess = Start-Process -FilePath 'java' -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($script:h2ServerProcess.HasExited) {
+            throw "Isolated H2 server exited early, exitCode=$($script:h2ServerProcess.ExitCode), logs=$logRoot"
+        }
+        if (-not (Test-PortFree -Port $h2ServerPort)) { return }
+        Start-Sleep -Milliseconds 150
+    }
+    throw "Isolated H2 server did not listen on port $h2ServerPort within 20 seconds."
+}
+
+function Stop-AcceptanceDatabase {
+    $server = $script:h2ServerProcess
+    $script:h2ServerProcess = $null
+    if (-not $server) { return }
+    $server.Refresh()
+    if (-not $server.HasExited) {
+        Stop-Process -Id $server.Id -Force
+        $server.WaitForExit(10000) | Out-Null
     }
 }
 
@@ -93,7 +150,12 @@ function Start-AcceptanceBackend {
         "--server.port=$BackendPort",
         "--spring.profiles.active=$Profile",
         "--labex-agent.project-base-path=$workspaceRoot",
-        "--labex-agent.instance-id=acceptance-$runId-$Profile"
+        "--labex-agent.instance-id=acceptance-$runId-$Profile",
+        '--spring.datasource.driver-class-name=org.h2.Driver',
+        "--spring.datasource.url=jdbc:h2:tcp://127.0.0.1:$h2ServerPort/./labex-agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_ON_EXIT=FALSE",
+        '--spring.datasource.username=sa',
+        '--spring.datasource.password=',
+        "--spring.sql.init.schema-locations=file:$($h2SchemaPath.Replace('\', '/'))"
     )
     $script:backendProcess = Start-Process -FilePath 'java' -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -258,7 +320,9 @@ function Restart-AcceptanceBackend {
 }
 
 try {
+    Start-AcceptanceDatabase
     Start-AcceptanceBackend -Profile 'acceptance,local'
+    $evidence.isolatedDatabase = $true
 
     $username = "accept_$($runId.Substring(0, 16))"
     $password = "A!$([Guid]::NewGuid().ToString('N'))z9"
@@ -372,9 +436,21 @@ try {
         $approval = Get-RequiredEvent -Events $commandEvents -Type 'COMMAND_APPROVAL_REQUIRED'
         $commandTaskId = [long]$approval.data.taskId
         $approvalId = [string]$approval.data.approvalId
+        $beforeRestart = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$commandTaskId"
+        if ([string]$beforeRestart.status -ne 'waiting_approval') {
+            throw "Command approval task $commandTaskId was $($beforeRestart.status) before restart."
+        }
         Restart-AcceptanceBackend
+        $afterRestart = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$commandTaskId"
+        if ([string]$afterRestart.status -ne 'waiting_approval') {
+            throw "Command approval task $commandTaskId was $($afterRestart.status) after restart."
+        }
         $decision = Invoke-ApiData -Path "/student/projects/$projectId/agent/command-approvals/$approvalId/decision" -Method POST -Body @{
             action = $action; decisionIdempotencyKey = [Guid]::NewGuid().ToString()
+        }
+        $afterDecision = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$commandTaskId"
+        if ($action -eq 'approve' -and [string]$afterDecision.status -ne 'waiting_approval') {
+            throw "Command approval task $commandTaskId was $($afterDecision.status) immediately after approve decision."
         }
         if ($action -eq 'approve') {
             Invoke-ApiData -Path "/student/projects/$projectId/agent/command-approvals/$approvalId/execute" -Method POST | Out-Null
@@ -497,6 +573,7 @@ try {
         Write-Warning "验收资源清理失败：$($_.Exception.Message)"
     }
     try { Stop-AcceptanceBackend } catch { Write-Warning $_.Exception.Message }
+    try { Stop-AcceptanceDatabase } catch { Write-Warning "Acceptance database shutdown failed: $($_.Exception.Message)" }
     try { Remove-OwnedWorkspace } catch { Write-Warning "Acceptance workspace cleanup failed: $($_.Exception.Message)" }
 }
 

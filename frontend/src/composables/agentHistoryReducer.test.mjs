@@ -95,6 +95,22 @@ test('records checkout and environment blockers without treating them as complet
   assert.equal(target.content, '网络不可用，请先恢复环境。')
 })
 
+test('keeps a replayed environment wait authoritative over legacy FINAL and DONE events', () => {
+  const target = message()
+  reduceHistoryEvent('ENVIRONMENT_BLOCKED', {
+    taskId: 71, taskStatus: 'waiting_environment', detail: 'Restore DNS and retry.'
+  }, target)
+  reduceHistoryEvent('TASK_PAUSED', {
+    taskId: 71, taskStatus: 'waiting_environment', reason: 'environment', resumeAgentLoop: false
+  }, target)
+  reduceHistoryEvent('FINAL', { content: 'Legacy pseudo final must stay hidden.' }, target)
+  reduceHistoryEvent('DONE', { taskStatus: 'waiting_environment' }, target)
+
+  assert.equal(target.content, 'Restore DNS and retry.')
+  assert.equal(target.runState, 'waiting_environment')
+})
+
+
 test('shows compaction progress as one updateable context-management timeline item', () => {
   const target = message()
 

@@ -267,9 +267,65 @@ class AgentRunTranscriptServiceTest {
         assertThat(result.getRole()).isEqualTo("tool");
         assertThat(result.getContent()).contains("status=failed");
         verify(parts).updateById(org.mockito.ArgumentMatchers.argThat(part ->
-                "approval-call".equals(part.getToolCallId())
+                "tool_call".equals(part.getPartType())
+                        && "approval-call".equals(part.getToolCallId())
                         && "completed".equals(part.getStatus())
                         && part.getOutputText().contains("exit=128")));
+    }
+
+    @Test
+    void replacesWaitingPlaceholderWithTheFinalDeferredCommandResult() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunPart placeholder = new AgentRunPart();
+        placeholder.setPartId(94L);
+        placeholder.setTaskId(7L);
+        placeholder.setMessageId(42L);
+        placeholder.setPartType("tool_result");
+        placeholder.setToolCallId("approval-call");
+        placeholder.setToolName("run_tests");
+        placeholder.setStatus("completed");
+        placeholder.setOutputText("command approval required");
+        placeholder.setMetadata("{\"provider\":true,\"partType\":\"tool_result\"}");
+        AgentRunPart call = toolCallPart(91L, 41L, "approval-call", "run_tests", "waiting_approval", 8L);
+        AgentRunMessage placeholderMessage = message(42L, "provider:4:message:9", 9L,
+                "tool", "command approval required");
+        when(parts.selectOne(any())).thenReturn(placeholder, call, placeholder);
+        when(parts.selectList(any())).thenReturn(List.of(call));
+        when(messages.selectById(42L)).thenReturn(placeholderMessage);
+        when(tasks.selectById(7L)).thenReturn(task());
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+
+        boolean appended = service.appendDeferredToolResult(
+                7L, "approval-call", "run_tests", "status=failed\nexit=128");
+
+        assertThat(appended).isTrue();
+        assertThat(placeholderMessage.getContent()).isEqualTo("status=failed\nexit=128");
+        assertThat(placeholder.getOutputText()).isEqualTo("status=failed\nexit=128");
+        assertThat(placeholder.getMetadata()).contains("deferredResolution");
+        assertThat(call.getStatus()).isEqualTo("completed");
+        assertThat(service.hasPersistedToolResult(7L, "approval-call")).isTrue();
+        verify(messages).updateById(placeholderMessage);
+        verify(parts).updateById(placeholder);
+    }
+
+    @Test
+    void doesNotTreatAnUnmarkedWaitingToolResultAsADeferredCommandOutcome() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunPart placeholder = new AgentRunPart();
+        placeholder.setPartType("tool_result");
+        placeholder.setToolCallId("approval-call");
+        placeholder.setStatus("completed");
+        placeholder.setMetadata("{\"provider\":true,\"partType\":\"tool_result\"}");
+        when(parts.selectOne(any())).thenReturn(placeholder);
+
+        boolean ready = new AgentRunTranscriptService(messages, parts, tasks)
+                .hasPersistedToolResult(7L, "approval-call");
+
+        assertThat(ready).isFalse();
     }
 
     private AgentRunPart toolCallPart(Long partId, Long messageId, String toolCallId,

@@ -15,6 +15,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.labex.entity.CommandApproval;
 import com.labex.mapper.CommandApprovalMapper;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -140,6 +141,17 @@ class CommandApprovalServiceTest {
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
                 () -> service.createOrGet(changed));
         verify(mapper, never()).insert(any(CommandApproval.class));
+    }
+
+    @Test
+    void selectsOnlyResolvedApprovalsWhoseTasksStillAwaitResume() {
+        CommandApprovalMapper mapper = mock(CommandApprovalMapper.class);
+        CommandApproval waiting = persisted("consumed");
+        when(mapper.selectResolvedAgentApprovalsAwaitingResume(100)).thenReturn(List.of(waiting));
+        CommandApprovalService service = new CommandApprovalService(mapper);
+
+        assertEquals(List.of(waiting), service.findResolvedAgentApprovalsAwaitingResume(1_000));
+        verify(mapper).selectResolvedAgentApprovalsAwaitingResume(100);
     }
 
     @Test

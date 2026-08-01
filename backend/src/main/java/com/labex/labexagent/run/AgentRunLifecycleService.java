@@ -13,11 +13,14 @@ import com.labex.mapper.AgentTaskMapper;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AgentRunLifecycleService {
+    private static final Logger log = LoggerFactory.getLogger(AgentRunLifecycleService.class);
     private static final Gson GSON = new Gson();
     private static final String OUTBOX_TOPIC = "agent.run.event";
 
@@ -322,6 +325,11 @@ public class AgentRunLifecycleService {
         task.setUpdateTime(now);
         persistOutbox(event, safePayload, now);
         recordEventPartBestEffort(task.getTaskId(), event.getEventType(), safePayload, nextSequence);
+        if (stateChanged) {
+            log.debug("AGENT_RUN_TRANSITION taskId={} eventType={} previousState={} nextState={} epoch={} sequence={} idempotencyKey={}",
+                    task.getTaskId(), eventType, currentState.persistedStatus(), targetState.persistedStatus(),
+                    valueOrZero(task.getExecutionEpoch()), nextSequence, idempotencyKey);
+        }
         return new TransitionResult(event, stateChanged);
     }
 

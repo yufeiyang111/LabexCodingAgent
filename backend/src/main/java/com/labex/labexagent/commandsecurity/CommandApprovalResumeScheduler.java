@@ -6,6 +6,7 @@ import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.run.AgentRunContinuationRequestFactory;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.service.AgentTaskService;
 import java.time.LocalDateTime;
@@ -39,22 +40,32 @@ public class CommandApprovalResumeScheduler {
     private final AgentRunExecutionLeaseService executionLeaseService;
     private final AgentLoopEngine agentLoopEngine;
     private final CommandApprovalService approvalService;
+    private final AgentRunTranscriptService transcriptService;
 
     public CommandApprovalResumeScheduler(AgentTaskService taskService,
                                           AgentRunExecutionLeaseService executionLeaseService,
                                           @Lazy AgentLoopEngine agentLoopEngine) {
-        this(taskService, executionLeaseService, agentLoopEngine, null);
+        this(taskService, executionLeaseService, agentLoopEngine, null, null);
+    }
+
+    public CommandApprovalResumeScheduler(AgentTaskService taskService,
+                                          AgentRunExecutionLeaseService executionLeaseService,
+                                          @Lazy AgentLoopEngine agentLoopEngine,
+                                          AgentRunTranscriptService transcriptService) {
+        this(taskService, executionLeaseService, agentLoopEngine, null, transcriptService);
     }
 
     @Autowired
     public CommandApprovalResumeScheduler(AgentTaskService taskService,
                                           AgentRunExecutionLeaseService executionLeaseService,
                                           @Lazy AgentLoopEngine agentLoopEngine,
-                                          CommandApprovalService approvalService) {
+                                          CommandApprovalService approvalService,
+                                          AgentRunTranscriptService transcriptService) {
         this.taskService = taskService;
         this.executionLeaseService = executionLeaseService;
         this.agentLoopEngine = agentLoopEngine;
         this.approvalService = approvalService;
+        this.transcriptService = transcriptService;
     }
 
     /** 尝试立即恢复；若上一个 JVM 的 lease 仍有效，则保留 durable waiting state 交给轮询接管。 */
@@ -66,9 +77,16 @@ public class CommandApprovalResumeScheduler {
         if (!waitingApproval(task)) {
             return ResumeResult.UNAVAILABLE;
         }
+        if (!durableToolResultReady(approval)) {
+            log.debug("COMMAND_APPROVAL_RESUME_DEFERRED taskId={} approvalId={} reason=tool_result_not_persisted",
+                    approval.getTaskId(), approval.getApprovalId());
+            return ResumeResult.DEFERRED_TOOL_RESULT;
+        }
         if (executionLeaseService.hasActiveLease(task, LocalDateTime.now())) {
             return ResumeResult.DEFERRED_ACTIVE_LEASE;
         }
+        log.debug("COMMAND_APPROVAL_RESUME_GATE_PASSED taskId={} approvalId={} toolCallId={}",
+                approval.getTaskId(), approval.getApprovalId(), approval.getToolCallId());
         AgentRunLifecycleService.DispatchClaim claim = taskService.claimCommandApprovalResume(
                 task.getTaskId(), approval.getApprovalId(), CURRENT_STEP, SUMMARY);
         if (claim == null) {
@@ -132,12 +150,19 @@ public class CommandApprovalResumeScheduler {
     private boolean resumable(CommandApproval approval) {
         if (approval == null || approval.getApprovalId() == null || approval.getTaskId() == null
                 || approval.getStudentId() == null || approval.getProjectId() == null
+                || approval.getToolCallId() == null || approval.getToolCallId().isBlank()
                 || !"agent_shell".equals(approval.getSource())) {
             return false;
         }
         return "consumed".equals(approval.getStatus())
                 || "rejected".equals(approval.getStatus())
                 || "expired".equals(approval.getStatus());
+    }
+
+    /** consumed 只表示一次性能力不可重放；Provider 续跑还必须等待最终 tool result 落入持久化 transcript。 */
+    private boolean durableToolResultReady(CommandApproval approval) {
+        return transcriptService != null
+                && transcriptService.hasPersistedToolResult(approval.getTaskId(), approval.getToolCallId());
     }
 
     private boolean waitingApproval(AgentTask task) {
@@ -148,6 +173,7 @@ public class CommandApprovalResumeScheduler {
 
     public enum ResumeResult {
         RESUMED,
+        DEFERRED_TOOL_RESULT,
         DEFERRED_ACTIVE_LEASE,
         UNAVAILABLE,
         FAILED

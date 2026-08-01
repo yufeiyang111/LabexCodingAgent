@@ -79,6 +79,62 @@ class RunCompletionEvidenceServiceTest {
     }
 
     @Test
+    void laterSuccessForTheSameCommandSupersedesItsHistoricalFailure() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentVerification failed = new AgentVerification();
+        failed.setVerificationId(10L);
+        failed.setCommand("npm test");
+        failed.setStatus("failed");
+        failed.setExitCode(1);
+        AgentVerification passed = new AgentVerification();
+        passed.setVerificationId(11L);
+        passed.setCommand("npm\t  test");
+        passed.setStatus("passed");
+        passed.setExitCode(0);
+        when(changes.selectList(any())).thenReturn(List.of());
+        when(verifications.selectList(any())).thenReturn(List.of(failed, passed));
+
+        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts)
+                .evaluateAndPersist(9L, 7, 3, false, "running");
+
+        assertTrue(evidence.satisfied());
+        assertEquals(List.of("npm test (exit 0)"), evidence.successfulVerifications());
+        assertTrue(evidence.failedVerifications().isEmpty());
+    }
+
+    @Test
+    void laterSuccessfulRunTestsKeepsHistoricalFailureForAuditWithoutBlockingCompletion() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentVerification failed = new AgentVerification();
+        failed.setVerificationId(10L);
+        failed.setCommand("npm test");
+        failed.setStatus("failed");
+        failed.setExitCode(1);
+        AgentVerification passed = new AgentVerification();
+        passed.setVerificationId(11L);
+        passed.setCommand("npm test");
+        passed.setStatus("passed");
+        passed.setExitCode(0);
+        AgentRunArtifact historicalFailure = new AgentRunArtifact();
+        historicalFailure.setArtifactPath("run_tests:acceptance-environment-first-test");
+        historicalFailure.setContent("tool=run_tests\nfailure_code=DEPENDENCY_RESOLUTION_FAILED\nexit=1");
+        when(changes.selectList(any())).thenReturn(List.of());
+        when(verifications.selectList(any())).thenReturn(List.of(failed, passed));
+        when(artifacts.list(9L, "tool_failure")).thenReturn(List.of(historicalFailure));
+
+        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts)
+                .evaluateAndPersist(9L, 7, 3, false, "running");
+
+        assertTrue(evidence.satisfied());
+        assertTrue(evidence.failedVerifications().isEmpty());
+        assertTrue(evidence.unresolvedRisks().isEmpty());
+    }
+
+    @Test
     void readsPersistedGeneratedAtWithoutReflectingIntoJavaTime() {
         AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
         AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);

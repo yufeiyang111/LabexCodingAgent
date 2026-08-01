@@ -201,6 +201,38 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void drivesEnvironmentFailureRetryAndFinalReplyWithoutCreatingANewObjective() {
+        List<LlmProvider.StreamChunk> setup = stream("[acceptance:environment-wait] recover dependency environment");
+        List<LlmProvider.StreamChunk> setupCalls = setup.stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .toList();
+        assertEquals(2, setupCalls.size());
+        assertTrue(setupCalls.stream().allMatch(chunk -> "write_file".equals(chunk.toolName())));
+
+        LlmProvider.StreamChunk firstVerification = stream(
+                "[acceptance:environment-wait] recover dependency environment",
+                "[Tool write_file result]\ncreated fixtures").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("run_tests", firstVerification.toolName());
+
+        LlmProvider.StreamChunk retriedVerification = stream(
+                "[acceptance:environment-wait] recover dependency environment",
+                "[Tool write_file result]\ncreated fixtures",
+                "[Tool run_tests result]\nNon-resolvable parent POM for acceptance fixture").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("run_tests", retriedVerification.toolName());
+
+        String completed = text(stream(
+                "[acceptance:environment-wait] recover dependency environment",
+                "[Tool write_file result]\ncreated fixtures",
+                "[Tool run_tests result]\nNon-resolvable parent POM for acceptance fixture",
+                "[Tool run_tests result]\nenvironment restored"));
+        assertTrue(completed.contains("environment recovery"));
+    }
+
+    @Test
     void emitsAnUnverifiedWriteWithoutInventingVerification() {
         LlmProvider.StreamChunk edit = stream("[acceptance:unverified] reject false completion").stream()
                 .filter(chunk -> "tool_call".equals(chunk.type()))

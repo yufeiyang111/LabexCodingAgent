@@ -293,8 +293,8 @@ public class CommandApprovalOrchestrator {
     }
 
     /**
-      * transcript 已经持久化后?scheduler 必须取得与状态迁移同事务生成的 lease 才能恢复 Agent。
-      * 如果旧 worker 的 lease 仍然有效，保留 waiting_approval 并等待 scheduler 接管。
+     * transcript 已经持久化后，scheduler 必须取得与状态迁移同事务生成的 lease 才能恢复 Agent。
+     * 如果旧 worker 的 lease 仍然有效，保留 waiting_approval 并等待 scheduler 接管。
      */
     private boolean resumeAgentLoop(CommandApproval approval, String resolutionStatus, ProcessExecutionResult result) {
         CommandApprovalResumeScheduler.ResumeResult resumeResult = commandResumeScheduler.resumeIfWaiting(approval);

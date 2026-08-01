@@ -177,6 +177,53 @@ test('preserves provider error over a later final and handles blockers', () => {
 })
 
 
+test('keeps a recoverable environment wait authoritative over legacy FINAL and DONE events', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({
+    type: 'ENVIRONMENT_BLOCKED',
+    data: { taskId: 21, taskStatus: 'waiting_environment', detail: 'Restore DNS and retry.' }
+  }, assistant)
+  state.handleAgentEvent({
+    type: 'TASK_PAUSED',
+    data: { taskId: 21, taskStatus: 'waiting_environment', reason: 'environment', resumeAgentLoop: false }
+  }, assistant)
+  state.handleAgentEvent({ type: 'FINAL', data: { content: 'Legacy pseudo final must stay hidden.' } }, assistant)
+  state.handleAgentEvent({ type: 'DONE', data: { taskStatus: 'waiting_environment' } }, assistant)
+
+  assert.equal(assistant.content, 'Restore DNS and retry.')
+  assert.equal(assistant.runState, 'waiting_environment')
+  assert.equal(assistant.isStreaming, false)
+  assert.equal(state.agentLoading.value, false)
+})
+
+
+test('projects environment resume back to an active state before accepting the final response', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({
+    type: 'ENVIRONMENT_BLOCKED',
+    data: { taskId: 21, taskStatus: 'waiting_environment', detail: 'Restore dependency service.' }
+  }, assistant)
+  state.handleAgentEvent({
+    type: 'RUN_ENVIRONMENT_RESUME',
+    data: { taskId: 21, state: 'queued', taskStatus: 'queued' }
+  }, assistant)
+  state.handleAgentEvent({
+    type: 'RUN_STATE_RUNNING',
+    data: { taskId: 21, state: 'running' }
+  }, assistant)
+  state.handleAgentEvent({
+    type: 'FINAL',
+    data: { taskId: 21, content: 'Environment recovery completed.' }
+  }, assistant)
+
+  assert.equal(assistant.runState, 'running')
+  assert.equal(assistant.environmentBlocker, null)
+  assert.equal(assistant.isStreaming, true)
+  assert.equal(assistant.content, 'Environment recovery completed.')
+})
+
 test('renders a context admission blocker as durable actionable state', () => {
   const state = harness()
   const assistant = message()

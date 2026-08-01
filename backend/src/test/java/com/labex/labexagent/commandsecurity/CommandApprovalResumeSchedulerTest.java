@@ -13,6 +13,7 @@ import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.service.AgentTaskService;
 import java.time.LocalDateTime;
@@ -21,6 +22,27 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class CommandApprovalResumeSchedulerTest {
+
+    @Test
+    void defersConsumedApprovalUntilTheDurableToolResultExists() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTask task = waitingTask();
+        CommandApproval approval = consumedApproval();
+        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
+        when(transcript.hasPersistedToolResult(71L, "tool-71")).thenReturn(false);
+        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(
+                tasks, leases, engine, transcript);
+
+        CommandApprovalResumeScheduler.ResumeResult result = scheduler.resumeIfWaiting(approval);
+
+        assertThat(result).isEqualTo(CommandApprovalResumeScheduler.ResumeResult.DEFERRED_TOOL_RESULT);
+        verify(leases, never()).hasActiveLease(any(), any());
+        verify(tasks, never()).claimCommandApprovalResume(any(), any(), any(), any());
+        verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean(), any());
+    }
 
     @Test
     void defersResolvedCommandContinuationUntilForeignLeaseExpires() {
@@ -32,7 +54,8 @@ class CommandApprovalResumeSchedulerTest {
         when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
         when(leases.hasActiveLease(eq(task), any())).thenReturn(true);
 
-        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(tasks, leases, engine);
+        AgentRunTranscriptService transcript = readyTranscript();
+        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(tasks, leases, engine, transcript);
 
         CommandApprovalResumeScheduler.ResumeResult result = scheduler.resumeIfWaiting(approval);
 
@@ -55,7 +78,8 @@ class CommandApprovalResumeSchedulerTest {
         when(leases.hasActiveLease(eq(task), any())).thenReturn(false);
         when(tasks.claimCommandApprovalResume(eq(71L), eq("approval-71"), any(), any())).thenReturn(claim);
 
-        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(tasks, leases, engine);
+        AgentRunTranscriptService transcript = readyTranscript();
+        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(tasks, leases, engine, transcript);
 
         CommandApprovalResumeScheduler.ResumeResult result = scheduler.resumeIfWaiting(approval);
 
@@ -83,7 +107,8 @@ class CommandApprovalResumeSchedulerTest {
         when(tasks.claimCommandApprovalResume(eq(71L), eq("approval-71"), any(), any())).thenReturn(claim);
         org.mockito.Mockito.doThrow(new IllegalStateException("executor rejected"))
                 .when(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true), eq(lease));
-        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(tasks, leases, engine);
+        AgentRunTranscriptService transcript = readyTranscript();
+        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(tasks, leases, engine, transcript);
 
         CommandApprovalResumeScheduler.ResumeResult result = scheduler.resumeIfWaiting(approval);
 
@@ -109,7 +134,8 @@ class CommandApprovalResumeSchedulerTest {
         when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
         when(leases.hasActiveLease(eq(task), any())).thenReturn(true, false);
         when(tasks.claimCommandApprovalResume(eq(71L), eq("approval-71"), any(), any())).thenReturn(claim);
-        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(tasks, leases, engine, approvals);
+        AgentRunTranscriptService transcript = readyTranscript();
+        CommandApprovalResumeScheduler scheduler = new CommandApprovalResumeScheduler(tasks, leases, engine, approvals, transcript);
 
         scheduler.resumeDeferred();
         verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean(), any());
@@ -118,6 +144,12 @@ class CommandApprovalResumeSchedulerTest {
 
         verify(tasks).claimCommandApprovalResume(eq(71L), eq("approval-71"), any(), any());
         verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true), eq(lease));
+    }
+
+    private AgentRunTranscriptService readyTranscript() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        when(transcript.hasPersistedToolResult(71L, "tool-71")).thenReturn(true);
+        return transcript;
     }
 
     private AgentTask waitingTask() {
@@ -141,6 +173,7 @@ class CommandApprovalResumeSchedulerTest {
         approval.setConversationId("conversation-71");
         approval.setSessionId("session-71");
         approval.setSource("agent_shell");
+        approval.setToolCallId("tool-71");
         approval.setStatus("consumed");
         return approval;
     }

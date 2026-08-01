@@ -1,5 +1,6 @@
 package com.labex.labexagent.llm;
 
+import com.google.gson.JsonObject;
 import com.labex.labexagent.runtime.CancellationToken;
 import java.util.List;
 import java.util.Locale;
@@ -25,6 +26,18 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
     private static final String PROVIDER_ID = "acceptance_scripted";
     private static final Pattern ISOLATION_MARKER = Pattern.compile("\\[acceptance:isolation:([^]\\r\\n]+)]");
     private static final String COMPACTION_PADDING = "x".repeat(30_000);
+    private static final String ENVIRONMENT_TEST_SCRIPT = """
+            const fs = require('node:fs');
+            const marker = '.acceptance-environment-recovered';
+            if (!fs.existsSync(marker)) {
+              fs.writeFileSync(marker, 'ready');
+              console.error('Non-resolvable parent POM for acceptance fixture');
+              process.exit(1);
+            }
+            console.log('environment restored');
+            """;
+    private static final String ENVIRONMENT_TEST_PACKAGE =
+            "{\"name\":\"acceptance-environment\",\"scripts\":{\"test\":\"node acceptance-environment-test.cjs\"}}";
     private static final Map<String, Object> USAGE = Map.of(
             "prompt_tokens", 64,
             "completion_tokens", 32,
@@ -156,6 +169,25 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                     "acceptance-permission-read-env");
             return;
         }
+        if (prompt.contains("[acceptance:environment-wait]")
+                && !prompt.contains("[Tool write_file result]")) {
+            emitToolBatch(onChunk, List.of(
+                    new ScriptedToolCall("write_file",
+                            writeFileArguments("acceptance-environment-test.cjs", ENVIRONMENT_TEST_SCRIPT),
+                            "acceptance-environment-script"),
+                    new ScriptedToolCall("write_file",
+                            writeFileArguments("package.json", ENVIRONMENT_TEST_PACKAGE),
+                            "acceptance-environment-package")));
+            return;
+        }
+        if (prompt.contains("[acceptance:environment-wait]")
+                && countOccurrences(prompt, "[Tool run_tests result]") < 2) {
+            emitTool(onChunk, "run_tests", "{\"strategy\":\"test\"}",
+                    countOccurrences(prompt, "[Tool run_tests result]") == 0
+                            ? "acceptance-environment-first-test"
+                            : "acceptance-environment-retry-test");
+            return;
+        }
         if (prompt.contains("[acceptance:unverified]") && !prompt.contains("[Tool write_file result]")) {
             emitTool(onChunk, "write_file",
                     "{\"file_path\":\"unverified-acceptance.txt\",\"content\":\"must-not-complete\"}",
@@ -238,6 +270,24 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             }
             remaining -= slice;
         }
+    }
+
+    private String writeFileArguments(String filePath, String content) {
+        JsonObject arguments = new JsonObject();
+        arguments.addProperty("file_path", filePath);
+        arguments.addProperty("content", content);
+        return arguments.toString();
+    }
+
+    private int countOccurrences(String value, String marker) {
+        if (value == null || value.isEmpty() || marker == null || marker.isEmpty()) return 0;
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(marker, offset)) >= 0) {
+            count++;
+            offset += marker.length();
+        }
+        return count;
     }
 
     private void emitTool(Consumer<StreamChunk> onChunk, String name, String arguments, String id) {
@@ -324,6 +374,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return "## Summary\n**Completed**\n- The tool permission decision resumed the original task.\n"
                     + "**Verification**\n- The acceptance run reached a final reply after the .env read decision.\n"
                     + "**Risk**\n- The acceptance provider never reads credentials itself.";
+        }
+        if (prompt.contains("[acceptance:environment-wait]")) {
+            return "## Summary\n**Completed**\n- The environment recovery resumed the original task after the same verification command succeeded.\n"
+                    + "**Verification**\n- The first deterministic run reported a dependency-resolution blocker and the resumed run passed without creating a new task.\n"
+                    + "**Risk**\n- The dependency failure is an acceptance-only local fixture and does not access the network.";
         }
         if (prompt.contains("[acceptance:evidence]")) {
             return "## Summary\n**Completed**\n- The edit and completion evidence scenario finished.\n"

@@ -18,6 +18,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,8 +32,10 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 public class AgentRunTranscriptService {
+    private static final Logger log = LoggerFactory.getLogger(AgentRunTranscriptService.class);
     private static final Gson GSON = new Gson();
     private static final String PROVIDER_KEY_PREFIX = "provider:";
+    private static final String DEFERRED_RESOLUTION_METADATA = "deferredResolution";
 
     private final AgentRunMessageMapper messageMapper;
     private final AgentRunPartMapper partMapper;
@@ -407,7 +411,7 @@ public class AgentRunTranscriptService {
         return messages.get(0).getSequenceNumber() + 1L;
     }
 
-        /** 将 Agent 主循环之外完成的工具结果追加回唯一的 Provider transcript。 */
+    /** 将 Agent 主循环之外完成的工具结果追加回唯一的 Provider transcript。 */
     @Transactional(rollbackFor = Exception.class)
     public boolean appendDeferredToolResult(Long taskId, String toolCallId, String toolName, String content) {
         if (taskId == null || taskId <= 0 || toolCallId == null || toolCallId.isBlank()) {
@@ -418,7 +422,9 @@ public class AgentRunTranscriptService {
                 .eq(AgentRunPart::getToolCallId, toolCallId)
                 .eq(AgentRunPart::getPartType, "tool_result")
                 .last("LIMIT 1"));
-        if (existingResult != null) {
+        if (existingResult != null && isDeferredResolution(existingResult)) {
+            log.debug("DEFERRED_TOOL_RESULT_PERSIST_SKIPPED taskId={} toolCallId={} partId={} reason=already_resolved",
+                    taskId, toolCallId, existingResult.getPartId());
             return false;
         }
         AgentRunPart toolCall = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
@@ -437,13 +443,83 @@ public class AgentRunTranscriptService {
         if (resolvedToolName == null || resolvedToolName.isBlank()) {
             throw new IllegalStateException("Deferred tool result has no tool name: " + toolCallId);
         }
+        String resolvedContent = content == null ? "" : content;
+        if (existingResult != null) {
+            replaceDeferredToolResult(existingResult, resolvedToolName, resolvedContent);
+            completeMatchingToolCallPart(taskId, toolCallId, resolvedContent);
+            log.debug("DEFERRED_TOOL_RESULT_PLACEHOLDER_REPLACED taskId={} toolCallId={} partId={}",
+                    taskId, toolCallId, existingResult.getPartId());
+            return true;
+        }
         long epoch = task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch();
-        appendMessage(taskId, epoch, nextSequence(taskId), Map.of(
-                "role", "tool",
-                "tool_call_id", toolCallId,
-                "name", resolvedToolName,
-                "content", content == null ? "" : content));
+        LinkedHashMap<String, Object> providerResult = new LinkedHashMap<>();
+        providerResult.put("role", "tool");
+        providerResult.put("tool_call_id", toolCallId);
+        providerResult.put("name", resolvedToolName);
+        providerResult.put("content", resolvedContent);
+        providerResult.put(DEFERRED_RESOLUTION_METADATA, true);
+        appendMessage(taskId, epoch, nextSequence(taskId), providerResult);
+        log.debug("DEFERRED_TOOL_RESULT_APPENDED taskId={} toolCallId={}", taskId, toolCallId);
         return true;
+    }
+
+    /** 只有已覆盖等待占位内容的最终 tool result 才能触发 Provider 续跑。 */
+    @Transactional(readOnly = true)
+    public boolean hasPersistedToolResult(Long taskId, String toolCallId) {
+        if (taskId == null || taskId <= 0 || toolCallId == null || toolCallId.isBlank()) {
+            return false;
+        }
+        AgentRunPart result = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .eq(AgentRunPart::getToolCallId, toolCallId)
+                .eq(AgentRunPart::getPartType, "tool_result")
+                .last("LIMIT 1"));
+        boolean ready = isDeferredResolution(result);
+        log.debug("DEFERRED_TOOL_RESULT_GATE taskId={} toolCallId={} partId={} partStatus={} ready={}",
+                taskId, toolCallId, result == null ? null : result.getPartId(),
+                result == null ? null : result.getStatus(), ready);
+        return ready;
+    }
+
+    private void replaceDeferredToolResult(AgentRunPart result, String toolName, String content) {
+        if (result.getMessageId() == null) {
+            throw new IllegalStateException("Deferred tool result placeholder has no owning message");
+        }
+        AgentRunMessage message = messageMapper.selectById(result.getMessageId());
+        if (message == null) {
+            throw new IllegalStateException("Deferred tool result placeholder message is missing");
+        }
+        message.setStatus("completed");
+        message.setContent(content);
+        message.setUpdateTime(LocalDateTime.now());
+        messageMapper.updateById(message);
+
+        LinkedHashMap<String, Object> providerResult = new LinkedHashMap<>();
+        providerResult.put("role", "tool");
+        providerResult.put("tool_call_id", result.getToolCallId());
+        providerResult.put("name", toolName);
+        providerResult.put("content", content);
+        result.setStatus("completed");
+        result.setToolName(toolName);
+        result.setInputJson(GSON.toJson(providerResult));
+        result.setOutputText(limit(content, 8_000));
+        markDeferredResolution(result);
+        result.setUpdateTime(LocalDateTime.now());
+        partMapper.updateById(result);
+    }
+
+    private boolean isDeferredResolution(AgentRunPart result) {
+        if (result == null || !"tool_result".equals(result.getPartType())) return false;
+        Object marker = parseObject(result.getMetadata()).get(DEFERRED_RESOLUTION_METADATA);
+        return Boolean.TRUE.equals(marker) || "true".equalsIgnoreCase(String.valueOf(marker));
+    }
+
+    private void markDeferredResolution(AgentRunPart result) {
+        LinkedHashMap<String, Object> metadata = new LinkedHashMap<>(parseObject(result.getMetadata()));
+        metadata.put("provider", true);
+        metadata.put("partType", "tool_result");
+        metadata.put(DEFERRED_RESOLUTION_METADATA, true);
+        result.setMetadata(GSON.toJson(metadata));
     }
 
     public boolean hasProjectableTranscript(Long taskId) {
@@ -524,8 +600,13 @@ public class AgentRunTranscriptService {
             throw new IllegalArgumentException("tool message tool_call_id and name are required");
         }
         String content = stringValue(providerMessage.get("content"));
-        upsertPart(taskId, message, toolResultKey(epoch, sequence, toolCallId), sequence,
+        AgentRunPart result = upsertPart(taskId, message, toolResultKey(epoch, sequence, toolCallId), sequence,
                 "tool_result", "completed", toolCallId, toolName, providerMessage, content);
+        if (Boolean.TRUE.equals(providerMessage.get(DEFERRED_RESOLUTION_METADATA))) {
+            markDeferredResolution(result);
+            result.setUpdateTime(LocalDateTime.now());
+            partMapper.updateById(result);
+        }
         completeMatchingToolCallPart(taskId, toolCallId, content);
     }
 

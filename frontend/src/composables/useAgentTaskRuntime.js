@@ -1,9 +1,10 @@
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyRunMessageSnapshot, applyRunPartSnapshot } from './agentRunPartState.js'
+import { isTerminalAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 import { nextTick as vueNextTick } from 'vue'
 
 export function isTerminalAgentTask(task) {
-  return ['completed', 'failed', 'cancelled'].includes(String(task?.status || '').toLowerCase())
+  return isTerminalAgentRunState(task?.status)
 }
 
 export function createTaskEventCursorStore(projectId, storage = globalThis.sessionStorage) {
@@ -94,6 +95,7 @@ export function useAgentTaskRuntime(options) {
       _nextOrder: 0,
       timestamp: Date.now(),
       taskId: task.taskId,
+      runState: normalizeAgentRunState(task.status),
       timing: createMessageTiming()
     }
   }
@@ -152,8 +154,9 @@ export function useAgentTaskRuntime(options) {
     return !['completed', 'failed', 'cancelled'].includes(String(latestTaskMessage.runState || '').toLowerCase())
   }
 
-  async function reconcileTerminalConversationHistory(conversationId, generation, status) {
-    if (typeof reloadConversationHistory !== 'function' || !needsTerminalHistoryReconciliation()) return false
+  async function reconcileTerminalConversationHistory(conversationId, generation, status, force = false) {
+    if (typeof reloadConversationHistory !== 'function'
+        || (!force && !needsTerminalHistoryReconciliation())) return false
     if (generation !== recoveryGeneration || !ownsConversation(conversationId)) return false
     log('TERMINAL_HISTORY_RECONCILIATION_STARTED', { conversationId, generation, status })
     try {
@@ -197,7 +200,8 @@ export function useAgentTaskRuntime(options) {
     assistantMsg.taskId = task.taskId
     reconcileRecoveredToolCalls(assistantMsg, task)
     reconcileRecoveredCommandApproval(assistantMsg, task)
-    const taskStatus = String(task.status || '').toLowerCase()
+    const taskStatus = normalizeAgentRunState(task.status)
+    assistantMsg.runState = taskStatus
     const waitingForCommandApproval = taskStatus === 'waiting_approval'
     const waitingForEnvironment = taskStatus === 'waiting_environment'
     assistantMsg.isStreaming = !waitingForCommandApproval && !waitingForEnvironment
@@ -210,7 +214,9 @@ export function useAgentTaskRuntime(options) {
 
   async function subscribeToTaskEvents(initialTask, assistantMsg) {
     let task = initialTask
+    let receivedFinalEvent = false
     const generation = ++subscriptionGeneration
+    const recoveryBoundary = recoveryGeneration
     try {
       while (generation === subscriptionGeneration && task?.taskId && !isTerminalAgentTask(task)) {
         if (!ownsTaskIdentity(task)) return
@@ -229,6 +235,7 @@ export function useAgentTaskRuntime(options) {
               if (generation !== subscriptionGeneration || !ownsTaskIdentity(task)) return
               cursors.save(task.taskId, event.eventId)
               handleAgentEvent(event, assistantMsg)
+              if (event?.type === 'FINAL' && event?.data?.content) receivedFinalEvent = true
             }
           })
         } catch (error) {
@@ -245,6 +252,12 @@ export function useAgentTaskRuntime(options) {
           stopMessageTimer(assistantMsg)
           cursors.clear(initialTask.taskId)
           await syncTaskTiming(assistantMsg)
+          await reconcileTerminalConversationHistory(
+            task.conversationId,
+            recoveryBoundary,
+            active?.status || 'terminal',
+            !receivedFinalEvent
+          )
           break
         }
         task = active

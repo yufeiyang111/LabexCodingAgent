@@ -35,9 +35,9 @@ function harness(overrides = {}) {
     messages,
     agentLoading,
     api,
-    subscribeAgent: async (pid, taskId, options) => {
+    subscribeAgent: overrides.subscribeAgent || (async (pid, taskId, options) => {
       subscriptions.push({ pid, taskId, options })
-    },
+    }),
     disconnectSubscription: () => events.push('disconnect'),
     handleAgentEvent: event => events.push(event.type),
     reconcileRecoveredCommandApproval: () => {},
@@ -96,6 +96,38 @@ test('terminal recovery reconciles conversation history after the initial snapsh
   assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), false)
   assert.deepEqual(reconciliations, ['conversation-a'])
   assert.equal(state.messages.value[0].content, 'Durable final reply')
+})
+
+test('terminal subscription without a final event reloads the durable conversation projection', async () => {
+  const reconciliations = []
+  let state
+  state = harness({
+    api: {
+      agentActiveTask: async () => ({ data: null }),
+      agentTasks: async () => ({ data: [] })
+    },
+    subscribeAgent: async (_projectId, _taskId, options) => {
+      options.onEvent({ type: 'RUN_STATE_COMPLETED', eventId: '18', data: { taskId: 71, state: 'completed' } })
+    },
+    reloadConversationHistory: async conversationId => {
+      reconciliations.push(conversationId)
+      state.messages.value = [{ role: 'assistant', taskId: 71, runState: 'completed', content: 'Durable terminal reply' }]
+      return true
+    }
+  })
+  const assistant = { role: 'assistant', taskId: 71, runState: 'running', content: '', isStreaming: true, timing: {} }
+  state.messages.value = [assistant]
+
+  await state.runtime.subscribeToTaskEvents({
+    taskId: 71,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'running',
+    lastEventSequence: 17
+  }, assistant)
+
+  assert.deepEqual(reconciliations, ['conversation-a'])
+  assert.equal(state.messages.value[0].content, 'Durable terminal reply')
 })
 
 test('stale active-task recovery cannot attach to a newly selected conversation', async () => {
@@ -174,6 +206,7 @@ test('active-task recovery prefers durable parts over a stale compatibility tool
   assert.deepEqual(call.args, { command: 'mvn compile' })
   assert.equal(call.result, 'failure_code=ENVIRONMENT_BLOCKED')
   assert.equal(state.agentLoading.value, false)
+  assert.equal(state.messages.value[0].runState, 'waiting_environment')
 })
 
 test('active-task recovery hydrates a pending question reply card', async () => {

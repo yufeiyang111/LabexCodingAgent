@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { CdpClient } from './cdp-client.mjs'
 import { redactEvidence } from './evidence.mjs'
 import { isExpectedRestartTransportError } from './browser-error-policy.mjs'
+import { parseSse } from './agent-sse.mjs'
 
 const uiBase = process.env.ACCEPTANCE_UI_BASE || 'http://127.0.0.1:13000'
 const apiBase = process.env.ACCEPTANCE_API_BASE || 'http://127.0.0.1:18080/api'
@@ -71,6 +72,26 @@ async function api(path, { method = 'GET', body, anonymous = false } = {}) {
     throw new Error(`API ${method} ${path} failed: ${payload?.message ?? response.status}`)
   }
   return payload.data
+}
+
+async function taskEvents(taskId) {
+  const path = `/student/projects/${projectId}/agent/tasks/${encodeURIComponent(taskId)}/events?lastEventId=0`
+  const response = await fetch(`${apiBase}${path}`, {
+    headers: {
+      Accept: 'text/event-stream',
+      Authorization: `Bearer ${token}`
+    }
+  })
+  const body = await response.text()
+  if (!response.ok) {
+    throw new Error(`Task event replay ${taskId} failed: ${response.status}`)
+  }
+  const malformed = []
+  const events = parseSse(body, { onMalformed: event => malformed.push(event) })
+  if (malformed.length > 0) {
+    throw new Error(`Task event replay ${taskId} contained malformed frames: ${JSON.stringify(malformed)}`)
+  }
+  return events
 }
 
 function chromeCandidates() {
@@ -985,6 +1006,8 @@ async function runScenario() {
   await client.send('Page.reload', { ignoreCache: true })
   await waitForWorkspace()
   await waitFor(() => bodyIncludes('acceptance-tiny'), 'tiny model selection')
+  const staticContextPriorTasks = await api(`/student/projects/${projectId}/agent/tasks`)
+  const staticContextPriorTaskIds = new Set(staticContextPriorTasks.map(task => Number(task.taskId)))
   await sendMessage('[acceptance:static-context]')
   await waitFor(
     () => client.evaluate(`Boolean(document.querySelector('.context-limit-card'))`),
@@ -994,6 +1017,28 @@ async function runScenario() {
   if (!blockerText.includes('\u9759\u6001\u4e0a\u4e0b\u6587') || !blockerText.includes('\u8f93\u5165\u5bb9\u91cf')) {
     throw new Error('Static context blocker card is missing the budget breakdown')
   }
+  let staticContextTask = null
+  await waitFor(async () => {
+    const tasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    staticContextTask = tasks
+      .filter(task => !staticContextPriorTaskIds.has(Number(task.taskId)))
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))[0] || null
+    return staticContextTask?.status === 'waiting_environment'
+  }, 'static context durable waiting state')
+  const staticContextEvents = await taskEvents(staticContextTask.taskId)
+  const staticContextEventTypes = staticContextEvents.map(event => event.type)
+  if (!staticContextEventTypes.includes('CONTEXT_LIMIT_BLOCKED')
+      || !staticContextEventTypes.includes('TASK_PAUSED')
+      || staticContextEventTypes.includes('FINAL')
+      || staticContextEventTypes.includes('DONE')) {
+    throw new Error(`Static context wait emitted an invalid terminal sequence: ${JSON.stringify(staticContextEventTypes)}`)
+  }
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.context-limit-card'))`),
+    'static context blocker after refresh'
+  )
 
   const evidenceConfig = await api('/student/model-configs', {
     method: 'POST',
@@ -1008,6 +1053,76 @@ async function runScenario() {
   await client.send('Page.reload', { ignoreCache: true })
   await waitForWorkspace()
   await waitFor(() => bodyIncludes('acceptance-evidence'), 'completion evidence model selection')
+
+  const environmentPriorTasks = await api(`/student/projects/${projectId}/agent/tasks`)
+  const environmentPriorTaskIds = new Set(environmentPriorTasks.map(task => Number(task.taskId)))
+  await createNewConversation()
+  await sendMessage('[acceptance:environment-wait]')
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.ai-environment-retry'))`),
+    'environment recovery action'
+  )
+  let environmentTask = null
+  await waitFor(async () => {
+    const tasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    environmentTask = tasks
+      .filter(task => !environmentPriorTaskIds.has(Number(task.taskId)))
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))[0] || null
+    return environmentTask?.status === 'waiting_environment'
+  }, 'environment durable waiting state')
+  const waitingEnvironmentEvents = await taskEvents(environmentTask.taskId)
+  const waitingEnvironmentEventTypes = waitingEnvironmentEvents.map(event => event.type)
+  if (!waitingEnvironmentEventTypes.includes('ENVIRONMENT_BLOCKED')
+      || !waitingEnvironmentEventTypes.includes('TASK_PAUSED')
+      || waitingEnvironmentEventTypes.includes('FINAL')
+      || waitingEnvironmentEventTypes.includes('DONE')) {
+    throw new Error(`Environment wait emitted an invalid terminal sequence: ${JSON.stringify(waitingEnvironmentEventTypes)}`)
+  }
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.ai-environment-retry'))`),
+    'environment recovery action after refresh'
+  )
+  await clickElement('.ai-environment-retry', { label: 'environment recovery action', native: true })
+  await waitFor(async () => {
+    environmentTask = await api(`/student/projects/${projectId}/agent/tasks/${environmentTask.taskId}`)
+    return environmentTask?.status === 'completed'
+  }, 'same environment task completion')
+  await waitFor(
+    () => bodyIncludes('The environment recovery resumed the original task'),
+    'environment recovery final response'
+  )
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.completion-evidence.satisfied'))`),
+    'environment recovery completion evidence card'
+  )
+  const environmentTasksAfterResume = (await api(`/student/projects/${projectId}/agent/tasks`))
+    .filter(task => !environmentPriorTaskIds.has(Number(task.taskId)))
+  if (environmentTasksAfterResume.length !== 1
+      || Number(environmentTasksAfterResume[0].taskId) !== Number(environmentTask.taskId)) {
+    throw new Error(`Environment recovery created a second task: ${JSON.stringify(environmentTasksAfterResume)}`)
+  }
+  const completedEnvironmentEvents = await taskEvents(environmentTask.taskId)
+  const completedEnvironmentEventTypes = completedEnvironmentEvents.map(event => event.type)
+  const environmentResumeIndex = completedEnvironmentEventTypes.indexOf('RUN_ENVIRONMENT_RESUME')
+  const environmentFinalCount = completedEnvironmentEventTypes.filter(type => type === 'FINAL').length
+  const environmentDoneCount = completedEnvironmentEventTypes.filter(type => type === 'DONE').length
+  if (environmentResumeIndex < 0
+      || environmentFinalCount !== 1
+      || environmentDoneCount !== 1
+      || completedEnvironmentEventTypes.indexOf('FINAL') < environmentResumeIndex
+      || completedEnvironmentEventTypes.indexOf('DONE') < environmentResumeIndex) {
+    throw new Error(`Environment recovery terminal sequence is invalid: ${JSON.stringify(completedEnvironmentEventTypes)}`)
+  }
+  const environmentCompletionEvidence = await api(
+    `/student/projects/${projectId}/agent/tasks/${environmentTask.taskId}/completion-evidence`
+  )
+  if (!environmentCompletionEvidence?.satisfied
+      || (environmentCompletionEvidence.failedVerifications || []).length > 0) {
+    throw new Error(`Environment recovery completion evidence is not satisfied: ${JSON.stringify(environmentCompletionEvidence)}`)
+  }
+
   await createNewConversation()
   await sendMessage('[acceptance:evidence]')
   await waitFor(
@@ -1076,6 +1191,12 @@ async function runScenario() {
     restartInteractionVerified,
     expectedRestartTransportErrors: expectedRestartTransportErrors.length,
     staticContextBlockerCard: true,
+    recoverableWaitNoPseudoTerminal: true,
+    environmentRetrySameTask: true,
+    environmentTaskId: environmentTask.taskId,
+    environmentFinalCount,
+    environmentDoneCount,
+    environmentCompletionEvidence: environmentCompletionEvidence.satisfied,
     completionEvidenceCard: true,
     unverifiedCompletionBlocked: true,
     consoleErrors: 0,

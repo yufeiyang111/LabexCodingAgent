@@ -13,7 +13,9 @@ import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.mapper.AgentVerificationMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
@@ -49,15 +51,22 @@ public class RunCompletionEvidenceService {
                 .eq(AgentVerification::getTaskId, taskId)
                 .eq(AgentVerification::getStudentId, studentId)
                 .eq(AgentVerification::getProjectId, projectId)
-                .orderByAsc(AgentVerification::getCreateTime));
+                .orderByAsc(AgentVerification::getCreateTime)
+                .orderByAsc(AgentVerification::getVerificationId));
+        List<AgentVerification> effectiveVerifications = latestVerificationPerCommand(verifications);
         List<String> changedFiles = changes.stream().map(AgentFileChange::getRelativePath)
                 .filter(path -> path != null && !path.isBlank()).distinct().toList();
-        List<String> passed = verifications.stream().filter(this::passed)
+        List<String> passed = effectiveVerifications.stream().filter(this::passed)
                 .map(this::verificationLabel).toList();
-        List<String> failed = new ArrayList<>(verifications.stream().filter(item -> !passed(item))
+        List<String> failed = new ArrayList<>(effectiveVerifications.stream().filter(item -> !passed(item))
                 .map(this::verificationLabel).toList());
         List<String> unresolvedRisks = new ArrayList<>();
         boolean hasSuccessfulVerification = !passed.isEmpty();
+        boolean hasHistoricalFailedVerification = verifications != null
+                && verifications.stream().anyMatch(item -> item != null && !passed(item));
+        boolean runTestsFailureRecovered = hasSuccessfulVerification
+                && failed.isEmpty()
+                && hasHistoricalFailedVerification;
         for (AgentRunArtifact artifact : artifactService.list(taskId, "post_edit_verification")) {
             String content = artifact.getContent() == null ? "" : artifact.getContent();
             if (content.contains("status=UNAVAILABLE")) {
@@ -71,6 +80,10 @@ public class RunCompletionEvidenceService {
         }
         for (AgentRunArtifact artifact : artifactService.list(taskId, "tool_failure")) {
             String content = artifact.getContent() == null ? "" : artifact.getContent();
+            // run_tests 的失败工件保留审计；只有更晚的权威验证已覆盖全部历史失败时才解除完成阻塞。
+            if (runTestsFailureRecovered && isRunTestsFailure(content)) {
+                continue;
+            }
             failed.add("tool failure: " + boundedLabel(content));
             unresolvedRisks.add("unrecovered tool failure");
         }
@@ -149,6 +162,42 @@ public class RunCompletionEvidenceService {
                 && left.satisfied() == right.satisfied();
     }
 
+    /**
+     * 同一规范化命令只保留最后一条验证记录，使恢复后的成功能够覆盖历史失败。
+     * 不同命令仍分别保留，避免用无关验证掩盖失败。
+     */
+    private List<AgentVerification> latestVerificationPerCommand(List<AgentVerification> verifications) {
+        Map<String, AgentVerification> latest = new LinkedHashMap<>();
+        int anonymous = 0;
+        for (AgentVerification verification : verifications == null ? List.<AgentVerification>of() : verifications) {
+            if (verification == null) continue;
+            String key = normalizedVerificationCommand(verification.getCommand());
+            if (key.isBlank()) {
+                key = "verification:" + (verification.getVerificationId() == null
+                        ? "anonymous-" + anonymous++ : verification.getVerificationId());
+            }
+            // remove + put 保持最后一次出现的命令顺序。
+            latest.remove(key);
+            latest.put(key, verification);
+        }
+        return List.copyOf(latest.values());
+    }
+
+    private String normalizedVerificationCommand(String command) {
+        return command == null ? "" : command.trim().replaceAll("\\s+", " ");
+    }
+
+    private boolean isRunTestsFailure(String content) {
+        if (content == null || content.isBlank()) return false;
+        for (String line : content.split("\\R")) {
+            String normalized = line.trim();
+            if (normalized.regionMatches(true, 0, "tool=", 0, "tool=".length())) {
+                return "run_tests".equalsIgnoreCase(normalized.substring("tool=".length()).trim());
+            }
+        }
+        return false;
+    }
+
     private boolean passed(AgentVerification verification) {
         String status = verification.getStatus() == null ? "" : verification.getStatus().toLowerCase(Locale.ROOT);
         return "passed".equals(status) || "manual_passed".equals(status);
@@ -160,8 +209,8 @@ public class RunCompletionEvidenceService {
     }
 
     private String verificationLabel(AgentVerification verification) {
-        String command = verification.getCommand() == null || verification.getCommand().isBlank()
-                ? "verification" : verification.getCommand().trim();
+        String command = normalizedVerificationCommand(verification.getCommand());
+        if (command.isBlank()) command = "verification";
         command = SECRET.matcher(command).replaceAll("$1=[REDACTED]");
         if (command.length() > 240) command = command.substring(0, 240) + "...";
         return command + (verification.getExitCode() == null ? "" : " (exit " + verification.getExitCode() + ")");

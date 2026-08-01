@@ -51,7 +51,7 @@ test('CloudWorkspace renders provider failures instead of leaving a loading skel
 })
 
 test('CloudWorkspace keeps the actual provider error when a stop final event follows', () => {
-  assert.match(timelineSource, /case 'FINAL':[\s\S]*if \(data\.content && !assistantMsg\.error\) assistantMsg\.content = stripInternalReasoningBlocks\(data\.content\)/)
+  assert.match(timelineSource, /case 'FINAL':[\s\S]*!isRecoverableAgentRunState\(assistantMsg\.runState\) && data\.content && !assistantMsg\.error[\s\S]*assistantMsg\.content = stripInternalReasoningBlocks\(data\.content\)/)
 })
 
 test('CloudWorkspace renders live thinking and answer deltas immediately', () => {

@@ -1024,10 +1024,21 @@ public class AgentLoopEngine {
                                             Optional<EnvironmentBlockerClassifier.Blocker> environmentBlocker =
                                                     EnvironmentBlockerClassifier.classify(tn, res);
                                             if (environmentBlocker.isPresent()) {
+                                                String blockedResultForModel = "[Tool " + tn + " result]\n"
+                                                        + this.compactToolResultForModel(tn, res);
                                                 this.journalToolBlocked(task.getTaskId(), toolCallId, tn, publicArgs, i, res.getContent());
+                                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                                        this.toolCallBatchProtocol.toolResultMessage(call, blockedResultForModel));
                                                 this.appendToolResult(runLog, res);
+                                                String skippedMessage = "Skipped because an earlier tool call in the same model turn is blocked by the environment.";
                                                 this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i,
-                                                        "Skipped because an earlier tool call in the same model turn is blocked by the environment.");
+                                                        skippedMessage);
+                                                for (int skippedIndex = batchIndex + 1; skippedIndex < nativeToolCalls.size(); skippedIndex++) {
+                                                    AgentModelTurnExecutor.NativeToolCall skipped = nativeToolCalls.get(skippedIndex);
+                                                    this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                                            this.toolCallBatchProtocol.toolResultMessage(skipped,
+                                                                    "[Tool " + skipped.toolName() + " result]\n" + skippedMessage));
+                                                }
                                                 this.stopForEnvironmentBlocker(sse, conv, task, project, request, ctx, runLog, i, tn,
                                                         res, environmentBlocker.get(), visibleLanguage, emitter);
                                                 return;
@@ -1496,21 +1507,23 @@ public class AgentLoopEngine {
         event.put("tool", toolName);
         event.put("blockerCode", blocker.code());
         event.put("detail", blocker.detail());
+        event.put("taskStatus", "waiting_environment");
+        event.put("retryable", true);
         event.put("manualRetryRequired", true);
         event.put("result", this.compactToolResultForCheckpoint(toolName, result));
         this.sendEvent(sse, conv, "ENVIRONMENT_BLOCKED", event);
         this.writeAgentCheckpoint(project, request, task, ctx, "waiting_environment", detail, toolName,
                 this.compactToolResultForCheckpoint(toolName, result), runLog);
-        this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
-        this.sendEvent(sse, conv, "DONE", Map.of(
+        this.sendEvent(sse, conv, "TASK_PAUSED", Map.of(
                 "message", summary,
+                "detail", detail,
                 "iterations", iteration,
                 "taskId", task.getTaskId(),
                 "taskStatus", "waiting_environment",
-                "waitingForEnvironment", true,
-                "waitingForApproval", false,
+                "reason", "environment",
                 "resumeAgentLoop", false,
                 "manualRetryRequired", true));
+        // 只关闭当前 HTTP 传输；可恢复任务不得发送 FINAL/DONE 终态事件。
         emitter.complete();
     }
 
@@ -2768,15 +2781,24 @@ public class AgentLoopEngine {
         payload.put("action", decision.action().name());
         payload.put("reasonCode", decision.reasonCode());
         payload.put("message", detail);
+        payload.put("taskStatus", "waiting_environment");
+        payload.put("manualRetryRequired", true);
         payload.put("remediation", decision.remediation());
         payload.put("budget", decision.breakdown().toPayload());
         this.appendRunLog(runLog, "\n- Context admission blocked provider invocation: `"
                 + this.safeLogText(decision.reasonCode()) + "`\n");
         this.sendEvent(sse, conversation, "CONTEXT_LIMIT_BLOCKED", payload);
         this.writeAgentCheckpoint(project, request, task, context, "waiting_environment", detail, "", "", runLog);
-        this.streamFinal(sse, conversation, this.buildStopFinal(title, detail, project, runLog, visibleLanguage), visibleLanguage);
-        this.sendEvent(sse, conversation, "DONE", Map.of(
-                "message", title, "iterations", iteration, "reasonCode", decision.reasonCode()));
+        this.sendEvent(sse, conversation, "TASK_PAUSED", Map.of(
+                "message", title,
+                "detail", detail,
+                "iterations", iteration,
+                "taskId", task.getTaskId(),
+                "taskStatus", "waiting_environment",
+                "reason", "context_limit",
+                "resumeAgentLoop", false,
+                "manualRetryRequired", true));
+        // 只关闭当前 HTTP 传输；上下文阻塞任务保持可恢复等待态。
         emitter.complete();
     }
 

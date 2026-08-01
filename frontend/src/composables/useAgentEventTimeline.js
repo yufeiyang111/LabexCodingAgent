@@ -2,6 +2,7 @@ import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStr
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyTokenUsageEvent } from './cacheTelemetryStatus.js'
+import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 
 function toolResultStatus(success, result) {
   if (success === false) return 'error'
@@ -155,6 +156,11 @@ export function useAgentEventTimeline(options) {
       case 'COMMAND_APPROVAL_RESUME_DEFERRED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
         assistantMsg.resumeTaskEventsAfterStream = true
+        if (type === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED') {
+          assistantMsg.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'recovering'
+          assistantMsg.isStreaming = true
+          agentLoading.value = true
+        }
         updateCommandApprovalLifecycle(assistantMsg, type, data)
         scheduleAgentRender()
         break
@@ -182,6 +188,7 @@ export function useAgentEventTimeline(options) {
         break
       case 'ENVIRONMENT_BLOCKED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.taskStatus) || 'waiting_environment'
         assistantMsg.environmentBlocker = data
         assistantMsg.content = data.detail || '依赖环境暂时不可用，请恢复后重试。'
         assistantMsg.isStreaming = false
@@ -189,6 +196,7 @@ export function useAgentEventTimeline(options) {
         break
       case 'CONTEXT_LIMIT_BLOCKED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.taskStatus) || 'waiting_environment'
         assistantMsg.contextLimitBlocker = data
         assistantMsg.environmentBlocker = {
           ...data,
@@ -211,9 +219,37 @@ export function useAgentEventTimeline(options) {
         break
       case 'RUN_INTERACTION_RESUME_QUEUED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'recovering'
+        assistantMsg.isStreaming = true
+        agentLoading.value = true
         resolveDurableInteraction(assistantMsg, data)
         scheduleAgentRender()
         break
+      case 'RUN_ENVIRONMENT_RESUME':
+      case 'RUN_WORKSPACE_RESUME':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'queued'
+        assistantMsg.environmentBlocker = null
+        assistantMsg.contextLimitBlocker = null
+        assistantMsg.workspaceWaiting = null
+        assistantMsg.error = null
+        assistantMsg.isStreaming = true
+        agentLoading.value = true
+        scheduleAgentRender()
+        break
+      case 'RUN_STATE_QUEUED':
+      case 'RUN_STATE_PREPARING':
+      case 'RUN_STATE_RUNNING':
+      case 'RUN_STATE_RECOVERING':
+      case 'RUN_STATE_RETRYING': {
+        const fallbackState = type.substring('RUN_STATE_'.length).toLowerCase()
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.state || data.taskStatus) || fallbackState
+        assistantMsg.isStreaming = true
+        agentLoading.value = true
+        scheduleAgentRender()
+        break
+      }
       case 'RUN_STATE_COMPLETED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
         assistantMsg.runState = data.state || 'completed'
@@ -221,15 +257,20 @@ export function useAgentEventTimeline(options) {
         scheduleAgentRender()
         break
       case 'FINAL_DELTA':
+        if (isRecoverableAgentRunState(assistantMsg.runState)) break
         assistantMsg._finalReasoningFilter ??= createInternalReasoningBlockStreamFilter()
         assistantMsg.content += assistantMsg._finalReasoningFilter.push(data.delta)
         scheduleAgentRender()
         break
       case 'FINAL':
-        if (data.content && !assistantMsg.error) assistantMsg.content = stripInternalReasoningBlocks(data.content)
+        if (!isRecoverableAgentRunState(assistantMsg.runState) && data.content && !assistantMsg.error) {
+          assistantMsg.content = stripInternalReasoningBlocks(data.content)
+        }
         assistantMsg._finalReasoningFilter?.reset()
         break
       case 'TASK_PAUSED':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.taskStatus) || assistantMsg.runState || ''
         assistantMsg.waitingForCommandApproval = data.reason === 'command_approval'
         assistantMsg.resumeTaskEventsAfterStream = data.resumeAgentLoop === true
           || ['workspace_checkout', 'command_approval', 'permission', 'network', 'question'].includes(data.reason)
@@ -243,12 +284,23 @@ export function useAgentEventTimeline(options) {
           resumeAgentLoop: data.resumeAgentLoop === true
         })
         break
-      case 'DONE':
-        resolveWaitingInteractions(assistantMsg)
+      case 'DONE': {
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        const doneState = normalizeAgentRunState(data.taskStatus || assistantMsg.runState)
+        if (doneState) assistantMsg.runState = doneState
         flushThinkingDisplay(assistantMsg)
         assistantMsg.isStreaming = false
         stopMessageTimer(assistantMsg)
         agentLoading.value = false
+        if (isRecoverableAgentRunState(assistantMsg.runState)) {
+          logTaskRecovery('LEGACY_PSEUDO_TERMINAL_IGNORED', {
+            taskId: assistantMsg.taskId,
+            taskStatus: assistantMsg.runState,
+            eventType: type
+          })
+          break
+        }
+        resolveWaitingInteractions(assistantMsg)
         if (data.waitingForApproval) {
           assistantMsg.waitingForCommandApproval = true
           logTaskRecovery('TASK_WAITING_APPROVAL', {
@@ -258,6 +310,7 @@ export function useAgentEventTimeline(options) {
           })
         }
         break
+      }
       case 'CONTEXT_STATUS':
         contextUsageStatus.value = data
         break

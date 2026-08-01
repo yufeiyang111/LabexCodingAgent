@@ -1,6 +1,7 @@
 import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
+import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 
 function nextOrder(message) {
   message._nextOrder = (message._nextOrder || 0) + 1
@@ -289,15 +290,18 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'USER_QUESTION': callbacks.onUserQuestion?.(message, data); break
     case 'WORKSPACE_WAITING':
       message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.taskStatus) || 'waiting_workspace'
       message.workspaceWaiting = data
       break
     case 'ENVIRONMENT_BLOCKED':
       message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.taskStatus) || 'waiting_environment'
       message.environmentBlocker = data
       message.content = data.detail || data.message || message.content || '依赖环境暂时不可用，请恢复后重试。'
       break
     case 'CONTEXT_LIMIT_BLOCKED':
       message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.taskStatus) || 'waiting_environment'
       message.contextLimitBlocker = data
       message.environmentBlocker = {
         ...data,
@@ -316,17 +320,32 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       break
     case 'RUN_STATE_COMPLETED':
       message.taskId = data.taskId || message.taskId || null
-      message.runState = data.state || 'completed'
+      message.runState = normalizeAgentRunState(data.state) || 'completed'
+      break
+    case 'TASK_PAUSED':
+      message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.taskStatus) || message.runState || ''
+      message.isStreaming = false
       break
     case 'FINAL_DELTA': {
+      if (isRecoverableAgentRunState(message.runState)) break
       message._finalReasoningFilter ??= createInternalReasoningBlockStreamFilter()
       message.content += message._finalReasoningFilter.push(data.delta)
       break
     }
     case 'FINAL':
-      if (data.content && !message.error) message.content = stripInternalReasoningBlocks(data.content)
+      if (!isRecoverableAgentRunState(message.runState) && data.content && !message.error) {
+        message.content = stripInternalReasoningBlocks(data.content)
+      }
       message._finalReasoningFilter?.reset()
       break
+    case 'DONE': {
+      message.taskId = data.taskId || message.taskId || null
+      const doneState = normalizeAgentRunState(data.taskStatus || message.runState)
+      if (doneState) message.runState = doneState
+      message.isStreaming = false
+      break
+    }
     case 'ERROR': message.error = data.message; break
     case 'INTERRUPTED': message.content += '\n[\u5df2\u4e2d\u65ad]'; break
     case 'TOKEN_USAGE': callbacks.onTokenUsage?.(data); break
