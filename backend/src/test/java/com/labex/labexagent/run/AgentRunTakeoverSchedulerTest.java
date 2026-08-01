@@ -3,6 +3,8 @@ package com.labex.labexagent.run;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
@@ -13,6 +15,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentTask;
+import com.labex.entity.StudentProject;
+import com.labex.service.StudentProjectService;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
@@ -30,7 +34,7 @@ class AgentRunTakeoverSchedulerTest {
         when(leases.leaseDurationMs()).thenReturn(30_000L);
         when(lifecycle.claimRecovery(71L, AgentRunState.RUNNING, "instance-new", 30_000L))
                 .thenReturn(claim(), null);
-        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine);
+        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine, existingProjectService());
 
         assertTrue(scheduler.takeover(task));
         assertFalse(scheduler.takeover(task));
@@ -48,7 +52,7 @@ class AgentRunTakeoverSchedulerTest {
         when(leases.instanceId()).thenReturn("instance-new");
         when(leases.leaseDurationMs()).thenReturn(30_000L);
         when(lifecycle.claimRecovery(71L, AgentRunState.RUNNING, "instance-new", 30_000L)).thenReturn(claim());
-        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine);
+        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine, existingProjectService());
 
         assertFalse(scheduler.takeover(task));
 
@@ -58,6 +62,25 @@ class AgentRunTakeoverSchedulerTest {
                 any(), any(), any(), any());
         verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean(), any(AgentRunExecutionLeaseService.ExecutionLease.class));
         verify(leases).release(any(AgentRunExecutionLeaseService.ExecutionLease.class));
+    }
+
+    @Test
+    void marksAnOrphanedTaskFailedInsteadOfEnqueuingAProjectlessResume() {
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        StudentProjectService projectService = mock(StudentProjectService.class);
+        AgentTask task = task();
+        when(projectService.getOwnedProject(7, 12)).thenReturn(null);
+        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine, projectService);
+
+        assertFalse(scheduler.takeover(task));
+
+        verify(lifecycle).transitionIfCurrent(
+                eq(71L), eq(AgentRunState.RUNNING), eq(AgentRunState.FAILED),
+                eq("RUN_RECOVERY_PROJECT_MISSING"), any(), any(), any(), eq("recovery-project-missing-71"));
+        verify(lifecycle, never()).claimRecovery(anyLong(), any(), anyString(), anyLong());
+        verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean(), any(AgentRunExecutionLeaseService.ExecutionLease.class));
     }
 
     @Test
@@ -71,7 +94,7 @@ class AgentRunTakeoverSchedulerTest {
         when(lifecycle.claimRecovery(71L, AgentRunState.RUNNING, "instance-new", 30_000L)).thenReturn(claim());
         org.mockito.Mockito.doThrow(new IllegalStateException("queue rejected"))
                 .when(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true), any(AgentRunExecutionLeaseService.ExecutionLease.class));
-        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine);
+        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine, existingProjectService());
 
         assertFalse(scheduler.takeover(task));
 
@@ -81,6 +104,12 @@ class AgentRunTakeoverSchedulerTest {
         order.verify(lifecycle).transition(eq(71L), eq(AgentRunState.FAILED), eq("RUN_RECOVERY_TAKEOVER_FAILED"),
                 any(), any(), any(), any());
         verify(leases).release(any(AgentRunExecutionLeaseService.ExecutionLease.class));
+    }
+
+    private StudentProjectService existingProjectService() {
+        StudentProjectService service = mock(StudentProjectService.class);
+        when(service.getOwnedProject(7, 12)).thenReturn(new StudentProject());
+        return service;
     }
 
     private AgentTask task() {

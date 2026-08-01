@@ -1,11 +1,15 @@
 package com.labex.labexagent.workspace;
 
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
+import java.sql.SQLException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.TransientDataAccessException;
+import org.springframework.transaction.TransactionSystemException;
 import org.springframework.stereotype.Service;
 
 /** Renews active checkout leases and interrupts a worker that loses its checkout fencing token. */
@@ -35,13 +39,35 @@ public class ProjectCheckoutLeaseHeartbeatService {
     @Scheduled(fixedDelayString = "${labex-agent.project-checkout-heartbeat-interval-ms:10000}")
     public void heartbeatScheduled() {
         for (TrackedLease tracked : active.values()) {
-            if (leaseService.renew(tracked.lease())) continue;
+            try {
+                if (leaseService.renew(tracked.lease())) continue;
+            } catch (RuntimeException failure) {
+                if (isRetryableFailure(failure)) {
+                    log.warn("Project checkout lease heartbeat will retry after transient database failure taskId={} epoch={} reason={}",
+                            tracked.lease().taskId(), tracked.lease().epoch(), failure.getMessage());
+                    continue;
+                }
+                log.error("Project checkout lease heartbeat failed unexpectedly taskId={} epoch={}",
+                        tracked.lease().taskId(), tracked.lease().epoch(), failure);
+            }
             if (active.remove(tracked.lease().taskId(), tracked)) {
                 log.warn("Agent run lost project checkout lease taskId={} epoch={}",
                         tracked.lease().taskId(), tracked.lease().epoch());
                 cancellationRegistry.cancel(tracked.sessionId());
             }
         }
+    }
+
+    private boolean isRetryableFailure(Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof DataAccessException || current instanceof TransientDataAccessException
+                    || current instanceof TransactionSystemException || current instanceof SQLException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private record TrackedLease(ProjectCheckoutLeaseService.CheckoutLease lease, String sessionId) { }

@@ -12,6 +12,7 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Database-backed, fenced checkout lease. Tasks may run concurrently only when their resolved
@@ -87,6 +88,7 @@ public class ProjectCheckoutLeaseService {
         return AcquireResult.busy(existing.getTaskId());
     }
 
+    @Transactional(timeout = 3)
     public boolean renew(CheckoutLease lease) {
         return renew(lease, LocalDateTime.now());
     }

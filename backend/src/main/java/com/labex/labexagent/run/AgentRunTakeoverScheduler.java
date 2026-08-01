@@ -1,6 +1,7 @@
 package com.labex.labexagent.run;
 
 import com.labex.entity.AgentTask;
+import com.labex.service.StudentProjectService;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import java.util.Map;
@@ -12,12 +13,14 @@ public class AgentRunTakeoverScheduler {
     private final AgentRunExecutionLeaseService leases;
     private final AgentRunLifecycleService lifecycle;
     private final AgentLoopEngine engine;
+    private final StudentProjectService projectService;
 
     public AgentRunTakeoverScheduler(AgentRunExecutionLeaseService leases, AgentRunLifecycleService lifecycle,
-                                     @Lazy AgentLoopEngine engine) {
+                                     @Lazy AgentLoopEngine engine, StudentProjectService projectService) {
         this.leases = leases;
         this.lifecycle = lifecycle;
         this.engine = engine;
+        this.projectService = projectService;
     }
 
     public boolean takeover(AgentTask task) {
@@ -25,6 +28,19 @@ public class AgentRunTakeoverScheduler {
             return false;
         }
         AgentRunState expected = AgentRunState.fromPersistedStatus(task.getStatus());
+        if (!projectExists(task)) {
+            lifecycle.transitionIfCurrent(
+                    task.getTaskId(),
+                    expected,
+                    AgentRunState.FAILED,
+                    "RUN_RECOVERY_PROJECT_MISSING",
+                    Map.of("reason", "Project no longer exists",
+                            "projectId", String.valueOf(task.getProjectId())),
+                    "Recovery failed",
+                    "The project no longer exists; the interrupted run cannot be resumed.",
+                    "recovery-project-missing-" + task.getTaskId());
+            return false;
+        }
         AgentRunLifecycleService.RecoveryClaim claim = lifecycle.claimRecovery(
                 task.getTaskId(), expected, leases.instanceId(), leases.leaseDurationMs());
         if (claim == null) {
@@ -58,6 +74,13 @@ public class AgentRunTakeoverScheduler {
                 "recovery-takeover-failed-" + task.getTaskId() + "-" + lease.epoch());
         leases.release(lease);
         return false;
+    }
+
+    private boolean projectExists(AgentTask task) {
+        if (task == null || task.getStudentId() == null || task.getProjectId() == null || projectService == null) {
+            return false;
+        }
+        return projectService.getOwnedProject(task.getStudentId(), task.getProjectId()) != null;
     }
 
     private boolean hasDurableContinuationContext(AgentTask task) {

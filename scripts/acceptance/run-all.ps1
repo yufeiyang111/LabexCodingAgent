@@ -3,7 +3,8 @@ param(
     [int]$BackendPort = 18080,
     [int]$FrontendPort = 13000,
     [int]$CdpPort = 19222,
-    [int]$TimeoutSeconds = 120
+    [int]$TimeoutSeconds = 120,
+    [switch]$RestartBrowserBackend
 )
 
 Set-StrictMode -Version Latest
@@ -42,8 +43,13 @@ if ($LASTEXITCODE -ne 0) { throw "后端重启验收失败，exitCode=$LASTEXITC
 $summary.backendRuntime = $true
 
 Write-Host '[4/4] Running browser acceptance...'
-& (Join-Path $PSScriptRoot 'browser-runtime.ps1') -BackendPort $BackendPort -FrontendPort $FrontendPort -CdpPort $CdpPort -TimeoutSeconds $TimeoutSeconds
-if ($LASTEXITCODE -ne 0) { throw "浏览器验收失败，exitCode=$LASTEXITCODE" }
+if ($RestartBrowserBackend) {
+    & (Join-Path $PSScriptRoot 'browser-runtime.ps1') -BackendPort $BackendPort -FrontendPort $FrontendPort -CdpPort $CdpPort -TimeoutSeconds $TimeoutSeconds -RestartBackendForAcceptance
+} else {
+    & (Join-Path $PSScriptRoot 'browser-runtime.ps1') -BackendPort $BackendPort -FrontendPort $FrontendPort -CdpPort $CdpPort -TimeoutSeconds $TimeoutSeconds
+}
+if ($LASTEXITCODE -ne 0) { throw "Browser acceptance failed; exitCode=$LASTEXITCODE" }
 $summary.browserRuntime = $true
+
 
 $summary | ConvertTo-Json

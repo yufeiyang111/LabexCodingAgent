@@ -92,6 +92,28 @@ class AgentRunLifecycleServiceTest {
     }
 
     @Test
+    void skipsAStaleExpectedStateEventAfterTheTaskHasReachedTerminalState() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.COMPLETED);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        AgentRunEvent event = service.appendEventIfCurrent(
+                71L,
+                AgentRunState.WAITING_USER,
+                "RUN_RECOVERY_WAITING",
+                Map.of("reason", "stale startup snapshot"),
+                "recovery-71-waiting");
+
+        assertEquals(null, event);
+        verify(taskMapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(eventMapper, never()).insert(any(AgentRunEvent.class));
+        verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
     void allocatesAfterThePersistedEventMaximumWhenTheTaskCursorIsStale() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);

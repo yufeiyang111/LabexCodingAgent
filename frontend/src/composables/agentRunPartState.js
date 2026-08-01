@@ -41,11 +41,11 @@ export function applyRunPartSnapshot(message, parts = []) {
     Number(left?.sequence || left?.partId || 0) - Number(right?.sequence || right?.partId || 0))
   ordered.forEach(part => {
     const type = String(part?.partType || '').toLowerCase()
-    if (type === 'tool') {
+    if (type === 'tool' || type === 'tool_call' || type === 'tool_result') {
       upsertDurableToolCallState(message, {
         toolCallId: part.toolCallId,
         tool: part.tool,
-        arguments: parseJson(part.input),
+        arguments: type === 'tool_result' ? undefined : parseJson(part.input),
         status: part.status,
         detail: part.output
       })

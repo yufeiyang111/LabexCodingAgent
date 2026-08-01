@@ -87,7 +87,7 @@ function Start-AcceptanceBackend {
     $stderr = Join-Path $logRoot "$Profile-err.log"
     $arguments = @(
         '-Dfile.encoding=UTF-8',
-        '-Dlabex.acceptance.hold.ms=5000',
+        '-Dlabex.acceptance.hold.ms=12000',
         '-jar', $JarPath,
         "--server.port=$BackendPort",
         "--spring.profiles.active=$Profile",
@@ -211,12 +211,27 @@ function Wait-TaskTerminal {
     param([long]$TaskId, [int]$Seconds = 60)
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     do {
-        $tasks = @(Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks")
-        $task = $tasks | Where-Object { [long]$_.taskId -eq $TaskId } | Select-Object -First 1
+        try {
+            $task = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$TaskId"
+        } catch {
+            $task = $null
+        }
         if ($task -and $task.status -in @('completed','failed','cancelled','timeout')) { return $task }
         Start-Sleep -Milliseconds 400
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "任务 $TaskId 在 $Seconds 秒内未进入终态。"
+}
+
+function Wait-TaskBySession {
+    param([string]$SessionId, [string[]]$Statuses = @(), [int]$Seconds = 30)
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    do {
+        $tasks = @(Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks")
+        $task = $tasks | Where-Object { [string]$_.sessionId -eq $SessionId } | Select-Object -First 1
+        if ($task -and ($Statuses.Count -eq 0 -or $task.status -in $Statuses)) { return $task }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Session $SessionId did not reach the expected task state within $Seconds seconds."
 }
 
 function Get-TaskEvents {
@@ -367,8 +382,9 @@ try {
         if ($action -eq 'approve') { $evidence.commandApproveRestart = $true } else { $evidence.commandRejectRestart = $true }
     }
 
+    $holderSessionId = [Guid]::NewGuid().ToString()
     $jobPayload = @{
-        sessionId = [Guid]::NewGuid().ToString(); conversationId = ''; mode = 'build'
+        sessionId = $holderSessionId; conversationId = ''; mode = 'build'
         message = '[acceptance:checkout-hold] hold checkout'; activePath = ''; modelConfigId = $configId; backgroundRun = $false
     } | ConvertTo-Json -Compress
     $jobHeaders = Get-Headers
@@ -378,7 +394,10 @@ try {
         Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method Post -Headers $Headers -ContentType 'application/json' -Body $Body -TimeoutSec $Timeout | Select-Object -ExpandProperty Content
     } -ArgumentList $jobUri, $jobHeaders, $jobPayload, $TimeoutSeconds
     try {
-        Start-Sleep -Milliseconds 700
+        $holderTask = Wait-TaskBySession -SessionId $holderSessionId -Statuses @('preparing', 'running') -Seconds 30
+        if ([string]$holderTask.status -notin @('preparing', 'running')) {
+            throw "Checkout holder was not active: $($holderTask.status)"
+        }
         $contenderEvents = Invoke-AgentStream -Message '[acceptance:isolation:contender] checkout contention'
         $contenderWaiting = Get-RequiredEvent -Events $contenderEvents -Type 'WORKSPACE_WAITING'
         $contenderTaskId = [long]$contenderWaiting.data.taskId

@@ -30,6 +30,11 @@ spring:
       enabled: true
       max-file-size: 100MB
       max-request-size: 100MB
+  task:
+    scheduling:
+      pool:
+        size: ${LABEX_AGENT_SCHEDULER_POOL_SIZE:4}
+      thread-name-prefix: labex-agent-scheduler-
 
 mybatis-plus:
   type-aliases-package: com.labex.entity

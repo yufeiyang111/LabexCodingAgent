@@ -2,6 +2,8 @@ package com.labex.labexagent.run;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -21,13 +23,13 @@ class AgentRunRecoveryServiceTest {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         AgentTask task = task(71L, AgentRunState.QUEUED);
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
-        when(taskMapper.updateById(task)).thenReturn(1);
+        when(lifecycle.recordRecoveryAttemptIfCurrent(anyLong(), any())).thenReturn(1);
         AgentRunRecoveryService service = newRecoveryService(taskMapper, lifecycle, mock(AgentRunTakeoverScheduler.class));
 
         int recovered = service.recoverInterruptedRuns();
 
         assertEquals(1, recovered);
-        assertEquals(1, task.getRecoveryAttempts());
+        verify(lifecycle).recordRecoveryAttemptIfCurrent(71L, AgentRunState.QUEUED);
         verify(lifecycle).transition(
                 eq(71L),
                 eq(AgentRunState.FAILED),
@@ -63,14 +65,15 @@ class AgentRunRecoveryServiceTest {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         AgentTask task = task(72L, AgentRunState.WAITING_APPROVAL);
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
-        when(taskMapper.updateById(task)).thenReturn(1);
+        when(lifecycle.recordRecoveryAttemptIfCurrent(anyLong(), any())).thenReturn(1);
         AgentRunRecoveryService service = newRecoveryService(taskMapper, lifecycle, mock(AgentRunTakeoverScheduler.class));
 
         int recovered = service.recoverInterruptedRuns();
 
         assertEquals(1, recovered);
-        verify(lifecycle).appendEvent(
+        verify(lifecycle).appendEventIfCurrent(
                 eq(72L),
+                eq(AgentRunState.WAITING_APPROVAL),
                 eq("RUN_RECOVERY_WAITING"),
                 any(),
                 eq("recovery-72-waiting"));
@@ -88,15 +91,37 @@ class AgentRunRecoveryServiceTest {
         task.setRetryAttempts(1);
         task.setNextRetryAt(java.time.LocalDateTime.of(2026, 7, 23, 10, 1));
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
-        when(taskMapper.updateById(task)).thenReturn(1);
+        when(lifecycle.recordRecoveryAttemptIfCurrent(anyLong(), any())).thenReturn(1);
         AgentRunRecoveryService service = newRecoveryService(taskMapper, lifecycle, mock(AgentRunTakeoverScheduler.class));
 
         int recovered = service.recoverInterruptedRuns();
 
         assertEquals(1, recovered);
-        verify(lifecycle).appendEvent(
-                eq(73L), eq("RUN_RECOVERY_RETRY_PENDING"), any(), eq("recovery-73-retry-pending"));
+        verify(lifecycle).appendEventIfCurrent(
+                eq(73L), eq(AgentRunState.RETRYING), eq("RUN_RECOVERY_RETRY_PENDING"),
+                any(), eq("recovery-73-retry-pending"));
         verify(lifecycle, never()).transition(eq(73L), eq(AgentRunState.FAILED), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void ignoresStaleRecoverySnapshotAfterTaskReachedTerminalState() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTask task = task(74L, AgentRunState.WAITING_USER);
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+        when(lifecycle.recordRecoveryAttemptIfCurrent(74L, AgentRunState.WAITING_USER)).thenReturn(null);
+        AgentRunPartService partService = mock(AgentRunPartService.class);
+        AgentRunMessageService messageService = mock(AgentRunMessageService.class);
+        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle,
+                mock(AgentRunExecutionLeaseService.class), mock(AgentRunTakeoverScheduler.class),
+                partService, messageService);
+
+        assertEquals(1, service.recoverInterruptedRuns());
+        verify(lifecycle).recordRecoveryAttemptIfCurrent(74L, AgentRunState.WAITING_USER);
+        verify(lifecycle, never()).appendEventIfCurrent(anyLong(), any(), anyString(), any(), anyString());
+        verify(partService, never()).interruptOpenParts(anyLong(), anyString());
+        verify(messageService, never()).markOpenMessages(anyLong(), anyString(), anyString());
+        verify(taskMapper, never()).updateById(any(AgentTask.class));
     }
 
     private AgentTask task(Long taskId, AgentRunState state) {

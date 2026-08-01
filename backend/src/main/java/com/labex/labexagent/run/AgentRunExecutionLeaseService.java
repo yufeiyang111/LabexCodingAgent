@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /** Fences concurrent agent workers with a durable owner, epoch, and expiring lease. */
 @Service
@@ -62,6 +63,7 @@ public class AgentRunExecutionLeaseService {
         return new ExecutionLease(taskId, instanceId, epoch, expiresAt);
     }
 
+    @Transactional(timeout = 3)
     public boolean renew(ExecutionLease lease) {
         return renew(lease, LocalDateTime.now());
     }

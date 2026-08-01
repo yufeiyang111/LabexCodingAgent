@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import { CdpClient } from './cdp-client.mjs'
 import { redactEvidence } from './evidence.mjs'
+import { isExpectedRestartTransportError } from './browser-error-policy.mjs'
 
 const uiBase = process.env.ACCEPTANCE_UI_BASE || 'http://127.0.0.1:13000'
 const apiBase = process.env.ACCEPTANCE_API_BASE || 'http://127.0.0.1:18080/api'
@@ -23,6 +24,7 @@ let profileDir = null
 let client = null
 const consoleErrors = []
 const networkErrors = []
+const networkRequests = new Map()
 
 async function api(path, { method = 'GET', body, anonymous = false } = {}) {
   const headers = { Accept: 'application/json' }
@@ -112,15 +114,25 @@ async function launchBrowser() {
     consoleErrors.push(event.exceptionDetails?.exception?.description ?? event.exceptionDetails?.text ?? 'Runtime exception')
   })
   client.on('Log.entryAdded', ({ entry }) => {
-    if (entry?.level === 'error') consoleErrors.push(entry.text || 'Browser log error')
+    if (entry?.level !== 'error') return
+    const url = entry.url ? ` url=${entry.url}` : ''
+    consoleErrors.push(`${entry.text || 'Browser log error'}${url}`)
   })
   client.on('Runtime.consoleAPICalled', event => {
     if (!['error', 'warning'].includes(event?.type)) return
     const text = (event.args || []).map(arg => arg.value ?? arg.description ?? '').join(' ')
     if (text) consoleErrors.push(`${event.type}: ${text}`)
   })
+  client.on('Network.requestWillBeSent', event => {
+    if (event?.requestId && event?.request?.url) networkRequests.set(event.requestId, event.request.url)
+  })
   client.on('Network.loadingFailed', event => {
-    if (!event.canceled) networkErrors.push(`${event.type ?? 'request'}: ${event.errorText ?? 'failed'}`)
+    const url = networkRequests.get(event.requestId)
+    networkRequests.delete(event.requestId)
+    if (!event.canceled) networkErrors.push(`${event.type ?? 'request'}: ${event.errorText ?? 'failed'}${url ? ` url=${url}` : ''}`)
+  })
+  client.on('Network.loadingFinished', event => {
+    networkRequests.delete(event.requestId)
   })
 }
 
@@ -148,7 +160,7 @@ function delay(milliseconds) {
 }
 
 
-async function clickElement(selector, { containsText = '', label = selector } = {}) {
+async function clickElement(selector, { containsText = '', label = selector, native = false } = {}) {
   await client.evaluate(`(() => {
     const candidates = Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
     const element = candidates.find(candidate => {
@@ -162,6 +174,10 @@ async function clickElement(selector, { containsText = '', label = selector } = 
     if (rect.width <= 0 || rect.height <= 0) throw new Error(${JSON.stringify(`${label} is not visible`)})
     element.scrollIntoView({ block: 'center', inline: 'center' })
     element.focus?.()
+    if (${native ? 'true' : 'false'}) {
+      element.click()
+      return
+    }
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
       const EventType = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent
       element.dispatchEvent(new EventType(type, { bubbles: true, cancelable: true, composed: true, view: window, button: 0 }))
@@ -410,7 +426,7 @@ async function runScenario() {
   }
   await clickElement('.tc-question .tc-option-btn', { label: 'question option' })
   await waitFor(() => client.evaluate(`Boolean(document.querySelector('.tc-question textarea')?.value?.trim())`), 'question answer selection')
-  await clickElement('.tc-question .tc-approval-btn.primary', { label: 'question answer submit' })
+  await clickElement('.tc-question .tc-approval-btn.primary', { label: 'question answer submit', native: true })
   await waitFor(
     () => client.evaluate(`!document.querySelector('.tc-question') && document.body.innerText.includes('durable user-question interaction resumed')`),
     'question reply completion'
@@ -715,8 +731,15 @@ async function runScenario() {
     throw new Error('Unverified edit displayed successful completion evidence')
   }
 
-  const meaningfulConsoleErrors = consoleErrors.filter(message => !/favicon|ResizeObserver loop/i.test(message))
-  const meaningfulNetworkErrors = networkErrors.filter(message => !/ERR_ABORTED|canceled/i.test(message))
+  const restartVerification = { restartProjectionVerified, restartInteractionVerified }
+  const expectedRestartTransportErrors = [...consoleErrors, ...networkErrors]
+    .filter(message => isExpectedRestartTransportError(message, restartVerification))
+  const meaningfulConsoleErrors = consoleErrors.filter(message =>
+    !/favicon|ResizeObserver loop/i.test(message)
+    && !isExpectedRestartTransportError(message, restartVerification))
+  const meaningfulNetworkErrors = networkErrors.filter(message =>
+    !/ERR_ABORTED|canceled/i.test(message)
+    && !isExpectedRestartTransportError(message, restartVerification))
   if (meaningfulConsoleErrors.length) throw new Error(`Browser console errors: ${meaningfulConsoleErrors.join(' | ')}`)
   if (meaningfulNetworkErrors.length) throw new Error(`Browser network errors: ${meaningfulNetworkErrors.join(' | ')}`)
 
@@ -741,6 +764,7 @@ async function runScenario() {
     providerStreamInterruptionHandled: true,
     restartProjectionVerified,
     restartInteractionVerified,
+    expectedRestartTransportErrors: expectedRestartTransportErrors.length,
     staticContextBlockerCard: true,
     completionEvidenceCard: true,
     unverifiedCompletionBlocked: true,

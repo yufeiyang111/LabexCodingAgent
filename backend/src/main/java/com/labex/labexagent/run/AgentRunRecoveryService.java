@@ -65,31 +65,33 @@ public class AgentRunRecoveryService {
     }
 
     private void recover(AgentTask task) {
+        AgentRunState state = AgentRunState.fromPersistedStatus(task.getStatus());
         if (executionLeaseService.hasActiveLease(task, java.time.LocalDateTime.now())) {
-            lifecycleService.appendEvent(
+            lifecycleService.appendEventIfCurrent(
                     task.getTaskId(),
+                    state,
                     "RUN_RECOVERY_ACTIVE_LEASE",
                     Map.of("owner", task.getExecutionOwner(), "epoch", valueOrZero(task.getExecutionEpoch()),
                             "leaseExpiresAt", String.valueOf(task.getExecutionLeaseExpiresAt())),
                     "recovery-" + task.getTaskId() + "-active-lease");
             return;
         }
-        AgentRunState state = AgentRunState.fromPersistedStatus(task.getStatus());
-        sealInterruptedParts(task, state);
         if ((state == AgentRunState.QUEUED || state == AgentRunState.PREPARING || state == AgentRunState.RUNNING) && takeoverScheduler.takeover(task)) return;
-        int attempts = valueOrZero(task.getRecoveryAttempts()) + 1;
-        task.setRecoveryAttempts(attempts);
-        if (taskMapper.updateById(task) != 1) {
-            throw new IllegalStateException("Unable to record agent run recovery attempt");
+        Integer attemptsValue = lifecycleService.recordRecoveryAttemptIfCurrent(task.getTaskId(), state);
+        if (attemptsValue == null) {
+            return;
         }
+        int attempts = attemptsValue;
+        sealInterruptedParts(task, state);
         Map<String, Object> payload = Map.of(
                 "reason", "Agent service restarted before the run could resume",
                 "recoveryAttempt", attempts);
 
         if (state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER
                 || state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT) {
-            lifecycleService.appendEvent(
+            lifecycleService.appendEventIfCurrent(
                     task.getTaskId(),
+                    state,
                     "RUN_RECOVERY_WAITING",
                     payload,
                     "recovery-" + task.getTaskId() + "-waiting");
@@ -97,8 +99,9 @@ public class AgentRunRecoveryService {
         }
 
         if (state == AgentRunState.RETRYING) {
-            lifecycleService.appendEvent(
+            lifecycleService.appendEventIfCurrent(
                     task.getTaskId(),
+                    state,
                     "RUN_RECOVERY_RETRY_PENDING",
                     Map.of(
                             "recoveryAttempt", attempts,

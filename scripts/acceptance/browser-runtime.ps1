@@ -4,7 +4,8 @@ param(
     [int]$FrontendPort = 13000,
     [int]$CdpPort = 19222,
     [string]$JarPath = '',
-    [int]$TimeoutSeconds = 120
+    [int]$TimeoutSeconds = 120,
+    [switch]$RestartBackendForAcceptance
 )
 
 Set-StrictMode -Version Latest
@@ -24,6 +25,7 @@ $workspaceRoot = Join-Path $repoRoot "workspaces\browser-acceptance-$runId"
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $backend = $null
 $vite = $null
+$browserProcess = $null
 
 function Test-PortFree {
     param([int]$Port)
@@ -69,17 +71,71 @@ function Wait-Http {
     throw "服务未在 $TimeoutSeconds 秒内就绪：$Uri"
 }
 
+
+$backendArguments = @(
+    '-Dfile.encoding=UTF-8', '-jar', $JarPath,
+    "--server.port=$BackendPort", '--spring.profiles.active=acceptance,local',
+    "--labex-agent.project-base-path=$workspaceRoot",
+    "--labex-agent.instance-id=browser-acceptance-$runId"
+)
+
+function Start-BackendProcess {
+    param([int]$Ordinal)
+    $stdoutPath = Join-Path $logRoot ("backend-{0}.out.log" -f $Ordinal)
+    $stderrPath = Join-Path $logRoot ("backend-{0}.err.log" -f $Ordinal)
+    return Start-Process -FilePath 'java' -ArgumentList $backendArguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+}
+
+function Restart-BackendProcess {
+    param([int]$Ordinal)
+    if ($script:backend -and -not $script:backend.HasExited) {
+        Stop-OwnedProcessTree -RootProcessId $script:backend.Id
+        try { $script:backend.WaitForExit(10000) | Out-Null } catch { }
+    }
+    $script:backend = Start-BackendProcess -Ordinal $Ordinal
+    Wait-Http -Uri "http://127.0.0.1:$BackendPort/api/auth/login" -Method POST -Body '{}'
+}
+
+function Invoke-BrowserRestartHandoffs {
+    param(
+        [System.Diagnostics.Process]$BrowserProcess,
+        [string[]]$HandoffDirs
+    )
+
+    $pending = @{}
+    foreach ($handoffDir in $HandoffDirs) {
+        if (-not [string]::IsNullOrWhiteSpace($handoffDir)) {
+            $pending[$handoffDir] = $true
+        }
+    }
+    $restartOrdinal = 1
+    while ($pending.Count -gt 0) {
+        if ($BrowserProcess.HasExited) {
+            throw "Browser acceptance exited before restart handoff completed; exitCode=$($BrowserProcess.ExitCode)"
+        }
+        foreach ($handoffDir in @($pending.Keys)) {
+            $readyPath = Join-Path $handoffDir 'ready.json'
+            $continuePath = Join-Path $handoffDir 'continue.signal'
+            if ((Test-Path -LiteralPath $readyPath -PathType Leaf) -and
+                -not (Test-Path -LiteralPath $continuePath -PathType Leaf)) {
+                Write-Host "[browser-restart] handoff ready: $readyPath"
+                Restart-BackendProcess -Ordinal $restartOrdinal
+                $restartOrdinal++
+                New-Item -ItemType File -Force -Path $continuePath | Out-Null
+                $pending.Remove($handoffDir)
+                Write-Host "[browser-restart] backend restarted and continuation signaled: $handoffDir"
+            }
+        }
+        if ($pending.Count -gt 0) { Start-Sleep -Milliseconds 250 }
+    }
+}
+
 try {
     Assert-PortFree -Port $BackendPort
     Assert-PortFree -Port $FrontendPort
     Assert-PortFree -Port $CdpPort
 
-    $backend = Start-Process -FilePath 'java' -ArgumentList @(
-        '-Dfile.encoding=UTF-8', '-jar', $JarPath,
-        "--server.port=$BackendPort", '--spring.profiles.active=acceptance,local',
-        "--labex-agent.project-base-path=$workspaceRoot",
-        "--labex-agent.instance-id=browser-acceptance-$runId"
-    ) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'backend.out.log') -RedirectStandardError (Join-Path $logRoot 'backend.err.log')
+    $backend = Start-BackendProcess -Ordinal 0
 
     $oldApiTarget = $env:VITE_API_TARGET
     $oldFrontendPort = $env:ACCEPTANCE_FRONTEND_PORT
@@ -99,18 +155,56 @@ try {
     $oldApiBase = $env:ACCEPTANCE_API_BASE
     $oldCdpPort = $env:ACCEPTANCE_CDP_PORT
     $oldTimeout = $env:ACCEPTANCE_BROWSER_TIMEOUT_MS
+    $oldRestartHandoffDir = $env:ACCEPTANCE_RESTART_HANDOFF_DIR
+    $oldInteractionRestartHandoffDir = $env:ACCEPTANCE_INTERACTION_RESTART_HANDOFF_DIR
+    $restartHandoffDir = Join-Path $logRoot 'restart-projection'
+    $interactionRestartHandoffDir = Join-Path $logRoot 'restart-interaction'
     try {
         $env:ACCEPTANCE_UI_BASE = "http://127.0.0.1:$FrontendPort"
         $env:ACCEPTANCE_API_BASE = "http://127.0.0.1:$BackendPort/api"
         $env:ACCEPTANCE_CDP_PORT = [string]$CdpPort
         $env:ACCEPTANCE_BROWSER_TIMEOUT_MS = [string]($TimeoutSeconds * 1000)
-        & node (Join-Path $frontendRoot 'scripts\acceptance\agent-browser.mjs')
-        if ($LASTEXITCODE -ne 0) { throw "浏览器验收失败，exitCode=$LASTEXITCODE，日志目录：$logRoot" }
+        if ($RestartBackendForAcceptance) {
+            $env:ACCEPTANCE_RESTART_HANDOFF_DIR = $restartHandoffDir
+            $env:ACCEPTANCE_INTERACTION_RESTART_HANDOFF_DIR = $interactionRestartHandoffDir
+        } else {
+            $env:ACCEPTANCE_RESTART_HANDOFF_DIR = ''
+            $env:ACCEPTANCE_INTERACTION_RESTART_HANDOFF_DIR = ''
+        }
+
+        $browserProcess = Start-Process -FilePath 'node.exe' -ArgumentList @((Join-Path $frontendRoot 'scripts\acceptance\agent-browser.mjs')) -WorkingDirectory $frontendRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'browser.out.log') -RedirectStandardError (Join-Path $logRoot 'browser.err.log')
+        if ($RestartBackendForAcceptance) {
+            Invoke-BrowserRestartHandoffs -BrowserProcess $browserProcess -HandoffDirs @($interactionRestartHandoffDir, $restartHandoffDir)
+        }
+        $browserProcess.WaitForExit()
+        $browserProcess.Refresh()
+        $browserExitCode = $browserProcess.ExitCode
+        $browserOutputPath = Join-Path $logRoot 'browser.out.log'
+        $browserErrorPath = Join-Path $logRoot 'browser.err.log'
+        $browserOutputLength = if (Test-Path -LiteralPath $browserOutputPath -PathType Leaf) { (Get-Item -LiteralPath $browserOutputPath).Length } else { 0 }
+        $browserErrorLength = if (Test-Path -LiteralPath $browserErrorPath -PathType Leaf) { (Get-Item -LiteralPath $browserErrorPath).Length } else { 0 }
+        if ($browserOutputLength -gt 0) {
+            Get-Content -LiteralPath $browserOutputPath | Write-Host
+        }
+        if ($browserErrorLength -gt 0) {
+            Get-Content -LiteralPath $browserErrorPath | Write-Warning
+        }
+        if (($null -ne $browserExitCode) -and $browserExitCode -ne 0) {
+            throw "Browser acceptance failed; exitCode=$browserExitCode; logRoot=$logRoot"
+        }
+        if ($browserErrorLength -gt 0) {
+            throw "Browser acceptance wrote diagnostics to stderr; logRoot=$logRoot"
+        }
+        if ($browserOutputLength -eq 0) {
+            throw "Browser acceptance produced no result; logRoot=$logRoot"
+        }
     } finally {
         $env:ACCEPTANCE_UI_BASE = $oldUiBase
         $env:ACCEPTANCE_API_BASE = $oldApiBase
         $env:ACCEPTANCE_CDP_PORT = $oldCdpPort
         $env:ACCEPTANCE_BROWSER_TIMEOUT_MS = $oldTimeout
+        if ($null -eq $oldRestartHandoffDir) { Remove-Item Env:ACCEPTANCE_RESTART_HANDOFF_DIR -ErrorAction SilentlyContinue } else { $env:ACCEPTANCE_RESTART_HANDOFF_DIR = $oldRestartHandoffDir }
+        if ($null -eq $oldInteractionRestartHandoffDir) { Remove-Item Env:ACCEPTANCE_INTERACTION_RESTART_HANDOFF_DIR -ErrorAction SilentlyContinue } else { $env:ACCEPTANCE_INTERACTION_RESTART_HANDOFF_DIR = $oldInteractionRestartHandoffDir }
     }
 } finally {
     foreach ($process in @($vite, $backend)) {

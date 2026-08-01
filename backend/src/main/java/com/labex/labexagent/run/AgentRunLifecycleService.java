@@ -324,6 +324,35 @@ public class AgentRunLifecycleService {
 
     @Transactional(rollbackFor = Exception.class)
     public AgentRunEvent appendEvent(Long taskId, String eventType, Object payload, String idempotencyKey) {
+        return appendEventIfCurrent(taskId, null, eventType, payload, idempotencyKey);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Integer recordRecoveryAttemptIfCurrent(Long taskId, AgentRunState expectedState) {
+        require(taskId, "taskId");
+        require(expectedState, "expectedState");
+
+        AgentTask task = taskMapper.selectByTaskIdForUpdate(taskId);
+        if (task == null || AgentRunState.fromPersistedStatus(task.getStatus()) != expectedState) {
+            return null;
+        }
+        int attempts = (task.getRecoveryAttempts() == null ? 0 : task.getRecoveryAttempts()) + 1;
+        long expectedVersion = valueOrZero(task.getRunVersion());
+        int updated = taskMapper.update(null, new UpdateWrapper<AgentTask>()
+                .eq("task_id", taskId)
+                .eq("status", expectedState.persistedStatus())
+                .eq("run_version", expectedVersion)
+                .set("recovery_attempts", attempts)
+                .set("update_time", LocalDateTime.now()));
+        return updated == 1 ? attempts : null;
+    }
+
+    /**
+     * 只有任务仍处于预期状态时，才能追加恢复事件，避免旧快照污染终态任务。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunEvent appendEventIfCurrent(Long taskId, AgentRunState expectedState,
+                                              String eventType, Object payload, String idempotencyKey) {
         require(taskId, "taskId");
         require(eventType, "eventType");
         require(idempotencyKey, "idempotencyKey");
@@ -332,11 +361,14 @@ public class AgentRunLifecycleService {
         if (task == null) {
             throw new IllegalArgumentException("Agent run not found: " + taskId);
         }
+        AgentRunState state = AgentRunState.fromPersistedStatus(task.getStatus());
+        if (expectedState != null && state != expectedState) {
+            return null;
+        }
         AgentRunEvent existing = findByIdempotencyKey(taskId, idempotencyKey);
         if (existing != null) {
             return existing;
         }
-        AgentRunState state = AgentRunState.fromPersistedStatus(task.getStatus());
         long nextSequence = nextSequence(task);
         long expectedVersion = valueOrZero(task.getRunVersion());
         long nextVersion = expectedVersion + 1L;
