@@ -26,6 +26,12 @@ public final class AgentRunTransitionKey {
                 + digest(String.valueOf(interactionId));
     }
 
+    /** 为一次已完成的一次性命令审批恢复生成稳定幂等键。 */
+    public static String forCommandApprovalResume(Long taskId, String approvalId) {
+        return "task-" + String.valueOf(taskId) + "-command-approval-resume-"
+                + digest(String.valueOf(approvalId));
+    }
+
     /**
      * 为一次具体的暂停交互生成稳定键。同一审批重放时键不变，不同审批即使文案相同也不会冲突。
      */

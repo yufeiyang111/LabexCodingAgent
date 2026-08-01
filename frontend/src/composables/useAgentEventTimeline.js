@@ -142,6 +142,10 @@ export function useAgentEventTimeline(options) {
       case 'COMMAND_EXECUTION_COMPLETED':
       case 'COMMAND_EXECUTION_FAILED':
       case 'COMMAND_EXECUTION_INTERRUPTED':
+      case 'RUN_COMMAND_APPROVAL_RESUME_QUEUED':
+      case 'COMMAND_APPROVAL_RESUME_DEFERRED':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.resumeTaskEventsAfterStream = true
         updateCommandApprovalLifecycle(assistantMsg, type, data)
         scheduleAgentRender()
         break

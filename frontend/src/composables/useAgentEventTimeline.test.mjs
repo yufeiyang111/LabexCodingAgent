@@ -242,3 +242,37 @@ test('live interaction resume hides duplicate waiting cards without touching ano
   assert.equal(assistant.toolCalls[1].status, 'waiting_approval')
   assert.equal(state.calls.some(call => call[0] === 'render'), true)
 })
+
+
+test('live command continuation delegates the durable resume event to the original approval card', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({
+    type: 'RUN_COMMAND_APPROVAL_RESUME_QUEUED',
+    eventId: 'command-resume-1',
+    data: { taskId: 72, approvalId: 'approval-72' }
+  }, assistant)
+
+  assert.equal(assistant.taskId, 72)
+  assert.equal(state.calls.some(call => call[0] === 'commandLifecycle'
+    && call[1] === assistant
+    && call[2] === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED'), true)
+  assert.equal(state.calls.some(call => call[0] === 'render'), true)
+})
+
+test('live command continuation deferral remains a visible lifecycle update', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({
+    type: 'COMMAND_APPROVAL_RESUME_DEFERRED',
+    eventId: 'command-resume-deferred-1',
+    data: { taskId: 73, approvalId: 'approval-73' }
+  }, assistant)
+
+  assert.equal(assistant.taskId, 73)
+  assert.equal(state.calls.some(call => call[0] === 'commandLifecycle'
+    && call[2] === 'COMMAND_APPROVAL_RESUME_DEFERRED'), true)
+  assert.equal(state.calls.some(call => call[0] === 'render'), true)
+})

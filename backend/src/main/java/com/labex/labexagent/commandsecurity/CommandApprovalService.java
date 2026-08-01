@@ -174,6 +174,19 @@ public class CommandApprovalService {
                 .last("LIMIT 1"));
     }
 
+    /**
+          * 返回可能仍等待 Agent continuation 的一次性命令审批；调用方仍须检查它是不是该 task 的最新审批，
+          * 并通过 task 状态机领取执行租约，不能把这份列表本身当成恢复事实。
+     */
+    public java.util.List<CommandApproval> findResolvedAgentApprovalsAwaitingResume(int limit) {
+        int effectiveLimit = Math.max(1, Math.min(limit, 100));
+        return approvalMapper.selectList(new QueryWrapper<CommandApproval>()
+                .eq("source", "agent_shell")
+                .in("status", CONSUMED, REJECTED, EXPIRED)
+                .orderByDesc("update_time")
+                .last("LIMIT " + effectiveLimit));
+    }
+
     /** Returns only an approval capability owned by the authenticated project user. */
     public CommandApproval findOwned(Integer studentId, Integer projectId, String approvalId) {
         require(studentId, "studentId");

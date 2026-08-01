@@ -22,6 +22,15 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 class AgentSsePublisherDurabilityTest {
 
     @Test
+    void exposesWhetherDurableRunBindingExists() {
+        AgentSsePublisher publisher = new AgentSsePublisher(mock(SseEmitter.class));
+
+        org.junit.jupiter.api.Assertions.assertFalse(publisher.isBound());
+        publisher.bindRun(mock(AgentRunLifecycleService.class), 71L);
+        org.junit.jupiter.api.Assertions.assertTrue(publisher.isBound());
+    }
+
+    @Test
     void rejectsDurableSendBeforeTheRunIsBound() throws Exception {
         SseEmitter emitter = mock(SseEmitter.class);
         AgentSsePublisher publisher = new AgentSsePublisher(emitter);

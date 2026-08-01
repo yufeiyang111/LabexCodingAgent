@@ -15,10 +15,8 @@ import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.AgentRunState;
-import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionResult;
-import com.labex.labexagent.service.AgentTaskService;
 import com.labex.service.StudentProjectService;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
@@ -30,12 +28,6 @@ class CommandApprovalOrchestratorTest {
         CommandApprovalService approvals = mock(CommandApprovalService.class);
         CommandAuditService audit = mock(CommandAuditService.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        AgentTaskService tasks = mock(AgentTaskService.class);
-        AgentLoopEngine engine = mock(AgentLoopEngine.class);
-        AgentTask task = new AgentTask();
-        task.setTaskId(71L);
-        task.setMode("build");
-        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
         CommandApproval approval = approval("pending");
         CommandApproval rejected = approval("rejected");
         rejected.setDecisionIdempotencyKey("decision-71");
@@ -44,18 +36,18 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(rejected);
         AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
         AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        when(resumeScheduler.resumeIfWaiting(rejected)).thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit,
-                mock(AgentApprovedCommandExecutor.class), mock(StudentProjectService.class), lifecycle, tasks, engine,
-                mock(AgentProjectMetadataRefreshScheduler.class), toolCalls, transcript);
+                mock(AgentApprovedCommandExecutor.class), mock(StudentProjectService.class), lifecycle,
+                mock(AgentProjectMetadataRefreshScheduler.class), resumeScheduler, null, toolCalls, transcript);
 
         CommandApprovalOrchestrator.DecisionResult result = orchestrator.decide(
                 7, 12, "approval-71", false, "decision-71");
 
         org.assertj.core.api.Assertions.assertThat(result.available()).isTrue();
-        verify(lifecycle).transition(eq(71L), eq(AgentRunState.RECOVERING), eq("COMMAND_APPROVAL_RESOLVED"),
-                any(), any(), any(), any());
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_APPROVAL_REJECTED"), any(), any());
-        verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
+        verify(resumeScheduler).resumeIfWaiting(rejected);
         verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
                 eq("Command approval was rejected"));
         verify(toolCalls).completedExisting(eq(71L), eq("tool-71"),
@@ -69,34 +61,29 @@ class CommandApprovalOrchestratorTest {
         AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
         StudentProjectService projects = mock(StudentProjectService.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        AgentTaskService tasks = mock(AgentTaskService.class);
-        AgentLoopEngine engine = mock(AgentLoopEngine.class);
         CommandApproval approval = approval("approved");
         StudentProject project = new StudentProject();
         project.setProjectId(12);
-        AgentTask task = new AgentTask();
-        task.setTaskId(71L);
-        task.setMode("build");
         when(projects.getOwnedProject(7, 12)).thenReturn(project);
         when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
         when(approvals.consume(any())).thenReturn(true);
         when(executor.execute(approval, project)).thenReturn(new ProcessExecutionResult(
                 ExecutionStatus.SUCCEEDED, 0, 12L, "tests passed", false));
-        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
         AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
         AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
         AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        when(resumeScheduler.resumeIfWaiting(approval)).thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
-                projects, lifecycle, tasks, engine, metadataRefresh, toolCalls, transcript);
+                projects, lifecycle, metadataRefresh, resumeScheduler, null, toolCalls, transcript);
 
         CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
 
         org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("resuming");
+        verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_STARTED"), any(), any());
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_COMPLETED"), any(), any());
-        verify(lifecycle).transition(eq(71L), eq(AgentRunState.RECOVERING),
-                eq("COMMAND_EXECUTION_RESUME_QUEUED"), any(), any(), any(), any());
-        verify(engine).resume(eq(7), eq(12), any(), eq(71L), eq(true));
+        verify(resumeScheduler).resumeIfWaiting(approval);
         verify(metadataRefresh).schedule(eq(7), eq(12), eq("command_approval"));
         verify(projects, never()).refreshProjectMetadata(eq(7), eq(12));
         verify(lifecycle, never()).transition(eq(71L), eq(AgentRunState.COMPLETED), any(), any(), any(), any(), any());
@@ -112,7 +99,6 @@ class CommandApprovalOrchestratorTest {
         AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
         StudentProjectService projects = mock(StudentProjectService.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        AgentLoopEngine engine = mock(AgentLoopEngine.class);
         StudentProject project = new StudentProject();
         project.setProjectId(12);
         CommandApproval oldApproval = approval("approved");
@@ -122,8 +108,9 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findOwned(7, 12, "approval-71")).thenReturn(oldApproval);
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(currentApproval);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals,
-                mock(CommandAuditService.class), executor, projects, lifecycle, mock(AgentTaskService.class), engine,
-                mock(AgentProjectMetadataRefreshScheduler.class), mock(AgentToolCallJournalService.class),
+                mock(CommandAuditService.class), executor, projects, lifecycle,
+                mock(AgentProjectMetadataRefreshScheduler.class), mock(CommandApprovalResumeScheduler.class), null,
+                mock(AgentToolCallJournalService.class),
                 mock(AgentRunTranscriptService.class));
 
         CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
@@ -133,14 +120,12 @@ class CommandApprovalOrchestratorTest {
         verify(approvals, never()).consume(any());
         verify(executor, never()).execute(any(), any());
         verify(lifecycle, never()).transition(any(), any(), any(), any(), any(), any(), any());
-        verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean());
     }
 
     @Test
     void doesNotResumeTheTaskWhenAnExpiredApprovalHasBeenSuperseded() {
         CommandApprovalService approvals = mock(CommandApprovalService.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        AgentLoopEngine engine = mock(AgentLoopEngine.class);
         CommandApproval oldApproval = approval("pending");
         CommandApproval expiredApproval = approval("expired");
         expiredApproval.setDecisionIdempotencyKey("decision-71");
@@ -151,8 +136,9 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(oldApproval, currentApproval);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals,
                 mock(CommandAuditService.class), mock(AgentApprovedCommandExecutor.class), mock(StudentProjectService.class),
-                lifecycle, mock(AgentTaskService.class), engine, mock(AgentProjectMetadataRefreshScheduler.class),
-                mock(AgentToolCallJournalService.class), mock(AgentRunTranscriptService.class));
+                lifecycle, mock(AgentProjectMetadataRefreshScheduler.class),
+                mock(CommandApprovalResumeScheduler.class), null, mock(AgentToolCallJournalService.class),
+                mock(AgentRunTranscriptService.class));
 
         CommandApprovalOrchestrator.DecisionResult result = orchestrator.decide(7, 12, "approval-71", false, "decision-71");
 
@@ -160,7 +146,6 @@ class CommandApprovalOrchestratorTest {
         org.assertj.core.api.Assertions.assertThat(result.resumeAgentLoop()).isFalse();
         verify(approvals, org.mockito.Mockito.times(2)).findLatestForTask(7, 12, 71L);
         verify(lifecycle, never()).transition(any(), any(), any(), any(), any(), any(), any());
-        verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean());
     }
 
     private CommandApproval approval(String status) {

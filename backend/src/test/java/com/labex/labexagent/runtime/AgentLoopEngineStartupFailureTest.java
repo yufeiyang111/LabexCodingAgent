@@ -25,8 +25,8 @@ class AgentLoopEngineStartupFailureTest {
 
         ArgumentCaptor<Object> errorPayload = ArgumentCaptor.forClass(Object.class);
         InOrder order = inOrder(publisher);
-        order.verify(publisher).send(eq("ERROR"), errorPayload.capture());
-        order.verify(publisher).send(eq("DONE"), any());
+        order.verify(publisher).sendTransient(eq("ERROR"), errorPayload.capture());
+        order.verify(publisher).sendTransient(eq("DONE"), any());
 
         assertThat(errorPayload.getValue()).isInstanceOf(Map.class);
         assertThat(((Map<?, ?>) errorPayload.getValue()).get("message"))

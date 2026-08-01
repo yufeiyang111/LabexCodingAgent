@@ -249,6 +249,28 @@ public class AgentTaskService {
                 executionLeaseService.instanceId(),
                 executionLeaseService.leaseDurationMs());
     }
+        /** 为已完成的一次性命令审批创建带租约的持久化 continuation dispatch。 */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunLifecycleService.DispatchClaim claimCommandApprovalResume(Long taskId, String approvalId,
+                                                                               String currentStep, String summary) {
+        if (taskId == null || approvalId == null || approvalId.isBlank()) return null;
+        AgentTask task = this.task(taskId);
+        if (task == null || this.runState(task.getStatus()) != AgentRunState.WAITING_APPROVAL) return null;
+        Map<String, Object> payload = new LinkedHashMap<>(this.taskUpdatePayload("recovering", currentStep, summary));
+        payload.put("approvalId", approvalId);
+        return lifecycleService.claimDispatch(
+                taskId,
+                AgentRunState.WAITING_APPROVAL,
+                AgentRunState.RECOVERING,
+                "RUN_COMMAND_APPROVAL_RESUME_QUEUED",
+                payload,
+                currentStep,
+                summary,
+                AgentRunTransitionKey.forCommandApprovalResume(taskId, approvalId),
+                executionLeaseService.instanceId(),
+                executionLeaseService.leaseDurationMs());
+    }
+
     /** Places a task behind the active task that owns the same project checkout. */
     @Transactional(rollbackFor = Exception.class)
     public boolean waitForWorkspace(Long taskId, String currentStep, String summary, Long blockingTaskId) {

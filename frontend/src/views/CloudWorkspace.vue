@@ -1397,6 +1397,20 @@ function updateCommandApprovalLifecycle(message, type, data = {}) {
     call.result = executionResultText(data, '命令执行完成')
     return
   }
+  if (type === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED') {
+    call.status = 'running'
+    call.durableStatus = 'resuming'
+    call.interactionStatus = 'resuming'
+    call.result = '命令结果已保存，正在恢复 Agent 任务'
+    return
+  }
+  if (type === 'COMMAND_APPROVAL_RESUME_DEFERRED') {
+    call.status = 'running'
+    call.durableStatus = 'waiting_resume'
+    call.interactionStatus = 'resuming'
+    call.result = '等待旧执行器释放后自动恢复'
+    return
+  }
   if (type === 'COMMAND_EXECUTION_FAILED') {
     call.status = 'error'
     call.result = executionResultText(data, '命令执行失败')

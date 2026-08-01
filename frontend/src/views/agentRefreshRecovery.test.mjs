@@ -23,6 +23,10 @@ test('workspace delegates active-task recovery to a conversation-scoped runtime'
   assert.match(source, /call\._commandApprovalInFlight/)
   assert.match(source, /function reconcileRecoveredCommandApproval\(message, task\)/)
   assert.match(timelineSource, /case 'COMMAND_EXECUTION_STARTED':/)
+  assert.match(timelineSource, /case 'RUN_COMMAND_APPROVAL_RESUME_QUEUED':/)
+  assert.match(timelineSource, /case 'COMMAND_APPROVAL_RESUME_DEFERRED':/)
+  assert.match(source, /type === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED'/)
+  assert.match(source, /type === 'COMMAND_APPROVAL_RESUME_DEFERRED'/)
   assert.match(source, /environmentBlocker\.retryable !== false/)
 
 })

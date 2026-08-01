@@ -219,6 +219,40 @@ test('renders unavailable post-edit diagnostics as a warning instead of success'
   assert.equal(target.toolCalls[0].verificationStatus, 'UNAVAILABLE')
 })
 
+test('replayed command continuation keeps the original approval card running', () => {
+  const target = message()
+  target.toolCalls.push({
+    name: 'run_tests',
+    status: 'waiting_approval',
+    result: null,
+    commandApproval: { approvalId: 'approval-72' }
+  })
+
+  reduceHistoryEvent('RUN_COMMAND_APPROVAL_RESUME_QUEUED', { taskId: 72, approvalId: 'approval-72' }, target)
+
+  assert.equal(target.taskId, 72)
+  assert.equal(target.toolCalls[0].status, 'running')
+  assert.equal(target.toolCalls[0].durableStatus, 'resuming')
+  assert.equal(target.toolCalls[0].result, '命令结果已保存，正在恢复 Agent 任务')
+})
+
+test('replayed command continuation waiting for lease keeps the approval card visible', () => {
+  const target = message()
+  target.toolCalls.push({
+    name: 'run_tests',
+    status: 'waiting_approval',
+    result: null,
+    commandApproval: { approvalId: 'approval-73' }
+  })
+
+  reduceHistoryEvent('COMMAND_APPROVAL_RESUME_DEFERRED', { taskId: 73, approvalId: 'approval-73' }, target)
+
+  assert.equal(target.taskId, 73)
+  assert.equal(target.toolCalls[0].status, 'running')
+  assert.equal(target.toolCalls[0].durableStatus, 'waiting_resume')
+  assert.equal(target.toolCalls[0].result, '等待旧执行器释放后自动恢复')
+})
+
 test('replayed interaction resume hides every duplicate card for the same durable request', () => {
   const target = message()
   target.toolCalls.push(

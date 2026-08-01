@@ -1,19 +1,14 @@
 package com.labex.labexagent.commandsecurity;
 
-import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ProcessExecutionResult;
-import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
-import com.labex.labexagent.run.AgentRunContinuationRequestFactory;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.CommandFailureGuard;
 import com.labex.labexagent.run.EnvironmentBlockerClassifier;
 import com.labex.labexagent.tool.ToolResult;
-import com.labex.labexagent.runtime.AgentLoopEngine;
-import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.service.StudentProjectService;
@@ -22,7 +17,6 @@ import java.util.Map;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 /**
@@ -37,31 +31,19 @@ public class CommandApprovalOrchestrator {
     private final AgentApprovedCommandExecutor executor;
     private final StudentProjectService projectService;
     private final AgentRunLifecycleService lifecycleService;
-    private final AgentTaskService taskService;
-    private final AgentLoopEngine agentLoopEngine;
     private final AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
+    private final CommandApprovalResumeScheduler commandResumeScheduler;
     private final AgentToolCallJournalService toolCallJournalService;
     private final AgentRunTranscriptService transcriptService;
     private CommandFailureGuard commandFailureGuard = new CommandFailureGuard(1, 2);
     private final NetworkAccessService networkAccessService;
 
-    public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
-                                       AgentApprovedCommandExecutor executor, StudentProjectService projectService,
-                                       AgentRunLifecycleService lifecycleService, AgentTaskService taskService,
-                                       @Lazy AgentLoopEngine agentLoopEngine,
-                                       AgentProjectMetadataRefreshScheduler metadataRefreshScheduler,
-                                       AgentToolCallJournalService toolCallJournalService,
-                                       AgentRunTranscriptService transcriptService) {
-        this(approvalService, auditService, executor, projectService, lifecycleService, taskService,
-                agentLoopEngine, metadataRefreshScheduler, null, toolCallJournalService, transcriptService);
-    }
-
     @org.springframework.beans.factory.annotation.Autowired
     public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
                                        AgentApprovedCommandExecutor executor, StudentProjectService projectService,
-                                       AgentRunLifecycleService lifecycleService, AgentTaskService taskService,
-                                       @Lazy AgentLoopEngine agentLoopEngine,
+                                       AgentRunLifecycleService lifecycleService,
                                        AgentProjectMetadataRefreshScheduler metadataRefreshScheduler,
+                                       CommandApprovalResumeScheduler commandResumeScheduler,
                                        NetworkAccessService networkAccessService,
                                        AgentToolCallJournalService toolCallJournalService,
                                        AgentRunTranscriptService transcriptService) {
@@ -70,9 +52,9 @@ public class CommandApprovalOrchestrator {
         this.executor = executor;
         this.projectService = projectService;
         this.lifecycleService = lifecycleService;
-        this.taskService = taskService;
-        this.agentLoopEngine = agentLoopEngine;
         this.metadataRefreshScheduler = metadataRefreshScheduler;
+        this.commandResumeScheduler = Objects.requireNonNull(commandResumeScheduler,
+                "commandResumeScheduler is required for durable command approval continuation");
         this.networkAccessService = networkAccessService;
         this.toolCallJournalService = Objects.requireNonNull(toolCallJournalService,
                 "toolCallJournalService is required for durable command approval continuation");
@@ -128,9 +110,8 @@ public class CommandApprovalOrchestrator {
                 approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory(), elapsedMs(requestStartedNanos));
         approval.setStatus("consumed");
         try {
-            lifecycleService.transition(approval.getTaskId(), AgentRunState.RUNNING,
-                    "COMMAND_EXECUTION_STARTED", publicPayload(approval, Map.of("resumeAgentLoop", false)),
-                    "Executing approved command", "Executing the stored one-time command",
+            lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_EXECUTION_STARTED",
+                    publicPayload(approval, Map.of("resumeAgentLoop", false)),
                     lifecycleKey(approval, "execution-started"));
             log.info("COMMAND_APPROVAL_PROCESS_STARTED taskId={} projectId={} approvalId={} workingDirectory={}",
                     approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory());
@@ -184,13 +165,7 @@ public class CommandApprovalOrchestrator {
                     lifecycleKey(approval, "execution-outcome:" + executionStatus));
             closeApprovedToolCall(approval, succeeded, result);
             if (resumeAgentLoop) {
-                lifecycleService.transition(approval.getTaskId(), AgentRunState.RECOVERING,
-                        "COMMAND_EXECUTION_RESUME_QUEUED",
-                        publicPayload(approval, Map.of("executionStatus", executionStatus, "resumeAgentLoop", true)),
-                        "Resuming Agent after approved command",
-                        "The one-time command finished and the Agent continuation is queued.",
-                        lifecycleKey(approval, "execution-resume:" + executionStatus));
-                resumeAgentLoop(approval, executionStatus, result);
+                resumeAgentLoop = resumeAgentLoop(approval, executionStatus, result);
             } else {
                 log.info("COMMAND_APPROVAL_AGENT_RESUME_SKIPPED taskId={} projectId={} approvalId={} reason=superseded",
                         approval.getTaskId(), projectId, approval.getApprovalId());
@@ -241,10 +216,6 @@ public class CommandApprovalOrchestrator {
                     approval.getTaskId(), approval.getProjectId(), approval.getApprovalId(), status);
             return false;
         }
-        lifecycleService.transition(approval.getTaskId(), AgentRunState.RECOVERING,
-                "COMMAND_APPROVAL_RESOLVED", publicPayload(approval, Map.of("decision", status, "resumeAgentLoop", true)),
-                "Resolving command approval", "The one-time command approval was resolved.",
-                lifecycleKey(approval, "resolve:" + decisionIdempotencyKey));
         lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_APPROVAL_" + status.toUpperCase(),
                 publicPayload(approval, Map.of("decision", status, "resumeAgentLoop", true)),
                 lifecycleKey(approval, "resolution:" + decisionIdempotencyKey));
@@ -255,8 +226,7 @@ public class CommandApprovalOrchestrator {
                     approval.getTaskId(), approval.getProjectId(), approval.getApprovalId());
             return false;
         }
-        resumeAgentLoop(approval, status, null);
-        return true;
+        return resumeAgentLoop(approval, status, null);
     }
 
     private boolean shouldRequestNetworkRetry(CommandApproval approval, ProcessExecutionResult result) {
@@ -322,25 +292,29 @@ public class CommandApprovalOrchestrator {
         toolCallJournalService.completedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
     }
 
-    private void resumeAgentLoop(CommandApproval approval, String resolutionStatus, ProcessExecutionResult result) {
-        AgentTask task = taskService.getOwnedTask(approval.getStudentId(), approval.getProjectId(), approval.getTaskId());
-        if (task == null) {
-            throw new IllegalStateException("Agent task is unavailable for command continuation");
+    /**
+      * transcript 已经持久化后?scheduler 必须取得与状态迁移同事务生成的 lease 才能恢复 Agent。
+      * 如果旧 worker 的 lease 仍然有效，保留 waiting_approval 并等待 scheduler 接管。
+     */
+    private boolean resumeAgentLoop(CommandApproval approval, String resolutionStatus, ProcessExecutionResult result) {
+        CommandApprovalResumeScheduler.ResumeResult resumeResult = commandResumeScheduler.resumeIfWaiting(approval);
+        if (resumeResult == CommandApprovalResumeScheduler.ResumeResult.RESUMED) {
+            log.info("COMMAND_APPROVAL_AGENT_RESUME_ENQUEUED taskId={} projectId={} approvalId={} resolutionStatus={}",
+                    approval.getTaskId(), approval.getProjectId(), approval.getApprovalId(), resolutionStatus);
+            return true;
         }
-        String output = result == null ? "" : CommandRedactor.redact(result.output());
-        if (output.length() > 4_000) output = output.substring(0, 4_000) + "...";
-        String continuation = """
-                The one-time command approval has been resolved and the command must not be replayed.
-                Resolution status: %s
-                Command exit code: %s
-                Redacted command output: %s
-                Reassess the workspace, use the recorded command outcome, and continue the existing plan.
-                """.formatted(resolutionStatus,
-                result == null || result.exitCode() == null ? "" : result.exitCode(), output);
-        AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task, continuation);
-        log.info("COMMAND_APPROVAL_AGENT_RESUME_REQUEST taskId={} projectId={} approvalId={} resolutionStatus={}",
+        if (resumeResult == CommandApprovalResumeScheduler.ResumeResult.DEFERRED_ACTIVE_LEASE) {
+            lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_APPROVAL_RESUME_DEFERRED",
+                    publicPayload(approval, Map.of("resolutionStatus", resolutionStatus,
+                            "reason", "previous_execution_lease_active", "resumeAgentLoop", true)),
+                    lifecycleKey(approval, "resume-deferred"));
+            log.info("COMMAND_APPROVAL_AGENT_RESUME_DEFERRED taskId={} projectId={} approvalId={} resolutionStatus={}",
+                    approval.getTaskId(), approval.getProjectId(), approval.getApprovalId(), resolutionStatus);
+            return true;
+        }
+        log.info("COMMAND_APPROVAL_AGENT_RESUME_SKIPPED taskId={} projectId={} approvalId={} resolutionStatus={} reason=task_not_waiting_or_superseded",
                 approval.getTaskId(), approval.getProjectId(), approval.getApprovalId(), resolutionStatus);
-        agentLoopEngine.resume(approval.getStudentId(), approval.getProjectId(), request, approval.getTaskId(), true);
+        return false;
     }
 
     private boolean isLatestTaskApproval(CommandApproval approval) {

@@ -245,8 +245,11 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'COMMAND_EXECUTION_STARTED':
     case 'COMMAND_EXECUTION_COMPLETED':
     case 'COMMAND_EXECUTION_FAILED':
-    case 'COMMAND_EXECUTION_INTERRUPTED': {
+    case 'COMMAND_EXECUTION_INTERRUPTED':
+    case 'RUN_COMMAND_APPROVAL_RESUME_QUEUED':
+    case 'COMMAND_APPROVAL_RESUME_DEFERRED': {
       const toolCall = message.toolCalls?.find(call => call.commandApproval?.approvalId === data.approvalId)
+      if (data.taskId != null) message.taskId = data.taskId
       if (!toolCall) break
       if (type === 'COMMAND_EXECUTION_STARTED') {
         toolCall.status = 'running'
@@ -254,6 +257,16 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       } else if (type === 'COMMAND_EXECUTION_COMPLETED') {
         toolCall.status = 'completed'
         toolCall.result = '命令已执行'
+      } else if (type === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED') {
+        toolCall.status = 'running'
+        toolCall.durableStatus = 'resuming'
+        toolCall.interactionStatus = 'resuming'
+        toolCall.result = '命令结果已保存，正在恢复 Agent 任务'
+      } else if (type === 'COMMAND_APPROVAL_RESUME_DEFERRED') {
+        toolCall.status = 'running'
+        toolCall.durableStatus = 'waiting_resume'
+        toolCall.interactionStatus = 'resuming'
+        toolCall.result = '等待旧执行器释放后自动恢复'
       } else if (type !== 'COMMAND_APPROVAL_DECIDED') {
         toolCall.status = 'error'
         toolCall.result = '命令未执行或执行失败'

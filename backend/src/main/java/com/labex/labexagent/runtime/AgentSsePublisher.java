@@ -33,6 +33,11 @@ public class AgentSsePublisher {
         this.taskId = taskId;
     }
 
+    /** 当前 SSE 是否已绑定到可持久化的 Agent run。 */
+    public boolean isBound() {
+        return this.lifecycleService != null && this.taskId != null;
+    }
+
     public void send(String type, Object data) throws IOException {
         if (this.lifecycleService == null || this.taskId == null) {
             throw new IllegalStateException(
