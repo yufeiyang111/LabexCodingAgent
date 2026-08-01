@@ -58,6 +58,23 @@ class AgentConversationServiceCompactionTest {
     }
 
     @Test
+    void recoveryDoesNotReadStaleConversationSummaryWithoutDurableCompactionEvent() {
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        when(conversationMapper.selectOne(any())).thenReturn(conversation());
+        when(messageMapper.selectList(any())).thenReturn(
+                List.of(),
+                List.of(message(11L, "FINAL", "Tail final outcome")));
+        AgentConversationService service = new AgentConversationService(conversationMapper, messageMapper, mock(RagConfig.class));
+
+        String recovered = service.buildMemoryContext(7, 3, "conversation");
+
+        assertTrue(recovered.contains("Tail final outcome"));
+        assertTrue(!recovered.contains("obsolete legacy summary"));
+        assertTrue(!recovered.contains("\u5386\u53f2\u6458\u8981:"));
+    }
+
+    @Test
     void compactionSummaryIsPersistedAsAFirstClassConversationEvent() {
         AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
         AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);

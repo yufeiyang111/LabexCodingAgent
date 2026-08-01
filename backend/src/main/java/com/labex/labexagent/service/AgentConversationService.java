@@ -223,11 +223,6 @@ public class AgentConversationService {
         StringBuilder builder = new StringBuilder();
         if (latestCompaction != null && latestCompaction.getContent() != null && !latestCompaction.getContent().isBlank()) {
             builder.append("\u5386\u53f2\u538b\u7f29\u6458\u8981:\n").append(latestCompaction.getContent()).append("\n\n");
-        } else {
-            String summary = conversation.getSummary() == null ? "" : conversation.getSummary();
-            if (!summary.isBlank()) {
-                builder.append("\u5386\u53f2\u6458\u8981:\n").append(summary).append("\n\n");
-            }
         }
         builder.append("\u6700\u8fd1\u5173\u952e\u4e8b\u4ef6:\n");
         for (int i = recent.size() - 1; i >= 0; --i) {

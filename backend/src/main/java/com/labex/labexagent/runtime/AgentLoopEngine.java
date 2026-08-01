@@ -94,7 +94,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
@@ -2670,11 +2669,6 @@ public class AgentLoopEngine {
 
     // ==================== 上下文窗口管理（参考 OpenCode 的 compaction 机制） ====================
 
-    /** 模型上下文窗口上限（token），超出时触发压缩 */
-    private static final int KEEP_RECENT_TURNS = 3;
-    /** 旧工具结果裁剪后的最大字符数 */
-    private static final int PRUNED_TOOL_RESULT_MAX = 300;
-
     /** 检测是否是上下文溢出错误 */
     private boolean isContextOverflowError(String message) {
         if (message == null) return false;
@@ -3090,84 +3084,6 @@ public class AgentLoopEngine {
         private static ContextManagementResult none() {
             return new ContextManagementResult(false, "NONE");
         }
-    }
-
-    private boolean trimMessagesIfNeeded(List<Map<String, Object>> msgs, String sysPrompt, OptionalInt inputTokenBudget) {
-        if (inputTokenBudget.isEmpty()) {
-            return false;
-        }
-
-        int budget = inputTokenBudget.getAsInt();
-        int originalTotalTokens = estimateMessagesTokens(msgs, sysPrompt);
-        int totalTokens = originalTotalTokens;
-        if (totalTokens <= budget) {
-            return false;
-        }
-
-        log.info("Context estimatedTokens={} exceeds resolvedInputBudget={}, pruning old tool results", totalTokens, budget);
-
-        // Preserve the newest turns and only prune older tool results.
-        int protectCount = Math.min(msgs.size(), KEEP_RECENT_TURNS * 2);
-        int protectFrom = msgs.size() - protectCount;
-        for (int idx = protectFrom - 1; idx >= 1 && totalTokens > budget; idx--) {
-            Map<String, Object> msg = msgs.get(idx);
-            Object content = msg.get("content");
-            if (!(content instanceof String s) || !s.startsWith("[Tool ") || !s.contains("result]")) {
-                continue;
-            }
-
-            String trimmed = s.substring(0, Math.min(s.length(), PRUNED_TOOL_RESULT_MAX))
-                    + "\n[... pruned to save context, use read_file/grep to re-read if needed ...]";
-            int originalTokens = estimateTokens(s);
-            int trimmedTokens = estimateTokens(trimmed);
-            if (trimmedTokens >= originalTokens) {
-                continue;
-            }
-
-            msgs.set(idx, Map.of("role", "user", "content", trimmed));
-            totalTokens -= originalTokens - trimmedTokens;
-        }
-
-        int estimatedTokensAfterPruning = estimateMessagesTokens(msgs, sysPrompt);
-        log.info("After pruning: estimatedTokens={} (estimatedTokensSaved={})",
-                estimatedTokensAfterPruning, originalTotalTokens - estimatedTokensAfterPruning);
-        if (estimatedTokensAfterPruning > budget) {
-            log.warn("Context pruning left estimatedTokens={} above resolvedInputBudget={}; no additional non-tail tool result can be reduced. Continuing with provider call so existing overflow recovery can handle it.",
-                    estimatedTokensAfterPruning, budget);
-        }
-        return estimatedTokensAfterPruning < originalTotalTokens;
-    }
-
-    /**
-     * Replaces older turns with a bounded continuation checkpoint without making another provider call.
-     */
-    private boolean compactConversationCheckpoint(List<Map<String, Object>> msgs, String userRequest, AgentContext context) {
-        return compactConversationCheckpointResult(msgs, userRequest, context).changed();
-    }
-
-    private ConversationCheckpointCompactor.Result compactConversationCheckpointResult(List<Map<String, Object>> msgs,
-                                                                                         String userRequest,
-                                                                                         AgentContext context) {
-        return new ConversationCheckpointCompactor().compactWithResult(msgs, userRequest, context);
-    }
-
-    /**
-     * 溢出后激进裁剪（结构化 checkpoint 无法继续缩小时的降级方案）
-     */
-    private void aggressiveTrimMessages(List<Map<String, Object>> msgs, String sysPrompt) {
-        if (msgs.size() <= 5) return;
-
-        int protectFrom = Math.max(1, msgs.size() - 4);
-
-        for (int idx = 1; idx < protectFrom; idx++) {
-            Map<String, Object> msg = msgs.get(idx);
-            Object content = msg.get("content");
-            if (content instanceof String s && s.length() > 200) {
-                msgs.set(idx, Map.of("role", msg.get("role"), "content",
-                    "[Previous context pruned to fit model window. Use read_file/grep to re-read if needed.]"));
-            }
-        }
-        log.info("Aggressively pruned messages to fit context window");
     }
 
     private String readActiveFile(Integer studentId, Integer projectId, String activePath) {

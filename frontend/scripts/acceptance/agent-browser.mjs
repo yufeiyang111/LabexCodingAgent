@@ -497,6 +497,10 @@ async function runScenario() {
     () => bodyIncludes('multi-tool permission batch resumed the original task'),
     'multi-tool permission same-task completion after refresh'
   )
+  await waitFor(async () => {
+    const task = await api(`/student/projects/${projectId}/agent/tasks/${permissionTask.taskId}`)
+    return task && ['completed', 'failed', 'cancelled'].includes(task.status)
+  }, 'permission durable terminal state after final response')
   const permissionTasksAfter = await api(`/student/projects/${projectId}/agent/tasks`)
   const createdPermissionTasks = permissionTasksAfter.filter(task => !permissionPriorTaskIds.has(Number(task.taskId)))
   if (createdPermissionTasks.length !== 1 || Number(createdPermissionTasks[0].taskId) !== Number(permissionTask.taskId)) {
