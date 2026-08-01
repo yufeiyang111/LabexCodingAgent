@@ -25,16 +25,15 @@ class ContextUsageRegistryDurabilityTest {
         AgentRunEvent event = new AgentRunEvent();
         event.setTaskId(91L);
         event.setEventType("CONTEXT_STATUS");
-        event.setPayload("{\"conversationId\":\"conversation-91\",\"sessionId\":\"session-91\",\"provider\":\"acceptance\",\"model\":\"model-91\",\"contextWindowTokens\":1000,\"categories\":{\"messages\":120},\"trimState\":\"NONE\"}");
+        event.setPayload("{\"conversationId\":\"conversation-91\",\"sessionId\":\"session-91\",\"provider\":\"acceptance\",\"model\":\"model-91\",\"contextWindowTokens\":1000,\"categories\":{\"messages\":120},\"staticCategories\":{\"system\":40},\"reducibleCategories\":{\"messages\":120},\"inputCapacityTokens\":900,\"reservedOutputTokens\":100,\"softLimitTokens\":800,\"trimState\":\"NONE\"}");
         when(tasks.selectList(any())).thenReturn(List.of(task));
         when(events.selectList(any())).thenReturn(List.of(event));
 
         ContextUsageRegistry registry = new ContextUsageRegistry(events, tasks);
 
-        assertThat(registry.find("conversation-91"))
-                .get()
-                .extracting(ContextUsageSnapshot::toPayload)
-                .asString()
-                .contains("conversation-91", "model-91", "messages");
+        ContextUsageSnapshot restored = registry.find("conversation-91").orElseThrow();
+        assertThat(restored.toPayload().toString())
+                .contains("conversation-91", "model-91", "messages", "staticTokens=40", "reducibleTokens=120",
+                        "inputCapacityTokens=900", "reservedOutputTokens=100");
     }
 }

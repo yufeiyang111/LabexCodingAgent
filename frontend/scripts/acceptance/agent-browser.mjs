@@ -644,6 +644,14 @@ async function runScenario() {
         expectedProviderMessages: compactionProviderMessages.length
       })}`)
     }
+    const restartedContextStatus = await api(
+      `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(compactionTask.conversationId)}/context-status`
+    )
+    if (restartedContextStatus?.status === 'AWAITING_FIRST_REQUEST'
+        || !Number.isFinite(Number(restartedContextStatus?.usedTokens))
+        || Number(restartedContextStatus.usedTokens) <= 0) {
+      throw new Error(`Restarted context status was not rebuilt from durable events: ${JSON.stringify(restartedContextStatus)}`)
+    }
     restartProjectionVerified = true
   }
 

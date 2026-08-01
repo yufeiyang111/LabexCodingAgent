@@ -38,6 +38,14 @@ public final class ContextUsageSnapshot {
                                 Integer contextWindowTokens, Map<String, Integer> categories, String trimState,
                                 List<ContextPreviewSection> previewSections, String previewSource,
                                 Map<String, Object> previewMetadata) {
+        this(conversationId, sessionId, provider, model, contextWindowTokens, categories, trimState,
+                previewSections, previewSource, previewMetadata, LocalDateTime.now());
+    }
+
+    private ContextUsageSnapshot(String conversationId, String sessionId, String provider, String model,
+                                 Integer contextWindowTokens, Map<String, Integer> categories, String trimState,
+                                 List<ContextPreviewSection> previewSections, String previewSource,
+                                 Map<String, Object> previewMetadata, LocalDateTime updatedAt) {
         this.conversationId = conversationId;
         this.sessionId = sessionId;
         this.provider = provider;
@@ -52,7 +60,7 @@ public final class ContextUsageSnapshot {
         this.previewSource = previewSource == null || previewSource.isBlank()
                 ? (this.previewSections.isEmpty() ? "UNAVAILABLE" : "LAST_ACTUAL_REQUEST") : previewSource;
         this.previewMetadata = Map.copyOf(previewMetadata == null ? Map.of() : new LinkedHashMap<>(previewMetadata));
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = updatedAt == null ? LocalDateTime.now() : updatedAt;
     }
 
     public ContextUsageSnapshot withBudgetBreakdown(ContextBudgetBreakdown budgetBreakdown) {
@@ -82,11 +90,21 @@ public final class ContextUsageSnapshot {
         }
         Map<String, Object> metadata = payload.get("previewMetadata") instanceof Map<?, ?> map
                 ? new LinkedHashMap<>((Map<String, Object>) map) : Map.of();
-        return new ContextUsageSnapshot(
+        ContextUsageSnapshot snapshot = new ContextUsageSnapshot(
                 string(payload.get("conversationId")), string(payload.get("sessionId")),
                 string(payload.get("provider")), string(payload.get("model")),
                 nullablePositiveNumber(payload.get("contextWindowTokens")), categories,
-                string(payload.get("trimState")), sections, string(payload.get("previewSource")), metadata);
+                string(payload.get("trimState")), sections, string(payload.get("previewSource")), metadata,
+                updatedAt(payload.get("updatedAt")));
+        Map<String, Integer> staticCategories = integerMap(payload.get("staticCategories"));
+        Map<String, Integer> reducibleCategories = integerMap(payload.get("reducibleCategories"));
+        if (!staticCategories.isEmpty() || !reducibleCategories.isEmpty()) {
+            snapshot.withBudgetBreakdown(new ContextBudgetBreakdown(
+                    number(payload.get("contextWindowTokens")), number(payload.get("inputCapacityTokens")),
+                    number(payload.get("reservedOutputTokens")), staticCategories, reducibleCategories,
+                    number(payload.get("softLimitTokens"))));
+        }
+        return snapshot;
     }
 
     private static String string(Object value) {
@@ -96,6 +114,21 @@ public final class ContextUsageSnapshot {
     private static int number(Object value) {
         if (value instanceof Number number) return number.intValue();
         try { return Integer.parseInt(String.valueOf(value)); } catch (RuntimeException ignored) { return 0; }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Integer> integerMap(Object value) {
+        if (!(value instanceof Map<?, ?> map)) return Map.of();
+        Map<String, Integer> result = new LinkedHashMap<>();
+        map.forEach((key, item) -> result.put(String.valueOf(key), number(item)));
+        return result;
+    }
+
+    private static LocalDateTime updatedAt(Object value) {
+        if (value instanceof String text && !text.isBlank()) {
+            try { return LocalDateTime.parse(text); } catch (RuntimeException ignored) { }
+        }
+        return LocalDateTime.now();
     }
 
     private static Integer nullablePositiveNumber(Object value) {
