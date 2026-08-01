@@ -7,7 +7,7 @@ import java.util.Map;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-/** 从 durable transcript 和 compaction 记录构造唯一 Provider 消息投影? */
+/** 从 durable transcript 和 compaction 记录构造唯一 Provider 消息投影。 */
 @Service
 public final class AgentTranscriptProjectionService {
     private final AgentRunTranscriptService transcriptService;
@@ -32,7 +32,7 @@ public final class AgentTranscriptProjectionService {
         this.compactionService = compactionService;
     }
 
-    /** Provider 的唯一读取入口；缺少持久化事实时失败，禁止回退到内存消息? */
+    /** Provider 的唯一读取入口；缺少持久化事实时失败，禁止回退到内存消息。 */
     public List<Map<String, Object>> loadProviderMessages(Long taskId) {
         Projection projection = loadDurableProjection(taskId);
         if (projection.messages().isEmpty()) {
@@ -41,13 +41,13 @@ public final class AgentTranscriptProjectionService {
         return projection.messages();
     }
 
-    /** JVM 重启时直接从 transcript 与最新 compaction epoch 重建? */
+    /** JVM 重启时直接从 transcript 与最新 compaction epoch 重建。 */
     public Projection loadDurableProjection(Long taskId) {
         DurableProjection durable = durableProjection(taskId, false);
         return new Projection(durable.messages(), durable.detail());
     }
 
-    /** 审批或提问恢复时保留可恢复的等待 Tool Part? */
+    /** 审批或提问恢复时保留可恢复的等待 Tool Part。 */
     public Projection loadDurableProjectionForInteractionResume(Long taskId) {
         DurableProjection durable = durableProjection(taskId, true);
         return new Projection(durable.messages(), durable.detail());

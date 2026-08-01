@@ -71,6 +71,7 @@ $evidence = [ordered]@{
     completionEvidence = $false
     unverifiedEditRejected = $false
     normalProfileProviderIsolation = $false
+    lifecycleTransitionAudit = $false
     isolatedDatabase = $false
     cleanup = $false
 }
@@ -381,6 +382,7 @@ try {
     $smallConfigId = $null
 
     $completionEvents = Invoke-AgentStream -Message '[acceptance:evidence] persist completion evidence'
+    $completionTaskId = [long](($completionEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
     $completionApproval = $completionEvents | Where-Object { $_.type -eq 'COMMAND_APPROVAL_REQUIRED' } | Select-Object -First 1
     if ($completionApproval) {
         $completionApprovalId = [string]$completionApproval.data.approvalId
@@ -391,16 +393,28 @@ try {
         Invoke-ApiData -Path "/student/projects/$projectId/agent/command-approvals/$completionApprovalId/execute" -Method POST | Out-Null
         $completionState = Wait-TaskTerminal -TaskId $completionTaskId
         if ($completionState.status -ne 'completed') { throw "Completion evidence task $completionTaskId status is $($completionState.status)." }
-        $completionEvents = Get-TaskEvents -TaskId $completionTaskId
     }
+    $completionEvents = Get-TaskEvents -TaskId $completionTaskId
     $completionEvent = Get-RequiredEvent -Events $completionEvents -Type 'COMPLETION_EVIDENCE'
-    $completedState = Get-RequiredEvent -Events $completionEvents -Type 'RUN_STATE_COMPLETED'
+    $completedState = $completionEvents | Where-Object {
+        $_.type -eq 'RUN_STATE_COMPLETED' -and $_.data.transition
+    } | Select-Object -First 1
+    if (-not $completedState) {
+        throw "Durable task events contain no audited RUN_STATE_COMPLETED transition: $(($completionEvents | ForEach-Object { $_.type }) -join ', ')"
+    }
+    $transition = $completedState.data.transition
+    if (-not $transition -or $transition.previousState -ne 'running' -or $transition.nextState -ne 'completed' -or
+        $transition.actor -ne 'agent_run_lifecycle' -or $transition.reason -ne 'RUN_STATE_COMPLETED' -or
+        -not $transition.stateChanged -or [long]$transition.executionEpoch -lt 1) {
+        throw "Completed state event is missing canonical lifecycle transition audit: $($completedState.data | ConvertTo-Json -Compress -Depth 8)"
+    }
+    $evidence.lifecycleTransitionAudit = $true
     if (-not [bool]$completionEvent.data.satisfied) { throw 'Completion evidence was not satisfied.' }
     $completionTypes = @($completionEvents | ForEach-Object { $_.type })
     if ([array]::IndexOf($completionTypes, 'COMPLETION_EVIDENCE') -gt [array]::IndexOf($completionTypes, 'RUN_STATE_COMPLETED')) {
         throw 'COMPLETION_EVIDENCE must precede RUN_STATE_COMPLETED.'
     }
-    $persistedEvidence = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$($completionEvent.data.taskId)/completion-evidence"
+    $persistedEvidence = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$completionTaskId/completion-evidence"
     if (-not [bool]$persistedEvidence.satisfied) { throw 'Completion evidence API did not return satisfied evidence.' }
     $evidence.completionEvidence = $true
 

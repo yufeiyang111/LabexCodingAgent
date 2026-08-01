@@ -82,23 +82,61 @@ public class AgentRunLifecycleService {
     @Transactional(rollbackFor = Exception.class)
     public RecoveryClaim claimRecovery(Long taskId, AgentRunState expectedState, String owner, long leaseDurationMs) {
         AgentTask task = taskMapper.selectByTaskIdForUpdate(taskId);
-        if (task == null || AgentRunState.fromPersistedStatus(task.getStatus()) != expectedState) return null;
-        LocalDateTime now = LocalDateTime.now(); long epoch = valueOrZero(task.getExecutionEpoch()) + 1L; LocalDateTime expires = now.plusNanos(Math.max(5_000L, leaseDurationMs) * 1_000_000L);
+        if (task == null || AgentRunState.fromPersistedStatus(task.getStatus()) != expectedState) {
+            return null;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        long epoch = valueOrZero(task.getExecutionEpoch()) + 1L;
+        LocalDateTime expires = now.plusNanos(Math.max(5_000L, leaseDurationMs) * 1_000_000L);
+        String eventType = "RUN_RECOVERY_TAKEOVER";
         String key = "recovery-takeover-" + taskId + "-" + epoch;
         AgentRunEvent existing = findByIdempotencyKey(taskId, key);
         if (existing != null) {
-            validateIdempotentReplay(existing, AgentRunState.RECOVERING, "RUN_RECOVERY_TAKEOVER");
+            validateIdempotentReplay(existing, AgentRunState.RECOVERING, eventType);
             return null;
         }
         AgentRunStateMachine.requireTransition(expectedState, AgentRunState.RECOVERING);
-        long seq = nextSequence(task);
+        long sequence = nextSequence(task);
         long version = valueOrZero(task.getRunVersion()) + 1L;
-        UpdateWrapper<AgentTask> update=new UpdateWrapper<AgentTask>().eq("task_id",taskId).eq("status",expectedState.persistedStatus()).eq("run_version",valueOrZero(task.getRunVersion()))
-                .and(w->w.isNull("execution_owner").or().isNull("execution_lease_expires_at").or().le("execution_lease_expires_at",now))
-                .set("status",AgentRunState.RECOVERING.persistedStatus()).set("last_event_sequence",seq).set("run_version",version).set("execution_owner",owner).set("execution_epoch",epoch).set("execution_lease_expires_at",expires).set("execution_heartbeat_at",now).set("current_step","Recovering after expired lease").set("summary","Recovery takeover claimed").set("update_time",now);
-        if(taskMapper.update(null,update)!=1) return null;
-        AgentRunEvent event=new AgentRunEvent(); event.setTaskId(taskId);event.setStudentId(task.getStudentId());event.setProjectId(task.getProjectId());event.setSequenceNumber(seq);event.setState("recovering");event.setEventType("RUN_RECOVERY_TAKEOVER");event.setPayload(GSON.toJson(Map.of("owner",owner,"epoch",epoch)));event.setIdempotencyKey(key);event.setCreateTime(now);
-        if(eventMapper.insert(event)!=1||event.getEventId()==null) throw new IllegalStateException("Unable to persist recovery takeover event"); persistOutbox(event,Map.of("owner",owner,"epoch",epoch),now); return new RecoveryClaim(owner,epoch,expires);
+        UpdateWrapper<AgentTask> update = new UpdateWrapper<AgentTask>()
+                .eq("task_id", taskId)
+                .eq("status", expectedState.persistedStatus())
+                .eq("run_version", valueOrZero(task.getRunVersion()))
+                .and(wrapper -> wrapper.isNull("execution_owner")
+                        .or().isNull("execution_lease_expires_at")
+                        .or().le("execution_lease_expires_at", now))
+                .set("status", AgentRunState.RECOVERING.persistedStatus())
+                .set("last_event_sequence", sequence)
+                .set("run_version", version)
+                .set("execution_owner", owner)
+                .set("execution_epoch", epoch)
+                .set("execution_lease_expires_at", expires)
+                .set("execution_heartbeat_at", now)
+                .set("current_step", "Recovering after expired lease")
+                .set("summary", "Recovery takeover claimed")
+                .set("update_time", now);
+        if (taskMapper.update(null, update) != 1) {
+            return null;
+        }
+
+        Object safePayload = transitionPayload(eventType, Map.of("owner", owner, "epoch", epoch),
+                expectedState, AgentRunState.RECOVERING, epoch);
+        AgentRunEvent event = new AgentRunEvent();
+        event.setTaskId(taskId);
+        event.setStudentId(task.getStudentId());
+        event.setProjectId(task.getProjectId());
+        event.setSequenceNumber(sequence);
+        event.setState(AgentRunState.RECOVERING.persistedStatus());
+        event.setEventType(eventType);
+        event.setPayload(GSON.toJson(safePayload));
+        event.setIdempotencyKey(key);
+        event.setCreateTime(now);
+        if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
+            throw new IllegalStateException("Unable to persist recovery takeover event");
+        }
+        persistOutbox(event, safePayload, now);
+        recordEventPartBestEffort(taskId, eventType, safePayload, sequence);
+        return new RecoveryClaim(owner, epoch, expires);
     }
 
     /**
@@ -163,7 +201,7 @@ public class AgentRunLifecycleService {
             return null;
         }
 
-        Object safePayload = InternalReasoningBoundary.sanitizeEventPayload(eventType, payload);
+        Object safePayload = transitionPayload(eventType, payload, expectedState, targetState, epoch);
         AgentRunEvent event = new AgentRunEvent();
         event.setTaskId(task.getTaskId());
         event.setStudentId(task.getStudentId());
@@ -289,7 +327,10 @@ public class AgentRunLifecycleService {
             throw new IllegalStateException("Agent run state changed concurrently; retry the transition with the same idempotency key");
         }
 
-        Object safePayload = InternalReasoningBoundary.sanitizeEventPayload(eventType, payload);
+        Object safePayload = stateChanged
+                ? transitionPayload(eventType, payload, currentState, targetState,
+                        valueOrZero(task.getExecutionEpoch()))
+                : InternalReasoningBoundary.sanitizeEventPayload(eventType, payload);
         AgentRunEvent event = new AgentRunEvent();
         event.setTaskId(task.getTaskId());
         event.setStudentId(task.getStudentId());
@@ -416,6 +457,36 @@ public class AgentRunLifecycleService {
         persistOutbox(event, safePayload, now);
         recordEventPartBestEffort(task.getTaskId(), event.getEventType(), safePayload, nextSequence);
         return event;
+    }
+
+    /** 状态迁移审计由唯一生命周期写入入口生成，调用方 payload 不能覆盖。 */
+    private Object transitionPayload(String eventType, Object payload, AgentRunState previousState,
+                                     AgentRunState nextState, long executionEpoch) {
+        Object sanitized = InternalReasoningBoundary.sanitizeEventPayload(eventType, payload);
+        LinkedHashMap<String, Object> enriched = new LinkedHashMap<>();
+        if (sanitized instanceof Map<?, ?> values) {
+            for (Map.Entry<?, ?> entry : values.entrySet()) {
+                if (entry.getKey() != null) {
+                    enriched.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+        } else if (sanitized != null) {
+            enriched.put("data", sanitized);
+        }
+        String reason = eventType;
+        Object payloadReason = enriched.get("reason");
+        if (payloadReason != null && !String.valueOf(payloadReason).isBlank()) {
+            reason = String.valueOf(payloadReason);
+        }
+        LinkedHashMap<String, Object> transition = new LinkedHashMap<>();
+        transition.put("previousState", previousState.persistedStatus());
+        transition.put("nextState", nextState.persistedStatus());
+        transition.put("actor", "agent_run_lifecycle");
+        transition.put("reason", reason);
+        transition.put("executionEpoch", Math.max(0L, executionEpoch));
+        transition.put("stateChanged", true);
+        enriched.put("transition", Map.copyOf(transition));
+        return enriched;
     }
 
     private void recordEventPartBestEffort(Long taskId, String eventType, Object payload, long sequence) {

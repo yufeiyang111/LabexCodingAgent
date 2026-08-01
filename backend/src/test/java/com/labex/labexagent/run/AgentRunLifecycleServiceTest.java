@@ -12,6 +12,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunOutbox;
 import com.labex.entity.AgentTask;
@@ -321,6 +323,9 @@ class AgentRunLifecycleServiceTest {
         assertEquals("RUN_RECOVERY_TAKEOVER", event.getValue().getEventType());
         assertEquals("recovering", event.getValue().getState());
         assertEquals(4L, event.getValue().getSequenceNumber());
+        JsonObject recoveryPayload = JsonParser.parseString(event.getValue().getPayload()).getAsJsonObject();
+        assertTransitionAudit(recoveryPayload.getAsJsonObject("transition"),
+                "running", "recovering", "RUN_RECOVERY_TAKEOVER", 5L);
         ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<AgentTask>> update = ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper.class);
         verify(taskMapper).update(org.mockito.ArgumentMatchers.isNull(), update.capture());
         assertTrue(update.getValue().getSqlSet().contains("execution_epoch"));
@@ -597,6 +602,79 @@ class AgentRunLifecycleServiceTest {
     }
 
     @Test
+    void persistsCanonicalTransitionAuditAcrossEventOutboxAndPartProjection() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(909L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        service.setPartService(parts);
+
+        service.transition(
+                71L,
+                AgentRunState.WAITING_ENVIRONMENT,
+                "RUN_ENVIRONMENT_BLOCKED",
+                Map.of("reason", "dependency_resolution_failed", "detail", "Repository unavailable"),
+                "Waiting for environment",
+                "Dependency resolution failed",
+                "run-71-environment-blocked");
+
+        ArgumentCaptor<AgentRunEvent> eventCaptor = ArgumentCaptor.forClass(AgentRunEvent.class);
+        ArgumentCaptor<AgentRunOutbox> outboxCaptor = ArgumentCaptor.forClass(AgentRunOutbox.class);
+        ArgumentCaptor<Object> partPayloadCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        verify(outboxMapper).insert(outboxCaptor.capture());
+        verify(parts).recordEventPart(eq(71L), eq("RUN_ENVIRONMENT_BLOCKED"),
+                partPayloadCaptor.capture(), eq(1L));
+
+        JsonObject eventPayload = JsonParser.parseString(eventCaptor.getValue().getPayload()).getAsJsonObject();
+        assertTransitionAudit(eventPayload.getAsJsonObject("transition"),
+                "running", "waiting_environment", "dependency_resolution_failed", 4L);
+        JsonObject outboxPayload = JsonParser.parseString(outboxCaptor.getValue().getPayload()).getAsJsonObject();
+        assertTransitionAudit(outboxPayload.getAsJsonObject("payload").getAsJsonObject("transition"),
+                "running", "waiting_environment", "dependency_resolution_failed", 4L);
+        assertTrue(partPayloadCaptor.getValue() instanceof Map<?, ?>);
+        Object transition = ((Map<?, ?>) partPayloadCaptor.getValue()).get("transition");
+        assertTrue(transition instanceof Map<?, ?>);
+        assertEquals("running", ((Map<?, ?>) transition).get("previousState"));
+        assertEquals("waiting_environment", ((Map<?, ?>) transition).get("nextState"));
+    }
+
+    @Test
+    void doesNotInventTransitionAuditForSameStateStreamEvents() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(910L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        service.appendEvent(71L, "THINK", Map.of("content", "Inspecting"), "run-71-think-audit");
+
+        ArgumentCaptor<AgentRunEvent> eventCaptor = ArgumentCaptor.forClass(AgentRunEvent.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        JsonObject payload = JsonParser.parseString(eventCaptor.getValue().getPayload()).getAsJsonObject();
+        assertFalse(payload.has("transition"));
+    }
+
+    @Test
     void rejectsAnIllegalTransitionBeforeWritingAnything() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
@@ -617,6 +695,16 @@ class AgentRunLifecycleServiceTest {
         verify(taskMapper, never()).updateById(any(AgentTask.class));
         verify(eventMapper, never()).insert(any(AgentRunEvent.class));
         verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    private void assertTransitionAudit(JsonObject transition, String previousState, String nextState,
+                                       String reason, long executionEpoch) {
+        assertEquals(previousState, transition.get("previousState").getAsString());
+        assertEquals(nextState, transition.get("nextState").getAsString());
+        assertEquals("agent_run_lifecycle", transition.get("actor").getAsString());
+        assertEquals(reason, transition.get("reason").getAsString());
+        assertEquals(executionEpoch, transition.get("executionEpoch").getAsLong());
+        assertTrue(transition.get("stateChanged").getAsBoolean());
     }
 
     private AgentTask task(AgentRunState state) {

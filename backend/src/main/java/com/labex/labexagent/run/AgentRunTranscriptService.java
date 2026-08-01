@@ -190,7 +190,7 @@ public class AgentRunTranscriptService {
         return result;
     }
 
-    /** 为交互暂停的整个 tool batch 生成协议完整、顺序稳定的 tool result? */
+    /** 为交互暂停的整个 tool batch 生成协议完整、顺序稳定的 tool result。 */
     public List<Map<String, Object>> resolvedInteractionToolResults(
             AgentRunInteraction interaction, List<Map<String, Object>> transcript) {
         if (interaction == null || transcript == null || transcript.isEmpty()) return List.of();

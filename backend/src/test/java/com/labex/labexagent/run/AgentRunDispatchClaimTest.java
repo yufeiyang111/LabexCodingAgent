@@ -10,6 +10,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunOutbox;
 import com.labex.entity.AgentTask;
@@ -19,6 +21,7 @@ import com.labex.mapper.AgentTaskMapper;
 import java.time.LocalDateTime;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class AgentRunDispatchClaimTest {
 
@@ -58,7 +61,19 @@ class AgentRunDispatchClaimTest {
         assertEquals("recovering", task.getStatus());
         assertEquals("instance-a", task.getExecutionOwner());
         assertNotNull(task.getExecutionLeaseExpiresAt());
-        verify(outboxMapper).insert(any(AgentRunOutbox.class));
+        ArgumentCaptor<AgentRunEvent> eventCaptor = ArgumentCaptor.forClass(AgentRunEvent.class);
+        ArgumentCaptor<AgentRunOutbox> outboxCaptor = ArgumentCaptor.forClass(AgentRunOutbox.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        verify(outboxMapper).insert(outboxCaptor.capture());
+        JsonObject eventPayload = JsonParser.parseString(eventCaptor.getValue().getPayload()).getAsJsonObject();
+        JsonObject transition = eventPayload.getAsJsonObject("transition");
+        assertEquals("waiting_user", transition.get("previousState").getAsString());
+        assertEquals("recovering", transition.get("nextState").getAsString());
+        assertEquals("agent_run_lifecycle", transition.get("actor").getAsString());
+        assertEquals("RUN_INTERACTION_RESUME_QUEUED", transition.get("reason").getAsString());
+        assertEquals(5L, transition.get("executionEpoch").getAsLong());
+        JsonObject outboxPayload = JsonParser.parseString(outboxCaptor.getValue().getPayload()).getAsJsonObject();
+        assertEquals(transition, outboxPayload.getAsJsonObject("payload").getAsJsonObject("transition"));
     }
 
     @Test
