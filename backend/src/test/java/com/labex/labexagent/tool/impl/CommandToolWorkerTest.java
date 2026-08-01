@@ -38,7 +38,7 @@ class CommandToolWorkerTest {
         Files.writeString(workspace.resolve("pom.xml"), "<project />");
         AgentContext context = new AgentContext(
                 "session-7", 1, null, "conversation-7", 1L, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
 
         assertSuccessful(new RunCommandTool(worker), context, commandArgs("echo worker"));
         assertSuccessful(new BashTool(worker), context, commandArgs("echo worker"));
@@ -56,7 +56,7 @@ class CommandToolWorkerTest {
                 ExecutionStatus.SUCCEEDED, 0, 1, "ok", false));
         AgentContext context = new AgentContext(
                 "session-8", 1, null, "conversation-8", 8L, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
 
         assertSuccessful(new RunCommandTool(worker), context, commandArgs("echo worker"));
 
@@ -73,7 +73,7 @@ class CommandToolWorkerTest {
         Files.writeString(workspace.resolve("pom.xml"), "<project />");
         AgentContext context = new AgentContext(
                 "session-9", 1, null, "conversation-9", 9L, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
         AgentCancellationRegistry.ActiveRun run = new AgentCancellationRegistry()
                 .register("session-9", 1, 12, 9L);
         context.setCancellationToken(run);
@@ -93,7 +93,7 @@ class CommandToolWorkerTest {
         SandboxWorker worker = mock(SandboxWorker.class);
         AgentContext context = new AgentContext(
                 "session-risk", 1, null, "conversation-risk", 10L, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
         JsonObject args = commandArgs("rm -rf unsafe");
         args.addProperty("allow_dangerous", true);
 

@@ -20,7 +20,7 @@ class CreatePlanToolVerificationTest {
     void rejectsCompletingAVerificationTaskBeforeAnySuccessfulVerification() throws Exception {
         CreatePlanTool tool = new CreatePlanTool();
         AgentContext context = new AgentContext("session-1", 7, null, "conversation-1", 71L, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
         JsonObject create = new JsonObject();
         create.addProperty("action", "create");
         JsonArray tasks = new JsonArray();

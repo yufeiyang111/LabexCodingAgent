@@ -17,7 +17,6 @@ public class AgentContext {
     private Long taskId;
     private Integer modelConfigId;
     private Path workspaceRoot;
-    private List<String> transcript;
     private List<PlanItem> plan;
     private int currentPlanIndex;
     private String mode = "agent";
@@ -43,7 +42,7 @@ public class AgentContext {
 
     public static AgentContext create(String sessionId, Integer studentId, StudentProject project, String conversationId, Long taskId) {
         return new AgentContext(sessionId, studentId, project, conversationId, taskId,
-                ProjectWorkspace.paths(project).workspaceRoot(), new ArrayList(), new ArrayList(), 0);
+                ProjectWorkspace.paths(project).workspaceRoot(), new ArrayList(), 0);
     }
 
     public String getPlanSummary() {
@@ -114,10 +113,6 @@ public class AgentContext {
         return this.workspaceRoot;
     }
 
-    public List<String> getTranscript() {
-        return this.transcript;
-    }
-
     public List<PlanItem> getPlan() {
         return this.plan;
     }
@@ -152,10 +147,6 @@ public class AgentContext {
 
     public void setWorkspaceRoot(Path workspaceRoot) {
         this.workspaceRoot = workspaceRoot;
-    }
-
-    public void setTranscript(List<String> transcript) {
-        this.transcript = transcript;
     }
 
     public void setPlan(List<PlanItem> plan) {
@@ -291,11 +282,6 @@ public class AgentContext {
         if (this$workspaceRoot == null ? other$workspaceRoot != null : !(this$workspaceRoot).equals(other$workspaceRoot)) {
             return false;
         }
-        List this$transcript = this.getTranscript();
-        List other$transcript = other.getTranscript();
-        if (this$transcript == null ? other$transcript != null : !(this$transcript).equals(other$transcript)) {
-            return false;
-        }
         List this$plan = this.getPlan();
         List other$plan = other.getPlan();
         return !(this$plan == null ? other$plan != null : !(this$plan).equals(other$plan));
@@ -321,25 +307,22 @@ public class AgentContext {
         result = result * 59 + ($conversationId == null ? 43 : $conversationId.hashCode());
         Path $workspaceRoot = this.getWorkspaceRoot();
         result = result * 59 + ($workspaceRoot == null ? 43 : ($workspaceRoot).hashCode());
-        List $transcript = this.getTranscript();
-        result = result * 59 + ($transcript == null ? 43 : ($transcript).hashCode());
         List $plan = this.getPlan();
         result = result * 59 + ($plan == null ? 43 : ($plan).hashCode());
         return result;
     }
 
     public String toString() {
-        return "AgentContext(sessionId=" + this.getSessionId() + ", studentId=" + this.getStudentId() + ", project=" + String.valueOf(this.getProject()) + ", conversationId=" + this.getConversationId() + ", taskId=" + this.getTaskId() + ", workspaceRoot=" + String.valueOf(this.getWorkspaceRoot()) + ", transcript=" + String.valueOf(this.getTranscript()) + ", plan=" + String.valueOf(this.getPlan()) + ", currentPlanIndex=" + this.getCurrentPlanIndex() + ")";
+        return "AgentContext(sessionId=" + this.getSessionId() + ", studentId=" + this.getStudentId() + ", project=" + String.valueOf(this.getProject()) + ", conversationId=" + this.getConversationId() + ", taskId=" + this.getTaskId() + ", workspaceRoot=" + String.valueOf(this.getWorkspaceRoot()) + ", plan=" + String.valueOf(this.getPlan()) + ", currentPlanIndex=" + this.getCurrentPlanIndex() + ")";
     }
 
-    public AgentContext(String sessionId, Integer studentId, StudentProject project, String conversationId, Long taskId, Path workspaceRoot, List<String> transcript, List<PlanItem> plan, int currentPlanIndex) {
+    public AgentContext(String sessionId, Integer studentId, StudentProject project, String conversationId, Long taskId, Path workspaceRoot, List<PlanItem> plan, int currentPlanIndex) {
         this.sessionId = sessionId;
         this.studentId = studentId;
         this.project = project;
         this.conversationId = conversationId;
         this.taskId = taskId;
         this.workspaceRoot = workspaceRoot;
-        this.transcript = transcript;
         this.plan = plan;
         this.currentPlanIndex = currentPlanIndex;
         this.mode = "agent";

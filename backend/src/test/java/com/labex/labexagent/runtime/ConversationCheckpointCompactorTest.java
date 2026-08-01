@@ -81,7 +81,6 @@ class ConversationCheckpointCompactorTest {
     private AgentContext context() {
         return new AgentContext(
                 "session", 1, null, "conversation", 1L, Path.of("workspace"),
-                new ArrayList<>(),
                 List.of(
                         new AgentContext.PlanItem("定位根因", "检查认证链路", true),
                         new AgentContext.PlanItem("补充回归测试", "覆盖空 token", false)),

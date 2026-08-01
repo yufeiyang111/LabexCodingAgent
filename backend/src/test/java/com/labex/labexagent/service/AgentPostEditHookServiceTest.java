@@ -71,7 +71,7 @@ class AgentPostEditHookServiceTest {
         project.setStudentId(7);
         project.setWorkspacePath(workspace.toString());
         return new AgentContext("session", 7, project, "conversation", 1L, workspace,
-                List.of(), List.of(), 0);
+                List.of(), 0);
     }
 
     private JsonObject writeArgs(String path) {

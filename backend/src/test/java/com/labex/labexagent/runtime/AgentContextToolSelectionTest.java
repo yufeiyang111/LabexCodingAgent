@@ -10,7 +10,7 @@ class AgentContextToolSelectionTest {
     @Test
     void executableToolsMustBelongToTheSchemasSelectedForThisRun() {
         AgentContext context = new AgentContext(null, null, null, null, null, null,
-                List.of(), List.of(), 0);
+                List.of(), 0);
 
         context.setSelectedToolNames(List.of("read_file", "question"));
 

@@ -103,7 +103,7 @@ class WorkspaceScanToolsTest {
 
     private AgentContext context() {
         return new AgentContext("session", 1, null, "conversation", 1L, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
     }
 
     private void write(String relativePath, String content) throws Exception {

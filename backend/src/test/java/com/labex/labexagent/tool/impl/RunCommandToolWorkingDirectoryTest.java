@@ -44,6 +44,6 @@ class RunCommandToolWorkingDirectoryTest {
 
     private AgentContext context() {
         return new AgentContext("session-1", 7, null, "conversation-1", 71L, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
     }
 }

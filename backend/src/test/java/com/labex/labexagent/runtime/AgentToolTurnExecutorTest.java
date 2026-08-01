@@ -43,7 +43,7 @@ class AgentToolTurnExecutorTest {
     }
 
     private AgentContext context() {
-        AgentContext context = new AgentContext(null, null, null, null, null, null, List.of(), List.of(), 0);
+        AgentContext context = new AgentContext(null, null, null, null, null, null, List.of(), 0);
         context.setMode("build"); return context;
     }
 

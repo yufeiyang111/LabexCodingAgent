@@ -26,7 +26,7 @@ class McpToolAdapterWorkerTest {
                 new McpToolAdapter.McpToolInfo("docs", "Docs", "search", "Search docs", new JsonObject()), manager);
         AgentContext context = new AgentContext(
                 "session-17", 7, null, "conversation-17", 17L, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
         when(manager.callTool(eq(7), argThat(run -> run.workspaceRoot().equals(workspace)),
                 eq("docs"), eq("search"), eq("{}")))
                 .thenReturn(McpClient.CallResult.ok("ok"));

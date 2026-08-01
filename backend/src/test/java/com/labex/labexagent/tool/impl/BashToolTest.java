@@ -256,7 +256,7 @@ class BashToolTest {
     private AgentContext context(String sessionId, Long taskId) {
         return new AgentContext(
                 sessionId, 1, null, "conversation", taskId, workspace,
-                new ArrayList<>(), new ArrayList<>(), 0);
+                new ArrayList<>(), 0);
     }
 
     private JsonObject commandArgs(String command) {

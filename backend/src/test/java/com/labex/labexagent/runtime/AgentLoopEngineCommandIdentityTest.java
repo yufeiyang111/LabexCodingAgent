@@ -21,7 +21,7 @@ class AgentLoopEngineCommandIdentityTest {
     @Test
     void derivesStableApprovalCreateIdempotencyFromToolCallIdentity() {
         AgentContext context = new AgentContext("session-71", 7, null, "conversation-71", 71L,
-                Path.of("."), new ArrayList<>(), new ArrayList<>(), 0);
+                Path.of("."), new ArrayList<>(), 0);
 
         assertThat(AgentLoopEngine.commandApprovalIdempotencyKey(context, "call-provider-71"))
                 .isEqualTo("command-approval:v1:71:session-71:agent_shell:call-provider-71");
