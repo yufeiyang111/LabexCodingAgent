@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.google.gson.Gson;
 import com.labex.entity.AgentChangeSet;
 import com.labex.entity.AgentFileChange;
+import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
@@ -117,17 +118,17 @@ public class AgentTaskService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public void updateTask(Long taskId, String status, String currentStep, String summary) {
+    public AgentRunEvent updateTask(Long taskId, String status, String currentStep, String summary) {
         // 普通状态写入代表一次新的发生实例；需要可重放幂等性的调用方必须显式传入领域键。
-        this.updateTask(taskId, status, currentStep, summary,
+        return this.updateTask(taskId, status, currentStep, summary,
                 AgentRunTransitionKey.forTaskUpdateOccurrence(taskId, UUID.randomUUID(), status, currentStep, summary));
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public void updateTask(Long taskId, String status, String currentStep, String summary,
-                           String idempotencyKey) {
+    public AgentRunEvent updateTask(Long taskId, String status, String currentStep, String summary,
+                                    String idempotencyKey) {
         if (taskId == null) {
-            return;
+            return null;
         }
         LocalDateTime now = LocalDateTime.now();
         if (this.isWaitingState(status)) {
@@ -137,7 +138,7 @@ public class AgentTaskService {
         if (runState == null) {
             throw new IllegalArgumentException("Unknown agent task state: " + status);
         }
-        this.lifecycleService.transition(
+        AgentRunLifecycleService.TransitionResult transition = this.lifecycleService.transition(
                 taskId,
                 runState,
                 "RUN_STATE_" + runState.name(),
@@ -148,6 +149,7 @@ public class AgentTaskService {
         if (this.isTerminalState(status)) {
             this.finishTimingIfTerminal(taskId, now);
         }
+        return transition == null ? null : transition.event();
     }
 
     /**

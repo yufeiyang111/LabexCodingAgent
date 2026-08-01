@@ -1,6 +1,7 @@
 package com.labex.labexagent.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
+import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
@@ -255,6 +257,31 @@ class AgentTaskServiceLifecycleTest {
                 eq("User response persisted"), eq(com.labex.labexagent.run.AgentRunTransitionKey.forInteractionResume(
                         72L, "interaction-72")), eq("instance-a"), any(Long.class));
         assertEquals("interaction-72", payload.getValue().get("interactionId"));
+    }
+
+    @Test
+    void returnsTheAuthoritativeLifecycleEventForLiveProjection() throws Exception {
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunEvent authoritativeEvent = new AgentRunEvent();
+        authoritativeEvent.setEventId(901L);
+        authoritativeEvent.setSequenceNumber(19L);
+        authoritativeEvent.setEventType("RUN_STATE_PREPARING");
+        when(lifecycle.transition(eq(72L), eq(AgentRunState.PREPARING),
+                eq("RUN_STATE_PREPARING"), any(), eq("Preparing workspace"),
+                eq("Worker accepted run"), eq("transition-72")))
+                .thenReturn(new AgentRunLifecycleService.TransitionResult(authoritativeEvent, true));
+        AgentTaskService service = newTaskService(
+                mock(AgentTaskMapper.class),
+                mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class),
+                lifecycle);
+
+        Object returned = AgentTaskService.class.getMethod("updateTask", Long.class, String.class,
+                        String.class, String.class, String.class)
+                .invoke(service, 72L, "preparing", "Preparing workspace", "Worker accepted run",
+                        "transition-72");
+
+        assertSame(authoritativeEvent, returned);
     }
 
     @Test

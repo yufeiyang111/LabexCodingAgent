@@ -72,6 +72,7 @@ $evidence = [ordered]@{
     unverifiedEditRejected = $false
     normalProfileProviderIsolation = $false
     lifecycleTransitionAudit = $false
+    singleAuthoritativeTerminalEvent = $false
     isolatedDatabase = $false
     cleanup = $false
 }
@@ -381,9 +382,9 @@ try {
     Invoke-ApiData -Path "/student/model-configs/$smallConfigId" -Method DELETE | Out-Null
     $smallConfigId = $null
 
-    $completionEvents = Invoke-AgentStream -Message '[acceptance:evidence] persist completion evidence'
-    $completionTaskId = [long](($completionEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
-    $completionApproval = $completionEvents | Where-Object { $_.type -eq 'COMMAND_APPROVAL_REQUIRED' } | Select-Object -First 1
+    $completionStreamEvents = Invoke-AgentStream -Message '[acceptance:evidence] persist completion evidence'
+    $completionTaskId = [long](($completionStreamEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
+    $completionApproval = $completionStreamEvents | Where-Object { $_.type -eq 'COMMAND_APPROVAL_REQUIRED' } | Select-Object -First 1
     if ($completionApproval) {
         $completionApprovalId = [string]$completionApproval.data.approvalId
         $completionTaskId = [long]$completionApproval.data.taskId
@@ -394,13 +395,29 @@ try {
         $completionState = Wait-TaskTerminal -TaskId $completionTaskId
         if ($completionState.status -ne 'completed') { throw "Completion evidence task $completionTaskId status is $($completionState.status)." }
     }
+    $directCompletedState = $completionStreamEvents | Where-Object { $_.type -eq 'RUN_STATE_COMPLETED' } | Select-Object -First 1
+    $directTransition = $null
+    if ($directCompletedState -and $directCompletedState.data -and
+        $directCompletedState.data.PSObject.Properties['transition']) {
+        $directTransition = $directCompletedState.data.transition
+    }
+    if (-not $completionApproval) {
+        if (-not $directCompletedState -or -not $directTransition -or -not $directCompletedState.eventId) {
+            throw 'Direct completion stream did not project the authoritative persisted RUN_STATE_COMPLETED event.'
+        }
+    }
     $completionEvents = Get-TaskEvents -TaskId $completionTaskId
     $completionEvent = Get-RequiredEvent -Events $completionEvents -Type 'COMPLETION_EVIDENCE'
-    $completedState = $completionEvents | Where-Object {
-        $_.type -eq 'RUN_STATE_COMPLETED' -and $_.data.transition
-    } | Select-Object -First 1
-    if (-not $completedState) {
+    $durableCompletedStates = @($completionEvents | Where-Object { $_.type -eq 'RUN_STATE_COMPLETED' })
+    if ($durableCompletedStates.Count -ne 1) {
+        throw "Expected exactly one durable RUN_STATE_COMPLETED event, found $($durableCompletedStates.Count)."
+    }
+    $completedState = $durableCompletedStates[0]
+    if (-not $completedState.data.transition) {
         throw "Durable task events contain no audited RUN_STATE_COMPLETED transition: $(($completionEvents | ForEach-Object { $_.type }) -join ', ')"
+    }
+    if ($directCompletedState -and [string]$directCompletedState.eventId -ne [string]$completedState.eventId) {
+        throw "Direct and durable completion events use different sequence IDs: direct=$($directCompletedState.eventId), durable=$($completedState.eventId)."
     }
     $transition = $completedState.data.transition
     if (-not $transition -or $transition.previousState -ne 'running' -or $transition.nextState -ne 'completed' -or
@@ -409,6 +426,7 @@ try {
         throw "Completed state event is missing canonical lifecycle transition audit: $($completedState.data | ConvertTo-Json -Compress -Depth 8)"
     }
     $evidence.lifecycleTransitionAudit = $true
+    $evidence.singleAuthoritativeTerminalEvent = $true
     if (-not [bool]$completionEvent.data.satisfied) { throw 'Completion evidence was not satisfied.' }
     $completionTypes = @($completionEvents | ForEach-Object { $_.type })
     if ([array]::IndexOf($completionTypes, 'COMPLETION_EVIDENCE') -gt [array]::IndexOf($completionTypes, 'RUN_STATE_COMPLETED')) {

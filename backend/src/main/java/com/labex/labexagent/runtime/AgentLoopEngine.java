@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.labex.entity.AgentConversation;
+import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
@@ -1267,10 +1268,11 @@ public class AgentLoopEngine {
                                     }
                                 }
                                 this.sendEvent(sse, conv, "FINAL", Map.of("content", ft, "summary", this.finalResponseSummary(visibleLanguage)));
-                                this.taskService.updateTask(task.getTaskId(), "completed", this.localText(visibleLanguage, "\u5df2\u5b8c\u6210", "Completed"), ft);
+                                AgentRunEvent completedEvent = this.taskService.updateTask(task.getTaskId(), "completed",
+                                        this.localText(visibleLanguage, "\u5df2\u5b8c\u6210", "Completed"), ft);
                                 ctx.setStage("final");
                                 this.writeAgentCheckpoint(project, request, task, ctx, "completed", "Task completed with final response.", "", this.limitForContext(ft, 2000), runLog);
-                                this.sendEvent(sse, conv, "RUN_STATE_COMPLETED", Map.of("taskId", task.getTaskId(), "state", "completed"));
+                                this.sendPersistedEvent(sse, conv, completedEvent);
                                 this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "\u5b8c\u6210", "Done"), "iterations", i));
                                 emitter.complete();
                                 return;
@@ -3403,6 +3405,24 @@ public class AgentLoopEngine {
         sse.send(type, data);
         if (conv != null) {
             this.conversationService.saveEvent(conv, type, data);
+        }
+    }
+
+    /** 将生命周期已持久化的事件投影到当前连接，不能再次追加同名运行事件。 */
+    private void sendPersistedEvent(AgentSsePublisher sse, AgentConversation conv, AgentRunEvent event) throws Exception {
+        if (event == null || event.getSequenceNumber() == null || event.getEventType() == null) {
+            throw new IllegalStateException("A persisted agent run event is required for live projection");
+        }
+        Object data = event.getPayload() == null || event.getPayload().isBlank()
+                ? Map.of()
+                : GSON.fromJson(event.getPayload(), Object.class);
+        try {
+            sse.sendPersisted(event.getSequenceNumber(), event.getEventType(), data);
+        } catch (java.io.IOException ignored) {
+            // 浏览器断线只影响观察者，不能把已经提交的终态重新解释成执行失败。
+        }
+        if (conv != null) {
+            this.conversationService.saveEvent(conv, event.getEventType(), data);
         }
     }
 
