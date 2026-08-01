@@ -75,6 +75,25 @@ class AgentConversationServiceCompactionTest {
     }
 
     @Test
+    void memoryStatsUseDurableCompactionSummaryInsteadOfLegacyAggregateCache() {
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation conversation = conversation();
+        String durableSummary = "<conversation-checkpoint version=\"3\">durable summary</conversation-checkpoint>";
+        when(conversationMapper.selectOne(any())).thenReturn(conversation);
+        when(messageMapper.selectList(any())).thenReturn(
+                List.of(message(21L, "COMPACTION_SUMMARY", durableSummary)));
+        when(messageMapper.selectCount(any())).thenReturn(7L);
+        AgentConversationService service = new AgentConversationService(conversationMapper, messageMapper, mock(RagConfig.class));
+
+        AgentConversationService.MemoryStats stats = service.getMemoryStats(7, 3, "conversation");
+
+        assertTrue(stats.getEstimatedTokens() == durableSummary.length());
+        assertTrue(stats.getMessageCount() == 7);
+        assertTrue(stats.isNeedsCompact());
+    }
+
+    @Test
     void compactionSummaryIsPersistedAsAFirstClassConversationEvent() {
         AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
         AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);

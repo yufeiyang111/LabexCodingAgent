@@ -428,7 +428,9 @@ public class AgentConversationService {
             return new MemoryStats(0, 0, false, 0);
         }
         Long count = this.messageMapper.selectCount(new LambdaQueryWrapper<AgentMessage>().eq(AgentMessage::getConversationId, conversationId).eq(AgentMessage::getStudentId, studentId).eq(AgentMessage::getProjectId, projectId));
-        String summary = conversation.getSummary() == null ? "" : conversation.getSummary();
+        AgentMessage latestCompaction = this.latestCompactionSummary(studentId, projectId, conversationId);
+        String summary = latestCompaction == null || latestCompaction.getContent() == null
+                ? "" : latestCompaction.getContent();
         return new MemoryStats(summary.length(), count == null ? 0 : count.intValue(), this.isAutoCompacted(summary), 12000);
     }
 
