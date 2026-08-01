@@ -791,7 +791,7 @@ public class AgentLoopEngine {
                                                             "\u5df2\u8fbe\u5230\u914d\u7f6e\u7684\u6700\u7ec8\u4fdd\u9669\u4e0a\u9650 " + iterationDecision.configuredHardMax() + " \u8f6e\u3002\u8be5\u4e0a\u9650\u9ed8\u8ba4\u5173\u95ed\uff1b\u5f53\u524d\u8fd0\u884c\u5df2\u5b89\u5168\u505c\u6b62\u3002",
                                                             "Reached the configured final safety fuse of " + iterationDecision.configuredHardMax() + " iterations. This fuse is disabled by default; the run stopped safely.");
                                             this.appendRunLog(runLog, "\n- Stop reason: " + stopReason + "\n");
-                                            this.taskService.updateTask(task.getTaskId(), "failed", noProgressStop
+                                            this.failTaskAndProject(sse, conv, task, noProgressStop
                                                     ? this.localText(visibleLanguage, "\u8fde\u7eed\u65e0\u8fdb\u5c55", "No progress")
                                                     : this.localText(visibleLanguage, "\u8fbe\u5230\u6700\u7ec8\u8fd0\u884c\u4fdd\u9669\u4e0a\u9650", "Hard iteration fuse reached"), stopReason);
                                             this.writeAgentCheckpoint(project, request, task, ctx, noProgressStop ? "no_progress_guard" : "hard_iteration_limit", stopReason, "", "", runLog);
@@ -1347,7 +1347,7 @@ public class AgentLoopEngine {
                                 this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg,
                                         "iteration", i, "reasonCode", "context_overflow_recovery_exhausted"));
                                 this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
-                                this.taskService.updateTask(task.getTaskId(), "failed", modelFailTitle, errMsg);
+                                this.failTaskAndProject(sse, conv, task, modelFailTitle, errMsg);
                                 this.writeAgentCheckpoint(project, request, task, ctx, "failed_context_overflow", modelFailReason, "", errMsg, runLog);
                                 this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle,
                                         "iterations", i, "reasonCode", "context_overflow_recovery_exhausted"));
@@ -1367,7 +1367,7 @@ public class AgentLoopEngine {
                                     "The model service did not return an initial response in time, so this run was stopped. Check the provider, proxy, or try another model.");
                             this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
                             this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
-                            this.taskService.updateTask(task.getTaskId(), "failed", modelFailTitle, errMsg);
+                            this.failTaskAndProject(sse, conv, task, modelFailTitle, errMsg);
                             this.writeAgentCheckpoint(project, request, task, ctx, "failed_model_timeout", modelFailReason, "", errMsg, runLog);
                             this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle, "iterations", i));
                             emitter.complete();
@@ -1404,7 +1404,7 @@ public class AgentLoopEngine {
                                     "Model connection failed continuously. Task paused. Check API Key config or retry later.");
                             this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
                             this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
-                            this.taskService.updateTask(task.getTaskId(), "failed", modelFailTitle, errMsg);
+                            this.failTaskAndProject(sse, conv, task, modelFailTitle, errMsg);
                             this.writeAgentCheckpoint(project, request, task, ctx, "failed_model_error", "Model connection failed continuously. Task paused.", "", errMsg, runLog);
                             this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle, "iterations", i));
                             emitter.complete();
@@ -1438,7 +1438,7 @@ public class AgentLoopEngine {
                             "Agent 执行过程中遇到异常：`" + e.getMessage() + "`。",
                             "Agent encountered exception during execution: `" + e.getMessage() + "`.");
                     this.streamFinal(sse, conv, this.buildStopFinal(runtimeTitle, runtimeReason, project, runLog, visibleLanguage), visibleLanguage);
-                    this.taskService.updateTask(task.getTaskId(), "failed", runtimeTitle, e.getMessage());
+                    this.failTaskAndProject(sse, conv, task, runtimeTitle, e.getMessage());
                     this.writeAgentCheckpoint(project, request, task, ctx, "failed_exception", "Agent encountered exception during execution.", "", e.toString(), runLog);
                     this.sendEvent(sse, conv, "DONE", Map.of("message", runtimeTitle));
                 }
@@ -2174,7 +2174,7 @@ public class AgentLoopEngine {
         String detail = this.localText(visibleLanguage,
                 "服务提供方未返回可用于一次性审批绑定的工具调用标识，因此本次执行已安全停止。",
                 "The provider did not return a tool-call identity suitable for one-time approval binding, so execution stopped safely.");
-        this.taskService.updateTask(task.getTaskId(), "failed", summary, detail);
+        this.failTaskAndProject(sse, conv, task, summary, detail);
         this.appendRunLog(runLog, "\n- " + detail + " Tool=`" + this.safeLogText(toolName) + "`\n");
         this.writeAgentCheckpoint(project, request, task, ctx, "tool_call_identity_missing", detail, toolName, "", runLog);
         this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
@@ -3409,6 +3409,13 @@ public class AgentLoopEngine {
     }
 
     /** 将生命周期已持久化的事件投影到当前连接，不能再次追加同名运行事件。 */
+    private void failTaskAndProject(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
+                                    String currentStep, String summary) throws Exception {
+        AgentRunEvent failedEvent = this.taskService.updateTask(
+                task.getTaskId(), "failed", currentStep, summary);
+        this.sendPersistedEvent(sse, conv, failedEvent);
+    }
+
     private void sendPersistedEvent(AgentSsePublisher sse, AgentConversation conv, AgentRunEvent event) throws Exception {
         if (event == null || event.getSequenceNumber() == null || event.getEventType() == null) {
             throw new IllegalStateException("A persisted agent run event is required for live projection");

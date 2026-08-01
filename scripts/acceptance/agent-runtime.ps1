@@ -73,6 +73,7 @@ $evidence = [ordered]@{
     normalProfileProviderIsolation = $false
     lifecycleTransitionAudit = $false
     singleAuthoritativeTerminalEvent = $false
+    authoritativeFailureProjection = $false
     isolatedDatabase = $false
     cleanup = $false
 }
@@ -441,6 +442,36 @@ try {
     $unverifiedTaskId = [long](($unverifiedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
     $unverifiedTask = Wait-TaskTerminal -TaskId $unverifiedTaskId
     if ($unverifiedTask.status -eq 'completed') { throw 'Unverified edit task incorrectly completed.' }
+    $directFailedState = $unverifiedEvents | Where-Object { $_.type -eq 'RUN_STATE_FAILED' } | Select-Object -First 1
+    $directFailedTransition = $null
+    if ($directFailedState -and $directFailedState.data -and
+        $directFailedState.data.PSObject.Properties['transition']) {
+        $directFailedTransition = $directFailedState.data.transition
+    }
+    if (-not $directFailedState -or -not $directFailedTransition -or -not $directFailedState.eventId) {
+        throw 'Direct failure stream did not project the authoritative persisted RUN_STATE_FAILED event.'
+    }
+    $durableUnverifiedEvents = Get-TaskEvents -TaskId $unverifiedTaskId
+    $durableFailedStates = @($durableUnverifiedEvents | Where-Object { $_.type -eq 'RUN_STATE_FAILED' })
+    if ($durableFailedStates.Count -ne 1) {
+        throw "Expected exactly one durable RUN_STATE_FAILED event, found $($durableFailedStates.Count)."
+    }
+    $durableFailedState = $durableFailedStates[0]
+    if ([string]$directFailedState.eventId -ne [string]$durableFailedState.eventId) {
+        throw "Direct and durable failure events use different sequence IDs: direct=$($directFailedState.eventId), durable=$($durableFailedState.eventId)."
+    }
+    $failedTransition = $durableFailedState.data.transition
+    if (-not $failedTransition -or $failedTransition.previousState -ne 'running' -or
+        $failedTransition.nextState -ne 'failed' -or $failedTransition.actor -ne 'agent_run_lifecycle' -or
+        $failedTransition.reason -ne 'RUN_STATE_FAILED' -or -not $failedTransition.stateChanged -or
+        [long]$failedTransition.executionEpoch -lt 1) {
+        throw "Failed state event is missing canonical lifecycle transition audit: $($durableFailedState.data | ConvertTo-Json -Compress -Depth 8)"
+    }
+    $unverifiedTypes = @($unverifiedEvents | ForEach-Object { $_.type })
+    if ([array]::IndexOf($unverifiedTypes, 'RUN_STATE_FAILED') -gt [array]::IndexOf($unverifiedTypes, 'DONE')) {
+        throw 'RUN_STATE_FAILED must precede DONE in the direct stream.'
+    }
+    $evidence.authoritativeFailureProjection = $true
     $evidence.unverifiedEditRejected = $true
 
     $questionEvents = Invoke-AgentStream -Message '[acceptance:question] restart recovery'
