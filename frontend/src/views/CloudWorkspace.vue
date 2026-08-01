@@ -1039,7 +1039,7 @@ const emptyModelConfigForm = () => ({
   baseUrl: '',
   modelsUrl: '',
   maxTokens: 32768,
-  contextWindowTokens: 1_000_000,
+  contextWindowTokens: null,
   promptCacheKeyEnabled: false,
   reasoningEffort: 'medium',
   imageInputEnabled: false,
@@ -1063,7 +1063,7 @@ const mcCustomTemplate = {
   modelsUrl: '',
   modelName: '',
   maxTokens: 32768,
-  contextWindowTokens: 1_000_000,
+  contextWindowTokens: null,
   provider: 'openai_compatible',
   note: '手动填写服务信息',
   custom: true
@@ -1852,7 +1852,7 @@ function editConfig(cfg) {
     baseUrl: cfg.baseUrl || '',
     modelsUrl: '',
     maxTokens: cfg.maxTokens || 32768,
-    contextWindowTokens: cfg.contextWindowTokens ?? 1_000_000,
+    contextWindowTokens: cfg.contextWindowTokens ?? null,
     promptCacheKeyEnabled: cfg.promptCacheKeyEnabled === 1,
     reasoningEffort: cfg.reasoningEffort || 'medium',
     imageInputEnabled: cfg.imageInputEnabled === 1,
@@ -1880,7 +1880,7 @@ function selectModelTemplate(tpl) {
     modelsUrl: tpl.modelsUrl || '',
     modelName: tpl.modelName || '',
     maxTokens: tpl.maxTokens || 32768,
-    contextWindowTokens: tpl.contextWindowTokens ?? 1_000_000,
+    contextWindowTokens: tpl.contextWindowTokens ?? null,
     temperature: tpl.temperature ?? 0.7
   }
   mcFetchedModels.value = []

@@ -146,7 +146,7 @@
                 </div>
                 <div class="mc-field">
                   <label>上下文窗口 Tokens</label>
-                  <input v-model.number="state.mcForm.contextWindowTokens" class="mc-input" type="number" min="1" step="1" placeholder="1000000" />
+                  <input v-model.number="state.mcForm.contextWindowTokens" class="mc-input" type="number" min="1" step="1" placeholder="请填写真实值" />
                   <div class="mc-hint">模型单次请求可容纳的总输入 + 输出 Token 容量，必须大于 Max Tokens</div>
                 </div>
                 <div class="mc-field mc-context-policy">

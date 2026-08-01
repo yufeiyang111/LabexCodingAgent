@@ -29,6 +29,7 @@ $token = $null
 $projectId = $null
 $configId = $null
 $smallConfigId = $null
+$unconfiguredConfigId = $null
 $evidence = [ordered]@{
     runId = $runId
     backendPort = $BackendPort
@@ -40,6 +41,7 @@ $evidence = [ordered]@{
     runMessagePartProjection = $false
     manualCompaction = $false
     staticContextBlocked = $false
+    contextWindowUnconfigured = $false
     completionEvidence = $false
     unverifiedEditRejected = $false
     normalProfileProviderIsolation = $false
@@ -261,6 +263,26 @@ try {
     $configId = [int]$config.configId
 
     $originalConfigId = $configId
+    $unconfiguredConfig = Invoke-ApiData -Path '/student/model-configs' -Method POST -Body @{
+        configName = 'Acceptance Unconfigured Context'; provider = 'acceptance_scripted'; modelName = 'acceptance-unconfigured'
+        apiKey = 'acceptance-placeholder-not-a-secret'; baseUrl = 'acceptance://scripted'; maxTokens = 4096
+        temperature = 0.0; isDefault = $false; promptCacheKeyEnabled = $false
+        reasoningEffort = 'medium'; imageInputEnabled = $false
+    }
+    $unconfiguredConfigId = [int]$unconfiguredConfig.configId
+    $configId = $unconfiguredConfigId
+    $unconfiguredEvents = Invoke-AgentStream -Message '[acceptance:unconfigured-context] provider must not run'
+    $unconfiguredBlock = Get-RequiredEvent -Events $unconfiguredEvents -Type 'CONTEXT_LIMIT_BLOCKED'
+    if ($unconfiguredBlock.data.reasonCode -ne 'context_window_unconfigured') {
+        throw "Unexpected unconfigured context reason: $($unconfiguredBlock.data.reasonCode)"
+    }
+    if ($unconfiguredEvents | Where-Object { $_.type -eq 'THINK_DELTA' -and [string]$_.data.delta -like '*Acceptance runtime scenario selected*' }) {
+        throw 'Provider was invoked when contextWindowTokens was unconfigured.'
+    }
+    $evidence.contextWindowUnconfigured = $true
+    $configId = $originalConfigId
+    Invoke-ApiData -Path "/student/model-configs/$unconfiguredConfigId" -Method DELETE | Out-Null
+    $unconfiguredConfigId = $null
     $smallConfig = Invoke-ApiData -Path '/student/model-configs' -Method POST -Body @{
         configName = 'Acceptance Tiny Context'; provider = 'acceptance_scripted'; modelName = 'acceptance-tiny'
         apiKey = 'acceptance-placeholder-not-a-secret'; baseUrl = 'acceptance://scripted'; maxTokens = 1000; contextWindowTokens = 1024
@@ -404,6 +426,7 @@ try {
     $evidence.manualCompaction = $true
 
     if ($smallConfigId) { Invoke-ApiData -Path "/student/model-configs/$smallConfigId" -Method DELETE | Out-Null; $smallConfigId = $null }
+    if ($unconfiguredConfigId) { Invoke-ApiData -Path "/student/model-configs/$unconfiguredConfigId" -Method DELETE | Out-Null; $unconfiguredConfigId = $null }
     Invoke-ApiData -Path "/student/model-configs/$configId" -Method DELETE | Out-Null
     $configId = $null
     Invoke-ApiData -Path "/student/projects/$projectId" -Method DELETE | Out-Null
@@ -427,6 +450,7 @@ try {
     try {
         if ($backendProcess -and -not $backendProcess.HasExited -and $token) {
             if ($smallConfigId) { Invoke-ApiData -Path "/student/model-configs/$smallConfigId" -Method DELETE | Out-Null }
+            if ($unconfiguredConfigId) { Invoke-ApiData -Path "/student/model-configs/$unconfiguredConfigId" -Method DELETE | Out-Null }
             if ($configId) { Invoke-ApiData -Path "/student/model-configs/$configId" -Method DELETE | Out-Null }
             if ($projectId) { Invoke-ApiData -Path "/student/projects/$projectId" -Method DELETE | Out-Null }
         }
