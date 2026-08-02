@@ -3,6 +3,8 @@ package com.labex.labexagent.multimodal;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -100,4 +102,30 @@ class ConfiguredImageUnderstandingServiceTest {
         config.setImageInputEnabled(imageInputEnabled ? 1 : 0);
         return config;
     }
+
+    @Test
+    void neverPromotesProviderReasoningIntoTheVisibleImageAnswer() {
+        AgentModelConfig config = modelConfig(true);
+        AgentModelConfigService configService = mock(AgentModelConfigService.class);
+        LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(configService.resolveForStudent(42, 7)).thenReturn(config);
+        when(configService.hasStoredApiKey(config)).thenReturn(true);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(new LlmProvider.LlmConfig(
+                "key", "https://api.example.test/v1", "vision-model", 256, 0.1));
+        when(provider.chatWithTools(any(), anyList(), anyList(), any())).thenReturn(Map.of(
+                "type", "text",
+                "content", "<THINK data-kind='hidden'>private plan</THINKING>visible screenshot text",
+                "thinking", "dedicated private plan"));
+        ConfiguredImageUnderstandingService service = new ConfiguredImageUnderstandingService(
+                configService, providerFactory, source -> "data:image/png;base64,AA==");
+
+        ConfiguredImageUnderstandingService.ImageAnalysisResult result = service.analyzeImage(
+                context(), "Read the error", "screenshots/error.png", "error.png");
+
+        assertTrue(result.success());
+        assertEquals("visible screenshot text", result.content());
+    }
+
 }

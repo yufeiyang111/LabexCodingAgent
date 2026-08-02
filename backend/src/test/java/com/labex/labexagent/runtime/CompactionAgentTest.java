@@ -110,4 +110,28 @@ class CompactionAgentTest {
                 Map.of("role", "assistant", "content", "I found the runtime loop."),
                 Map.of("role", "user", "content", "[Tool read_file result]\nclass AgentLoopEngine {}"));
     }
+
+    @Test
+    void stripsHiddenReasoningBeforeParsingTheStructuredCheckpoint() {
+        AgentModelConfig config = modelConfig(1, "primary", 1);
+        LlmProvider provider = mock(LlmProvider.class);
+        LlmProvider.LlmConfig llmConfig = configFor(config);
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class)))
+                .thenReturn(Map.of("type", "text", "content", """
+                        <THINK data-kind='hidden'>private compaction plan</THINKING>
+                        {"summary":"Safe checkpoint.","facts":[],"nextActions":[],
+                         "openRisks":[],"files":[],"verification":[]}
+                        """));
+        LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(llmConfig);
+
+        CompactionAgent.Result result = new CompactionAgent(providerFactory, mock(AgentModelConfigService.class))
+                .compact(7, config, messages(), "task", null, CancellationToken.none());
+
+        assertTrue(result.success());
+        assertTrue(result.checkpoint().contains("Safe checkpoint."));
+        assertFalse(result.checkpoint().contains("private compaction plan"));
+    }
+
 }

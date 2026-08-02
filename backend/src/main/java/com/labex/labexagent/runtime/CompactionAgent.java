@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.service.AgentModelConfigService;
 import java.util.ArrayList;
 import java.util.List;
@@ -81,10 +82,14 @@ public class CompactionAgent {
                 return Result.failure("Compaction model request failed");
             }
             Object rawContent = response.get("content");
-            if (!(rawContent instanceof String content) || content.isBlank()) {
+            if (!(rawContent instanceof String content)) {
                 return Result.failure("Compaction model returned no text content");
             }
-            String checkpoint = parseAndRenderCheckpoint(content, selected.getModelName());
+            String visibleContent = InternalReasoningBoundary.stripVisible(content).trim();
+            if (visibleContent.isBlank()) {
+                return Result.failure("Compaction model returned no text content");
+            }
+            String checkpoint = parseAndRenderCheckpoint(visibleContent, selected.getModelName());
             if (checkpoint == null) {
                 return Result.failure("Compaction model returned invalid structured output");
             }

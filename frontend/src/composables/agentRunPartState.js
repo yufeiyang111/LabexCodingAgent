@@ -1,4 +1,5 @@
 import { upsertDurableToolCallState } from './agentToolCallState.js'
+import { stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 
 function parseJson(value, fallback = {}) {
   if (!value) return fallback
@@ -14,8 +15,27 @@ function partIdentity(part = {}) {
   return part.partKey || `part:${part.partId || part.sequence || 'unknown'}`
 }
 
+function sanitizeRunPart(part = {}) {
+  const projected = { ...part }
+  const type = String(projected.partType || '').toLowerCase()
+  if (type === 'reasoning') projected.output = stripInternalReasoningTags(projected.output || '')
+  if (type === 'text') projected.output = stripInternalReasoningBlocks(projected.output || '')
+  return projected
+}
+
+function sanitizeRunMessage(runMessage = {}) {
+  const projected = { ...runMessage }
+  const key = String(projected.messageKey || '').toLowerCase()
+  if (key.startsWith('assistant:turn:')) {
+    projected.content = stripInternalReasoningTags(projected.content || '')
+  } else if (String(projected.role || '').toLowerCase() === 'assistant' || key === 'assistant:final') {
+    projected.content = stripInternalReasoningBlocks(projected.content || '')
+  }
+  return projected
+}
+
 function appendReasoningPart(message, part) {
-  const content = String(part.output || '').trim()
+  const content = stripInternalReasoningTags(part.output || '').trim()
   if (!content) return
   message.thinkingBlocks ||= []
   const key = partIdentity(part)
@@ -37,8 +57,10 @@ function appendReasoningPart(message, part) {
 /** 将持久化 RunPart 投影到现有消息视图，兼容旧事件 reducer。 */
 export function applyRunPartSnapshot(message, parts = []) {
   if (!message || !Array.isArray(parts)) return message
-  const ordered = [...parts].sort((left, right) =>
-    Number(left?.sequence || left?.partId || 0) - Number(right?.sequence || right?.partId || 0))
+  const ordered = [...parts]
+    .sort((left, right) =>
+      Number(left?.sequence || left?.partId || 0) - Number(right?.sequence || right?.partId || 0))
+    .map(sanitizeRunPart)
   ordered.forEach(part => {
     const type = String(part?.partType || '').toLowerCase()
     if (type === 'tool' || type === 'tool_call' || type === 'tool_result') {
@@ -56,7 +78,7 @@ export function applyRunPartSnapshot(message, parts = []) {
       return
     }
     if (type === 'text' && String(part.output || '').trim()) {
-      message.content = String(part.output)
+      message.content = stripInternalReasoningBlocks(part.output)
       return
     }
     if (type === 'completion_evidence') {
@@ -74,10 +96,12 @@ export function applyRunPartSnapshot(message, parts = []) {
 /** 保留 Message 身份，使多个 Part 在刷新后仍归属于原来的模型回合。 */
 export function applyRunMessageSnapshot(message, runMessages = []) {
   if (!message || !Array.isArray(runMessages)) return message
-  const ordered = [...runMessages].sort((left, right) =>
-    Number(left?.sequence || left?.messageId || 0) - Number(right?.sequence || right?.messageId || 0))
+  const ordered = [...runMessages]
+    .sort((left, right) =>
+      Number(left?.sequence || left?.messageId || 0) - Number(right?.sequence || right?.messageId || 0))
+    .map(sanitizeRunMessage)
   message.runMessages = ordered
   const finalMessage = [...ordered].reverse().find(item => item?.messageKey === 'assistant:final')
-  if (finalMessage?.content) message.content = finalMessage.content
+  if (finalMessage?.content) message.content = stripInternalReasoningBlocks(finalMessage.content)
   return message
 }

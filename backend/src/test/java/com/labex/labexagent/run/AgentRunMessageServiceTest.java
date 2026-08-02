@@ -10,6 +10,7 @@ import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunMessageMapper;
 import com.labex.mapper.AgentTaskMapper;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -63,4 +64,42 @@ class AgentRunMessageServiceTest {
         task.setProjectId(22);
         return task;
     }
+
+    @Test
+    void finalEventPersistsOnlyVisibleContentAtTheDurableMessageBoundary() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(43L);
+            return 1;
+        });
+
+        AgentRunMessage result = new AgentRunMessageService(messages, tasks)
+                .recordEventMessage(7L, "FINAL", Map.of(
+                        "content", "Visible <THINK data-kind='hidden'>private plan</THINKING> answer"), 20L);
+
+        assertThat(result.getContent()).isEqualTo("Visible  answer");
+        assertThat(result.getMetadata()).doesNotContainIgnoringCase("<think");
+    }
+
+
+    @Test
+    void publicHistorySanitizesLegacyDirtyFinalMessagesWithoutRewritingRows() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessage dirty = new AgentRunMessage();
+        dirty.setMessageKey("assistant:final");
+        dirty.setContent("Visible <think>private plan</think> answer");
+        when(messages.selectList(any())).thenReturn(List.of(dirty));
+
+        List<Map<String, Object>> history = new AgentRunMessageService(messages, tasks).publicHistory(7L);
+
+        assertThat(history).singleElement().extracting(item -> item.get("content"))
+                .isEqualTo("Visible  answer");
+        assertThat(dirty.getContent()).contains("private plan");
+    }
+
 }

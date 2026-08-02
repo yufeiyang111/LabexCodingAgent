@@ -7,6 +7,7 @@ import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -97,7 +98,8 @@ public class AgentRunPartService {
     public AgentRunPart recordEventPart(Long taskId, String eventType, Object payload, long sequence) {
         if (taskId == null || eventType == null || eventType.isBlank() || !supportsEventPart(eventType)) return null;
         Map<String, Object> data = payload instanceof Map<?, ?> map
-                ? copyMap(map) : Map.of("value", payload == null ? "" : payload);
+                ? copyMap(map) : new LinkedHashMap<>(Map.of("value", payload == null ? "" : payload));
+        sanitizeReasoningPayload(eventType, data);
         AgentRunMessage message = messageService.recordEventMessage(taskId, eventType, data, sequence);
         Long messageId = message.getRunMessageId();
         return switch (eventType) {
@@ -228,6 +230,18 @@ public class AgentRunPartService {
         return part;
     }
 
+    private void sanitizeReasoningPayload(String eventType, Map<String, Object> data) {
+        if (!"FINAL".equals(eventType) && !eventType.startsWith("THINK")) return;
+        for (String key : List.of("content", "message", "summary", "delta")) {
+            Object value = data.get(key);
+            if (value == null) continue;
+            String safe = "FINAL".equals(eventType)
+                    ? InternalReasoningBoundary.stripVisible(String.valueOf(value))
+                    : InternalReasoningBoundary.stripTags(String.valueOf(value));
+            data.put(key, safe);
+        }
+    }
+
     private boolean supportsEventPart(String eventType) {
         return switch (eventType) {
             case "THINK", "FINAL", "ERROR", "COMPLETION_EVIDENCE",
@@ -293,12 +307,19 @@ public class AgentRunPartService {
         payload.put("toolCallId", part.getToolCallId());
         payload.put("tool", part.getToolName());
         payload.put("input", part.getInputJson());
-        payload.put("output", part.getOutputText());
+        payload.put("output", publicOutput(part));
         payload.put("metadata", part.getMetadata());
         payload.put("sequence", part.getSequenceNumber());
         payload.put("createdAt", part.getCreateTime());
         payload.put("updatedAt", part.getUpdateTime());
         return payload;
+    }
+
+    private String publicOutput(AgentRunPart part) {
+        String type = part.getPartType() == null ? "" : part.getPartType();
+        if ("text".equalsIgnoreCase(type)) return InternalReasoningBoundary.stripVisible(part.getOutputText());
+        if ("reasoning".equalsIgnoreCase(type)) return InternalReasoningBoundary.stripTags(part.getOutputText());
+        return part.getOutputText();
     }
 
     private String limit(String value) {

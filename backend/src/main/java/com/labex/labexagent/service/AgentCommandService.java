@@ -11,6 +11,7 @@ import com.labex.labexagent.command.CommandRegistry;
 import com.labex.labexagent.dto.PromptOptimizationRequest;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.service.AgentModelConfigService;
 import com.labex.service.StudentProjectService;
 import java.util.List;
@@ -294,8 +295,7 @@ public class AgentCommandService {
         if (trimmed.startsWith("LLM error:") || trimmed.startsWith("LLM API key not configured") || trimmed.startsWith("LLM request failed")) {
             throw new IllegalArgumentException(trimmed);
         }
-        String text = trimmed;
-        text = text.replaceAll("(?s)<think>.*?</think>", "").trim();
+        String text = InternalReasoningBoundary.stripVisible(trimmed).trim();
         if ((text = text.replaceAll("^```[a-zA-Z]*\\s*", "").replaceAll("\\s*```$", "").trim()).startsWith("\"") && text.endsWith("\"") || text.startsWith("'") && text.endsWith("'")) {
             text = text.substring(1, text.length() - 1).trim();
         }

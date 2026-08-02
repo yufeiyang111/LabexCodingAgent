@@ -6,6 +6,7 @@ import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunMessageMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,7 +36,8 @@ public class AgentRunMessageService {
     public AgentRunMessage recordEventMessage(Long taskId, String eventType, Object payload, long sequence) {
         if (taskId == null || eventType == null || eventType.isBlank()) return null;
         Map<String, Object> data = payload instanceof Map<?, ?> map
-                ? copyMap(map) : Map.of("value", payload == null ? "" : payload);
+                ? copyMap(map) : new LinkedHashMap<>(Map.of("value", payload == null ? "" : payload));
+        sanitizeReasoningPayload(eventType, data);
         String role = eventType.startsWith("RUN_") || eventType.startsWith("CONTEXT_")
                 || eventType.startsWith("COMPACTION_") ? "system" : "assistant";
         String key = switch (eventType) {
@@ -117,6 +119,18 @@ public class AgentRunMessageService {
         return result;
     }
 
+    private void sanitizeReasoningPayload(String eventType, Map<String, Object> data) {
+        if (!"FINAL".equals(eventType) && !eventType.startsWith("THINK")) return;
+        for (String key : List.of("content", "message", "summary", "delta")) {
+            Object value = data.get(key);
+            if (value == null) continue;
+            String safe = "FINAL".equals(eventType)
+                    ? InternalReasoningBoundary.stripVisible(String.valueOf(value))
+                    : InternalReasoningBoundary.stripTags(String.valueOf(value));
+            data.put(key, safe);
+        }
+    }
+
     private String stringValue(Map<String, Object> data, String first, String fallback) {
         Object value = data.get(first);
         return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value);
@@ -136,11 +150,19 @@ public class AgentRunMessageService {
         payload.put("sequence", message.getSequenceNumber());
         payload.put("role", message.getRole());
         payload.put("status", message.getStatus());
-        payload.put("content", message.getContent());
+        payload.put("content", publicContent(message));
         payload.put("metadata", message.getMetadata());
         payload.put("createdAt", message.getCreateTime());
         payload.put("updatedAt", message.getUpdateTime());
         return payload;
+    }
+
+    private String publicContent(AgentRunMessage message) {
+        String content = message.getContent();
+        String key = message.getMessageKey() == null ? "" : message.getMessageKey();
+        if ("assistant:final".equals(key)) return InternalReasoningBoundary.stripVisible(content);
+        if (key.startsWith("assistant:turn:")) return InternalReasoningBoundary.stripTags(content);
+        return content;
     }
 
     private String limit(String value) {

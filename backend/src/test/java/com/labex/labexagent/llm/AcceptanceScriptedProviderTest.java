@@ -34,6 +34,14 @@ class AcceptanceScriptedProviderTest {
         assertEquals(List.of("&lt;TH",
                 "INK data-kind=&quot;hidden&quot;&gt;Acceptance runtime scenario selected. &lt;/THINK",
                 "ING&gt;"), reasoningChunks);
+
+        List<String> visibleChannelChunks = stream("[acceptance:reasoning-boundary]").stream()
+                .filter(chunk -> "text_delta".equals(chunk.type()))
+                .map(LlmProvider.StreamChunk::content)
+                .toList();
+        assertEquals("&lt;thi", visibleChannelChunks.get(0));
+        assertTrue(visibleChannelChunks.get(1).contains("Private content-channel plan."));
+        assertEquals("ing&gt;", visibleChannelChunks.get(2));
     }
 
 

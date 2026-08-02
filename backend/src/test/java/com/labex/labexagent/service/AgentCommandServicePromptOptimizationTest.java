@@ -113,4 +113,31 @@ class AgentCommandServicePromptOptimizationTest {
                 providerFactory
         );
     }
+
+    @Test
+    void optimizePromptUsesTheSharedReasoningBoundary() {
+        StudentProjectService projectService = mock(StudentProjectService.class);
+        AgentModelConfigService modelConfigService = mock(AgentModelConfigService.class);
+        LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
+        LlmProvider provider = mock(LlmProvider.class);
+        StudentProject project = new StudentProject();
+        project.setProjectName("demo");
+        AgentModelConfig config = enabledConfig();
+        LlmProvider.LlmConfig llmConfig = new LlmProvider.LlmConfig(
+                "user-key", "https://example.test/v1", "user-model", 2048, 0.2);
+        when(projectService.getOwnedProject(7, 3)).thenReturn(project);
+        when(modelConfigService.resolveForStudent(7, 42)).thenReturn(config);
+        when(modelConfigService.hasStoredApiKey(config)).thenReturn(true);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(llmConfig);
+        when(provider.chatWithTools(any(), anyList(), anyList(), same(llmConfig))).thenReturn(Map.of(
+                "type", "text",
+                "content", "<THINK data-kind='hidden'>private plan</THINKING>structured prompt"));
+
+        Map<String, String> result = service(projectService, modelConfigService, providerFactory)
+                .optimizePrompt(7, 3, new PromptOptimizationRequest("fix the failing test", "src/App.vue", 42));
+
+        assertEquals("structured prompt", result.get("optimizedPrompt"));
+    }
+
 }

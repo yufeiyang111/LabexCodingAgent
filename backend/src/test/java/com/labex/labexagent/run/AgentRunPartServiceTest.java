@@ -160,4 +160,41 @@ class AgentRunPartServiceTest {
         when(messages.upsertAssistantTurn(anyLong(), anyLong(), anyString())).thenReturn(message);
         return messages;
     }
+
+    @Test
+    void finalEventPersistsOnlyVisibleContentAtTheDurablePartBoundary() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(44L);
+        when(messages.recordEventMessage(anyLong(), anyString(), any(), anyLong())).thenReturn(message);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "FINAL", Map.of(
+                        "content", "Visible &lt;thinking&gt;private plan&lt;/thinking&gt; answer"), 21L);
+
+        assertThat(result.getOutputText()).isEqualTo("Visible  answer");
+        assertThat(result.getInputJson()).doesNotContainIgnoringCase("think");
+    }
+
+
+    @Test
+    void publicHistorySanitizesLegacyDirtyTextPartsWithoutRewritingRows() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunPart dirty = new AgentRunPart();
+        dirty.setPartType("text");
+        dirty.setOutputText("Visible <thinking>private plan</thinking> answer");
+        when(parts.selectList(any())).thenReturn(List.of(dirty));
+
+        List<Map<String, Object>> history = new AgentRunPartService(parts, tasks, messageService()).publicHistory(7L);
+
+        assertThat(history).singleElement().extracting(item -> item.get("output"))
+                .isEqualTo("Visible  answer");
+        assertThat(dirty.getOutputText()).contains("private plan");
+    }
+
 }

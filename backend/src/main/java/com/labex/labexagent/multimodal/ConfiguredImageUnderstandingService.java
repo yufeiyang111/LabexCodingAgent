@@ -3,6 +3,7 @@ package com.labex.labexagent.multimodal;
 import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.service.AgentModelConfigService;
 import java.util.LinkedHashMap;
@@ -55,10 +56,8 @@ public class ConfiguredImageUnderstandingService {
             if (response == null || "error".equals(String.valueOf(response.get("type")))) {
                 return ImageAnalysisResult.failure(safeError(response));
             }
-            String answer = Objects.toString(response.get("content"), "").trim();
-            if (answer.isBlank()) {
-                answer = Objects.toString(response.get("thinking"), "").trim();
-            }
+            String answer = InternalReasoningBoundary.stripVisible(
+                    Objects.toString(response.get("content"), "")).trim();
             if (answer.isBlank()) {
                 return ImageAnalysisResult.failure("The selected model returned no image analysis.");
             }

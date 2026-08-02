@@ -54,3 +54,24 @@ test('restores final content and completion evidence from message and part snaps
   assert.equal(target.content, 'done')
   assert.equal(target.completionEvidence.satisfied, true)
 })
+
+test('sanitizes durable reasoning and final projections during recovery', () => {
+  const fromMessage = message()
+  applyRunMessageSnapshot(fromMessage, [
+    { messageId: 9, messageKey: 'assistant:final', sequence: 9,
+      content: "Visible <THINK data-kind='hidden'>private plan</THINKING> answer", status: 'completed' }
+  ])
+
+  const fromParts = message()
+  applyRunPartSnapshot(fromParts, [
+    { partId: 10, partKey: 'reasoning:10', partType: 'reasoning',
+      output: '&lt;think&gt;inspect project&lt;/think&gt;', sequence: 10 },
+    { partId: 11, partKey: 'final', partType: 'text',
+      output: 'Part <thinking>private plan</thinking> answer', sequence: 11 }
+  ])
+
+  assert.equal(fromMessage.content, 'Visible  answer')
+  assert.equal(fromParts.content, 'Part  answer')
+  assert.equal(fromParts.thinkingBlocks[0].content, 'inspect project')
+  assert.doesNotMatch(JSON.stringify({ fromMessage, fromParts }), /<\/?think/i)
+})

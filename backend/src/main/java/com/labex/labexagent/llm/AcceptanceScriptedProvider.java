@@ -200,6 +200,15 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         }
 
         String finalText = finalReply(prompt);
+        if (prompt.contains("[acceptance:reasoning-boundary]")) {
+            onChunk.accept(new StreamChunk("text_delta", "&lt;thi", null, null, null, false, null,
+                    null, null, null));
+            onChunk.accept(new StreamChunk("text_delta",
+                    "nk data-channel=&quot;content&quot;&gt;Private content-channel plan. &lt;/think",
+                    null, null, null, false, null, null, null, null));
+            onChunk.accept(new StreamChunk("text_delta", "ing&gt;", null, null, null, false, null,
+                    null, null, null));
+        }
         onChunk.accept(new StreamChunk("text_delta", finalText, null, null, null, false, null,
                 null, null, null));
         onChunk.accept(new StreamChunk("done", "", null, null, null, true, usageFor(prompt),
