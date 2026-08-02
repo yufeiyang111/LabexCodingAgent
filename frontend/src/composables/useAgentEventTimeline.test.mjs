@@ -297,3 +297,17 @@ test('suppresses split internal reasoning blocks during live streaming', () => {
   state.handleAgentEvent({ type: 'FINAL_DELTA', data: { delta: '</THINK> answer' } }, assistant)
   assert.equal(assistant.content, 'visible  answer')
 })
+
+
+test('filters split internal reasoning tags across live THINK_DELTA events', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({ type: 'THINK_START', data: {} }, assistant)
+  state.handleAgentEvent({ type: 'THINK_DELTA', data: { delta: '<thi' } }, assistant)
+  state.handleAgentEvent({ type: 'THINK_DELTA', data: { delta: 'nk>private plan</THINK' } }, assistant)
+  state.handleAgentEvent({ type: 'THINK_DELTA', data: { delta: 'ING>' } }, assistant)
+
+  assert.equal(assistant.thinking, 'private plan')
+  assert.equal(assistant._thinkingDisplay, 'private plan')
+})

@@ -25,6 +25,17 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void emitsSplitReasoningProtocolFixtureForBrowserBoundaryAcceptance() {
+        List<String> reasoningChunks = stream("[acceptance:reasoning-boundary]").stream()
+                .filter(chunk -> "thinking_delta".equals(chunk.type()))
+                .map(LlmProvider.StreamChunk::content)
+                .toList();
+
+        assertEquals(List.of("<thi", "nk>Acceptance runtime scenario selected. </THINK", "ING>"),
+                reasoningChunks);
+    }
+
+    @Test
     void emitsAStableNativeToolCallThenACompleteFinalReply() {
         List<LlmProvider.StreamChunk> first = stream("[acceptance:tool] 请检查项目根目录");
 

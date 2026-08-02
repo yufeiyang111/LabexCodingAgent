@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createInternalReasoningBlockStreamFilter, normalizeSpecialMarkdownBlocks, stripInternalReasoningBlocks, stripInternalReasoningTags } from './agentMarkdown.js'
+import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, normalizeSpecialMarkdownBlocks, stripInternalReasoningBlocks, stripInternalReasoningTags } from './agentMarkdown.js'
 
 test('normalizes supported callout directives into safe Markdown blockquotes', () => {
   assert.equal(normalizeSpecialMarkdownBlocks(':::warning\n请先备份数据库。\n:::'), '> [!WARNING]\n> 请先备份数据库。')
@@ -35,4 +35,12 @@ test('holds incomplete internal reasoning blocks across streamed deltas', () => 
   assert.equal(filter.push('visible <TH'), 'visible ')
   assert.equal(filter.push('INK>private'), '')
   assert.equal(filter.push(' plan</THINKING> answer'), ' answer')
+})
+
+
+test('removes protocol delimiters split across dedicated reasoning deltas', () => {
+  const filter = createInternalReasoningTagStreamFilter()
+  assert.equal(filter.push('<thi'), '')
+  assert.equal(filter.push('nk>private plan</THINK'), 'private plan')
+  assert.equal(filter.push('ING>'), '')
 })

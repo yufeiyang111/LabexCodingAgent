@@ -288,3 +288,16 @@ test('suppresses split internal reasoning blocks during replay', () => {
   reduceHistoryEvent('FINAL_DELTA', { delta: '</THINK> answer' }, target)
   assert.equal(target.content, 'visible  answer')
 })
+
+
+test('filters split internal reasoning tags while replaying persisted THINK_DELTA events', () => {
+  const target = message()
+
+  reduceHistoryEvent('THINK_START', {}, target)
+  reduceHistoryEvent('THINK_DELTA', { delta: '<thi' }, target)
+  reduceHistoryEvent('THINK_DELTA', { delta: 'nk>private plan</THINK' }, target)
+  reduceHistoryEvent('THINK_DELTA', { delta: 'ING>' }, target)
+
+  assert.equal(target.thinking, 'private plan')
+  assert.equal(target._thinkingDisplay, 'private plan')
+})

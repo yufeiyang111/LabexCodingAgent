@@ -233,7 +233,7 @@
                             <div
                               v-if="item.data._open"
                               class="ai-thinking-body markdown-rendered"
-                              v-html="renderMarkdown(item.data.content)"
+                              v-html="renderThinkingMarkdown(item.data.content)"
                               @click="handleMarkdownClick"
                             ></div>
                           </Transition>
@@ -282,7 +282,7 @@
                       </div>
                       <div
                         class="ai-thinking-body markdown-rendered"
-                        v-html="renderMarkdown(msg._thinkingDisplay || '')"
+                        v-html="renderThinkingMarkdown(msg._thinkingDisplay || '')"
                         @click="handleMarkdownClick"
                       ></div>
                     </div>
@@ -302,7 +302,7 @@
                         :retrying="msg.environmentRetrying"
                         @retry="retryEnvironmentTask(msg)"
                       />
-                      <div v-else class="ai-msg-text markdown-rendered" v-html="renderMarkdown(msg.content)" @click="handleMarkdownClick"></div>
+                      <div v-else class="ai-msg-text markdown-rendered" v-html="renderMessageMarkdown(msg)" @click="handleMarkdownClick"></div>
                       <button
                         v-if="msg.environmentBlocker && !msg.contextLimitBlocker && msg.taskId && msg.environmentBlocker.retryable !== false"
                         type="button"
@@ -806,7 +806,7 @@ import { useWorkspaceFiles } from '@/composables/useWorkspaceFiles'
 import { useChangeSetState } from '@/composables/useChangeSetState'
 import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
 import { attachDurableInteraction } from '@/composables/agentInteractionProjection'
-import { normalizeSpecialMarkdownBlocks } from '@/utils/agentMarkdown'
+import { normalizeSpecialMarkdownBlocks, stripInternalReasoningBlocks, stripInternalReasoningTags } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
 import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
 import { enhanceFileLinks } from '@/utils/fileLinks'
@@ -2538,6 +2538,17 @@ function renderMarkdown(text) {
   if (!text) return ''
   const rawHtml = marked.parse(normalizeSpecialMarkdownBlocks(text), { gfm: true, breaks: true, silent: true })
   return enhanceMarkdownHtml(sanitizeMarkdownHtml(String(rawHtml || '')))
+}
+
+function renderThinkingMarkdown(text) {
+  return renderMarkdown(stripInternalReasoningTags(text))
+}
+
+function renderMessageMarkdown(message) {
+  const source = message?.role === 'assistant'
+    ? stripInternalReasoningBlocks(message?.content)
+    : message?.content
+  return renderMarkdown(source)
 }
 
 function sanitizeMarkdownHtml(html) {

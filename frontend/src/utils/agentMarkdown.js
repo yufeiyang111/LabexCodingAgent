@@ -103,6 +103,38 @@ function safeInternalReasoningPrefixLength(value, tags) {
 }
 
 /**
+ * 独立思考通道只删除协议标签，不删除其中的思考文本。
+ * 该过滤器跨事件保留不完整标签前缀，防止分片标签泄漏到实时 UI 或历史回放。
+ */
+export function createInternalReasoningTagStreamFilter() {
+  const tags = [...INTERNAL_REASONING_OPEN_TAGS, ...INTERNAL_REASONING_CLOSE_TAGS]
+  let buffer = ''
+
+  return {
+    push(value) {
+      buffer += String(value ?? '')
+      let visible = ''
+      while (buffer) {
+        const match = findInternalReasoningTag(buffer, tags)
+        if (match) {
+          visible += buffer.slice(0, match.index)
+          buffer = buffer.slice(match.index + match.tag.length)
+          continue
+        }
+        const safeLength = safeInternalReasoningPrefixLength(buffer, tags)
+        if (safeLength > 0) visible += buffer.slice(0, safeLength)
+        buffer = buffer.slice(safeLength)
+        break
+      }
+      return visible
+    },
+    reset() {
+      buffer = ''
+    }
+  }
+}
+
+/**
  * Stateful final-output filter. It prevents an unfinished internal reasoning block from being
  * rendered between streaming deltas, while still preserving normal visible text around it.
  */

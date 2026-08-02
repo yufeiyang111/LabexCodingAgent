@@ -60,6 +60,13 @@ test('CloudWorkspace renders live thinking and answer deltas immediately', () =>
   assert.doesNotMatch(source, /function startThinkingReveal\([\s\S]*?setInterval\(/)
 })
 
+test('CloudWorkspace applies the internal-reasoning boundary again at render time', () => {
+  assert.match(source, /v-html="renderThinkingMarkdown\(item\.data\.content\)"/)
+  assert.match(source, /v-html="renderMessageMarkdown\(msg\)"/)
+  assert.match(source, /function renderThinkingMarkdown\(text\) \{[\s\S]*stripInternalReasoningTags\(text\)/)
+  assert.match(source, /function renderMessageMarkdown\(message\) \{[\s\S]*message\?\.role === 'assistant'[\s\S]*stripInternalReasoningBlocks\(message\?\.content\)/)
+})
+
 
 test('direct SSE events persist cursors through the extracted task runtime', () => {
   assert.match(timelineSource, /recordTaskEventCursor\(data\.taskId \|\| assistantMsg\?\.taskId, event\.eventId\)/)

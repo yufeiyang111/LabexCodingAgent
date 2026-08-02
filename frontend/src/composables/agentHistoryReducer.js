@@ -1,4 +1,4 @@
-import { createInternalReasoningBlockStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
+import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 
@@ -167,16 +167,21 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
         message.thinking = ''
       }
       message._hasThinkStart = true
+      message._thinkingTagFilter = createInternalReasoningTagStreamFilter()
       break
     case 'THINK_DELTA':
-      message.thinking += stripInternalReasoningTags(data.delta)
+      message._thinkingTagFilter ??= createInternalReasoningTagStreamFilter()
+      message.thinking += message._thinkingTagFilter.push(data.delta)
       message._thinkingDisplay = message.thinking
       break
     case 'THINK_SNAPSHOT':
+      message._thinkingTagFilter?.reset()
+      message._thinkingTagFilter = createInternalReasoningTagStreamFilter()
       message.thinking = stripInternalReasoningTags(data.content || message.thinking || '')
       message._thinkingDisplay = message.thinking
       break
     case 'THINK':
+      message._thinkingTagFilter?.reset()
       if (data.content) {
         message.thinkingBlocks = message.thinkingBlocks || []
         if (message.thinking) message.thinkingBlocks.push({ content: message.thinking, summary: data.summary || '', _open: false, _order: nextOrder(message) })
@@ -186,6 +191,7 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       }
       break
     case 'TOOL_CALL':
+      message._thinkingTagFilter?.reset()
       if (message.thinking) {
         message.thinkingBlocks = message.thinkingBlocks || []
         message.thinkingBlocks.push({ content: message.thinking, summary: data.summary || data.tool || '', _open: false, _order: nextOrder(message) })

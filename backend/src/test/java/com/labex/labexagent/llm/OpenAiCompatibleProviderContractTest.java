@@ -78,6 +78,37 @@ class OpenAiCompatibleProviderContractTest {
     }
 
     @Test
+    void stripsSplitProtocolTagsFromDedicatedReasoningChannel() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"<thi\"}}]}\n\n" +
+                    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"nk>private plan</THINK\"}}]}\n\n" +
+                    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"ING>\",\"content\":\"visible answer\"}}]}\n\n" +
+                    "data: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            String thinking = chunks.stream()
+                    .filter(chunk -> "thinking_delta".equals(chunk.type()))
+                    .map(LlmProvider.StreamChunk::content)
+                    .reduce("", String::concat);
+            String visible = chunks.stream()
+                    .filter(chunk -> "text_delta".equals(chunk.type()))
+                    .map(LlmProvider.StreamChunk::content)
+                    .reduce("", String::concat);
+
+            assertEquals("private plan", thinking);
+            assertEquals("visible answer", visible);
+            assertFalse(thinking.toLowerCase().contains("think"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void routesCaseInsensitiveThinkingTagsWithoutExposingDelimiterText() throws Exception {
         HttpServer server = startServer(exchange -> {
             exchange.getRequestBody().readAllBytes();

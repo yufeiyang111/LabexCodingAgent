@@ -1,4 +1,4 @@
-import { createInternalReasoningBlockStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
+import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 
@@ -56,18 +56,23 @@ export function useAgentEventTimeline(options) {
           assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: data.summary || '', iteration: data.iteration || 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
         }
         assistantMsg.thinking = ''
+        assistantMsg._thinkingTagFilter = createInternalReasoningTagStreamFilter()
         break
       case 'THINK_DELTA':
-        assistantMsg.thinking += stripInternalReasoningTags(data.delta)
+        assistantMsg._thinkingTagFilter ??= createInternalReasoningTagStreamFilter()
+        assistantMsg.thinking += assistantMsg._thinkingTagFilter.push(data.delta)
         assistantMsg._thinkingDisplay = assistantMsg.thinking
         scheduleAgentRender()
         break
       case 'THINK_SNAPSHOT':
+        assistantMsg._thinkingTagFilter?.reset()
+        assistantMsg._thinkingTagFilter = createInternalReasoningTagStreamFilter()
         assistantMsg.thinking = stripInternalReasoningTags(data.content || assistantMsg.thinking || '')
         assistantMsg._thinkingDisplay = assistantMsg.thinking
         scheduleAgentRender()
         break
       case 'THINK':
+        assistantMsg._thinkingTagFilter?.reset()
         if (data.content) {
           if (assistantMsg.thinking) {
             assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: data.summary || '', iteration: data.iteration || 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
@@ -80,6 +85,7 @@ export function useAgentEventTimeline(options) {
         }
         break
       case 'TOOL_CALL':
+        assistantMsg._thinkingTagFilter?.reset()
         if (assistantMsg.thinking && !assistantMsg.streamSaving) {
           flushThinkingDisplay(assistantMsg)
           assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: data.summary || data.tool || '', iteration: 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })

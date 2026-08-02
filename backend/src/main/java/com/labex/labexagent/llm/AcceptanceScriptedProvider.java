@@ -95,8 +95,17 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 config == null ? "" : config.modelName(), messages == null ? 0 : messages.size(),
                 prompt.contains("[acceptance:compaction]"), prompt.contains("[acceptance:permission-batch]"),
                 hasResumedInteraction(prompt, "waiting_user"), prompt.contains("[Tool list_files result]"));
-        onChunk.accept(new StreamChunk("thinking_delta", "Acceptance runtime scenario selected. ",
-                null, null, null, false, null, null, null, null));
+        if (prompt.contains("[acceptance:reasoning-boundary]")) {
+            onChunk.accept(new StreamChunk("thinking_delta", "<thi",
+                    null, null, null, false, null, null, null, null));
+            onChunk.accept(new StreamChunk("thinking_delta", "nk>Acceptance runtime scenario selected. </THINK",
+                    null, null, null, false, null, null, null, null));
+            onChunk.accept(new StreamChunk("thinking_delta", "ING>",
+                    null, null, null, false, null, null, null, null));
+        } else {
+            onChunk.accept(new StreamChunk("thinking_delta", "Acceptance runtime scenario selected. ",
+                    null, null, null, false, null, null, null, null));
+        }
 
         if (prompt.contains("[acceptance:stream-break]")) {
             onChunk.accept(new StreamChunk("text_delta",

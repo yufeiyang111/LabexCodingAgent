@@ -337,6 +337,17 @@ async function createNewConversation() {
   await waitFor(() => client.evaluate(`!document.querySelector('.ai-session-dropdown')`), 'conversation menu close')
 }
 
+async function assertInternalReasoningProtocolHidden(label) {
+  const leakedFragments = await client.evaluate(`(() => {
+    const text = (document.body?.innerText || '').toLowerCase()
+    return ['<thi', 'nk>acceptance runtime scenario selected.', '</think', 'ing>']
+      .filter(fragment => text.includes(fragment))
+  })()`)
+  if (Array.isArray(leakedFragments) && leakedFragments.length > 0) {
+    throw new Error(`${label} rendered internal reasoning protocol fragments: ${leakedFragments.join(', ')}`)
+  }
+}
+
 async function runScenario() {
   const username = `browser_${runId.slice(0, 16)}`
   const password = `B!${crypto.randomUUID().replaceAll('-', '')}z9`
@@ -379,15 +390,17 @@ async function runScenario() {
   await waitFor(async () => !(await bodyIncludes(markerA)), 'conversation A detachment')
   if (await bodyIncludes(markerA)) throw new Error('New conversation still renders conversation A context')
 
-  await sendMessage('[acceptance:isolation:B-ONLY]')
+  await sendMessage('[acceptance:isolation:B-ONLY] [acceptance:reasoning-boundary]')
   await waitFor(() => bodyIncludes(markerB), 'conversation B final reply')
   if (await bodyIncludes(markerA)) throw new Error('Conversation B rendered conversation A context')
+  await assertInternalReasoningProtocolHidden('Live projection')
 
   await client.send('Page.reload', { ignoreCache: true })
   await waitForWorkspace()
   await waitFor(() => bodyIncludes(markerB), 'conversation B replay after refresh')
   const duplicates = await markerCount(markerB)
   if (duplicates !== 1) throw new Error(`Expected one replayed B marker, found ${duplicates}`)
+  await assertInternalReasoningProtocolHidden('Refresh replay')
   const cursorKeys = await client.evaluate(`Object.keys(sessionStorage).filter(key => key.startsWith('labex-agent:task-event-cursor:'))`)
   if (!Array.isArray(cursorKeys) || cursorKeys.length === 0) {
     throw new Error('No persisted task event cursor was observed after refresh')
@@ -424,7 +437,7 @@ async function runScenario() {
   if (!providerParts.some(part => part.partType === 'tool_call' && part.toolCallId)) {
     throw new Error(`Durable Provider tool-call part was not persisted: ${JSON.stringify(providerParts)}`)
   }
-  await clickElement('.tc-question .tc-option-btn', { label: 'question option' })
+  await clickElement('.tc-question .tc-option-btn', { label: 'question option', native: true })
   await waitFor(() => client.evaluate(`Boolean(document.querySelector('.tc-question textarea')?.value?.trim())`), 'question answer selection')
   await clickElement('.tc-question .tc-approval-btn.primary', { label: 'question answer submit', native: true })
   await waitFor(
@@ -758,6 +771,7 @@ async function runScenario() {
     desktopLayoutMetrics: desktopLayout,
     conversationIsolation: true,
     refreshReplayDeduplicated: true,
+    internalReasoningProtocolHidden: true,
     questionReplyComponent: true,
     permissionApprovalRefreshRecovery: true,
     multiToolPermissionBatchProtocolComplete: true,
