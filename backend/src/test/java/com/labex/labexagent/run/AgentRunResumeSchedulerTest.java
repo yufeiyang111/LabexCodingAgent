@@ -13,6 +13,8 @@ import com.labex.entity.AgentTask;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.service.AgentTaskService;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -41,6 +43,41 @@ class AgentRunResumeSchedulerTest {
         assertThat(request.getValue().getMessage()).contains("answered").contains("Continue the existing task");
     }
 
+    @Test
+    void retriesAResolvedInteractionAfterThePreviousWorkerReleasesItsLease() throws Exception {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        AgentTask waiting = task(71L, "waiting_user");
+        when(tasks.getOwnedTask(7, 12, 71L))
+                .thenReturn(waiting, waiting, task(71L, "recovering"));
+        when(tasks.claimInteractionResume(
+                eq(71L),
+                eq("interaction-71-question-answered"),
+                eq("Resuming after user response"),
+                eq("A persisted user response is ready")))
+                .thenReturn(null, new AgentRunLifecycleService.DispatchClaim(lease()));
+        CountDownLatch resumed = new CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            resumed.countDown();
+            return null;
+        }).when(engine).resume(
+                eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class),
+                eq(71L), eq(true), eq(lease()));
+        AgentRunResumeScheduler scheduler = new AgentRunResumeScheduler(tasks, engine);
+
+        boolean accepted = scheduler.resumeIfWaiting(questionAnswer(71L));
+
+        assertThat(accepted).isTrue();
+        assertThat(resumed.await(2, TimeUnit.SECONDS)).isTrue();
+        verify(tasks, org.mockito.Mockito.times(2)).claimInteractionResume(
+                eq(71L),
+                eq("interaction-71-question-answered"),
+                eq("Resuming after user response"),
+                eq("A persisted user response is ready"));
+        verify(engine).resume(
+                eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class),
+                eq(71L), eq(true), eq(lease()));
+    }
     @Test
     void doesNotEnqueueWhenThePersistedTaskDidNotEnterRecovery() {
         AgentTaskService tasks = mock(AgentTaskService.class);
@@ -86,7 +123,8 @@ class AgentRunResumeSchedulerTest {
         boolean scheduled = scheduler.resumeIfWaiting(questionAnswer(71L));
 
         assertThat(scheduled).isFalse();
-        verify(tasks).updateTask(71L, "failed", "Unable to resume after user response", "queue full");
+        verify(tasks).updateTask(71L, "failed", "Unable to resume after user response", "queue full",
+                "interaction-resume-dispatch-interaction-71-question-answered");
     }
 
     @Test

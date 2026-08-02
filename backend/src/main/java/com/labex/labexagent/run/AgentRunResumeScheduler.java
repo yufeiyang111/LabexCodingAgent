@@ -5,16 +5,29 @@ import com.labex.entity.AgentTask;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.runtime.AgentLoopEngine;
 import com.labex.labexagent.service.AgentTaskService;
-import org.springframework.context.annotation.Lazy;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AgentRunResumeScheduler {
     private static final Logger log = LoggerFactory.getLogger(AgentRunResumeScheduler.class);
+    private static final int MAX_CLAIM_ATTEMPTS = 350;
+    private static final long CLAIM_RETRY_DELAY_MS = 100L;
+    private static final String RESUME_STEP = "Resuming after user response";
+    private static final String RESUME_SUMMARY = "A persisted user response is ready";
+    private static final String FAILURE_STEP = "Unable to resume after user response";
+    private static final String EXHAUSTED_SUMMARY =
+            "The previous execution lease did not become available after the persisted interaction response";
+
     private final AgentTaskService taskService;
     private final AgentLoopEngine agentLoopEngine;
+    private final Set<String> scheduledRetries = ConcurrentHashMap.newKeySet();
 
     public AgentRunResumeScheduler(AgentTaskService taskService, @Lazy AgentLoopEngine agentLoopEngine) {
         this.taskService = taskService;
@@ -29,25 +42,30 @@ public class AgentRunResumeScheduler {
                     interaction == null ? null : interaction.getStatus());
             return false;
         }
+        return attemptResume(interaction, 1);
+    }
+
+    private boolean attemptResume(AgentRunInteraction interaction, int attempt) {
         AgentTask task = taskService.getOwnedTask(
                 interaction.getStudentId(), interaction.getProjectId(), interaction.getTaskId());
-        if (task == null || !isWaiting(task)) {
-            log.info("AGENT_INTERACTION_RESUME_SKIPPED interactionId={} taskId={} taskStatus={}",
-                    interaction.getInteractionId(), interaction.getTaskId(), task == null ? null : task.getStatus());
+        if (task == null) {
+            log.info("AGENT_INTERACTION_RESUME_SKIPPED interactionId={} taskId={} taskStatus=null",
+                    interaction.getInteractionId(), interaction.getTaskId());
             return false;
+        }
+        if (!isWaiting(task)) {
+            boolean alreadyProgressed = isAlreadyProgressing(task);
+            log.info("AGENT_INTERACTION_RESUME_SKIPPED interactionId={} taskId={} taskStatus={} alreadyProgressed={}",
+                    interaction.getInteractionId(), interaction.getTaskId(), task.getStatus(), alreadyProgressed);
+            return alreadyProgressed;
         }
 
         AgentStreamRequest request = continuationRequest(task, interaction);
         request.setResumeInteractionId(interaction.getInteractionId());
         AgentRunLifecycleService.DispatchClaim claim = taskService.claimInteractionResume(
-                task.getTaskId(),
-                interaction.getInteractionId(),
-                "Resuming after user response",
-                "A persisted user response is ready");
+                task.getTaskId(), interaction.getInteractionId(), RESUME_STEP, RESUME_SUMMARY);
         if (claim == null) {
-            log.warn("AGENT_INTERACTION_RESUME_CLAIM_REJECTED interactionId={} taskId={} taskStatus={}",
-                    interaction.getInteractionId(), task.getTaskId(), task.getStatus());
-            return false;
+            return deferClaim(interaction, task, attempt);
         }
         AgentTask resumedTask = taskService.getOwnedTask(
                 interaction.getStudentId(), interaction.getProjectId(), interaction.getTaskId());
@@ -57,16 +75,64 @@ public class AgentRunResumeScheduler {
             return false;
         }
         try {
-            log.info("AGENT_INTERACTION_RESUME_ENQUEUED interactionId={} taskId={} continuationChars={}",
-                    interaction.getInteractionId(), resumedTask.getTaskId(), request.getMessage() == null ? 0 : request.getMessage().length());
-            agentLoopEngine.resume(resumedTask.getStudentId(), resumedTask.getProjectId(), request, resumedTask.getTaskId(), true,
-                    claim.lease());
+            log.info("AGENT_INTERACTION_RESUME_ENQUEUED interactionId={} taskId={} continuationChars={} attempt={}",
+                    interaction.getInteractionId(), resumedTask.getTaskId(),
+                    request.getMessage() == null ? 0 : request.getMessage().length(), attempt);
+            agentLoopEngine.resume(resumedTask.getStudentId(), resumedTask.getProjectId(), request,
+                    resumedTask.getTaskId(), true, claim.lease());
             return true;
         } catch (RuntimeException exception) {
-            taskService.updateTask(task.getTaskId(), "failed", "Unable to resume after user response",
-                    exception.getMessage() == null ? "Unable to enqueue Agent continuation" : exception.getMessage());
+            taskService.updateTask(task.getTaskId(), "failed", FAILURE_STEP,
+                    exception.getMessage() == null ? "Unable to enqueue Agent continuation" : exception.getMessage(),
+                    failureKey(interaction, "dispatch"));
             return false;
         }
+    }
+
+    private boolean deferClaim(AgentRunInteraction interaction, AgentTask task, int attempt) {
+        if (attempt >= MAX_CLAIM_ATTEMPTS) {
+            failIfStillWaiting(interaction, EXHAUSTED_SUMMARY, "claim-exhausted");
+            log.error("AGENT_INTERACTION_RESUME_CLAIM_EXHAUSTED interactionId={} taskId={} attempts={}",
+                    interaction.getInteractionId(), task.getTaskId(), attempt);
+            return false;
+        }
+
+        boolean newlyScheduled = scheduledRetries.add(interaction.getInteractionId());
+        if (newlyScheduled) {
+            int nextAttempt = attempt + 1;
+            CompletableFuture.delayedExecutor(CLAIM_RETRY_DELAY_MS, TimeUnit.MILLISECONDS).execute(() -> {
+                scheduledRetries.remove(interaction.getInteractionId());
+                try {
+                    attemptResume(interaction, nextAttempt);
+                } catch (RuntimeException exception) {
+                    log.error("AGENT_INTERACTION_RESUME_RETRY_FAILED interactionId={} taskId={} attempt={}",
+                            interaction.getInteractionId(), interaction.getTaskId(), nextAttempt, exception);
+                    failIfStillWaiting(
+                            interaction,
+                            exception.getMessage() == null
+                                    ? "Unexpected failure while retrying the persisted interaction continuation"
+                                    : exception.getMessage(),
+                            "retry-failed");
+                }
+            });
+        }
+        log.info("AGENT_INTERACTION_RESUME_RETRY_SCHEDULED interactionId={} taskId={} attempt={} nextAttempt={} newlyScheduled={}",
+                interaction.getInteractionId(), task.getTaskId(), attempt, attempt + 1, newlyScheduled);
+        return true;
+    }
+
+    private void failIfStillWaiting(AgentRunInteraction interaction, String summary, String reason) {
+        AgentTask current = taskService.getOwnedTask(
+                interaction.getStudentId(), interaction.getProjectId(), interaction.getTaskId());
+        if (current == null || !isWaiting(current)) {
+            return;
+        }
+        taskService.updateTask(
+                current.getTaskId(), "failed", FAILURE_STEP, summary, failureKey(interaction, reason));
+    }
+
+    private String failureKey(AgentRunInteraction interaction, String reason) {
+        return "interaction-resume-" + reason + "-" + interaction.getInteractionId();
     }
 
     private boolean isResolvedForResume(AgentRunInteraction interaction) {
@@ -82,6 +148,13 @@ public class AgentRunResumeScheduler {
 
     private boolean isWaiting(AgentTask task) {
         return "waiting_user".equals(task.getStatus()) || "waiting_approval".equals(task.getStatus());
+    }
+
+    private boolean isAlreadyProgressing(AgentTask task) {
+        return "recovering".equals(task.getStatus())
+                || "preparing".equals(task.getStatus())
+                || "running".equals(task.getStatus())
+                || "completed".equals(task.getStatus());
     }
 
     private AgentStreamRequest continuationRequest(AgentTask task, AgentRunInteraction interaction) {
