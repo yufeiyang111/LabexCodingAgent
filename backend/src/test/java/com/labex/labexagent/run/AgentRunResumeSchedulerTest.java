@@ -79,6 +79,27 @@ class AgentRunResumeSchedulerTest {
                 eq(71L), eq(true), eq(lease()));
     }
     @Test
+    void reconcilesAPersistedResponseAfterProcessRestart() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        AgentRunInteractionService interactions = mock(AgentRunInteractionService.class);
+        AgentRunInteraction answered = questionAnswer(71L);
+        when(interactions.findResolvedAwaitingResume(100)).thenReturn(java.util.List.of(answered));
+        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task(71L, "waiting_user"), task(71L, "recovering"));
+        when(tasks.claimInteractionResume(
+                eq(71L), eq("interaction-71-question-answered"),
+                eq("Resuming after user response"), eq("A persisted user response is ready")))
+                .thenReturn(new AgentRunLifecycleService.DispatchClaim(lease()));
+        AgentRunResumeScheduler scheduler = new AgentRunResumeScheduler(tasks, engine, interactions);
+
+        int resumed = scheduler.resumeResolvedInteractions();
+
+        assertThat(resumed).isEqualTo(1);
+        verify(engine).resume(
+                eq(7), eq(12), org.mockito.ArgumentMatchers.any(AgentStreamRequest.class),
+                eq(71L), eq(true), eq(lease()));
+    }
+    @Test
     void doesNotEnqueueWhenThePersistedTaskDidNotEnterRecovery() {
         AgentTaskService tasks = mock(AgentTaskService.class);
         AgentLoopEngine engine = mock(AgentLoopEngine.class);

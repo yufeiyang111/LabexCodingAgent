@@ -272,6 +272,13 @@ public class AgentRunInteractionService {
             interaction.setUpdateTime(now);
         }
     }
+    /** 查询已解决但对应任务仍处于等待态的最新交互，供重启恢复协调器轮询。 */
+    public List<AgentRunInteraction> findResolvedAwaitingResume(int limit) {
+        int effectiveLimit = Math.max(1, Math.min(limit, 500));
+        List<AgentRunInteraction> interactions = interactionMapper.selectResolvedAwaitingResume(effectiveLimit);
+        return interactions == null || interactions.isEmpty() ? List.of() : List.copyOf(interactions);
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public List<AgentRunInteraction> claimExpired(LocalDateTime now, int limit) {
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;

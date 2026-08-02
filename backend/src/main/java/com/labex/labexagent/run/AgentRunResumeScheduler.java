@@ -11,7 +11,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -24,14 +26,48 @@ public class AgentRunResumeScheduler {
     private static final String FAILURE_STEP = "Unable to resume after user response";
     private static final String EXHAUSTED_SUMMARY =
             "The previous execution lease did not become available after the persisted interaction response";
+    private static final int RECONCILE_BATCH_SIZE = 100;
 
     private final AgentTaskService taskService;
     private final AgentLoopEngine agentLoopEngine;
+    private final AgentRunInteractionService interactionService;
     private final Set<String> scheduledRetries = ConcurrentHashMap.newKeySet();
 
     public AgentRunResumeScheduler(AgentTaskService taskService, @Lazy AgentLoopEngine agentLoopEngine) {
+        this(taskService, agentLoopEngine, null);
+    }
+
+    @Autowired
+    public AgentRunResumeScheduler(AgentTaskService taskService,
+                                   @Lazy AgentLoopEngine agentLoopEngine,
+                                   AgentRunInteractionService interactionService) {
         this.taskService = taskService;
         this.agentLoopEngine = agentLoopEngine;
+        this.interactionService = interactionService;
+    }
+
+    @Scheduled(fixedDelayString = "${labex-agent.interaction-resume-poll-interval-ms:1000}")
+    public void reconcileScheduled() {
+        resumeResolvedInteractions();
+    }
+
+    public int resumeResolvedInteractions() {
+        if (interactionService == null) {
+            return 0;
+        }
+        int accepted = 0;
+        for (AgentRunInteraction interaction : interactionService.findResolvedAwaitingResume(RECONCILE_BATCH_SIZE)) {
+            try {
+                if (resumeIfWaiting(interaction)) {
+                    accepted++;
+                }
+            } catch (RuntimeException failure) {
+                log.error("AGENT_INTERACTION_RECONCILE_FAILED interactionId={} taskId={}",
+                        interaction == null ? null : interaction.getInteractionId(),
+                        interaction == null ? null : interaction.getTaskId(), failure);
+            }
+        }
+        return accepted;
     }
 
     public boolean resumeIfWaiting(AgentRunInteraction interaction) {
