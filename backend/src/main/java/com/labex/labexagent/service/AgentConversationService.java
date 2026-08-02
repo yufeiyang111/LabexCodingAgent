@@ -30,15 +30,14 @@ import org.springframework.stereotype.Service;
 @Service
 public class AgentConversationService {
     private static final Gson GSON = new Gson();
-    private static final int SUMMARY_LIMIT = 9000;
+    private static final int DETERMINISTIC_SUMMARY_LIMIT = 9000;
     private static final int MEMORY_CONTEXT_LIMIT = 12000;
     private static final int RECENT_EVENT_LIMIT = 24;
-    private static final int COMPACT_TRIGGER_CHARS = 16000;
     private static final int COMPACT_SOURCE_EVENTS = 120;
-    private static final int COMPACT_TAIL_EVENTS = 18;
+    private static final int DETERMINISTIC_TAIL_EVENTS = 18;
     private static final Set<String> MEMORY_SKIP_TYPES = Set.of("SESSION", "THINK", "TOOL_CALL",
             "COMPACTION_STARTED", "COMPACTION_COMPLETED", "COMPACTION_FAILED", "CONTEXT_PRUNED");
-    private static final Set<String> MEMORY_IMPORTANT_TYPES = Set.of("USER", "FINAL", "OBSERVE", "ERROR", "INTERRUPTED",
+    private static final Set<String> COMPACTION_RETAINED_TYPES = Set.of("USER", "FINAL", "OBSERVE", "ERROR", "INTERRUPTED",
             "COMMAND_APPROVAL_REQUIRED", "USER_QUESTION", "COMPACTION_SUMMARY");
     private static final Pattern API_KEY = Pattern.compile("(?i)\\bsk-[a-z0-9_-]{10,}\\b");
     private static final Pattern BEARER = Pattern.compile("(?i)\\bbearer\\s+[a-z0-9._~-]{10,}");
@@ -88,7 +87,6 @@ public class AgentConversationService {
         conversation.setModel(modelConfig == null
                 ? ("ollama".equalsIgnoreCase(this.ragConfig.getLlmProvider()) ? this.ragConfig.getOllamaModel() : this.ragConfig.getMiniMaxModel())
                 : normalizeModel(modelConfig.getModelName()));
-        conversation.setSummary("");
         conversation.setStatus(Integer.valueOf(1));
         conversation.setCreateTime(LocalDateTime.now());
         conversation.setUpdateTime(LocalDateTime.now());
@@ -180,8 +178,6 @@ public class AgentConversationService {
 
     public void saveUserMessage(AgentConversation conversation, String content) {
         this.saveMessage(conversation, "USER", "user", content, Map.of("content", content));
-        this.updateSummary(conversation, "USER", content);
-        this.autoCompactIfNeeded(conversation);
     }
 
     public void saveEvent(AgentConversation conversation, String type, Object data) {
@@ -189,10 +185,6 @@ public class AgentConversationService {
         String content = this.extractContent(safeData);
         String role = "FINAL".equals(type) || "FINAL_DELTA".equals(type) ? "assistant" : "event";
         this.saveMessage(conversation, type, role, content, safeData);
-        if (MEMORY_IMPORTANT_TYPES.contains(type)) {
-            this.updateSummary(conversation, type, content);
-        }
-        this.autoCompactIfNeeded(conversation);
     }
 
     public void saveCompactionSummary(AgentConversation conversation, String checkpoint, Map<String, Object> metadata) {
@@ -203,7 +195,6 @@ public class AgentConversationService {
         LinkedHashMap<String, Object> safeMetadata = new LinkedHashMap<>(metadata == null ? Map.of() : metadata);
         safeMetadata.put("content", safeCheckpoint);
         this.saveMessage(conversation, "COMPACTION_SUMMARY", "event", safeCheckpoint, safeMetadata);
-        this.persistSummary(conversation, safeCheckpoint);
         conversation.setCompactedAt(LocalDateTime.now());
         this.conversationMapper.update(null, new LambdaUpdateWrapper<AgentConversation>()
                 .eq(AgentConversation::getConversationId, conversation.getConversationId())
@@ -312,7 +303,7 @@ public class AgentConversationService {
         }
         this.saveEvent(conversation, "COMPACTION_FAILED", Map.of("strategy", "manual_model",
                 "reason", modelResult.reason()));
-        String fallback = deterministicManualSummary(conversation, recent);
+        String fallback = buildDeterministicManualSummary(conversation, recent);
         String checkpoint = "<conversation-checkpoint version=\"3\" source=\"manual-deterministic\">\n"
                 + fallback + "\n</conversation-checkpoint>";
         this.saveCompactionSummary(conversation, checkpoint, Map.of("strategy", "manual_deterministic_fallback",
@@ -321,15 +312,9 @@ public class AgentConversationService {
         return new ManualCompactionResult(checkpoint, "manual_deterministic_fallback", true);
     }
 
-    private String deterministicManualSummary(AgentConversation conversation, List<AgentMessage> recent) {
-        String summary = this.rebuildCompactedSummary(conversation, recent, "Manual compacted context");
-        this.persistSummary(conversation, redactSecrets(summary));
-        conversation.setCompactedAt(LocalDateTime.now());
-        this.conversationMapper.update(null, new LambdaUpdateWrapper<AgentConversation>()
-                .eq(AgentConversation::getConversationId, conversation.getConversationId())
-                .set(AgentConversation::getCompactedAt, conversation.getCompactedAt())
-                .set(AgentConversation::getUpdateTime, LocalDateTime.now()));
-        return summary;
+    private String buildDeterministicManualSummary(AgentConversation conversation, List<AgentMessage> recent) {
+        return redactSecrets(this.buildDeterministicCompactionSummary(
+                conversation, recent, "Manual compacted context"));
     }
 
     private List<Map<String, Object>> runtimeMessagesForCompaction(List<AgentMessage> newestFirst) {
@@ -386,7 +371,6 @@ public class AgentConversationService {
         child.setMode(source.getMode());
         child.setProvider(source.getProvider());
         child.setModel(source.getModel());
-        child.setSummary(source.getSummary() == null ? "" : source.getSummary());
         child.setParentConversationId(source.getConversationId());
         child.setForkedFromMessageId(messageId);
         child.setStatus(1);
@@ -473,61 +457,31 @@ public class AgentConversationService {
         this.conversationMapper.update(null, (new LambdaUpdateWrapper<AgentConversation>().eq(AgentConversation::getConversationId, conversation.getConversationId())).set(AgentConversation::getUpdateTime, LocalDateTime.now()));
     }
 
-    private void updateSummary(AgentConversation conversation, String type, String content) {
-        if (!MEMORY_IMPORTANT_TYPES.contains(type)) {
-            return;
-        }
-        String item = "[" + type + "] " + this.limit(content, this.memoryItemLimit(type));
-        String summary = conversation.getSummary() == null ? "" : conversation.getSummary();
-        summary = this.limit(summary + "\n" + item, 9000);
-        this.persistSummary(conversation, summary);
-    }
-
-    private void autoCompactIfNeeded(AgentConversation conversation) {
-        String summary;
-        String string = summary = conversation.getSummary() == null ? "" : conversation.getSummary();
-        if (summary.length() < 16000 && !this.isNearSummaryLimit(summary)) {
-            return;
-        }
-        List<AgentMessage> recent = this.messageMapper.selectList(new LambdaQueryWrapper<AgentMessage>().eq(AgentMessage::getConversationId, conversation.getConversationId()).eq(AgentMessage::getStudentId, conversation.getStudentId()).eq(AgentMessage::getProjectId, conversation.getProjectId()).orderByDesc(AgentMessage::getMessageId).last("LIMIT 120"));
-        String compacted = this.rebuildCompactedSummary(conversation, recent, "Auto compacted context");
-        this.persistSummary(conversation, compacted);
-    }
-
-    private String rebuildCompactedSummary(AgentConversation conversation, List<AgentMessage> newestFirst, String title) {
+    private String buildDeterministicCompactionSummary(AgentConversation conversation, List<AgentMessage> newestFirst, String title) {
         ArrayList<AgentMessage> chronological = newestFirst == null ? new ArrayList<AgentMessage>() : new ArrayList<AgentMessage>(newestFirst);
         Collections.reverse(chronological);
-        List<AgentMessage> important = chronological.stream().filter(message -> !MEMORY_SKIP_TYPES.contains(message.getEventType())).filter(message -> MEMORY_IMPORTANT_TYPES.contains(message.getEventType())).toList();
-        int tailStart = Math.max(0, important.size() - 18);
+        List<AgentMessage> important = chronological.stream().filter(message -> !MEMORY_SKIP_TYPES.contains(message.getEventType())).filter(message -> COMPACTION_RETAINED_TYPES.contains(message.getEventType())).toList();
+        int tailStart = Math.max(0, important.size() - DETERMINISTIC_TAIL_EVENTS);
         StringBuilder compact = new StringBuilder(title).append(":\n");
         compact.append("- strategy: keep durable decisions, changed files, failures, final outcomes, and the latest tail events.\n");
         compact.append("- conversation: ").append(conversation.getConversationId()).append("\n\n");
         if (tailStart > 0) {
             compact.append("Earlier durable facts:\n");
             for (AgentMessage message2 : important.subList(0, tailStart)) {
-                this.appendCompactLine(compact, message2, this.compactItemLimit(message2.getEventType()));
+                this.appendDeterministicSummaryLine(compact, message2, this.earlierCompactionItemLimit(message2.getEventType()));
             }
             compact.append("\nRecent tail events kept verbatim-like:\n");
         } else {
             compact.append("Recent tail events:\n");
         }
         for (AgentMessage message2 : important.subList(tailStart, important.size())) {
-            this.appendCompactLine(compact, message2, this.memoryItemLimit(message2.getEventType()));
+            this.appendDeterministicSummaryLine(compact, message2, this.memoryItemLimit(message2.getEventType()));
         }
-        return this.limit(compact.toString(), 9000);
+        return this.limit(compact.toString(), DETERMINISTIC_SUMMARY_LIMIT);
     }
 
-    private void appendCompactLine(StringBuilder builder, AgentMessage message, int maxChars) {
+    private void appendDeterministicSummaryLine(StringBuilder builder, AgentMessage message, int maxChars) {
         builder.append('[').append(message.getEventType()).append("] ").append(this.limit(this.normalizeForMemory(message.getContent()), maxChars)).append('\n');
-    }
-
-    private void persistSummary(AgentConversation conversation, String summary) {
-        conversation.setSummary(summary);
-        this.conversationMapper.update(null, ((new LambdaUpdateWrapper<AgentConversation>().eq(AgentConversation::getConversationId, conversation.getConversationId())).set(AgentConversation::getSummary, summary)).set(AgentConversation::getUpdateTime, LocalDateTime.now()));
-    }
-
-    private boolean isNearSummaryLimit(String summary) {
-        return summary != null && (double)summary.length() > 7650.0;
     }
 
     private boolean isAutoCompacted(String summary) {
@@ -573,7 +527,7 @@ public class AgentConversationService {
         };
     }
 
-    private int compactItemLimit(String type) {
+    private int earlierCompactionItemLimit(String type) {
         return switch (type == null ? "" : type) {
             case "USER" -> 220;
             case "FINAL" -> 340;

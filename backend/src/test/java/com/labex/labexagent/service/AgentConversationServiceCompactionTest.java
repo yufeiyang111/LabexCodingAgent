@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+@SuppressWarnings("deprecation")
 class AgentConversationServiceCompactionTest {
 
     @BeforeAll
@@ -128,7 +129,7 @@ class AgentConversationServiceCompactionTest {
         verify(messageMapper).insert(persisted.capture());
         assertTrue("COMPACTION_SUMMARY".equals(persisted.getValue().getEventType()));
         assertTrue(persisted.getValue().getContent().contains("version=\"3\""));
-        assertTrue(conversation.getSummary().contains("summary"));
+        assertEquals("obsolete legacy summary", conversation.getSummary());
         verify(conversationMapper, atLeast(1)).update(any(), any());
     }
 
@@ -165,6 +166,72 @@ class AgentConversationServiceCompactionTest {
 
         assertTrue(error.getMessage().contains("not found or disabled"));
         verify(messageMapper, never()).insert(any());
+    }
+
+
+    @Test
+    void ordinaryMessagesDoNotMutateTheLegacyAggregateSummary() {
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation conversation = conversation();
+        AgentConversationService service = new AgentConversationService(
+                conversationMapper, messageMapper, mock(RagConfig.class));
+
+        service.saveUserMessage(conversation, "new request");
+        service.saveEvent(conversation, "FINAL", Map.of("content", "new answer"));
+
+        assertEquals("obsolete legacy summary", conversation.getSummary());
+    }
+
+    @Test
+    void deterministicManualFallbackPersistsOnlyTheDurableCompactionMessage() {
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        CompactionAgent compactionAgent = mock(CompactionAgent.class);
+        AgentModelConfigService modelConfigService = mock(AgentModelConfigService.class);
+        AgentConversation conversation = conversation();
+        when(conversationMapper.selectOne(any())).thenReturn(conversation);
+        when(messageMapper.selectList(any())).thenReturn(List.of(
+                message(12L, "FINAL", "Implemented durable transcript projection."),
+                message(11L, "USER", "Retire the legacy summary writer.")));
+        when(compactionAgent.compact(any(), any(), any(), any(), any(), any()))
+                .thenReturn(CompactionAgent.Result.failure("scripted fallback"));
+        AgentConversationService service = new AgentConversationService(conversationMapper, messageMapper,
+                mock(RagConfig.class), compactionAgent, modelConfigService);
+
+        AgentConversationService.ManualCompactionResult result = service.compactConversation(
+                7, 3, "conversation", null);
+
+        assertTrue(result.deterministicFallback());
+        assertTrue(result.summary().contains("manual-deterministic"));
+        assertEquals("obsolete legacy summary", conversation.getSummary());
+        ArgumentCaptor<AgentMessage> persisted = ArgumentCaptor.forClass(AgentMessage.class);
+        verify(messageMapper, atLeast(1)).insert(persisted.capture());
+        assertTrue(persisted.getAllValues().stream().anyMatch(item ->
+                "COMPACTION_SUMMARY".equals(item.getEventType())
+                        && item.getContent().contains("manual-deterministic")));
+    }
+
+    @Test
+    void forkCopiesDurableHistoryWithoutCopyingTheLegacyAggregate() {
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversation source = conversation();
+        when(conversationMapper.selectOne(any())).thenReturn(source);
+        when(messageMapper.selectList(any())).thenReturn(List.of(
+                message(10L, "COMPACTION_SUMMARY",
+                        "<conversation-checkpoint version=\"3\">durable summary</conversation-checkpoint>")));
+        AgentConversationService service = new AgentConversationService(
+                conversationMapper, messageMapper, mock(RagConfig.class));
+
+        AgentConversation child = service.forkConversation(7, 3, "conversation", 10L);
+
+        assertTrue(child.getSummary() == null || child.getSummary().isBlank());
+        ArgumentCaptor<AgentMessage> copied = ArgumentCaptor.forClass(AgentMessage.class);
+        verify(messageMapper, atLeast(1)).insert(copied.capture());
+        assertTrue(copied.getAllValues().stream().anyMatch(item ->
+                "COMPACTION_SUMMARY".equals(item.getEventType())
+                        && item.getContent().contains("durable summary")));
     }
 
 }

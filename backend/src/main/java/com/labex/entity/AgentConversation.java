@@ -66,6 +66,10 @@ public class AgentConversation {
         return this.model;
     }
 
+    /**
+     * @deprecated 旧聚合摘要字段仅保留数据库兼容；权威摘要来自 {@code COMPACTION_SUMMARY} 事件。
+     */
+    @Deprecated
     @JsonIgnore
     public String getSummary() {
         return this.summary;
@@ -123,6 +127,10 @@ public class AgentConversation {
         this.model = model;
     }
 
+    /**
+     * @deprecated 禁止新的运行时写入；仅供历史数据映射兼容。
+     */
+    @Deprecated
     public void setSummary(String summary) {
         this.summary = summary;
     }
@@ -202,11 +210,6 @@ public class AgentConversation {
         if (this$model == null ? other$model != null : !this$model.equals(other$model)) {
             return false;
         }
-        String this$summary = this.getSummary();
-        String other$summary = other.getSummary();
-        if (this$summary == null ? other$summary != null : !this$summary.equals(other$summary)) {
-            return false;
-        }
         LocalDateTime this$createTime = this.getCreateTime();
         LocalDateTime other$createTime = other.getCreateTime();
         if (this$createTime == null ? other$createTime != null : !(this$createTime).equals(other$createTime)) {
@@ -240,8 +243,6 @@ public class AgentConversation {
         result = result * 59 + ($provider == null ? 43 : $provider.hashCode());
         String $model = this.getModel();
         result = result * 59 + ($model == null ? 43 : $model.hashCode());
-        String $summary = this.getSummary();
-        result = result * 59 + ($summary == null ? 43 : $summary.hashCode());
         LocalDateTime $createTime = this.getCreateTime();
         result = result * 59 + ($createTime == null ? 43 : ($createTime).hashCode());
         LocalDateTime $updateTime = this.getUpdateTime();
@@ -250,6 +251,6 @@ public class AgentConversation {
     }
 
     public String toString() {
-        return "AgentConversation(conversationId=" + this.getConversationId() + ", studentId=" + this.getStudentId() + ", projectId=" + this.getProjectId() + ", title=" + this.getTitle() + ", mode=" + this.getMode() + ", provider=" + this.getProvider() + ", model=" + this.getModel() + ", summary=" + this.getSummary() + ", status=" + this.getStatus() + ", createTime=" + String.valueOf(this.getCreateTime()) + ", updateTime=" + String.valueOf(this.getUpdateTime()) + ")";
+        return "AgentConversation(conversationId=" + this.getConversationId() + ", studentId=" + this.getStudentId() + ", projectId=" + this.getProjectId() + ", title=" + this.getTitle() + ", mode=" + this.getMode() + ", provider=" + this.getProvider() + ", model=" + this.getModel() + ", status=" + this.getStatus() + ", createTime=" + String.valueOf(this.getCreateTime()) + ", updateTime=" + String.valueOf(this.getUpdateTime()) + ")";
     }
 }

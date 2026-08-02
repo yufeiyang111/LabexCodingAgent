@@ -349,6 +349,36 @@ async function createNewConversation() {
   await waitFor(() => client.evaluate(`!document.querySelector('.ai-session-dropdown')`), 'conversation menu close')
 }
 
+async function selectConversationByTitle(title) {
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.ai-input-text-area textarea'))`),
+    'chat tab before selecting a conversation'
+  )
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const menuOpen = await client.evaluate(`Boolean(document.querySelector('.ai-session-dropdown'))`)
+    if (!menuOpen) {
+      await clickElement('.ai-session-select', { label: 'conversation selector', native: true })
+    }
+    const found = await client.evaluate(`Array.from(document.querySelectorAll('.ai-session-item .ai-session-title'))
+      .some(element => (element.textContent || '').trim() === ${JSON.stringify(title)})`)
+    if (found) break
+    await delay(150)
+  }
+  await waitFor(
+    () => client.evaluate(`Array.from(document.querySelectorAll('.ai-session-item .ai-session-title'))
+      .some(element => (element.textContent || '').trim() === ${JSON.stringify(title)})`),
+    `conversation ${title}`
+  )
+  await client.evaluate(`(() => {
+    const title = ${JSON.stringify(title)};
+    const item = Array.from(document.querySelectorAll('.ai-session-item'))
+      .find(candidate => (candidate.querySelector('.ai-session-title')?.textContent || '').trim() === title);
+    if (!item) throw new Error('Conversation item not found: ' + title);
+    item.click();
+  })()`)
+  await waitFor(() => client.evaluate(`!document.querySelector('.ai-session-dropdown')`), 'conversation menu close')
+}
+
 async function assertInternalReasoningProtocolHidden(label) {
   const leakedFragments = await client.evaluate(`(() => {
     const text = (document.body?.innerText || '').toLowerCase()
@@ -629,14 +659,24 @@ async function runScenario() {
   await waitForAgentIdle('reloaded compaction conversation terminal state')
   const tasksBeforeCompaction = await api(`/student/projects/${projectId}/agent/tasks`)
   const priorTaskIds = new Set(tasksBeforeCompaction.map(task => Number(task.taskId)))
+  const currentCompactionConversationId = await client.evaluate(
+    `sessionStorage.getItem(${JSON.stringify(`labex-agent:selected-conversation:${projectId}`)})`
+  )
+  if (!currentCompactionConversationId) throw new Error('Compaction conversation identity is missing')
   await sendMessage('[acceptance:compaction]')
   await waitFor(
     () => client.evaluate(`Boolean(document.querySelector('.tc-question'))`),
     'durable compaction question component'
   )
-  await clickElement('.tc-question .tc-option-btn', { label: 'question option' })
+  await clickElement('.tc-question .tc-option-btn', { label: 'question option', native: true })
   await waitFor(() => client.evaluate(`Boolean(document.querySelector('.tc-question textarea')?.value?.trim())`), 'question answer selection')
-  await clickElement('.tc-question .tc-approval-btn.primary', { label: 'question answer submit' })
+  await clickElement('.tc-question .tc-approval-btn.primary', { label: 'question answer submit', native: true })
+  await waitFor(async () => {
+    const activeTask = await api(
+      `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(currentCompactionConversationId)}/active-task`
+    )
+    return !activeTask || String(activeTask.status) !== 'waiting_user'
+  }, 'question durable decision before compaction completion')
   await waitFor(
     () => client.evaluate(`Boolean(document.querySelector('.ai-context-management-card.is-completed'))`),
     'durable compaction completion card'
@@ -673,14 +713,97 @@ async function runScenario() {
     throw new Error('The large native tool call was not preserved in the durable Provider transcript')
   }
 
+  const sourceConversationId = compactionTask.conversationId
+  const sourceBeforeManualPage = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/messages?limit=50`
+  )
+  const sourceBeforeManualEvents = sourceBeforeManualPage?.events || []
+  const sourceLastMessageId = sourceBeforeManualEvents.reduce(
+    (latest, event) => Math.max(latest, Number(event.messageId) || 0),
+    0
+  )
+  const manualCompaction = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/compact`,
+    { method: 'POST', body: { modelConfigId: compactionConfig.configId } }
+  )
+  let manualCompactionProjection = null
+  await waitFor(async () => {
+    try {
+      manualCompactionProjection = await api(`/student/projects/${projectId}/agent/tasks/${manualCompaction.taskId}`)
+      return ['completed', 'failed', 'cancelled'].includes(String(manualCompactionProjection?.status))
+    } catch {
+      return false
+    }
+  }, 'manual compaction durable terminal state')
+  if (manualCompactionProjection?.status !== 'completed') {
+    throw new Error(`Manual compaction did not complete: ${JSON.stringify(manualCompactionProjection)}`)
+  }
+
+  const sourceAfterManualPage = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/messages?limit=50`
+  )
+  const sourceAfterManualEvents = sourceAfterManualPage?.events || []
+  const manualSummary = [...sourceAfterManualEvents].reverse().find(event =>
+    event.eventType === 'COMPACTION_SUMMARY'
+      && Number(event.messageId) > sourceLastMessageId
+      && String(event.content || '').includes('Compaction model: acceptance-compaction')
+  )
+  if (!manualSummary) {
+    throw new Error('Manual compaction did not persist a new durable COMPACTION_SUMMARY message')
+  }
+  const sourceConversation = (await api(`/student/projects/${projectId}/agent/conversations`))
+    .find(conversation => conversation.conversationId === sourceConversationId)
+  if (!sourceConversation || Object.prototype.hasOwnProperty.call(sourceConversation, 'summary')) {
+    throw new Error(`Conversation API exposed the retired legacy summary: ${JSON.stringify(sourceConversation)}`)
+  }
+
+  const forkedConversation = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/fork`,
+    { method: 'POST', body: { messageId: manualSummary.messageId } }
+  )
+  if (!forkedConversation?.conversationId
+      || forkedConversation.parentConversationId !== sourceConversationId
+      || Number(forkedConversation.forkedFromMessageId) !== Number(manualSummary.messageId)
+      || Object.prototype.hasOwnProperty.call(forkedConversation, 'summary')) {
+    throw new Error(`Fork metadata retained the legacy summary or lost its cutoff: ${JSON.stringify(forkedConversation)}`)
+  }
+  const forkedPage = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(forkedConversation.conversationId)}/messages?limit=50`
+  )
+  const forkedSummary = (forkedPage?.events || []).find(event =>
+    event.eventType === 'COMPACTION_SUMMARY' && event.content === manualSummary.content
+  )
+  const forkedMemory = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(forkedConversation.conversationId)}/memory`
+  )
+  if (!forkedSummary || Number(forkedMemory?.estimatedTokens) <= 0 || forkedMemory?.needsCompact !== true) {
+    throw new Error(`Fork did not rebuild memory from the durable compaction message: ${JSON.stringify({
+      forkedSummary,
+      forkedMemory
+    })}`)
+  }
+
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await selectConversationByTitle(forkedConversation.title)
+  await waitFor(() => bodyIncludes('COMPACTION-WARMUP'), 'forked durable history in browser')
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitFor(() => bodyIncludes('COMPACTION-WARMUP'), 'forked durable history after browser refresh')
+  const manualCompactionForkRefreshVerified = true
+
   let restartProjectionVerified = false
+  let restartManualForkVerified = false
   if (restartHandoffDir) {
     await mkdir(restartHandoffDir, { recursive: true })
     await writeFile(join(restartHandoffDir, 'ready.json'), JSON.stringify({
       projectId,
       taskId: compactionTask.taskId,
       conversationId: compactionTask.conversationId,
-      compactionEpoch: completedCompaction.compactionEpoch
+      compactionEpoch: completedCompaction.compactionEpoch,
+      manualCompactionTaskId: manualCompaction.taskId,
+      forkedConversationId: forkedConversation.conversationId,
+      forkedSummaryMessageId: forkedSummary.messageId
     }, null, 2), 'utf8')
     await waitForRestartContinuation(restartHandoffDir)
     let restartedProjection = null
@@ -712,7 +835,32 @@ async function runScenario() {
         || Number(restartedContextStatus.usedTokens) <= 0) {
       throw new Error(`Restarted context status was not rebuilt from durable events: ${JSON.stringify(restartedContextStatus)}`)
     }
+    const restartedManualCompaction = await api(
+      `/student/projects/${projectId}/agent/tasks/${manualCompaction.taskId}`
+    )
+    const restartedForkedPage = await api(
+      `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(forkedConversation.conversationId)}/messages?limit=50`
+    )
+    const restartedForkedSummary = (restartedForkedPage?.events || []).find(event =>
+      event.eventType === 'COMPACTION_SUMMARY' && event.content === manualSummary.content
+    )
+    const restartedFork = (await api(`/student/projects/${projectId}/agent/conversations`))
+      .find(conversation => conversation.conversationId === forkedConversation.conversationId)
+    if (restartedManualCompaction?.status !== 'completed'
+        || !restartedForkedSummary
+        || !restartedFork
+        || Object.prototype.hasOwnProperty.call(restartedFork, 'summary')) {
+      throw new Error(`Manual compaction/fork did not survive backend restart: ${JSON.stringify({
+        manualStatus: restartedManualCompaction?.status,
+        restartedForkedSummary,
+        restartedFork
+      })}`)
+    }
+    await client.send('Page.reload', { ignoreCache: true })
+    await waitForWorkspace()
+    await waitFor(() => bodyIncludes('COMPACTION-WARMUP'), 'forked durable history after backend restart')
     restartProjectionVerified = true
+    restartManualForkVerified = true
   }
 
   const streamBreakPriorTasks = await api(`/student/projects/${projectId}/agent/tasks`)
@@ -799,7 +947,7 @@ async function runScenario() {
     throw new Error('Unverified edit displayed successful completion evidence')
   }
 
-  const restartVerification = { restartProjectionVerified, restartInteractionVerified }
+  const restartVerification = { restartProjectionVerified, restartInteractionVerified, restartManualForkVerified }
   const expectedRestartTransportErrors = [...consoleErrors, ...networkErrors]
     .filter(message => isExpectedRestartTransportError(message, restartVerification))
   const meaningfulConsoleErrors = consoleErrors.filter(message =>
@@ -831,8 +979,12 @@ async function runScenario() {
     compactionTokensBefore: completedCompaction.estimatedTokensBefore,
     compactionTokensAfter: completedCompaction.estimatedTokensAfter,
     compactionProviderMessages: compactionProviderMessages.length,
+    manualCompactionForkRefreshVerified,
+    manualCompactionTaskId: manualCompaction.taskId,
+    forkedConversationId: forkedConversation.conversationId,
     providerStreamInterruptionHandled: true,
     restartProjectionVerified,
+    restartManualForkVerified,
     restartInteractionVerified,
     expectedRestartTransportErrors: expectedRestartTransportErrors.length,
     staticContextBlockerCard: true,
