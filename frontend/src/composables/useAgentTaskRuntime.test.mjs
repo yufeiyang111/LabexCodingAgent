@@ -44,6 +44,7 @@ function harness(overrides = {}) {
     createMessageTiming: () => ({ taskId: null, startedAt: 1, activeElapsedMs: null, isRunning: true }),
     stopMessageTimer: message => { if (message?.timing) message.timing.isRunning = false },
     scrollDown: () => {},
+    reloadConversationHistory: overrides.reloadConversationHistory,
     storage: overrides.storage || memoryStorage(),
     wait: async () => {},
     nextTick: async () => {}
@@ -74,6 +75,27 @@ test('direct stream events persist their durable task cursor through the runtime
   state.runtime.recordTaskEventCursor(71, 19)
 
   assert.equal(storage.getItem('labex-agent:task-event-cursor:42:71'), '19')
+})
+
+test('terminal recovery reconciles conversation history after the initial snapshot', async () => {
+  const reconciliations = []
+  let state
+  state = harness({
+    api: {
+      agentActiveTask: async () => ({ data: null }),
+      agentTasks: async () => ({ data: [] })
+    },
+    reloadConversationHistory: async conversationId => {
+      reconciliations.push(conversationId)
+      state.messages.value = [{ role: 'assistant', content: 'Durable final reply' }]
+      return true
+    }
+  })
+  state.messages.value = [{ role: 'assistant', content: '', completionEvidence: { satisfied: true } }]
+
+  assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), false)
+  assert.deepEqual(reconciliations, ['conversation-a'])
+  assert.equal(state.messages.value[0].content, 'Durable final reply')
 })
 
 test('stale active-task recovery cannot attach to a newly selected conversation', async () => {

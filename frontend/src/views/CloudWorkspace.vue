@@ -1812,7 +1812,9 @@ const {
   reconcileRecoveredCommandApproval,
   createMessageTiming,
   stopMessageTimer,
-  scrollDown
+  scrollDown,
+  // 历史快照与任务终态可能跨事务交错；终态确认后再读取一次持久会话，补齐最后的 FINAL。
+  reloadConversationHistory: conversationId => loadConversationMessagesState(conversationId)
 })
 
 ;({ handleAgentEvent } = useAgentEventTimeline({

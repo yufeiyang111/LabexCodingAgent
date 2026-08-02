@@ -38,6 +38,7 @@ export function useAgentTaskRuntime(options) {
     createMessageTiming,
     stopMessageTimer,
     scrollDown,
+    reloadConversationHistory,
     storage = globalThis.sessionStorage,
     wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
     nextTick = vueNextTick
@@ -142,6 +143,31 @@ export function useAgentTaskRuntime(options) {
     attachDurableInteraction(message, pending.interactionType, request)
   }
 
+  function needsTerminalHistoryReconciliation() {
+    const latestTaskMessage = [...messages.value].reverse().find(message =>
+      message?.role === 'assistant'
+        && (message.taskId || message.completionEvidence || (message.toolCalls || []).length > 0)
+    )
+    if (!latestTaskMessage) return false
+    return !['completed', 'failed', 'cancelled'].includes(String(latestTaskMessage.runState || '').toLowerCase())
+  }
+
+  async function reconcileTerminalConversationHistory(conversationId, generation, status) {
+    if (typeof reloadConversationHistory !== 'function' || !needsTerminalHistoryReconciliation()) return false
+    if (generation !== recoveryGeneration || !ownsConversation(conversationId)) return false
+    log('TERMINAL_HISTORY_RECONCILIATION_STARTED', { conversationId, generation, status })
+    try {
+      const reloaded = await reloadConversationHistory(conversationId)
+      if (generation !== recoveryGeneration || !ownsConversation(conversationId) || reloaded === false) return false
+      await syncConversationTaskTimings(conversationId)
+      log('TERMINAL_HISTORY_RECONCILIATION_COMPLETED', { conversationId, generation, status })
+      return true
+    } catch (error) {
+      console.warn('Failed to reconcile terminal Agent conversation history:', error)
+      return false
+    }
+  }
+
   async function recoverActiveTaskForConversation(conversationId) {
     if (!conversationId || !projectId.value) return false
     const generation = ++recoveryGeneration
@@ -156,6 +182,9 @@ export function useAgentTaskRuntime(options) {
 
     const task = response?.data
     if (!task?.taskId || isTerminalAgentTask(task) || task.conversationId !== conversationId) {
+      if (!task?.conversationId || task.conversationId === conversationId) {
+        await reconcileTerminalConversationHistory(conversationId, generation, task?.status || 'none')
+      }
       log('ACTIVE_TASK_RECOVERY_NONE', { conversationId, status: task?.status || 'none' })
       return false
     }
