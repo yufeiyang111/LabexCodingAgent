@@ -16,19 +16,23 @@ test('keeps unsupported or unterminated directives as ordinary text', () => {
   assert.equal(normalizeSpecialMarkdownBlocks(':::tip\n内容'), ':::tip\n内容')
 })
 
-
 test('removes internal reasoning delimiters including split streaming prefixes', () => {
   assert.equal(stripInternalReasoningTags('visible <THINK>private</think> answer'), 'visible private answer')
   assert.equal(stripInternalReasoningTags('visible <thin'), 'visible ')
   assert.equal(stripInternalReasoningTags('visible </THINKING> answer'), 'visible  answer')
 })
 
-
 test('removes full internal reasoning blocks from final output', () => {
   assert.equal(stripInternalReasoningBlocks('visible <THINK>private</think> answer'), 'visible  answer')
   assert.equal(stripInternalReasoningBlocks('visible <thinking>private</THINKING> answer'), 'visible  answer')
 })
 
+
+test('removes attributed and HTML-escaped internal reasoning blocks', () => {
+  assert.equal(stripInternalReasoningBlocks("visible <THINK data-kind='hidden'>private</THINKING> answer"), 'visible  answer')
+  assert.equal(stripInternalReasoningBlocks('visible &lt;think&gt;private&lt;/thinking&gt; answer'), 'visible  answer')
+  assert.equal(stripInternalReasoningTags('&lt;THINK data-kind=&quot;hidden&quot;&gt;private&lt;/THINK&gt;'), 'private')
+})
 
 test('holds incomplete internal reasoning blocks across streamed deltas', () => {
   const filter = createInternalReasoningBlockStreamFilter()
@@ -37,6 +41,13 @@ test('holds incomplete internal reasoning blocks across streamed deltas', () => 
   assert.equal(filter.push(' plan</THINKING> answer'), ' answer')
 })
 
+
+test('holds attributed reasoning delimiters split across final-output deltas', () => {
+  const filter = createInternalReasoningBlockStreamFilter()
+  assert.equal(filter.push('visible <TH'), 'visible ')
+  assert.equal(filter.push("INK data-kind='hidden'>private"), '')
+  assert.equal(filter.push(' plan</THINKING> answer'), ' answer')
+})
 
 test('removes protocol delimiters split across dedicated reasoning deltas', () => {
   const filter = createInternalReasoningTagStreamFilter()

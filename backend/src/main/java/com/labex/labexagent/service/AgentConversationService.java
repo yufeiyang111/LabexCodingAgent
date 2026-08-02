@@ -10,6 +10,7 @@ import com.labex.entity.AgentModelConfig;
 import com.labex.entity.StudentProject;
 import com.labex.mapper.AgentConversationMapper;
 import com.labex.mapper.AgentMessageMapper;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.runtime.CompactionAgent;
 import com.labex.rag.config.RagConfig;
@@ -184,9 +185,10 @@ public class AgentConversationService {
     }
 
     public void saveEvent(AgentConversation conversation, String type, Object data) {
-        String content = this.extractContent(data);
+        Object safeData = this.sanitizeReasoningProjection(type, data);
+        String content = this.extractContent(safeData);
         String role = "FINAL".equals(type) || "FINAL_DELTA".equals(type) ? "assistant" : "event";
-        this.saveMessage(conversation, type, role, content, data);
+        this.saveMessage(conversation, type, role, content, safeData);
         if (MEMORY_IMPORTANT_TYPES.contains(type)) {
             this.updateSummary(conversation, type, content);
         }
@@ -432,6 +434,29 @@ public class AgentConversationService {
         String summary = latestCompaction == null || latestCompaction.getContent() == null
                 ? "" : latestCompaction.getContent();
         return new MemoryStats(summary.length(), count == null ? 0 : count.intValue(), this.isAutoCompacted(summary), 12000);
+    }
+
+    private Object sanitizeReasoningProjection(String type, Object data) {
+        boolean finalProjection = "FINAL".equals(type) || "FINAL_DELTA".equals(type);
+        boolean reasoningProjection = type != null && type.startsWith("THINK");
+        if (!finalProjection && !reasoningProjection) return data;
+        if (data instanceof String text) {
+            return finalProjection
+                    ? InternalReasoningBoundary.stripVisible(text)
+                    : InternalReasoningBoundary.stripTags(text);
+        }
+        if (!(data instanceof Map<?, ?> source)) return data;
+
+        LinkedHashMap<Object, Object> safe = new LinkedHashMap<>(source);
+        for (String field : List.of("content", "delta")) {
+            Object value = safe.get(field);
+            if (value instanceof String text) {
+                safe.put(field, finalProjection
+                        ? InternalReasoningBoundary.stripVisible(text)
+                        : InternalReasoningBoundary.stripTags(text));
+            }
+        }
+        return safe;
     }
 
     private void saveMessage(AgentConversation conversation, String type, String role, String content, Object data) {

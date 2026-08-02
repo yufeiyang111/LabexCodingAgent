@@ -43,6 +43,40 @@ class AgentModelTurnExecutorTest {
     }
 
     @Test
+    void enforcesReasoningBoundaryForEveryProviderImplementation() throws Exception {
+        List<Map<String, Object>> projected = new ArrayList<>();
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
+        LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {
+            callback.accept(chunk("text_delta", "Visible <TH", null, null, null));
+            callback.accept(chunk("text_delta", "INK data-kind='hidden'>private plan</THINK", null, null, null));
+            callback.accept(chunk("text_delta", "ING> answer", null, null, null));
+            callback.accept(chunk("done", "", null, null, null));
+        });
+        AgentModelTurnExecutor.ModelTurnRequest request = new AgentModelTurnExecutor.ModelTurnRequest(
+                "system", List.of(Map.of("role", "user", "content", "hello")),
+                List.of(Map.of("type", "function")), provider,
+                new LlmProvider.LlmConfig("key", "https://example.com", "model", 100, 0.0),
+                1, 99L, "zh", CancellationToken.none(),
+                new AgentModelTurnExecutor.EventSink() {
+                    @Override
+                    public void durable(String type, Object data) {
+                        projected.add(Map.of("type", type, "data", data));
+                    }
+
+                    @Override
+                    public void transientEvent(String type, Object data) {
+                        projected.add(Map.of("type", type, "data", data));
+                    }
+                });
+
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request);
+
+        assertEquals("Visible  answer", result.content());
+        assertEquals("private plan", result.thinking());
+        assertFalse(projected.toString().toLowerCase().contains("<think"));
+    }
+
+    @Test
     void preservesAllNativeToolCallsInProviderOrder() throws Exception {
         AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
         LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {

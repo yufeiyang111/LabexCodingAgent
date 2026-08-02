@@ -1,0 +1,201 @@
+package com.labex.labexagent.llm;
+
+import java.util.Locale;
+import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * 统一约束 Provider 内部推理协议，避免标签进入用户可见输出和持久化回放。
+ */
+public final class InternalReasoningBoundary {
+    private static final Pattern TAG_PATTERN = Pattern.compile(
+            "(?is)<\\s*(/?)\\s*think(?:ing)?(?:\\s+[^<>]*?)?\\s*>"
+                    + "|&lt;\\s*(/?)\\s*think(?:ing)?(?:\\s+.*?)?\\s*&gt;"
+                    + "|&#(?:0*60|x0*3c);\\s*(/?)\\s*think(?:ing)?(?:\\s+.*?)?\\s*&#(?:0*62|x0*3e);");
+
+    private InternalReasoningBoundary() {
+    }
+
+    public static Projection project(String content, String dedicatedReasoning) {
+        StringBuilder visible = new StringBuilder();
+        StringBuilder embeddedReasoning = new StringBuilder();
+        VisibleStreamFilter filter = new VisibleStreamFilter(embeddedReasoning::append, visible::append);
+        filter.push(content);
+        filter.flush();
+
+        String normalizedDedicated = stripTags(dedicatedReasoning);
+        String reasoning = normalizedDedicated.isBlank()
+                ? embeddedReasoning.toString()
+                : normalizedDedicated;
+        return new Projection(visible.toString(), reasoning);
+    }
+
+    public static String stripVisible(String value) {
+        return project(value, "").visible();
+    }
+
+    public static String stripTags(String value) {
+        StringBuilder output = new StringBuilder();
+        TagStreamFilter filter = new TagStreamFilter(output::append);
+        filter.push(value);
+        filter.flush();
+        return output.toString();
+    }
+
+    public record Projection(String visible, String reasoning) {
+    }
+
+    /**
+     * 普通 content 通道：推理块进入推理投影，其余文本进入可见投影。
+     */
+    public static final class VisibleStreamFilter {
+        private final Consumer<String> onReasoning;
+        private final Consumer<String> onVisible;
+        private final StringBuilder buffer = new StringBuilder();
+        private boolean insideReasoning;
+
+        public VisibleStreamFilter(Consumer<String> onReasoning, Consumer<String> onVisible) {
+            this.onReasoning = onReasoning;
+            this.onVisible = onVisible;
+        }
+
+        public void push(String value) {
+            if (value == null || value.isEmpty()) return;
+            buffer.append(value);
+            process();
+        }
+
+        public void flush() {
+            process();
+            if (buffer.length() == 0) return;
+            int safeLength = safeLength(buffer);
+            emit(buffer.substring(0, safeLength));
+            buffer.setLength(0);
+        }
+
+        private void process() {
+            while (buffer.length() > 0) {
+                TagMatch tag = findTag(buffer);
+                if (tag != null) {
+                    emit(buffer.substring(0, tag.index()));
+                    buffer.delete(0, tag.end());
+                    insideReasoning = tag.closing() ? false : true;
+                    continue;
+                }
+                int safeLength = safeLength(buffer);
+                emit(buffer.substring(0, safeLength));
+                buffer.delete(0, safeLength);
+                break;
+            }
+        }
+
+        private void emit(String text) {
+            if (text == null || text.isEmpty()) return;
+            if (insideReasoning) onReasoning.accept(text);
+            else onVisible.accept(text);
+        }
+    }
+
+    /**
+     * 独立 reasoning_content 通道：保留推理文本，只移除协议标签。
+     */
+    public static final class TagStreamFilter {
+        private final Consumer<String> onText;
+        private final StringBuilder buffer = new StringBuilder();
+
+        public TagStreamFilter(Consumer<String> onText) {
+            this.onText = onText;
+        }
+
+        public void push(String value) {
+            if (value == null || value.isEmpty()) return;
+            buffer.append(value);
+            process();
+        }
+
+        public void flush() {
+            process();
+            if (buffer.length() == 0) return;
+            int safeLength = safeLength(buffer);
+            emit(buffer.substring(0, safeLength));
+            buffer.setLength(0);
+        }
+
+        private void process() {
+            while (buffer.length() > 0) {
+                TagMatch tag = findTag(buffer);
+                if (tag != null) {
+                    emit(buffer.substring(0, tag.index()));
+                    buffer.delete(0, tag.end());
+                    continue;
+                }
+                int safeLength = safeLength(buffer);
+                emit(buffer.substring(0, safeLength));
+                buffer.delete(0, safeLength);
+                break;
+            }
+        }
+
+        private void emit(String text) {
+            if (text != null && !text.isEmpty()) onText.accept(text);
+        }
+    }
+
+    private static TagMatch findTag(CharSequence value) {
+        Matcher matcher = TAG_PATTERN.matcher(value);
+        if (!matcher.find()) return null;
+        boolean closing = "/".equals(matcher.group(1))
+                || "/".equals(matcher.group(2))
+                || "/".equals(matcher.group(3));
+        return new TagMatch(matcher.start(), matcher.end(), closing);
+    }
+
+    private static int safeLength(CharSequence value) {
+        String text = value.toString();
+        for (int index = 0; index < text.length(); index++) {
+            char current = text.charAt(index);
+            if ((current == '<' || current == '&') && couldBeTagPrefix(text.substring(index))) {
+                return index;
+            }
+        }
+        return text.length();
+    }
+
+    private static boolean couldBeTagPrefix(String value) {
+        String lower = value.toLowerCase(Locale.ROOT);
+        if ("&lt;".startsWith(lower) || "&#60;".startsWith(lower) || "&#x3c;".startsWith(lower)) {
+            return true;
+        }
+        if (lower.startsWith("&lt;")) return couldBeRawPrefix("<" + lower.substring(4));
+        if (lower.startsWith("&#60;")) return couldBeRawPrefix("<" + lower.substring(5));
+        if (lower.startsWith("&#x3c;")) return couldBeRawPrefix("<" + lower.substring(6));
+        return couldBeRawPrefix(lower);
+    }
+
+    private static boolean couldBeRawPrefix(String value) {
+        if (!value.startsWith("<")) return false;
+        int index = 1;
+        while (index < value.length() && Character.isWhitespace(value.charAt(index))) index++;
+        if (index == value.length()) return true;
+        if (value.charAt(index) == '/') {
+            index++;
+            while (index < value.length() && Character.isWhitespace(value.charAt(index))) index++;
+            if (index == value.length()) return true;
+        }
+        int wordStart = index;
+        while (index < value.length()
+                && !Character.isWhitespace(value.charAt(index))
+                && value.charAt(index) != '>'
+                && value.charAt(index) != '&') {
+            index++;
+        }
+        String word = value.substring(wordStart, index);
+        if (word.isEmpty()) return true;
+        if ("think".startsWith(word) || "thinking".startsWith(word)) return true;
+        return "think".equals(word) || "thinking".equals(word);
+    }
+
+    private record TagMatch(int index, int end, boolean closing) {
+    }
+}

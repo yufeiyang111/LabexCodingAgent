@@ -31,8 +31,9 @@ class AcceptanceScriptedProviderTest {
                 .map(LlmProvider.StreamChunk::content)
                 .toList();
 
-        assertEquals(List.of("<thi", "nk>Acceptance runtime scenario selected. </THINK", "ING>"),
-                reasoningChunks);
+        assertEquals(List.of("&lt;TH",
+                "INK data-kind=&quot;hidden&quot;&gt;Acceptance runtime scenario selected. &lt;/THINK",
+                "ING&gt;"), reasoningChunks);
     }
 
 

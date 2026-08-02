@@ -103,11 +103,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 prompt.contains("[acceptance:compaction]"), prompt.contains("[acceptance:permission-batch]"),
                 hasResumedInteraction(prompt, "waiting_user"), prompt.contains("[Tool list_files result]"));
         if (prompt.contains("[acceptance:reasoning-boundary]")) {
-            onChunk.accept(new StreamChunk("thinking_delta", "<thi",
+            onChunk.accept(new StreamChunk("thinking_delta", "&lt;TH",
                     null, null, null, false, null, null, null, null));
-            onChunk.accept(new StreamChunk("thinking_delta", "nk>Acceptance runtime scenario selected. </THINK",
+            onChunk.accept(new StreamChunk("thinking_delta", "INK data-kind=&quot;hidden&quot;&gt;Acceptance runtime scenario selected. &lt;/THINK",
                     null, null, null, false, null, null, null, null));
-            onChunk.accept(new StreamChunk("thinking_delta", "ING>",
+            onChunk.accept(new StreamChunk("thinking_delta", "ING&gt;",
                     null, null, null, false, null, null, null, null));
         } else {
             onChunk.accept(new StreamChunk("thinking_delta", "Acceptance runtime scenario selected. ",

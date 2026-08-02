@@ -59,74 +59,88 @@ export function normalizeSpecialMarkdownBlocks(text) {
 
 
 /**
- * Removes internal reasoning protocol delimiters leaked by a provider or old persisted events.
- * Server-side stream parsing is authoritative; this is the UI and replay defense in depth.
+ * Internal reasoning delimiters can be raw, HTML-escaped, attributed, mixed-case, or split across events.
+ * Backend normalization is authoritative; this scanner is the replay and rendering defense in depth.
  */
-export function stripInternalReasoningTags(value) {
-  return String(value ?? '')
-    .replace(/<\/?think(?:ing)?\s*>/gi, '')
-    .replace(/<\/?(?:t|th|thi|thin|think|thinki|thinkin|thinking)?$/i, '')
+const INTERNAL_REASONING_TAG_PATTERN = /<\s*(\/?)\s*think(?:ing)?(?:\s+[^<>]*?)?\s*>|&lt;\s*(\/?)\s*think(?:ing)?(?:\s+.*?)?\s*&gt;|&#(?:0*60|x0*3c);\s*(\/?)\s*think(?:ing)?(?:\s+.*?)?\s*&#(?:0*62|x0*3e);/i
+
+function findInternalReasoningTag(value) {
+  const match = INTERNAL_REASONING_TAG_PATTERN.exec(value)
+  if (!match) return null
+  return {
+    index: match.index,
+    length: match[0].length,
+    closing: match.slice(1, 4).some(group => group === '/')
+  }
 }
 
-/**
- * Final answers must not display raw reasoning enclosed by internal delimiters.
- * Complete blocks are removed; partial stream prefixes are handled by stripInternalReasoningTags.
- */
-export function stripInternalReasoningBlocks(value) {
-  return stripInternalReasoningTags(String(value ?? '')
-    .replace(/<think(?:ing)?\s*>[\s\S]*?<\/think(?:ing)?\s*>/gi, ''))
+function couldBeRawReasoningPrefix(value) {
+  if (!value.startsWith('<')) return false
+  let index = 1
+  while (index < value.length && /\s/.test(value[index])) index += 1
+  if (index === value.length) return true
+  if (value[index] === '/') {
+    index += 1
+    while (index < value.length && /\s/.test(value[index])) index += 1
+    if (index === value.length) return true
+  }
+  const start = index
+  while (index < value.length && !/[\s>&]/.test(value[index])) index += 1
+  const word = value.slice(start, index)
+  if (!word) return true
+  return 'think'.startsWith(word) || 'thinking'.startsWith(word) || word === 'think' || word === 'thinking'
 }
 
-const INTERNAL_REASONING_OPEN_TAGS = ['<thinking>', '<think>']
-const INTERNAL_REASONING_CLOSE_TAGS = ['</thinking>', '</think>']
-
-function findInternalReasoningTag(value, tags) {
+function couldBeInternalReasoningPrefix(value) {
   const normalized = value.toLowerCase()
-  let selected = null
-  for (const tag of tags) {
-    const index = normalized.indexOf(tag)
-    if (index >= 0 && (!selected || index < selected.index || (index === selected.index && tag.length > selected.tag.length))) {
-      selected = { index, tag }
+  if ('&lt;'.startsWith(normalized) || '&#60;'.startsWith(normalized) || '&#x3c;'.startsWith(normalized)) return true
+  if (normalized.startsWith('&lt;')) return couldBeRawReasoningPrefix(`<${normalized.slice(4)}`)
+  if (normalized.startsWith('&#60;')) return couldBeRawReasoningPrefix(`<${normalized.slice(5)}`)
+  if (normalized.startsWith('&#x3c;')) return couldBeRawReasoningPrefix(`<${normalized.slice(6)}`)
+  return couldBeRawReasoningPrefix(normalized)
+}
+
+function safeInternalReasoningLength(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    if ((value[index] === '<' || value[index] === '&') && couldBeInternalReasoningPrefix(value.slice(index))) {
+      return index
     }
   }
-  return selected
+  return value.length
 }
 
-function safeInternalReasoningPrefixLength(value, tags) {
-  const normalized = value.toLowerCase()
-  const maximum = Math.max(...tags.map(tag => tag.length - 1))
-  for (let length = Math.min(maximum, normalized.length); length > 0; length -= 1) {
-    const suffix = normalized.slice(-length)
-    if (tags.some(tag => tag.startsWith(suffix))) return normalized.length - length
-  }
-  return normalized.length
-}
-
-/**
- * 独立思考通道只删除协议标签，不删除其中的思考文本。
- * 该过滤器跨事件保留不完整标签前缀，防止分片标签泄漏到实时 UI 或历史回放。
- */
+/** 删除独立思考通道中的协议标签，但保留思考文本。 */
 export function createInternalReasoningTagStreamFilter() {
-  const tags = [...INTERNAL_REASONING_OPEN_TAGS, ...INTERNAL_REASONING_CLOSE_TAGS]
   let buffer = ''
+
+  function process() {
+    let output = ''
+    while (buffer) {
+      const match = findInternalReasoningTag(buffer)
+      if (match) {
+        output += buffer.slice(0, match.index)
+        buffer = buffer.slice(match.index + match.length)
+        continue
+      }
+      const safeLength = safeInternalReasoningLength(buffer)
+      output += buffer.slice(0, safeLength)
+      buffer = buffer.slice(safeLength)
+      break
+    }
+    return output
+  }
 
   return {
     push(value) {
       buffer += String(value ?? '')
-      let visible = ''
-      while (buffer) {
-        const match = findInternalReasoningTag(buffer, tags)
-        if (match) {
-          visible += buffer.slice(0, match.index)
-          buffer = buffer.slice(match.index + match.tag.length)
-          continue
-        }
-        const safeLength = safeInternalReasoningPrefixLength(buffer, tags)
-        if (safeLength > 0) visible += buffer.slice(0, safeLength)
-        buffer = buffer.slice(safeLength)
-        break
-      }
-      return visible
+      return process()
+    },
+    flush() {
+      const output = process()
+      const safeLength = safeInternalReasoningLength(buffer)
+      const tail = buffer.slice(0, safeLength)
+      buffer = ''
+      return output + tail
     },
     reset() {
       buffer = ''
@@ -134,37 +148,55 @@ export function createInternalReasoningTagStreamFilter() {
   }
 }
 
-/**
- * Stateful final-output filter. It prevents an unfinished internal reasoning block from being
- * rendered between streaming deltas, while still preserving normal visible text around it.
- */
+/** 删除最终回答中的完整思考块，并跨事件保留不完整协议前缀。 */
 export function createInternalReasoningBlockStreamFilter() {
   let buffer = ''
   let insideInternalBlock = false
 
+  function process() {
+    let visible = ''
+    while (buffer) {
+      const match = findInternalReasoningTag(buffer)
+      if (match) {
+        if (!insideInternalBlock) visible += buffer.slice(0, match.index)
+        buffer = buffer.slice(match.index + match.length)
+        insideInternalBlock = match.closing ? false : true
+        continue
+      }
+      const safeLength = safeInternalReasoningLength(buffer)
+      if (!insideInternalBlock) visible += buffer.slice(0, safeLength)
+      buffer = buffer.slice(safeLength)
+      break
+    }
+    return visible
+  }
+
   return {
     push(value) {
       buffer += String(value ?? '')
-      let visible = ''
-      while (buffer) {
-        const tags = insideInternalBlock ? INTERNAL_REASONING_CLOSE_TAGS : INTERNAL_REASONING_OPEN_TAGS
-        const match = findInternalReasoningTag(buffer, tags)
-        if (match) {
-          if (!insideInternalBlock) visible += buffer.slice(0, match.index)
-          buffer = buffer.slice(match.index + match.tag.length)
-          insideInternalBlock = !insideInternalBlock
-          continue
-        }
-        const safeLength = safeInternalReasoningPrefixLength(buffer, tags)
-        if (!insideInternalBlock && safeLength > 0) visible += buffer.slice(0, safeLength)
-        buffer = buffer.slice(safeLength)
-        break
-      }
-      return visible
+      return process()
+    },
+    flush() {
+      const visible = process()
+      const safeLength = safeInternalReasoningLength(buffer)
+      const tail = insideInternalBlock ? '' : buffer.slice(0, safeLength)
+      buffer = ''
+      insideInternalBlock = false
+      return visible + tail
     },
     reset() {
       buffer = ''
       insideInternalBlock = false
     }
   }
+}
+
+export function stripInternalReasoningTags(value) {
+  const filter = createInternalReasoningTagStreamFilter()
+  return filter.push(value) + filter.flush()
+}
+
+export function stripInternalReasoningBlocks(value) {
+  const filter = createInternalReasoningBlockStreamFilter()
+  return filter.push(value) + filter.flush()
 }

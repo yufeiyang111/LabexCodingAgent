@@ -68,6 +68,7 @@ import com.labex.labexagent.llm.CacheTelemetry;
 import com.labex.labexagent.llm.CacheTelemetryStatus;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.llm.ProviderEventType;
 import com.labex.labexagent.llm.PromptCacheKeyFactory;
 import com.labex.rag.config.RagConfig;
@@ -2504,24 +2505,12 @@ public class AgentLoopEngine {
     }
 
     private String cleanModelOutput(String content) {
-        if (content == null) {
-            return "";
-        }
-        Object s = content;
-        while (((String)s).contains("<think>")) {
-            int start = ((String)s).indexOf("<think>");
-            int end = ((String)s).indexOf("</think>", start);
-            if (end >= 0) {
-                s = ((String)s).substring(0, start) + ((String)s).substring(end + 8);
-                continue;
-            }
-            s = ((String)s).substring(0, start);
-        }
-        s = ((String)s).replaceAll("</?end_turn\\s*/?>", "");
-        s = ((String)s).replaceAll("(?s)<(?:minimax:)?invoke[^>]*>.*?</(?:minimax:)?invoke>", "");
-        s = ((String)s).replaceAll("<(?:minimax:)?invoke[^>]*/?>", "");
-        s = ((String)s).replaceAll("(?s)<(?:minimax:)?tool_call[^>]*>.*", "");
-        return ((String)s).trim();
+        String safe = InternalReasoningBoundary.stripVisible(content);
+        safe = safe.replaceAll("</?end_turn\s*/?>", "");
+        safe = safe.replaceAll("(?s)<(?:minimax:)?invoke[^>]*>.*?</(?:minimax:)?invoke>", "");
+        safe = safe.replaceAll("<(?:minimax:)?invoke[^>]*/?>", "");
+        safe = safe.replaceAll("(?s)<(?:minimax:)?tool_call[^>]*>.*", "");
+        return safe.trim();
     }
 
     private boolean isModelTimeoutError(String message) {
@@ -3400,10 +3389,11 @@ public class AgentLoopEngine {
     }
 
     private void streamFinal(AgentSsePublisher sse, AgentConversation conv, String text, String visibleLanguage) throws Exception {
-        if (text != null && !text.isEmpty()) {
-            sse.sendTransient("FINAL_DELTA", Map.of("delta", text));
+        String visibleText = InternalReasoningBoundary.stripVisible(text);
+        if (!visibleText.isEmpty()) {
+            sse.sendTransient("FINAL_DELTA", Map.of("delta", visibleText));
         }
-        this.sendEvent(sse, conv, "FINAL", Map.of("content", text == null ? "" : text, "summary", this.finalResponseSummary(visibleLanguage)));
+        this.sendEvent(sse, conv, "FINAL", Map.of("content", visibleText, "summary", this.finalResponseSummary(visibleLanguage)));
     }
 
     private void streamFinalFromProvider(AgentSsePublisher sse, AgentConversation conv,
@@ -3417,13 +3407,36 @@ public class AgentLoopEngine {
                                           LlmProvider provider, LlmProvider.LlmConfig config,
                                           String visibleLanguage) throws Exception {
         StringBuilder contentBuf = new StringBuilder();
+        java.util.function.Consumer<String> emitThinking = delta -> {
+            if (delta == null || delta.isEmpty()) return;
+            try {
+                sse.sendTransient("THINK_DELTA", Map.of("messageId", "final-think", "delta", delta));
+            } catch (Exception eventFailure) {
+                throw new IllegalStateException("Failed to project final reasoning delta", eventFailure);
+            }
+        };
+        java.util.function.Consumer<String> emitVisible = delta -> {
+            if (delta == null || delta.isEmpty()) return;
+            try {
+                contentBuf.append(delta);
+                sse.sendTransient("FINAL_DELTA", Map.of("delta", delta));
+            } catch (Exception eventFailure) {
+                throw new IllegalStateException("Failed to project final visible delta", eventFailure);
+            }
+        };
+        InternalReasoningBoundary.TagStreamFilter dedicatedReasoningFilter =
+                new InternalReasoningBoundary.TagStreamFilter(emitThinking);
+        InternalReasoningBoundary.VisibleStreamFilter visibleContentFilter =
+                new InternalReasoningBoundary.VisibleStreamFilter(emitThinking, emitVisible);
         provider.chatStream(sysPrompt, msgs, null, config, chunk -> {
             try {
                 if ("text_delta".equals(chunk.type())) {
-                    contentBuf.append(chunk.content());
-                    sse.sendTransient("FINAL_DELTA", Map.of("delta", chunk.content()));
+                    visibleContentFilter.push(chunk.content());
                 } else if ("thinking_delta".equals(chunk.type())) {
-                    sse.sendTransient("THINK_DELTA", Map.of("messageId", "final-think", "delta", chunk.content()));
+                    dedicatedReasoningFilter.push(chunk.content());
+                } else if ("done".equals(chunk.type())) {
+                    dedicatedReasoningFilter.flush();
+                    visibleContentFilter.flush();
                 } else if ("error".equals(chunk.type())) {
                     sse.send("ERROR", Map.of("message", chunk.content()));
                 }
@@ -3431,7 +3444,9 @@ public class AgentLoopEngine {
                 log.warn("Stream chunk send error: {}", e.getMessage());
             }
         });
-        String finalContent = contentBuf.toString();
+        dedicatedReasoningFilter.flush();
+        visibleContentFilter.flush();
+        String finalContent = InternalReasoningBoundary.stripVisible(contentBuf.toString());
         this.sendEvent(sse, conv, "FINAL", Map.of("content", finalContent, "summary", this.finalResponseSummary(visibleLanguage)));
     }
 

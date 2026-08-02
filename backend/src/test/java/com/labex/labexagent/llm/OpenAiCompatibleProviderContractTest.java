@@ -140,6 +140,77 @@ class OpenAiCompatibleProviderContractTest {
     }
 
     @Test
+    void normalizesNonStreamingReasoningBeforeReturningProviderResult() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendJson(exchange, 200, "{\"choices\":[{\"message\":{"
+                    + "\"content\":\"Visible <THINK data-kind='hidden'>private plan</THINKING> answer\","
+                    + "\"reasoning_content\":\"&lt;think&gt;explicit plan&lt;/think&gt;\"}}]}");
+        });
+        try {
+            java.util.Map<String, Object> result = providerForLocalServer()
+                    .chatWithTools("system", List.of(), List.of(), config(server));
+
+            assertEquals("text", result.get("type"));
+            assertEquals("Visible  answer", result.get("content"));
+            assertEquals("explicit plan", result.get("thinking"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void neverPromotesReasoningOnlyResponseIntoVisibleContent() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendJson(exchange, 200,
+                    "{\"choices\":[{\"message\":{\"content\":\"<think>private plan</think>\"}}]}");
+        });
+        try {
+            java.util.Map<String, Object> result = providerForLocalServer()
+                    .chatWithTools("system", List.of(), List.of(), config(server));
+
+            assertEquals("text", result.get("type"));
+            assertEquals("", result.get("content"));
+            assertEquals("private plan", result.get("thinking"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void routesAttributedReasoningTagsSplitAcrossStreamingChunks() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"Visible <TH\"}}]}\n\n" +
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"INK data-kind='hidden'>private plan</THINK\"}}]}\n\n" +
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ING> answer\"}}]}\n\n" +
+                    "data: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            String visible = chunks.stream()
+                    .filter(chunk -> "text_delta".equals(chunk.type()))
+                    .map(LlmProvider.StreamChunk::content)
+                    .reduce("", String::concat);
+            String thinking = chunks.stream()
+                    .filter(chunk -> "thinking_delta".equals(chunk.type()))
+                    .map(LlmProvider.StreamChunk::content)
+                    .reduce("", String::concat);
+
+            assertEquals("Visible  answer", visible);
+            assertEquals("private plan", thinking);
+            assertFalse(chunks.stream().map(LlmProvider.StreamChunk::content)
+                    .anyMatch(content -> content != null && content.toLowerCase().contains("think")));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void disablesParallelToolCallsInOpenAiCompatibleRequests() throws Exception {
         HttpServer server = startServer(exchange -> {
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);

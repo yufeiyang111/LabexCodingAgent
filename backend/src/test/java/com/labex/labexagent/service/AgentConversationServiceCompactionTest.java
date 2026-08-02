@@ -1,5 +1,7 @@
 package com.labex.labexagent.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -37,6 +39,25 @@ class AgentConversationServiceCompactionTest {
         if (TableInfoHelper.getTableInfo(entityType) == null) {
             TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""), entityType);
         }
+    }
+
+    @Test
+    void finalEventPersistsOnlyTheVisibleReasoningProjection() {
+        AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
+        AgentMessageMapper messageMapper = mock(AgentMessageMapper.class);
+        AgentConversationService service = new AgentConversationService(
+                conversationMapper, messageMapper, mock(RagConfig.class));
+        ArgumentCaptor<AgentMessage> messageCaptor = ArgumentCaptor.forClass(AgentMessage.class);
+
+        service.saveEvent(conversation(), "FINAL", Map.of(
+                "content", "Visible <THINK data-kind='hidden'>private plan</THINKING> answer",
+                "summary", "done"));
+
+        verify(messageMapper).insert(messageCaptor.capture());
+        AgentMessage persisted = messageCaptor.getValue();
+        assertEquals("Visible  answer", persisted.getContent());
+        assertFalse(persisted.getEventData().toLowerCase().contains("<think"));
+        assertFalse(persisted.getEventData().contains("private plan"));
     }
 
     @Test

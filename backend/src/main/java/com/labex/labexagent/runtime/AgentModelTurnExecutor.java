@@ -1,5 +1,6 @@
 package com.labex.labexagent.runtime;
 
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.ProviderCapabilities;
 import java.util.Comparator;
@@ -74,6 +75,54 @@ public final class AgentModelTurnExecutor {
         long[] lastThinkingCheckpointAt = {System.nanoTime()};
         String thinkingMessageId = "think-" + request.iteration() + "-" + UUID.randomUUID();
 
+        Consumer<String> publishThinking = delta -> {
+            if (delta == null || delta.isEmpty()) return;
+            try {
+                if (!thinkingStarted[0]) {
+                    request.eventSink().durable("THINK_START", Map.of(
+                            "messageId", thinkingMessageId,
+                            "iteration", request.iteration(),
+                            "summary", localText(request.visibleLanguage(), "\u5206\u6790\u95ee\u9898", "Analyzing problem"),
+                            "taskId", request.taskId()));
+                    thinkingStarted[0] = true;
+                }
+                thinking.append(delta);
+                request.eventSink().transientEvent("THINK_DELTA", Map.of(
+                        "messageId", thinkingMessageId,
+                        "delta", delta,
+                        "taskId", request.taskId()));
+                long now = System.nanoTime();
+                if (thinking.length() - lastThinkingCheckpointLength[0] >= 1000
+                        || now - lastThinkingCheckpointAt[0] >= TimeUnit.SECONDS.toNanos(1)) {
+                    request.eventSink().durable("THINK_SNAPSHOT", Map.of(
+                            "messageId", thinkingMessageId,
+                            "iteration", request.iteration(),
+                            "content", thinking.toString(),
+                            "streaming", true,
+                            "taskId", request.taskId()));
+                    lastThinkingCheckpointLength[0] = thinking.length();
+                    lastThinkingCheckpointAt[0] = now;
+                }
+            } catch (Exception eventFailure) {
+                throw new IllegalStateException("Failed to project reasoning delta", eventFailure);
+            }
+        };
+        Consumer<String> publishVisible = delta -> {
+            if (delta == null || delta.isEmpty()) return;
+            try {
+                content.append(delta);
+                request.eventSink().transientEvent("FINAL_DELTA", Map.of(
+                        "delta", delta,
+                        "taskId", request.taskId()));
+            } catch (Exception eventFailure) {
+                throw new IllegalStateException("Failed to project visible delta", eventFailure);
+            }
+        };
+        InternalReasoningBoundary.TagStreamFilter dedicatedReasoningFilter =
+                new InternalReasoningBoundary.TagStreamFilter(publishThinking);
+        InternalReasoningBoundary.VisibleStreamFilter visibleContentFilter =
+                new InternalReasoningBoundary.VisibleStreamFilter(publishThinking, publishVisible);
+
         Future<?> future = executorService.submit(() -> request.provider().chatStream(
                 request.systemPrompt(), request.messages(), request.tools(), request.config(),
                 request.cancellationToken(), chunk -> {
@@ -83,45 +132,8 @@ public final class AgentModelTurnExecutor {
                                 cancelled[0] = true;
                                 terminalEvent[0] = true;
                             }
-                            case THINKING_DELTA -> {
-                                if (!thinkingStarted[0]) {
-                                    request.eventSink().durable("THINK_START", Map.of(
-                                            "messageId", thinkingMessageId,
-                                            "iteration", request.iteration(),
-                                            "summary", localText(request.visibleLanguage(), "分析问题", "Analyzing problem"),
-                                            "taskId", request.taskId()));
-                                    thinkingStarted[0] = true;
-                                }
-                                String delta = chunk.content() == null ? "" : chunk.content();
-                                thinking.append(delta);
-                                if (!delta.isEmpty()) {
-                                    request.eventSink().transientEvent("THINK_DELTA", Map.of(
-                                            "messageId", thinkingMessageId,
-                                            "delta", delta,
-                                            "taskId", request.taskId()));
-                                    long now = System.nanoTime();
-                                    if (thinking.length() - lastThinkingCheckpointLength[0] >= 1000
-                                            || now - lastThinkingCheckpointAt[0] >= TimeUnit.SECONDS.toNanos(1)) {
-                                        request.eventSink().durable("THINK_SNAPSHOT", Map.of(
-                                                "messageId", thinkingMessageId,
-                                                "iteration", request.iteration(),
-                                                "content", thinking.toString(),
-                                                "streaming", true,
-                                                "taskId", request.taskId()));
-                                        lastThinkingCheckpointLength[0] = thinking.length();
-                                        lastThinkingCheckpointAt[0] = now;
-                                    }
-                                }
-                            }
-                            case TEXT_DELTA -> {
-                                String delta = chunk.content() == null ? "" : chunk.content();
-                                content.append(delta);
-                                if (!delta.isEmpty()) {
-                                    request.eventSink().transientEvent("FINAL_DELTA", Map.of(
-                                            "delta", delta,
-                                            "taskId", request.taskId()));
-                                }
-                            }
+                            case THINKING_DELTA -> dedicatedReasoningFilter.push(chunk.content());
+                            case TEXT_DELTA -> visibleContentFilter.push(chunk.content());
                             case TOOL_ARGUMENTS_DELTA, TOOL_CALL -> {
                                 int index = chunk.toolCallIndex() == null ? 0 : chunk.toolCallIndex();
                                 toolCalls.put(index, chunk);
@@ -140,6 +152,8 @@ public final class AgentModelTurnExecutor {
                                 if (chunk.usage() != null) usage.set(chunk.usage());
                             }
                             case DONE -> {
+                                dedicatedReasoningFilter.flush();
+                                visibleContentFilter.flush();
                                 terminalEvent[0] = true;
                                 if (chunk.usage() != null) usage.set(chunk.usage());
                             }

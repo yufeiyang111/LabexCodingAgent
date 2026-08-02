@@ -15,7 +15,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -171,7 +170,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     boolean firstSseEvent = false;
                     AtomicReference<Map<String, Object>> latestUsage = new AtomicReference<>();
                     ToolCallAccumulator toolCalls = new ToolCallAccumulator();
-                    ThinkTagStreamParser thinkParser = new ThinkTagStreamParser(
+                    InternalReasoningBoundary.VisibleStreamFilter thinkParser = new InternalReasoningBoundary.VisibleStreamFilter(
                             text -> {
                                 thinkingBuf.append(text);
                                 onChunk.accept(new StreamChunk("thinking_delta", text, null, null,
@@ -181,7 +180,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                                 contentBuf.append(text);
                                 onChunk.accept(new StreamChunk("text_delta", text, null, null, null, false, null));
                             });
-                    ProtocolTagStreamFilter explicitThinkingFilter = new ProtocolTagStreamFilter(text -> {
+                    InternalReasoningBoundary.TagStreamFilter explicitThinkingFilter = new InternalReasoningBoundary.TagStreamFilter(text -> {
                         thinkingBuf.append(text);
                         onChunk.accept(new StreamChunk("thinking_delta", text, null, null,
                                 thinkingBuf.toString(), false, null));
@@ -359,10 +358,14 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     String content = msg.has("content") && !msg.get("content").isJsonNull()
                             ? msg.get("content").getAsString() : "";
 
-                    String thinking = "";
+                    String rawThinking = "";
                     if (msg.has("reasoning_content") && !msg.get("reasoning_content").isJsonNull()) {
-                        thinking = msg.get("reasoning_content").getAsString();
+                        rawThinking = msg.get("reasoning_content").getAsString();
                     }
+                    InternalReasoningBoundary.Projection projection =
+                            InternalReasoningBoundary.project(content, rawThinking);
+                    content = projection.visible();
+                    String thinking = projection.reasoning();
 
                     if (msg.has("tool_calls") && !msg.get("tool_calls").isJsonNull()) {
                         var tcs = msg.getAsJsonArray("tool_calls");
@@ -373,7 +376,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                                 result.put("type", "tool_call");
                                 result.put("tool", fn.get("name").getAsString());
                                 result.put("arguments", fn.get("arguments").getAsString());
-                                result.put("thinking", thinking.isEmpty() ? content : thinking);
+                                result.put("thinking", thinking);
                                 if (usage != null) result.put("usage", usage);
                                 return result;
                             }
@@ -391,7 +394,8 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     if (!thinking.isEmpty()) {
                         Map<String, Object> result = new HashMap<>();
                         result.put("type", "text");
-                        result.put("content", thinking);
+                        result.put("content", "");
+                        result.put("thinking", thinking);
                         if (usage != null) result.put("usage", usage);
                         return result;
                     }
@@ -627,157 +631,4 @@ public class OpenAiCompatibleProvider implements LlmProvider {
      * 流式解析 <think>...</think> 标签的状态机
      * 处理标签跨多个 chunk 的情况
      */
-    /**
-     * 独立 reasoning_content 通道本身已经是思考内容，这里只移除可能重复携带的协议标签。
-     * 必须保留跨 chunk 的标签前缀，避免 "<thi" + "nk>" 被逐片正则拆漏。
-     */
-    private static class ProtocolTagStreamFilter {
-        private static final List<String> TAGS = List.of("<thinking>", "</thinking>", "<think>", "</think>");
-        private final java.util.function.Consumer<String> onText;
-        private final StringBuilder buffer = new StringBuilder();
-
-        ProtocolTagStreamFilter(java.util.function.Consumer<String> onText) {
-            this.onText = onText;
-        }
-
-        void push(String text) {
-            if (text == null || text.isEmpty()) return;
-            buffer.append(text);
-            process();
-        }
-
-        void flush() {
-            if (buffer.length() == 0) return;
-            int safe = findSafeLength(buffer);
-            if (safe > 0) onText.accept(buffer.substring(0, safe));
-            buffer.setLength(0);
-        }
-
-        private void process() {
-            while (buffer.length() > 0) {
-                TagMatch tag = findTag(buffer);
-                if (tag != null) {
-                    if (tag.index() > 0) onText.accept(buffer.substring(0, tag.index()));
-                    buffer.delete(0, tag.index() + tag.tag().length());
-                    continue;
-                }
-                int safe = findSafeLength(buffer);
-                if (safe > 0) {
-                    onText.accept(buffer.substring(0, safe));
-                    buffer.delete(0, safe);
-                }
-                break;
-            }
-        }
-
-        private static TagMatch findTag(StringBuilder buffer) {
-            String content = buffer.toString().toLowerCase(Locale.ROOT);
-            TagMatch earliest = null;
-            for (String tag : TAGS) {
-                int index = content.indexOf(tag);
-                if (index >= 0 && (earliest == null || index < earliest.index()
-                        || (index == earliest.index() && tag.length() > earliest.tag().length()))) {
-                    earliest = new TagMatch(index, tag);
-                }
-            }
-            return earliest;
-        }
-
-        private static int findSafeLength(StringBuilder buffer) {
-            String content = buffer.toString().toLowerCase(Locale.ROOT);
-            int maxPrefix = TAGS.stream().mapToInt(String::length).max().orElse(1) - 1;
-            for (int length = Math.min(maxPrefix, content.length()); length > 0; length--) {
-                String suffix = content.substring(content.length() - length);
-                if (TAGS.stream().anyMatch(tag -> tag.startsWith(suffix))) return content.length() - length;
-            }
-            return content.length();
-        }
-
-        private record TagMatch(int index, String tag) {
-        }
-    }
-
-    /**
-     * Separates upstream internal-reasoning delimiters from visible streamed text.
-     * Matching is case-insensitive and retains partial tag prefixes across SSE chunks.
-     */
-    private static class ThinkTagStreamParser {
-        private static final List<String> OPEN_TAGS = List.of("<thinking>", "<think>");
-        private static final List<String> CLOSE_TAGS = List.of("</thinking>", "</think>");
-        private final java.util.function.Consumer<String> onThinking;
-        private final java.util.function.Consumer<String> onText;
-        private final StringBuilder buffer = new StringBuilder();
-        private boolean inThink = false;
-
-        ThinkTagStreamParser(java.util.function.Consumer<String> onThinking, java.util.function.Consumer<String> onText) {
-            this.onThinking = onThinking;
-            this.onText = onText;
-        }
-
-        void push(String text) {
-            if (text == null || text.isEmpty()) return;
-            buffer.append(text);
-            process();
-        }
-
-        void flush() {
-            if (buffer.length() > 0) {
-                emit(buffer.toString(), inThink);
-                buffer.setLength(0);
-            }
-        }
-
-        private void emit(String text, boolean thinking) {
-            if (text.isEmpty()) return;
-            if (thinking) onThinking.accept(text);
-            else onText.accept(text);
-        }
-
-        private void process() {
-            while (buffer.length() > 0) {
-                List<String> tags = inThink ? CLOSE_TAGS : OPEN_TAGS;
-                TagMatch tag = findTag(buffer, tags);
-                if (tag != null) {
-                    if (tag.index() > 0) emit(buffer.substring(0, tag.index()), inThink);
-                    buffer.delete(0, tag.index() + tag.tag().length());
-                    inThink = !inThink;
-                    continue;
-                }
-                int safe = findSafeLength(buffer, tags);
-                if (safe > 0) {
-                    emit(buffer.substring(0, safe), inThink);
-                    buffer.delete(0, safe);
-                }
-                break;
-            }
-        }
-
-        private static TagMatch findTag(StringBuilder buffer, List<String> tags) {
-            String content = buffer.toString().toLowerCase(Locale.ROOT);
-            TagMatch earliest = null;
-            for (String tag : tags) {
-                int index = content.indexOf(tag);
-                if (index >= 0 && (earliest == null || index < earliest.index()
-                        || (index == earliest.index() && tag.length() > earliest.tag().length()))) {
-                    earliest = new TagMatch(index, tag);
-                }
-            }
-            return earliest;
-        }
-
-        private static int findSafeLength(StringBuilder buffer, List<String> tags) {
-            String content = buffer.toString().toLowerCase(Locale.ROOT);
-            int maxPrefix = tags.stream().mapToInt(String::length).max().orElse(1) - 1;
-            for (int length = Math.min(maxPrefix, content.length()); length > 0; length--) {
-                String suffix = content.substring(content.length() - length);
-                for (String tag : tags) {
-                    if (tag.startsWith(suffix)) return content.length() - length;
-                }
-            }
-            return content.length();
-        }
-
-        private record TagMatch(int index, String tag) {
-        }
-    }
 }
