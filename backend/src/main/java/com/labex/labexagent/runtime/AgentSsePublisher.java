@@ -3,6 +3,7 @@ package com.labex.labexagent.runtime;
 import com.google.gson.Gson;
 import com.labex.entity.AgentRunEvent;
 import com.labex.labexagent.dto.AgentEvent;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import java.io.IOException;
 import java.util.UUID;
@@ -43,25 +44,27 @@ public class AgentSsePublisher {
             throw new IllegalStateException(
                     "Durable SSE events require a bound agent run before they can be sent");
         }
+        Object safeData = InternalReasoningBoundary.sanitizeEventPayload(type, data);
         AgentRunEvent event = this.lifecycleService.appendEvent(
                 this.taskId,
                 type,
-                data,
+                safeData,
                 "sse-" + this.taskId + "-" + UUID.randomUUID());
         if (this.connectionClosed) {
             return;
         }
         try {
-            this.sendFrame(event.getSequenceNumber(), type, data);
+            this.sendFrame(event.getSequenceNumber(), type, safeData);
         } catch (IOException ignored) {
             this.connectionClosed = true;
         }
     }
 
     public void sendTransient(String type, Object data) throws IOException {
+        Object safeData = InternalReasoningBoundary.sanitizeEventPayload(type, data);
         if (this.transientEventListener != null && this.taskId != null) {
             try {
-                this.transientEventListener.publish(this.taskId, type, data);
+                this.transientEventListener.publish(this.taskId, type, safeData);
             } catch (RuntimeException ignored) {
                 // A secondary observer must never disrupt the primary Agent stream.
             }
@@ -70,7 +73,7 @@ public class AgentSsePublisher {
             return;
         }
         try {
-            this.sendFrame(null, type, data);
+            this.sendFrame(null, type, safeData);
         } catch (IOException e) {
             this.connectionClosed = true;
             throw e;
@@ -83,7 +86,8 @@ public class AgentSsePublisher {
     }
 
     public void sendPersisted(Long sequenceNumber, String type, Object data) throws IOException {
-        this.sendFrame(sequenceNumber, type, data);
+        Object safeData = InternalReasoningBoundary.sanitizeEventPayload(type, data);
+        this.sendFrame(sequenceNumber, type, safeData);
     }
 
     private void sendFrame(Long sequenceNumber, String type, Object data) throws IOException {

@@ -560,6 +560,43 @@ class AgentRunLifecycleServiceTest {
     }
 
     @Test
+    void normalizesReasoningBlocksBeforePersistingAuthoritativeEventAndOutboxPayloads() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(908L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+        service.appendEvent(
+                71L,
+                "FINAL",
+                Map.of("content", "Visible <THINK data-kind='hidden'>private plan</THINKING> answer"),
+                "task-71-final-normalized");
+
+        ArgumentCaptor<AgentRunEvent> eventCaptor = ArgumentCaptor.forClass(AgentRunEvent.class);
+        ArgumentCaptor<AgentRunOutbox> outboxCaptor = ArgumentCaptor.forClass(AgentRunOutbox.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        verify(outboxMapper).insert(outboxCaptor.capture());
+
+        String eventPayload = eventCaptor.getValue().getPayload();
+        String outboxPayload = outboxCaptor.getValue().getPayload();
+        assertTrue(eventPayload.contains("Visible  answer"));
+        assertTrue(outboxPayload.contains("Visible  answer"));
+        assertFalse(eventPayload.toLowerCase().contains("think"));
+        assertFalse(outboxPayload.toLowerCase().contains("think"));
+        assertFalse(eventPayload.contains("private plan"));
+        assertFalse(outboxPayload.contains("private plan"));
+    }
+
+    @Test
     void rejectsAnIllegalTransitionBeforeWritingAnything() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);

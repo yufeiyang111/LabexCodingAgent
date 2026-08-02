@@ -39,6 +39,28 @@ class AgentRunEventReplayServiceTest {
     }
 
     @Test
+    void normalizesLegacyReasoningPayloadsWhileReplayingWithoutRewritingHistory() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentTask task = new AgentTask();
+        task.setTaskId(71L);
+        task.setStudentId(7);
+        task.setProjectId(12);
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        AgentRunEvent event = new AgentRunEvent();
+        event.setSequenceNumber(5L);
+        event.setEventType("FINAL");
+        event.setPayload("{\"content\":\"Visible &lt;THINK&gt;private&lt;/THINKING&gt; answer\"}");
+        when(eventMapper.selectList(any())).thenReturn(List.of(event));
+
+        AgentRunEventReplayService service = new AgentRunEventReplayService(taskMapper, eventMapper);
+        List<AgentRunEvent> events = service.eventsAfter(7, 12, 71L, 4L);
+
+        assertEquals("{\"content\":\"Visible  answer\"}", events.get(0).getPayload());
+        verify(eventMapper, never()).updateById(any(AgentRunEvent.class));
+    }
+
+    @Test
     void rejectsEventsForAnotherRunOwnerBeforeQueryingTheEventLog() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);

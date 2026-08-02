@@ -335,9 +335,14 @@ async function createNewConversation() {
     () => client.evaluate(`Boolean(document.querySelector('.ai-input-text-area textarea'))`),
     'chat tab before creating a conversation'
   )
-  const menuOpen = await client.evaluate(`Boolean(document.querySelector('.ai-session-new'))`)
-  if (!menuOpen) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const menuOpen = await client.evaluate(`Boolean(document.querySelector('.ai-session-new'))`)
+    if (menuOpen) break
     await clickElement('.ai-session-select', { label: 'conversation selector', native: true })
+    for (let probe = 0; probe < 20; probe += 1) {
+      if (await client.evaluate(`Boolean(document.querySelector('.ai-session-new'))`)) break
+      await delay(100)
+    }
   }
   await waitFor(() => client.evaluate(`Boolean(document.querySelector('.ai-session-new'))`), 'new conversation action')
   await clickElement('.ai-session-new', { label: 'new conversation action', native: true })
@@ -429,6 +434,7 @@ async function runScenario() {
   await createNewConversation()
   await sendMessage('[acceptance:cache-telemetry]')
   await waitFor(() => bodyIncludes('Prompt cache telemetry was emitted'), 'cache telemetry final reply')
+  await waitForAgentIdle('cache telemetry terminal state')
   await clickElement('.ai-tab', { containsText: '用量', label: 'usage tab' })
   await waitFor(() => client.evaluate(`Boolean(document.querySelector('.usage-cache-card'))`), 'cache telemetry card')
   const cacheCard = await client.evaluate(`document.querySelector('.usage-cache-card')?.innerText || ''`)

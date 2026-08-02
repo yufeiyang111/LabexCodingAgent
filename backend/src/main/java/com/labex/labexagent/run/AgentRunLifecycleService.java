@@ -6,6 +6,7 @@ import com.google.gson.Gson;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunOutbox;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentRunOutboxMapper;
 import com.labex.mapper.AgentTaskMapper;
@@ -159,6 +160,7 @@ public class AgentRunLifecycleService {
             return null;
         }
 
+        Object safePayload = InternalReasoningBoundary.sanitizeEventPayload(eventType, payload);
         AgentRunEvent event = new AgentRunEvent();
         event.setTaskId(task.getTaskId());
         event.setStudentId(task.getStudentId());
@@ -166,14 +168,14 @@ public class AgentRunLifecycleService {
         event.setSequenceNumber(nextSequence);
         event.setState(targetState.persistedStatus());
         event.setEventType(eventType);
-        event.setPayload(GSON.toJson(payload));
+        event.setPayload(GSON.toJson(safePayload));
         event.setIdempotencyKey(idempotencyKey);
         event.setCreateTime(now);
         if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
             throw new IllegalStateException("Unable to persist agent dispatch event");
         }
-        persistOutbox(event, payload, now);
-        recordEventPartBestEffort(taskId, eventType, payload, nextSequence);
+        persistOutbox(event, safePayload, now);
+        recordEventPartBestEffort(taskId, eventType, safePayload, nextSequence);
 
         task.setStatus(targetState.persistedStatus());
         task.setLastEventSequence(nextSequence);
@@ -284,6 +286,7 @@ public class AgentRunLifecycleService {
             throw new IllegalStateException("Agent run state changed concurrently; retry the transition with the same idempotency key");
         }
 
+        Object safePayload = InternalReasoningBoundary.sanitizeEventPayload(eventType, payload);
         AgentRunEvent event = new AgentRunEvent();
         event.setTaskId(task.getTaskId());
         event.setStudentId(task.getStudentId());
@@ -291,7 +294,7 @@ public class AgentRunLifecycleService {
         event.setSequenceNumber(nextSequence);
         event.setState(targetState.persistedStatus());
         event.setEventType(eventType);
-        event.setPayload(GSON.toJson(payload));
+        event.setPayload(GSON.toJson(safePayload));
         event.setIdempotencyKey(idempotencyKey);
         event.setCreateTime(now);
         if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
@@ -317,8 +320,8 @@ public class AgentRunLifecycleService {
             }
         }
         task.setUpdateTime(now);
-        persistOutbox(event, payload, now);
-        recordEventPartBestEffort(task.getTaskId(), event.getEventType(), payload, nextSequence);
+        persistOutbox(event, safePayload, now);
+        recordEventPartBestEffort(task.getTaskId(), event.getEventType(), safePayload, nextSequence);
         return new TransitionResult(event, stateChanged);
     }
 
@@ -384,6 +387,7 @@ public class AgentRunLifecycleService {
             throw new IllegalStateException("Agent run changed concurrently; retry the event append with the same idempotency key");
         }
 
+        Object safePayload = InternalReasoningBoundary.sanitizeEventPayload(eventType, payload);
         AgentRunEvent event = new AgentRunEvent();
         event.setTaskId(task.getTaskId());
         event.setStudentId(task.getStudentId());
@@ -391,7 +395,7 @@ public class AgentRunLifecycleService {
         event.setSequenceNumber(nextSequence);
         event.setState(state.persistedStatus());
         event.setEventType(eventType);
-        event.setPayload(GSON.toJson(payload));
+        event.setPayload(GSON.toJson(safePayload));
         event.setIdempotencyKey(idempotencyKey);
         event.setCreateTime(now);
         if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
@@ -401,8 +405,8 @@ public class AgentRunLifecycleService {
         task.setLastEventSequence(nextSequence);
         task.setRunVersion(nextVersion);
         task.setUpdateTime(now);
-        persistOutbox(event, payload, now);
-        recordEventPartBestEffort(task.getTaskId(), event.getEventType(), payload, nextSequence);
+        persistOutbox(event, safePayload, now);
+        recordEventPartBestEffort(task.getTaskId(), event.getEventType(), safePayload, nextSequence);
         return event;
     }
 

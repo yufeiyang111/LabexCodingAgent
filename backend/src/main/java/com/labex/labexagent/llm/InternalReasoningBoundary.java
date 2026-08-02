@@ -1,6 +1,9 @@
 package com.labex.labexagent.llm;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -41,6 +44,39 @@ public final class InternalReasoningBoundary {
         filter.push(value);
         filter.flush();
         return output.toString();
+    }
+
+    /**
+     * 在权威事件写入和 SSE 最终出口统一清洗内部推理协议。
+     * FINAL 仅保留用户可见正文，THINK 系列保留推理文本但移除协议标签。
+     */
+    public static boolean requiresEventPayloadSanitization(String eventType) {
+        return "FINAL".equalsIgnoreCase(eventType)
+                || "FINAL_DELTA".equalsIgnoreCase(eventType)
+                || eventType != null && eventType.toUpperCase(Locale.ROOT).startsWith("THINK");
+    }
+
+    public static Object sanitizeEventPayload(String eventType, Object payload) {
+        boolean finalProjection = "FINAL".equalsIgnoreCase(eventType)
+                || "FINAL_DELTA".equalsIgnoreCase(eventType);
+        if (!requiresEventPayloadSanitization(eventType) || payload == null) {
+            return payload;
+        }
+        if (payload instanceof String text) {
+            return finalProjection ? stripVisible(text) : stripTags(text);
+        }
+        if (!(payload instanceof Map<?, ?> source)) {
+            return payload;
+        }
+
+        LinkedHashMap<Object, Object> safe = new LinkedHashMap<>(source);
+        for (String field : List.of("content", "delta")) {
+            Object value = safe.get(field);
+            if (value instanceof String text) {
+                safe.put(field, finalProjection ? stripVisible(text) : stripTags(text));
+            }
+        }
+        return safe;
     }
 
     public record Projection(String visible, String reasoning) {
