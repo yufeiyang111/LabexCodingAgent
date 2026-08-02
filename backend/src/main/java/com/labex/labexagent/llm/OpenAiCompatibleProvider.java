@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
@@ -601,9 +602,13 @@ public class OpenAiCompatibleProvider implements LlmProvider {
      * 流式解析 <think>...</think> 标签的状态机
      * 处理标签跨多个 chunk 的情况
      */
+    /**
+     * Separates upstream internal-reasoning delimiters from visible streamed text.
+     * Matching is case-insensitive and retains partial tag prefixes across SSE chunks.
+     */
     private static class ThinkTagStreamParser {
-        private static final String OPEN_TAG = "<think>";
-        private static final String CLOSE_TAG = "</think>";
+        private static final List<String> OPEN_TAGS = List.of("<thinking>", "<think>");
+        private static final List<String> CLOSE_TAGS = List.of("</thinking>", "</think>");
         private final java.util.function.Consumer<String> onThinking;
         private final java.util.function.Consumer<String> onText;
         private final StringBuilder buffer = new StringBuilder();
@@ -635,39 +640,49 @@ public class OpenAiCompatibleProvider implements LlmProvider {
 
         private void process() {
             while (buffer.length() > 0) {
-                if (!inThink) {
-                    int openIdx = buffer.indexOf(OPEN_TAG);
-                    if (openIdx >= 0) {
-                        if (openIdx > 0) emit(buffer.substring(0, openIdx), false);
-                        buffer.delete(0, openIdx + OPEN_TAG.length());
-                        inThink = true;
-                        continue;
-                    }
-                    int safe = findSafeLength(buffer, OPEN_TAG);
-                    if (safe > 0) { emit(buffer.substring(0, safe), false); buffer.delete(0, safe); }
-                    break;
-                } else {
-                    int closeIdx = buffer.indexOf(CLOSE_TAG);
-                    if (closeIdx >= 0) {
-                        if (closeIdx > 0) emit(buffer.substring(0, closeIdx), true);
-                        buffer.delete(0, closeIdx + CLOSE_TAG.length());
-                        inThink = false;
-                        continue;
-                    }
-                    int safe = findSafeLength(buffer, CLOSE_TAG);
-                    if (safe > 0) { emit(buffer.substring(0, safe), true); buffer.delete(0, safe); }
-                    break;
+                List<String> tags = inThink ? CLOSE_TAGS : OPEN_TAGS;
+                TagMatch tag = findTag(buffer, tags);
+                if (tag != null) {
+                    if (tag.index() > 0) emit(buffer.substring(0, tag.index()), inThink);
+                    buffer.delete(0, tag.index() + tag.tag().length());
+                    inThink = !inThink;
+                    continue;
                 }
+                int safe = findSafeLength(buffer, tags);
+                if (safe > 0) {
+                    emit(buffer.substring(0, safe), inThink);
+                    buffer.delete(0, safe);
+                }
+                break;
             }
         }
 
-        private static int findSafeLength(StringBuilder buf, String tag) {
-            int maxPrefix = tag.length() - 1;
-            if (maxPrefix <= 0) return buf.length();
-            for (int len = Math.min(maxPrefix, buf.length()); len > 0; len--) {
-                if (tag.startsWith(buf.substring(buf.length() - len))) return buf.length() - len;
+        private static TagMatch findTag(StringBuilder buffer, List<String> tags) {
+            String content = buffer.toString().toLowerCase(Locale.ROOT);
+            TagMatch earliest = null;
+            for (String tag : tags) {
+                int index = content.indexOf(tag);
+                if (index >= 0 && (earliest == null || index < earliest.index()
+                        || (index == earliest.index() && tag.length() > earliest.tag().length()))) {
+                    earliest = new TagMatch(index, tag);
+                }
             }
-            return buf.length();
+            return earliest;
+        }
+
+        private static int findSafeLength(StringBuilder buffer, List<String> tags) {
+            String content = buffer.toString().toLowerCase(Locale.ROOT);
+            int maxPrefix = tags.stream().mapToInt(String::length).max().orElse(1) - 1;
+            for (int length = Math.min(maxPrefix, content.length()); length > 0; length--) {
+                String suffix = content.substring(content.length() - length);
+                for (String tag : tags) {
+                    if (tag.startsWith(suffix)) return content.length() - length;
+                }
+            }
+            return content.length();
+        }
+
+        private record TagMatch(int index, String tag) {
         }
     }
 }

@@ -1,3 +1,4 @@
+import { createInternalReasoningBlockStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 
@@ -168,18 +169,18 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message._hasThinkStart = true
       break
     case 'THINK_DELTA':
-      message.thinking += data.delta || ''
+      message.thinking += stripInternalReasoningTags(data.delta)
       message._thinkingDisplay = message.thinking
       break
     case 'THINK_SNAPSHOT':
-      message.thinking = data.content || message.thinking || ''
+      message.thinking = stripInternalReasoningTags(data.content || message.thinking || '')
       message._thinkingDisplay = message.thinking
       break
     case 'THINK':
       if (data.content) {
         message.thinkingBlocks = message.thinkingBlocks || []
         if (message.thinking) message.thinkingBlocks.push({ content: message.thinking, summary: data.summary || '', _open: false, _order: nextOrder(message) })
-        else if (!message._hasThinkStart) message.thinkingBlocks.push({ content: data.content, summary: data.summary || '', _open: false, _order: nextOrder(message) })
+        else if (!message._hasThinkStart) message.thinkingBlocks.push({ content: stripInternalReasoningTags(data.content), summary: data.summary || '', _open: false, _order: nextOrder(message) })
         message.thinking = ''
         message._hasThinkStart = false
       }
@@ -311,8 +312,15 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message.taskId = data.taskId || message.taskId || null
       message.runState = data.state || 'completed'
       break
-    case 'FINAL_DELTA': message.content += data.delta || ''; break
-    case 'FINAL': if (data.content && !message.error) message.content = data.content; break
+    case 'FINAL_DELTA': {
+      message._finalReasoningFilter ??= createInternalReasoningBlockStreamFilter()
+      message.content += message._finalReasoningFilter.push(data.delta)
+      break
+    }
+    case 'FINAL':
+      if (data.content && !message.error) message.content = stripInternalReasoningBlocks(data.content)
+      message._finalReasoningFilter?.reset()
+      break
     case 'ERROR': message.error = data.message; break
     case 'INTERRUPTED': message.content += '\n[\u5df2\u4e2d\u65ad]'; break
     case 'TOKEN_USAGE': callbacks.onTokenUsage?.(data); break

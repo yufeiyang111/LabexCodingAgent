@@ -276,3 +276,24 @@ test('live command continuation deferral remains a visible lifecycle update', ()
     && call[2] === 'COMMAND_APPROVAL_RESUME_DEFERRED'), true)
   assert.equal(state.calls.some(call => call[0] === 'render'), true)
 })
+
+test('removes internal reasoning delimiters from live events', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({ type: 'THINK_DELTA', data: { delta: '<thinking>checking</thinking>' } }, assistant)
+  state.handleAgentEvent({ type: 'FINAL_DELTA', data: { delta: 'done <THINK>private</THINK>' } }, assistant)
+
+  assert.equal(assistant.thinking, 'checking')
+  assert.equal(assistant.content, 'done ')
+  assert.equal(assistant.thinking.includes('<'), false)
+  assert.equal(assistant.content.includes('<'), false)
+})
+
+test('suppresses split internal reasoning blocks during live streaming', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({ type: 'FINAL_DELTA', data: { delta: 'visible <TH' } }, assistant)
+  state.handleAgentEvent({ type: 'FINAL_DELTA', data: { delta: 'INK>private plan' } }, assistant)
+  state.handleAgentEvent({ type: 'FINAL_DELTA', data: { delta: '</THINK> answer' } }, assistant)
+  assert.equal(assistant.content, 'visible  answer')
+})

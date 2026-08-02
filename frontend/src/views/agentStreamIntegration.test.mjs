@@ -51,12 +51,12 @@ test('CloudWorkspace renders provider failures instead of leaving a loading skel
 })
 
 test('CloudWorkspace keeps the actual provider error when a stop final event follows', () => {
-  assert.match(timelineSource, /case 'FINAL':[\s\S]*if \(data\.content && !assistantMsg\.error\) assistantMsg\.content = data\.content/)
+  assert.match(timelineSource, /case 'FINAL':[\s\S]*if \(data\.content && !assistantMsg\.error\) assistantMsg\.content = stripInternalReasoningBlocks\(data\.content\)/)
 })
 
 test('CloudWorkspace renders live thinking and answer deltas immediately', () => {
   assert.match(timelineSource, /case 'THINK_DELTA':[\s\S]*assistantMsg\._thinkingDisplay = assistantMsg\.thinking/)
-  assert.match(timelineSource, /case 'FINAL_DELTA':[\s\S]*assistantMsg\.content \+= \(data\.delta \|\| ''\)[\s\S]*scheduleAgentRender\(\)/)
+  assert.match(timelineSource, /case 'FINAL_DELTA':[\s\S]*assistantMsg\._finalReasoningFilter \?\?= createInternalReasoningBlockStreamFilter\(\)[\s\S]*assistantMsg\.content \+= assistantMsg\._finalReasoningFilter\.push\(data\.delta\)[\s\S]*scheduleAgentRender\(\)/)
   assert.doesNotMatch(source, /function startThinkingReveal\([\s\S]*?setInterval\(/)
 })
 

@@ -56,3 +56,83 @@ export function normalizeSpecialMarkdownBlocks(text) {
 
   return output.join('\n')
 }
+
+
+/**
+ * Removes internal reasoning protocol delimiters leaked by a provider or old persisted events.
+ * Server-side stream parsing is authoritative; this is the UI and replay defense in depth.
+ */
+export function stripInternalReasoningTags(value) {
+  return String(value ?? '')
+    .replace(/<\/?think(?:ing)?\s*>/gi, '')
+    .replace(/<\/?(?:t|th|thi|thin|think|thinki|thinkin|thinking)?$/i, '')
+}
+
+/**
+ * Final answers must not display raw reasoning enclosed by internal delimiters.
+ * Complete blocks are removed; partial stream prefixes are handled by stripInternalReasoningTags.
+ */
+export function stripInternalReasoningBlocks(value) {
+  return stripInternalReasoningTags(String(value ?? '')
+    .replace(/<think(?:ing)?\s*>[\s\S]*?<\/think(?:ing)?\s*>/gi, ''))
+}
+
+const INTERNAL_REASONING_OPEN_TAGS = ['<thinking>', '<think>']
+const INTERNAL_REASONING_CLOSE_TAGS = ['</thinking>', '</think>']
+
+function findInternalReasoningTag(value, tags) {
+  const normalized = value.toLowerCase()
+  let selected = null
+  for (const tag of tags) {
+    const index = normalized.indexOf(tag)
+    if (index >= 0 && (!selected || index < selected.index || (index === selected.index && tag.length > selected.tag.length))) {
+      selected = { index, tag }
+    }
+  }
+  return selected
+}
+
+function safeInternalReasoningPrefixLength(value, tags) {
+  const normalized = value.toLowerCase()
+  const maximum = Math.max(...tags.map(tag => tag.length - 1))
+  for (let length = Math.min(maximum, normalized.length); length > 0; length -= 1) {
+    const suffix = normalized.slice(-length)
+    if (tags.some(tag => tag.startsWith(suffix))) return normalized.length - length
+  }
+  return normalized.length
+}
+
+/**
+ * Stateful final-output filter. It prevents an unfinished internal reasoning block from being
+ * rendered between streaming deltas, while still preserving normal visible text around it.
+ */
+export function createInternalReasoningBlockStreamFilter() {
+  let buffer = ''
+  let insideInternalBlock = false
+
+  return {
+    push(value) {
+      buffer += String(value ?? '')
+      let visible = ''
+      while (buffer) {
+        const tags = insideInternalBlock ? INTERNAL_REASONING_CLOSE_TAGS : INTERNAL_REASONING_OPEN_TAGS
+        const match = findInternalReasoningTag(buffer, tags)
+        if (match) {
+          if (!insideInternalBlock) visible += buffer.slice(0, match.index)
+          buffer = buffer.slice(match.index + match.tag.length)
+          insideInternalBlock = !insideInternalBlock
+          continue
+        }
+        const safeLength = safeInternalReasoningPrefixLength(buffer, tags)
+        if (!insideInternalBlock && safeLength > 0) visible += buffer.slice(0, safeLength)
+        buffer = buffer.slice(safeLength)
+        break
+      }
+      return visible
+    },
+    reset() {
+      buffer = ''
+      insideInternalBlock = false
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import { createInternalReasoningBlockStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 
@@ -57,12 +58,12 @@ export function useAgentEventTimeline(options) {
         assistantMsg.thinking = ''
         break
       case 'THINK_DELTA':
-        assistantMsg.thinking += (data.delta || '')
+        assistantMsg.thinking += stripInternalReasoningTags(data.delta)
         assistantMsg._thinkingDisplay = assistantMsg.thinking
         scheduleAgentRender()
         break
       case 'THINK_SNAPSHOT':
-        assistantMsg.thinking = data.content || assistantMsg.thinking || ''
+        assistantMsg.thinking = stripInternalReasoningTags(data.content || assistantMsg.thinking || '')
         assistantMsg._thinkingDisplay = assistantMsg.thinking
         scheduleAgentRender()
         break
@@ -73,7 +74,7 @@ export function useAgentEventTimeline(options) {
             assistantMsg.thinking = ''
             assistantMsg._thinkingDisplay = ''
           } else {
-            assistantMsg.thinking = data.content
+            assistantMsg.thinking = stripInternalReasoningTags(data.content)
             startThinkingReveal(assistantMsg)
           }
         }
@@ -212,11 +213,13 @@ export function useAgentEventTimeline(options) {
         scheduleAgentRender()
         break
       case 'FINAL_DELTA':
-        assistantMsg.content += (data.delta || '')
+        assistantMsg._finalReasoningFilter ??= createInternalReasoningBlockStreamFilter()
+        assistantMsg.content += assistantMsg._finalReasoningFilter.push(data.delta)
         scheduleAgentRender()
         break
       case 'FINAL':
-        if (data.content && !assistantMsg.error) assistantMsg.content = data.content
+        if (data.content && !assistantMsg.error) assistantMsg.content = stripInternalReasoningBlocks(data.content)
+        assistantMsg._finalReasoningFilter?.reset()
         break
       case 'TASK_PAUSED':
         assistantMsg.waitingForCommandApproval = data.reason === 'command_approval'

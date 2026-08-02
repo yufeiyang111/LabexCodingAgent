@@ -269,3 +269,22 @@ test('replayed interaction resume hides every duplicate card for the same durabl
   assert.equal(target.toolCalls[0].durableStatus, 'resuming')
   assert.equal(target.toolCalls[1].status, 'waiting_approval')
 })
+
+test('removes internal reasoning delimiters from replayed events', () => {
+  const target = message()
+  reduceHistoryEvent('THINK_DELTA', { delta: '<THINK>checking</THINK>' }, target)
+  reduceHistoryEvent('FINAL_DELTA', { delta: 'result <thinking>private</thinking> visible' }, target)
+
+  assert.equal(target.thinking, 'checking')
+  assert.equal(target.content, 'result  visible')
+  assert.equal(target.thinking.includes('<'), false)
+  assert.equal(target.content.includes('<'), false)
+})
+
+test('suppresses split internal reasoning blocks during replay', () => {
+  const target = message()
+  reduceHistoryEvent('FINAL_DELTA', { delta: 'visible <TH' }, target)
+  reduceHistoryEvent('FINAL_DELTA', { delta: 'INK>private plan' }, target)
+  reduceHistoryEvent('FINAL_DELTA', { delta: '</THINK> answer' }, target)
+  assert.equal(target.content, 'visible  answer')
+})
