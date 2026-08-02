@@ -168,6 +168,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     StringBuilder contentBuf = new StringBuilder();
                     StringBuilder thinkingBuf = new StringBuilder();
                     boolean firstSseEvent = false;
+                    boolean terminalEventEmitted = false;
                     AtomicReference<Map<String, Object>> latestUsage = new AtomicReference<>();
                     ToolCallAccumulator toolCalls = new ToolCallAccumulator();
                     InternalReasoningBoundary.VisibleStreamFilter thinkParser = new InternalReasoningBoundary.VisibleStreamFilter(
@@ -193,22 +194,28 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                                 emitCancelled(onChunk);
                                 return;
                             }
-                            if (line.isEmpty() || !line.startsWith("data: ")) continue;
-                            String data = line.substring(6).trim();
+                            String eventLine = line.stripLeading();
+                            if (eventLine.isEmpty() || !eventLine.startsWith("data:")) continue;
+                            String data = eventLine.substring("data:".length()).stripLeading().trim();
+                            if (data.isEmpty()) continue;
                             if (!firstSseEvent) {
                                 firstSseEvent = true;
                                 log.info("LLM_STREAM_FIRST_EVENT model={} elapsedMs={}", config.modelName(),
                                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - requestStartedAt));
                             }
                             if ("[DONE]".equals(data)) {
-                                thinkParser.flush();
-                                explicitThinkingFilter.flush();
-                                for (ToolCallAccumulator.ToolCall call : toolCalls.completedCalls()) {
-                                    onChunk.accept(toolCallChunk(call, thinkingBuf.toString(), latestUsage.get()));
+                                if (!terminalEventEmitted) {
+                                    thinkParser.flush();
+                                    explicitThinkingFilter.flush();
+                                    for (ToolCallAccumulator.ToolCall call : toolCalls.completedCalls()) {
+                                        onChunk.accept(toolCallChunk(call, thinkingBuf.toString(), latestUsage.get()));
+                                    }
+                                    onChunk.accept(new StreamChunk("done", contentBuf.toString(), null, null,
+                                            thinkingBuf.toString(), true, latestUsage.get()));
+                                    terminalEventEmitted = true;
+                                    emittedStreamEvent = true;
+                                    log.info("LLM_STREAM_TERMINAL model={} source=done_sentinel", config.modelName());
                                 }
-                                onChunk.accept(new StreamChunk("done", contentBuf.toString(), null, null,
-                                        thinkingBuf.toString(), true, latestUsage.get()));
-                                emittedStreamEvent = true;
                                 break;
                             }
                             try {
@@ -221,26 +228,44 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                                 }
                                 var choices = chunk.getAsJsonArray("choices");
                                 if (choices == null || choices.isEmpty()) continue;
-                                var delta = choices.get(0).getAsJsonObject().getAsJsonObject("delta");
-                                if (delta == null) continue;
-                                if (delta.has("tool_calls") && !delta.get("tool_calls").isJsonNull()) {
-                                    for (var rawCall : delta.getAsJsonArray("tool_calls")) {
-                                        ToolCallAccumulator.ToolCallDelta deltaCall = toolCalls.append(rawCall.getAsJsonObject());
-                                        if (!deltaCall.argumentsDelta().isEmpty()) {
-                                            ToolCallAccumulator.ToolCall call = deltaCall.call();
-                                            onChunk.accept(new StreamChunk("tool_args_delta", deltaCall.argumentsDelta(), call.name(),
-                                                    call.arguments(), null, false, null, call.id(), call.index(), null));
-                                            emittedStreamEvent = true;
+                                JsonObject choice = choices.get(0).getAsJsonObject();
+                                JsonObject delta = choice.getAsJsonObject("delta");
+                                if (delta != null) {
+                                    if (delta.has("tool_calls") && !delta.get("tool_calls").isJsonNull()) {
+                                        for (var rawCall : delta.getAsJsonArray("tool_calls")) {
+                                            ToolCallAccumulator.ToolCallDelta deltaCall = toolCalls.append(rawCall.getAsJsonObject());
+                                            if (!deltaCall.argumentsDelta().isEmpty()) {
+                                                ToolCallAccumulator.ToolCall call = deltaCall.call();
+                                                onChunk.accept(new StreamChunk("tool_args_delta", deltaCall.argumentsDelta(), call.name(),
+                                                        call.arguments(), null, false, null, call.id(), call.index(), null));
+                                                emittedStreamEvent = true;
+                                            }
                                         }
                                     }
+                                    if (delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull()) {
+                                        explicitThinkingFilter.push(delta.get("reasoning_content").getAsString());
+                                        emittedStreamEvent = true;
+                                    }
+                                    if (delta.has("content") && !delta.get("content").isJsonNull()) {
+                                        thinkParser.push(delta.get("content").getAsString());
+                                        emittedStreamEvent = true;
+                                    }
                                 }
-                                if (delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull()) {
-                                    explicitThinkingFilter.push(delta.get("reasoning_content").getAsString());
+                                String finishReason = choice.has("finish_reason") && !choice.get("finish_reason").isJsonNull()
+                                        ? choice.get("finish_reason").getAsString()
+                                        : "";
+                                if (!finishReason.isBlank() && !terminalEventEmitted) {
+                                    thinkParser.flush();
+                                    explicitThinkingFilter.flush();
+                                    for (ToolCallAccumulator.ToolCall call : toolCalls.completedCalls()) {
+                                        onChunk.accept(toolCallChunk(call, thinkingBuf.toString(), latestUsage.get()));
+                                    }
+                                    onChunk.accept(new StreamChunk("done", contentBuf.toString(), null, null,
+                                            thinkingBuf.toString(), true, latestUsage.get()));
+                                    terminalEventEmitted = true;
                                     emittedStreamEvent = true;
-                                }
-                                if (delta.has("content") && !delta.get("content").isJsonNull()) {
-                                    thinkParser.push(delta.get("content").getAsString());
-                                    emittedStreamEvent = true;
+                                    log.info("LLM_STREAM_TERMINAL model={} source=finish_reason reason={}",
+                                            config.modelName(), finishReason);
                                 }
                             } catch (Exception parseEx) {
                                 log.debug("SSE parse skip: {}", parseEx.getMessage());

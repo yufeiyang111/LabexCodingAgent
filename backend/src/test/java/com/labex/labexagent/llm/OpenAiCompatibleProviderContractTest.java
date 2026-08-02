@@ -44,6 +44,80 @@ class OpenAiCompatibleProviderContractTest {
     }
 
     @Test
+    void acceptsSseDataFieldsWithoutAnOptionalSpace() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data:{\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+                    "data:[DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            assertEquals("ok", chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.TEXT_DELTA)
+                    .map(LlmProvider.StreamChunk::content)
+                    .reduce("", String::concat));
+            assertEquals(1L, chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.DONE)
+                    .count());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void treatsFinishReasonAsTerminalWhenGatewayOmitsDoneSentinel() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n" +
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            assertEquals("ok", chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.TEXT_DELTA)
+                    .map(LlmProvider.StreamChunk::content)
+                    .reduce("", String::concat));
+            assertEquals(1L, chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.DONE)
+                    .count());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void emitsToolCallAndDoneOnlyOnceWhenFinishReasonPrecedesDoneSentinel() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-read\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n" +
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+                    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n" +
+                    "data:[DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            assertEquals(1L, chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.TOOL_CALL)
+                    .count());
+            assertEquals(1L, chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.DONE)
+                    .count());
+            assertTrue(chunks.stream().anyMatch(chunk -> chunk.eventType() == ProviderEventType.USAGE));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void preservesInterleavedToolCallsByCallIdAndIndex() throws Exception {
         HttpServer server = startServer(exchange -> {
             exchange.getRequestBody().readAllBytes();
