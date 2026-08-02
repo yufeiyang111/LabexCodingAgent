@@ -1,34 +1,25 @@
 package com.labex.labexagent.run;
 
-import com.google.gson.Gson;
-import com.google.gson.JsonParseException;
-import com.labex.entity.AgentRunArtifact;
 import com.labex.entity.AgentRunPart;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
- * 记录一次工具调用的可恢复生命周期，兼容旧 artifact 并同步写入统一 Part。
- * Part 是未来历史回放的主要事实来源，artifact 继续作为兼容和诊断数据保留。
+ * 记录工具调用的可恢复生命周期。
+ *
+ * <p>Tool Part 是唯一持久化事实，事件仅作为可重放投影；旧兼容工件不再读取或写入。</p>
  */
 @Service
 public class AgentToolCallJournalService {
-    private static final String ARTIFACT_TYPE = "tool_call_state";
-    private static final Gson GSON = new Gson();
-
-    private final AgentRunArtifactService artifactService;
     private final AgentRunLifecycleService lifecycleService;
     private final AgentRunPartService partService;
 
     @Autowired
-    public AgentToolCallJournalService(AgentRunArtifactService artifactService,
-                                       AgentRunLifecycleService lifecycleService,
+    public AgentToolCallJournalService(AgentRunLifecycleService lifecycleService,
                                        AgentRunPartService partService) {
-        this.artifactService = Objects.requireNonNull(artifactService, "artifactService is required");
         this.lifecycleService = Objects.requireNonNull(lifecycleService, "lifecycleService is required");
         this.partService = Objects.requireNonNull(partService, "partService is required");
     }
@@ -97,51 +88,12 @@ public class AgentToolCallJournalService {
         recordExisting(taskId, toolCallId, "error", result);
     }
 
-    public List<AgentRunArtifact> history(Long taskId, String toolCallId) {
-        return artifactService.list(taskId, ARTIFACT_TYPE).stream()
-                .filter(artifact -> toolCallId != null && toolCallId.equals(artifact.getArtifactPath()))
-                .toList();
-    }
-
-    public List<Map<String, Object>> latestForTask(Long taskId) {
-        Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
-        for (AgentRunArtifact artifact : artifactService.list(taskId, ARTIFACT_TYPE)) {
-            if (artifact.getArtifactPath() == null || artifact.getArtifactPath().isBlank()) continue;
-            try {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> state = GSON.fromJson(artifact.getContent(), Map.class);
-                if (state != null) latest.put(artifact.getArtifactPath(), state);
-            } catch (JsonParseException ignored) {
-                // Malformed legacy artifacts are ignored; the durable Part remains authoritative.
-            }
-        }
-        return latest.values().stream().toList();
-    }
-
     private void recordExisting(Long taskId, String toolCallId, String status, String detail) {
-        Map<String, Object> current = latestForTask(taskId).stream()
-                .filter(state -> toolCallId != null && toolCallId.equals(String.valueOf(state.get("toolCallId"))))
-                .findFirst()
-                .orElse(Map.of());
-        if (!current.isEmpty()) {
-            Object rawIteration = current.get("iteration");
-            int iteration = rawIteration instanceof Number number ? number.intValue() : 0;
-            record(taskId, toolCallId, status, String.valueOf(current.getOrDefault("tool", "tool")),
-                    current.getOrDefault("arguments", Map.of()), iteration, detail);
-            return;
-        }
         AgentRunPart part = partService.resolveExistingToolCall(taskId, toolCallId, status, detail);
-        if (part != null) {
-            lifecycleService.appendEvent(taskId, "TOOL_CALL_STATE", Map.of(
-                    "taskId", taskId,
-                    "toolCallId", toolCallId,
-                    "tool", part.getToolName() == null ? "tool" : part.getToolName(),
-                    "status", status,
-                    "detail", detail == null ? "" : truncate(detail),
-                    "partId", part.getPartId(),
-                    "partKey", part.getPartKey()),
-                    "tool-call-state-part-" + part.getPartId() + "-" + status);
-        }
+        if (part == null) return;
+        Map<String, Object> payload = new LinkedHashMap<>(partService.projectToolCall(part));
+        payload.put("detail", detail == null ? "" : truncate(detail));
+        publishPartEvent(taskId, part, status, payload);
     }
 
     private void record(Long taskId, String toolCallId, String status, String toolName,
@@ -152,29 +104,37 @@ public class AgentToolCallJournalService {
     private void record(Long taskId, String toolCallId, String status, String toolName,
                         Object arguments, int iteration, String detail, Map<String, Object> extraPayload) {
         if (taskId == null || toolCallId == null || toolCallId.isBlank()) return;
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("toolCallId", toolCallId);
-        payload.put("status", status);
-        payload.put("tool", toolName == null ? "" : toolName);
-        payload.put("arguments", arguments == null ? Map.of() : arguments);
-        payload.put("iteration", iteration);
-        payload.put("detail", detail == null ? "" : truncate(detail));
+        Map<String, Object> payload = basePayload(toolCallId, status, toolName, arguments, iteration, detail);
         if (extraPayload != null && !extraPayload.isEmpty()) {
             payload.put("interactionPayload", new LinkedHashMap<>(extraPayload));
         }
 
-        AgentRunPart part = partService.upsertToolCall(taskId, toolCallId, status, toolName,
-                arguments, iteration, detail);
-        AgentRunArtifact artifact = artifactService.recordDeterministic(
-                taskId, ARTIFACT_TYPE, toolCallId, GSON.toJson(payload));
+        AgentRunPart part = Objects.requireNonNull(
+                partService.upsertToolCall(taskId, toolCallId, status, toolName,
+                        arguments, iteration, detail),
+                "Durable Tool Part persistence returned null");
+        publishPartEvent(taskId, part, status, payload);
+    }
 
-        Map<String, Object> event = new LinkedHashMap<>(payload);
-        event.put("taskId", taskId);
-        event.put("artifactId", artifact.getArtifactId());
-        event.put("partId", part.getPartId());
-        event.put("partKey", part.getPartKey());
+    private Map<String, Object> basePayload(String toolCallId, String status, String toolName,
+                                            Object arguments, int iteration, String detail) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("toolCallId", toolCallId == null ? "" : toolCallId);
+        payload.put("status", status == null ? "unknown" : status);
+        payload.put("tool", toolName == null ? "" : toolName);
+        payload.put("arguments", arguments == null ? Map.of() : arguments);
+        payload.put("iteration", iteration);
+        payload.put("detail", detail == null ? "" : truncate(detail));
+        return payload;
+    }
+
+    private void publishPartEvent(Long taskId, AgentRunPart part, String status,
+                                  Map<String, Object> payload) {
+        payload.put("taskId", taskId);
+        payload.put("partId", part.getPartId());
+        payload.put("partKey", part.getPartKey());
         String eventKey = "tool-call-state-part-" + part.getPartId() + "-" + status;
-        lifecycleService.appendEvent(taskId, "TOOL_CALL_STATE", event, eventKey);
+        lifecycleService.appendEvent(taskId, "TOOL_CALL_STATE", payload, eventKey);
     }
 
     private String truncate(String value) {

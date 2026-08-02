@@ -39,6 +39,7 @@ $evidence = [ordered]@{
     commandRejectRestart = $false
     checkoutContention = $false
     runMessagePartProjection = $false
+    toolPartAuthority = $false
     manualCompaction = $false
     staticContextBlocked = $false
     contextWindowUnconfigured = $false
@@ -379,8 +380,27 @@ try {
             Invoke-ApiData -Path "/student/projects/$projectId/agent/command-approvals/$approvalId/execute" -Method POST | Out-Null
         }
         Assert-SameTaskContinuation -TaskId $commandTaskId -RequiredType 'COMMAND_APPROVAL_REQUIRED'
+        $taskProjection = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$commandTaskId"
+        $toolParts = @($taskProjection.parts | Where-Object { [string]$_.partType -eq 'tool' })
+        $compatibilityCalls = @($taskProjection.toolCalls)
+        if ($toolParts.Count -eq 0 -or $compatibilityCalls.Count -ne $toolParts.Count) {
+            throw "Tool Part authority projection count mismatch for task $commandTaskId."
+        }
+        foreach ($compatibilityCall in $compatibilityCalls) {
+            $matchingPart = @($toolParts | Where-Object {
+                [string]$_.toolCallId -eq [string]$compatibilityCall.toolCallId
+            }) | Select-Object -First 1
+            $missingPart = -not $matchingPart
+            $statusMismatch = [string]$matchingPart.status -ne [string]$compatibilityCall.status
+            $toolMismatch = [string]$matchingPart.tool -ne [string]$compatibilityCall.tool
+            $detailMismatch = [string]$matchingPart.output -ne [string]$compatibilityCall.detail
+            if ($missingPart -or $statusMismatch -or $toolMismatch -or $detailMismatch) {
+                throw "Compatibility toolCalls diverged from durable Tool Part for task $commandTaskId."
+            }
+        }
         if ($action -eq 'approve') { $evidence.commandApproveRestart = $true } else { $evidence.commandRejectRestart = $true }
     }
+    $evidence.toolPartAuthority = $true
 
     $holderSessionId = [Guid]::NewGuid().ToString()
     $jobPayload = @{

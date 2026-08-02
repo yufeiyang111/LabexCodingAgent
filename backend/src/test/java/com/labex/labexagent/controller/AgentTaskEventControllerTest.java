@@ -52,13 +52,15 @@ class AgentTaskEventControllerTest {
         when(audit.findLatestExecutionOutcome("approval-71")).thenReturn(execution);
         AgentRunPartService parts = mock(AgentRunPartService.class);
         when(parts.publicHistory(71L)).thenReturn(java.util.List.of(Map.of("partKey", "tool:call-1")));
+        when(parts.publicToolCalls(71L)).thenReturn(java.util.List.of(Map.of(
+                "toolCallId", "call-1", "status", "completed")));
         AgentRunMessageService runMessages = mock(AgentRunMessageService.class);
         when(runMessages.publicHistory(71L)).thenReturn(java.util.List.of(Map.of("messageKey", "assistant:turn:1")));
         AgentCompactionService compactions = mock(AgentCompactionService.class);
         when(compactions.publicHistory(71L)).thenReturn(java.util.List.of(Map.of(
                 "compactionEpoch", 1L, "status", "completed")));
         AgentTaskEventController controller = new AgentTaskEventController(tasks,
-                mock(AgentTaskEventSubscriptionService.class), approvals, audit, null, parts, runMessages);
+                mock(AgentTaskEventSubscriptionService.class), approvals, audit, parts, runMessages);
         controller.setCompactionService(compactions);
 
         Result<Map<String, Object>> result = controller.activeTask(12, "conversation-71", authentication(7));
@@ -69,6 +71,8 @@ class AgentTaskEventControllerTest {
                 .containsEntry("lastEventSequence", 42L)
                 .containsEntry("compactions", java.util.List.of(Map.of(
                         "compactionEpoch", 1L, "status", "completed")))
+                .containsEntry("toolCalls", java.util.List.of(Map.of(
+                        "toolCallId", "call-1", "status", "completed")))
                 .doesNotContainKeys("requestPayload", "userMessage");
         @SuppressWarnings("unchecked")
         Map<String, Object> approvalData = (Map<String, Object>) result.getData().get("commandApproval");

@@ -175,6 +175,17 @@ public class AgentRunPartService {
         return history(taskId).stream().map(this::publicPayload).toList();
     }
 
+    /**
+     * 为旧客户端保留 toolCalls DTO，但数据只从持久化 Tool Part 派生。
+     */
+    public List<Map<String, Object>> publicToolCalls(Long taskId) {
+        return history(taskId).stream()
+                .filter(part -> "tool".equals(part.getPartType()))
+                .filter(part -> part.getToolCallId() != null && !part.getToolCallId().isBlank())
+                .map(this::projectToolCall)
+                .toList();
+    }
+
     private AgentRunPart upsertPart(Long taskId, Long messageId, String partKey, String partType, String status,
                                     String toolCallId, String toolName, Object input,
                                     String output, long sequence) {
@@ -247,6 +258,29 @@ public class AgentRunPartService {
             if (value != null && !String.valueOf(value).isBlank()) return String.valueOf(value);
         }
         return GSON.toJson(data);
+    }
+
+    Map<String, Object> projectToolCall(AgentRunPart part) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("partId", part.getPartId());
+        payload.put("partKey", part.getPartKey());
+        payload.put("toolCallId", part.getToolCallId());
+        payload.put("tool", part.getToolName() == null ? "" : part.getToolName());
+        payload.put("arguments", structuredInput(part.getInputJson()));
+        payload.put("status", part.getStatus() == null ? "unknown" : part.getStatus());
+        payload.put("iteration", part.getSequenceNumber() == null ? 0L : part.getSequenceNumber());
+        payload.put("detail", part.getOutputText() == null ? "" : part.getOutputText());
+        return payload;
+    }
+
+    private Object structuredInput(String inputJson) {
+        if (inputJson == null || inputJson.isBlank()) return Map.of();
+        try {
+            Object value = GSON.fromJson(inputJson, Object.class);
+            return value == null ? Map.of() : value;
+        } catch (RuntimeException ignored) {
+            return Map.of();
+        }
     }
 
     private Map<String, Object> publicPayload(AgentRunPart part) {

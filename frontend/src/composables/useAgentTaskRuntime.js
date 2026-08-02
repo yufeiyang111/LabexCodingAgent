@@ -1,4 +1,3 @@
-import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyRunMessageSnapshot, applyRunPartSnapshot } from './agentRunPartState.js'
 import { nextTick as vueNextTick } from 'vue'
@@ -112,9 +111,6 @@ export function useAgentTaskRuntime(options) {
     if (!message) return
     applyRunMessageSnapshot(message, task?.runMessages)
     applyRunPartSnapshot(message, task?.parts)
-    if (Array.isArray(task?.toolCalls)) {
-      task.toolCalls.forEach(state => upsertDurableToolCallState(message, state))
-    }
     const pending = task?.pendingInteraction
     if (pending?.status !== 'waiting') return
     const request = {

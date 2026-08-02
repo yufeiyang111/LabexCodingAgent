@@ -10,7 +10,6 @@ import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.commandsecurity.CommandAuditService;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.run.AgentTaskEventSubscriptionService;
-import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.AgentRunPartService;
 import com.labex.labexagent.run.AgentRunMessageService;
 import com.labex.labexagent.run.AgentRunSessionSnapshot;
@@ -42,48 +41,28 @@ public class AgentTaskEventController {
     private final AgentTaskEventSubscriptionService subscriptionService;
     private final CommandApprovalService commandApprovalService;
     private final CommandAuditService commandAuditService;
-    private final AgentToolCallJournalService toolCallJournalService;
     private final AgentRunPartService partService;
     private final AgentRunMessageService runMessageService;
     private final AgentRunInteractionService interactionService;
     private AgentCompactionService compactionService;
 
-    /** 兼容旧测试构造器；生产路径由 Spring 注入运行时服务。 */
+    /** 兼容不需要完整运行投影的聚焦测试。 */
     AgentTaskEventController(AgentTaskService taskService,
                              AgentTaskEventSubscriptionService subscriptionService,
                              CommandApprovalService commandApprovalService,
                              CommandAuditService commandAuditService) {
-        this(taskService, subscriptionService, commandApprovalService, commandAuditService, null, null, null, null);
-    }
-
-    public AgentTaskEventController(AgentTaskService taskService,
-                                    AgentTaskEventSubscriptionService subscriptionService,
-                                    CommandApprovalService commandApprovalService,
-                                    CommandAuditService commandAuditService,
-                                    AgentToolCallJournalService toolCallJournalService) {
         this(taskService, subscriptionService, commandApprovalService, commandAuditService,
-                toolCallJournalService, null, null, null);
+                null, null, null);
     }
 
     public AgentTaskEventController(AgentTaskService taskService,
                                     AgentTaskEventSubscriptionService subscriptionService,
                                     CommandApprovalService commandApprovalService,
                                     CommandAuditService commandAuditService,
-                                    AgentToolCallJournalService toolCallJournalService,
-                                    AgentRunPartService partService) {
-        this(taskService, subscriptionService, commandApprovalService, commandAuditService,
-                toolCallJournalService, partService, null, null);
-    }
-
-    public AgentTaskEventController(AgentTaskService taskService,
-                                    AgentTaskEventSubscriptionService subscriptionService,
-                                    CommandApprovalService commandApprovalService,
-                                    CommandAuditService commandAuditService,
-                                    AgentToolCallJournalService toolCallJournalService,
                                     AgentRunPartService partService,
                                     AgentRunMessageService runMessageService) {
         this(taskService, subscriptionService, commandApprovalService, commandAuditService,
-                toolCallJournalService, partService, runMessageService, null);
+                partService, runMessageService, null);
     }
 
     @Autowired
@@ -91,15 +70,13 @@ public class AgentTaskEventController {
                                     AgentTaskEventSubscriptionService subscriptionService,
                                     CommandApprovalService commandApprovalService,
                                     CommandAuditService commandAuditService,
-                                    AgentToolCallJournalService toolCallJournalService,
                                     AgentRunPartService partService,
                                     AgentRunMessageService runMessageService,
-                                     AgentRunInteractionService interactionService) {
+                                    AgentRunInteractionService interactionService) {
         this.taskService = taskService;
         this.subscriptionService = subscriptionService;
         this.commandApprovalService = commandApprovalService;
         this.commandAuditService = commandAuditService;
-        this.toolCallJournalService = toolCallJournalService;
         this.partService = partService;
         this.runMessageService = runMessageService;
         this.interactionService = interactionService;
@@ -163,7 +140,7 @@ public class AgentTaskEventController {
         response.put("summary", task.getSummary());
         response.put("lastEventSequence", task.getLastEventSequence() == null ? 0L : task.getLastEventSequence());
         response.put("runSession", AgentRunSessionSnapshot.from(task).toPayload());
-        response.put("toolCalls", toolCallJournalService == null ? List.of() : toolCallJournalService.latestForTask(task.getTaskId()));
+        response.put("toolCalls", partService == null ? List.of() : partService.publicToolCalls(task.getTaskId()));
         response.put("parts", partService == null ? List.of() : partService.publicHistory(task.getTaskId()));
         response.put("runMessages", runMessageService == null ? List.of() : runMessageService.publicHistory(task.getTaskId()));
         response.put("compactions", compactionService == null ? List.of() : compactionService.publicHistory(task.getTaskId()));

@@ -112,20 +112,31 @@ test('old task events cannot attach after the same conversation switches to a ne
   assert.deepEqual(state.events, [])
 })
 
-test('active-task recovery hydrates durable tool call states after refresh', async () => {
+test('active-task recovery prefers durable parts over a stale compatibility toolCalls snapshot', async () => {
   let activeTaskCalls = 0
   const recoveredTask = {
     taskId: 71,
     conversationId: 'conversation-a',
     sessionId: 'session-a',
     status: 'waiting_environment',
-    currentStep: '等待环境恢复',
+    currentStep: 'Waiting for environment recovery',
+    parts: [{
+      partId: 91,
+      partKey: 'tool:call-1',
+      partType: 'tool',
+      toolCallId: 'call-1',
+      tool: 'run_tests',
+      input: '{"command":"mvn compile"}',
+      output: 'failure_code=ENVIRONMENT_BLOCKED',
+      status: 'environment_blocked',
+      sequence: 2
+    }],
     toolCalls: [{
       toolCallId: 'call-1',
       tool: 'run_tests',
       arguments: { command: 'mvn compile' },
-      status: 'environment_blocked',
-      detail: 'failure_code=ENVIRONMENT_BLOCKED'
+      status: 'waiting_approval',
+      detail: 'stale legacy artifact state'
     }]
   }
   const state = harness({ api: {
@@ -138,6 +149,8 @@ test('active-task recovery hydrates durable tool call states after refresh', asy
   assert.equal(call.toolCallId, 'call-1')
   assert.equal(call.status, 'warning')
   assert.equal(call.durableStatus, 'environment_blocked')
+  assert.deepEqual(call.args, { command: 'mvn compile' })
+  assert.equal(call.result, 'failure_code=ENVIRONMENT_BLOCKED')
   assert.equal(state.agentLoading.value, false)
 })
 

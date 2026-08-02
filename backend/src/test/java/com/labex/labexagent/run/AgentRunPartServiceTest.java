@@ -108,6 +108,42 @@ class AgentRunPartServiceTest {
         verify(parts).updateById(providerCall);
     }
 
+    @Test
+    void projectsCompatibilityToolCallsFromDurableToolPartsOnly() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunPart reasoning = new AgentRunPart();
+        reasoning.setPartId(90L);
+        reasoning.setPartKey("reasoning:1");
+        reasoning.setPartType("reasoning");
+        reasoning.setStatus("completed");
+
+        AgentRunPart tool = new AgentRunPart();
+        tool.setPartId(91L);
+        tool.setPartKey("tool:call-1");
+        tool.setPartType("tool");
+        tool.setToolCallId("call-1");
+        tool.setToolName("run_tests");
+        tool.setInputJson("{\"command\":\"mvn test\"}");
+        tool.setOutputText("Tests passed");
+        tool.setStatus("completed");
+        tool.setSequenceNumber(3L);
+        when(parts.selectList(any())).thenReturn(List.of(reasoning, tool));
+
+        List<Map<String, Object>> projection = new AgentRunPartService(parts, tasks, messageService())
+                .publicToolCalls(7L);
+
+        assertThat(projection).containsExactly(Map.of(
+                "partId", 91L,
+                "partKey", "tool:call-1",
+                "toolCallId", "call-1",
+                "tool", "run_tests",
+                "arguments", Map.of("command", "mvn test"),
+                "status", "completed",
+                "iteration", 3L,
+                "detail", "Tests passed"));
+    }
+
     private AgentTask task() {
         AgentTask task = new AgentTask();
         task.setTaskId(7L);
