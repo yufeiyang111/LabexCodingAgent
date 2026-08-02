@@ -36,6 +36,7 @@ public class AdditiveSchemaMigrator {
             new ColumnDefinition("t_agent_model_config", "api_key_key_version", "VARCHAR(64) DEFAULT NULL"),
             new ColumnDefinition("t_agent_mcp_server", "auth_header_encrypted", "VARCHAR(2048) DEFAULT NULL"),
             new ColumnDefinition("t_agent_mcp_server", "auth_header_key_version", "VARCHAR(64) DEFAULT NULL"),
+            new ColumnDefinition("t_agent_token_usage", "cache_status", "VARCHAR(24) NOT NULL DEFAULT 'not_reported'"),
             new ColumnDefinition("t_agent_task", "run_version", "BIGINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "last_event_sequence", "BIGINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "request_payload", "LONGTEXT DEFAULT NULL"),

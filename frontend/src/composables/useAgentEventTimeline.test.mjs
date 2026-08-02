@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createTokenUsageState } from './cacheTelemetryStatus.js'
 
 import { useAgentEventTimeline } from './useAgentEventTimeline.js'
 
@@ -23,7 +24,7 @@ function harness() {
   const currentAgentSession = { value: null }
   const agentLoading = { value: true }
   const contextUsageStatus = { value: null }
-  const tokenUsage = { value: { promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0, conversationTotal: 0 } }
+  const tokenUsage = { value: createTokenUsageState() }
   const sessionHistory = { value: [] }
   const changesRefreshKey = { value: 0 }
   const timeline = useAgentEventTimeline({
@@ -44,7 +45,8 @@ function harness() {
     reduceContextManagementEvent: (...args) => calls.push(['context', ...args]),
     tokenUsage,
     sessionHistory,
-    currentSessionName: { value: '会话 A' }
+    currentSessionName: { value: '会话 A' },
+    onTokenUsageProjected: data => calls.push(['tokenUsageProjected', data])
   })
   return { ...timeline, calls, currentAgentSession, agentLoading, contextUsageStatus, tokenUsage, sessionHistory, changesRefreshKey }
 }
@@ -150,12 +152,13 @@ test('routes compaction/context status and accumulates token usage', () => {
   state.handleAgentEvent({ type: 'COMPACTION_STARTED', data: { taskId: 10 } }, assistant)
   state.handleAgentEvent({ type: 'COMPACTION_COMPLETED', data: { taskId: 10 } }, assistant)
   state.handleAgentEvent({ type: 'CONTEXT_TOOL_SCHEMA_REDUCED', data: { taskId: 10 } }, assistant)
-  state.handleAgentEvent({ type: 'TOKEN_USAGE', data: { promptTokens: 10, completionTokens: 5, totalTokens: 15, conversationTotal: 20 } }, assistant)
+  state.handleAgentEvent({ type: 'TOKEN_USAGE', data: { promptTokens: 10, completionTokens: 5, totalTokens: 15, conversationTotal: 20, cachedTokens: 4, cacheWriteTokens: 6, cacheStatus: 'hit', cacheTelemetryReported: true } }, assistant)
 
   assert.equal(state.contextUsageStatus.value.state, 'READY')
   assert.deepEqual(state.calls.filter(call => call[0] === 'context').map(call => call[1]), ['COMPACTION_STARTED', 'COMPACTION_COMPLETED', 'CONTEXT_TOOL_SCHEMA_REDUCED'])
-  assert.deepEqual(state.tokenUsage.value, { promptTokens: 10, completionTokens: 5, totalTokens: 15, callCount: 1, conversationTotal: 20 })
+  assert.deepEqual(state.tokenUsage.value, { ...createTokenUsageState(), promptTokens: 10, completionTokens: 5, totalTokens: 15, callCount: 1, conversationTotal: 20, cachedTokens: 4, cacheWriteTokens: 6, cacheStatus: 'hit', cacheTelemetryReported: true, cacheTelemetryCallCount: 1, cacheReportedPromptTokens: 10, cacheHitRate: 40 })
   assert.equal(state.sessionHistory.value[0].conversationId, 'c1')
+  assert.equal(state.calls.filter(call => call[0] === 'tokenUsageProjected').length, 1)
 })
 
 test('preserves provider error over a later final and handles blockers', () => {

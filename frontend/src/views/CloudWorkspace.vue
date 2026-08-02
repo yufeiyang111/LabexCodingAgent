@@ -531,11 +531,23 @@
               <div class="usage-stats">
                 <div class="usage-stat">
                   <span class="usage-stat-label">输入</span>
-                  <span class="usage-stat-value prompt">{{ formatTokenCount(allTokenStats?.totalPromptTokens || tokenUsage.promptTokens) }}</span>
+                  <span class="usage-stat-value prompt">{{ formatTokenCount(allTokenStats?.totalPromptTokens ?? tokenUsage.promptTokens) }}</span>
                 </div>
                 <div class="usage-stat">
                   <span class="usage-stat-label">输出</span>
-                  <span class="usage-stat-value completion">{{ formatTokenCount(allTokenStats?.totalCompletionTokens || tokenUsage.completionTokens) }}</span>
+                  <span class="usage-stat-value completion">{{ formatTokenCount(allTokenStats?.totalCompletionTokens ?? tokenUsage.completionTokens) }}</span>
+                </div>
+              </div>
+              <div class="usage-cache-card" :data-cache-status="cacheTelemetryView.status">
+                <div class="usage-cache-heading">
+                  <span class="usage-cache-title">Prompt 缓存</span>
+                  <span class="usage-cache-status">{{ cacheTelemetryView.label }}</span>
+                  <strong v-if="cacheTelemetryView.showHitRate" class="usage-cache-rate">{{ cacheTelemetryView.hitRate.toFixed(2) }}%</strong>
+                </div>
+                <p class="usage-cache-detail">{{ cacheTelemetryView.detail }}</p>
+                <div class="usage-cache-metrics">
+                  <span>读取 {{ formatTokenCount(cacheTelemetryTotals.cachedTokens) }} tokens</span>
+                  <span>写入 {{ formatTokenCount(cacheTelemetryTotals.cacheWriteTokens) }} tokens</span>
                 </div>
               </div>
               <div class="usage-chart-section">
@@ -808,6 +820,7 @@ import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/
 import { attachDurableInteraction } from '@/composables/agentInteractionProjection'
 import { normalizeSpecialMarkdownBlocks, stripInternalReasoningBlocks, stripInternalReasoningTags } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
+import { applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
 import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
 import { enhanceFileLinks } from '@/utils/fileLinks'
 import 'highlight.js/styles/github.css'
@@ -895,7 +908,7 @@ const currentMessageIndex = ref(0)
 const isNavigating = ref(false) // 标记是否正在导航中，防止滚动事件干扰
 
 // Token usage tracking
-const tokenUsage = ref({ promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0, conversationTotal: 0 })
+const tokenUsage = ref(createTokenUsageState())
 const contextUsageStatus = ref(null)
 const showContextUsageDialog = ref(false)
 const nextContextPreview = ref(null)
@@ -907,6 +920,11 @@ const usageBarRef = ref(null)
 const usageTimelineRef = ref(null)
 const usageModelRef = ref(null)
 const allTokenStats = ref(null)
+const cacheTelemetryView = computed(() => resolveCacheTelemetryView(allTokenStats.value, tokenUsage.value))
+const cacheTelemetryTotals = computed(() => ({
+  cachedTokens: allTokenStats.value?.totalCachedTokens ?? tokenUsage.value.cachedTokens,
+  cacheWriteTokens: allTokenStats.value?.totalCacheWriteTokens ?? tokenUsage.value.cacheWriteTokens
+}))
 let usagePieChart = null
 let usageBarChart = null
 let usageTimelineChart = null
@@ -1815,7 +1833,8 @@ const {
   reduceContextManagementEvent,
   tokenUsage,
   sessionHistory,
-  currentSessionName
+  currentSessionName,
+  onTokenUsageProjected: invalidateTokenStatsProjection
 }))
 
 const {
@@ -2082,6 +2101,7 @@ async function selectAiTab(key) {
     return
   }
   activeAiTab.value = key
+  if (key === 'usage') await initUsageCharts()
 }
 
 async function toggleTerminalPanel() {
@@ -2206,11 +2226,8 @@ function replayHistoryEvent(type, data, message) {
     onPendingChange: () => { changesRefreshKey.value++ },
     onUserQuestion: attachUserQuestion,
     onTokenUsage: usage => {
-      tokenUsage.value.promptTokens += usage.promptTokens || 0
-      tokenUsage.value.completionTokens += usage.completionTokens || 0
-      tokenUsage.value.totalTokens += usage.totalTokens || 0
-      tokenUsage.value.callCount++
-      tokenUsage.value.conversationTotal = usage.conversationTotal || tokenUsage.value.totalTokens
+      applyTokenUsageEvent(tokenUsage.value, usage)
+      invalidateTokenStatsProjection()
     },
     onContextStatus: status => { contextUsageStatus.value = status }
   })
@@ -2297,11 +2314,21 @@ function flushThinkingDisplay(msg) {
   msg._thinkingDisplay = msg.thinking || ''
 }
 
+let tokenUsageProjectionEpoch = 0
+
+function invalidateTokenStatsProjection() {
+  tokenUsageProjectionEpoch += 1
+  allTokenStats.value = null
+}
+
 async function loadAllTokenStats() {
+  const requestEpoch = tokenUsageProjectionEpoch
   try {
     const r = await projectApi.agentTokenSummary(projectId.value)
-    allTokenStats.value = r.data || null
-  } catch (e) { allTokenStats.value = null }
+    if (requestEpoch === tokenUsageProjectionEpoch) allTokenStats.value = r.data || null
+  } catch (e) {
+    if (requestEpoch === tokenUsageProjectionEpoch) allTokenStats.value = null
+  }
 }
 
 async function initUsageCharts() {

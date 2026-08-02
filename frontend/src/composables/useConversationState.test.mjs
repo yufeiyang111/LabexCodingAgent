@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ref } from 'vue'
+import { createTokenUsageState } from './cacheTelemetryStatus.js'
 
 const conversationModule = await import('./useConversationState.js').catch(() => ({}))
 const { useConversationState } = conversationModule
@@ -18,7 +19,7 @@ function createHarness(overrides = {}) {
   const projectId = ref(42)
   const messages = ref([])
   const sessionChanges = ref([{ id: 'old-change' }])
-  const tokenUsage = ref({ promptTokens: 9, completionTokens: 8, totalTokens: 17, callCount: 2, conversationTotal: 17 })
+  const tokenUsage = ref({ ...createTokenUsageState(), promptTokens: 9, completionTokens: 8, totalTokens: 17, callCount: 2, conversationTotal: 17 })
   const agentLoading = ref(true)
   const currentAgentSession = ref(null)
   const changesRefreshKey = ref(0)
@@ -100,7 +101,7 @@ test('rebuilds persisted conversation messages without owning the event reducer'
   assert.deepEqual(currentAgentSession.value, { sessionId: 'generated-session', conversationId: 'conversation-1' })
   assert.equal(agentLoading.value, false)
   assert.deepEqual(sessionChanges.value, [])
-  assert.deepEqual(tokenUsage.value, { promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0, conversationTotal: 0 })
+  assert.deepEqual(tokenUsage.value, createTokenUsageState())
   assert.deepEqual(messages.value.map(message => message.role), ['user', 'assistant'])
   assert.equal(messages.value[1].content, '你好呀')
   assert.deepEqual(replayedEvents, [{ type: 'FINAL_DELTA', data: { delta: '你好呀' } }])
@@ -183,7 +184,7 @@ test('deleting the active conversation clears only conversation state', async ()
   assert.deepEqual(messages.value, [])
   assert.equal(currentAgentSession.value, null)
   assert.deepEqual(sessionChanges.value, [])
-  assert.deepEqual(tokenUsage.value, { promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0, conversationTotal: 0 })
+  assert.deepEqual(tokenUsage.value, createTokenUsageState())
 })
 
 test('manual compaction forwards the selected model config and returns its asynchronous task identity', async () => {

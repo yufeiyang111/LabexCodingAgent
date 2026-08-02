@@ -35,6 +35,20 @@ class AcceptanceScriptedProviderTest {
                 reasoningChunks);
     }
 
+
+    @Test
+    void emitsDeterministicCacheTelemetryForBrowserAcceptance() {
+        LlmProvider.StreamChunk done = stream("[acceptance:cache-telemetry]").stream()
+                .filter(LlmProvider.StreamChunk::done)
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(200, done.usage().get("prompt_tokens"));
+        assertEquals(50, done.usage().get("cached_tokens"));
+        assertEquals(10, done.usage().get("cache_write_tokens"));
+        assertEquals(true, done.usage().get("cache_usage_reported"));
+    }
+
     @Test
     void emitsAStableNativeToolCallThenACompleteFinalReply() {
         List<LlmProvider.StreamChunk> first = stream("[acceptance:tool] 请检查项目根目录");

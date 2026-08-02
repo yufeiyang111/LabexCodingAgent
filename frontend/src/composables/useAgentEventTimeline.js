@@ -1,6 +1,7 @@
 import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
+import { applyTokenUsageEvent } from './cacheTelemetryStatus.js'
 
 function toolResultStatus(success, result) {
   if (success === false) return 'error'
@@ -37,7 +38,8 @@ export function useAgentEventTimeline(options) {
     reduceContextManagementEvent,
     tokenUsage,
     sessionHistory,
-    currentSessionName
+    currentSessionName,
+    onTokenUsageProjected
   } = options
 
   function handleAgentEvent(event, assistantMsg) {
@@ -270,11 +272,8 @@ export function useAgentEventTimeline(options) {
         scheduleAgentRender()
         break
       case 'TOKEN_USAGE': {
-        tokenUsage.value.promptTokens += (data.promptTokens || 0)
-        tokenUsage.value.completionTokens += (data.completionTokens || 0)
-        tokenUsage.value.totalTokens += (data.totalTokens || 0)
-        tokenUsage.value.callCount++
-        tokenUsage.value.conversationTotal = data.conversationTotal || tokenUsage.value.totalTokens
+        applyTokenUsageEvent(tokenUsage.value, data)
+        onTokenUsageProjected?.(data)
         const existingSession = sessionHistory.value.find(session => session.conversationId === currentAgentSession.value?.conversationId)
         if (existingSession) {
           existingSession.promptTokens += (data.promptTokens || 0)

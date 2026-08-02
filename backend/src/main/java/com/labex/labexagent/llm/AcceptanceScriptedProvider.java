@@ -29,6 +29,13 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             "prompt_tokens", 64,
             "completion_tokens", 32,
             "total_tokens", 96);
+    private static final Map<String, Object> CACHE_HIT_USAGE = Map.of(
+            "prompt_tokens", 200,
+            "completion_tokens", 20,
+            "total_tokens", 220,
+            "cached_tokens", 50,
+            "cache_write_tokens", 10,
+            "cache_usage_reported", true);
 
     @Override
     public String getProviderId() {
@@ -69,7 +76,7 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                     + "\"verification\":[\"Compaction response passed the production structured-output parser.\"]}";
             return Map.of("type", "text", "content", content, "usage", USAGE);
         }
-        return Map.of("type", "text", "content", finalReply(prompt), "usage", USAGE);
+        return Map.of("type", "text", "content", finalReply(prompt), "usage", usageFor(prompt));
     }
 
     @Override
@@ -195,8 +202,13 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         String finalText = finalReply(prompt);
         onChunk.accept(new StreamChunk("text_delta", finalText, null, null, null, false, null,
                 null, null, null));
-        onChunk.accept(new StreamChunk("done", "", null, null, null, true, USAGE,
+        onChunk.accept(new StreamChunk("done", "", null, null, null, true, usageFor(prompt),
                 null, null, null));
+    }
+
+
+    private Map<String, Object> usageFor(String prompt) {
+        return prompt != null && prompt.contains("[acceptance:cache-telemetry]") ? CACHE_HIT_USAGE : USAGE;
     }
 
     private void holdCheckoutLease(CancellationToken token) {
@@ -266,6 +278,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return "## Summary\n**Completed**\n- The acceptance run held and released the project checkout lease.\n"
                     + "**Verification**\n- A concurrent task can observe the durable workspace-wait state.\n"
                     + "**Risk**\n- The hold duration is bounded and acceptance-profile only.";
+        }
+        if (prompt.contains("[acceptance:cache-telemetry]")) {
+            return "## Summary\n**Completed**\n- Prompt cache telemetry was emitted by the acceptance provider.\n"
+                    + "**Verification**\n- The durable token usage event reports 50 cached tokens from 200 prompt tokens.\n"
+                    + "**Risk**\n- These deterministic usage values are acceptance-profile only.";
         }
         if (prompt.contains("[acceptance:tool]")) {
             return "## Summary\n**Completed**\n- The production Agent loop executed `list_files` and returned its result.\n"

@@ -290,6 +290,7 @@ CREATE TABLE IF NOT EXISTS t_agent_token_usage (
     total_tokens INT DEFAULT 0,
     cached_tokens INT DEFAULT 0,
     cache_write_tokens INT DEFAULT 0,
+    cache_status VARCHAR(24) NOT NULL DEFAULT 'not_reported',
     iteration INT DEFAULT 0,
     tool_name VARCHAR(64) DEFAULT NULL,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,

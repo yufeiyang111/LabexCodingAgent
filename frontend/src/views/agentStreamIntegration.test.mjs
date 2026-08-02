@@ -129,3 +129,13 @@ test('recoverable workspace pause hands the initial stream off to durable task s
   assert.match(source, /const shouldResumeTaskEvents = stillOwnsConversation[\s\S]*?assistantMsg\.resumeTaskEventsAfterStream === true/)
   assert.match(source, /shouldResumeTaskEvents[\s\S]*?replayResumedAgent\(assistantMsg\.taskId, assistantMsg(?:, [^)]+)?\)/)
 })
+
+test('CloudWorkspace projects durable cache telemetry instead of treating absent data as a miss', () => {
+  assert.match(source, /import \{ applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryView \} from '@\/composables\/cacheTelemetryStatus'/)
+  assert.match(timelineSource, /case 'TOKEN_USAGE': \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, data\)/)
+  assert.match(source, /onTokenUsage: usage => \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, usage\)/)
+  assert.match(source, /class="usage-cache-card"[\s\S]*cacheTelemetryView\.label[\s\S]*cacheTelemetryView\.detail/)
+  assert.match(source, /activeAiTab\.value = key[\s\S]*if \(key === 'usage'\) await initUsageCharts\(\)/)
+  assert.match(source, /onTokenUsageProjected: invalidateTokenStatsProjection/)
+  assert.match(source, /const requestEpoch = tokenUsageProjectionEpoch[\s\S]*requestEpoch === tokenUsageProjectionEpoch/)
+})

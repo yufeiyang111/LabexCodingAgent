@@ -1,13 +1,8 @@
 import { computed, ref, watch } from 'vue'
+import { createTokenUsageState } from './cacheTelemetryStatus.js'
 
 function emptyTokenUsage() {
-  return {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-    callCount: 0,
-    conversationTotal: 0
-  }
+  return createTokenUsageState()
 }
 
 function createAssistantMessage() {

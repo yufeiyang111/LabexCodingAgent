@@ -331,9 +331,16 @@ async function markerCount(text) {
 }
 
 async function createNewConversation() {
-  await clickElement('.ai-session-select', { label: 'conversation selector' })
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.ai-input-text-area textarea'))`),
+    'chat tab before creating a conversation'
+  )
+  const menuOpen = await client.evaluate(`Boolean(document.querySelector('.ai-session-new'))`)
+  if (!menuOpen) {
+    await clickElement('.ai-session-select', { label: 'conversation selector', native: true })
+  }
   await waitFor(() => client.evaluate(`Boolean(document.querySelector('.ai-session-new'))`), 'new conversation action')
-  await clickElement('.ai-session-new', { label: 'new conversation action' })
+  await clickElement('.ai-session-new', { label: 'new conversation action', native: true })
   await waitFor(() => client.evaluate(`!document.querySelector('.ai-session-dropdown')`), 'conversation menu close')
 }
 
@@ -405,6 +412,40 @@ async function runScenario() {
   if (!Array.isArray(cursorKeys) || cursorKeys.length === 0) {
     throw new Error('No persisted task event cursor was observed after refresh')
   }
+
+  const cacheConfig = await api('/student/model-configs', {
+    method: 'POST',
+    body: {
+      configName: 'Browser Cache Telemetry', provider: 'acceptance_scripted', modelName: 'acceptance-cache',
+      apiKey: 'acceptance-placeholder-not-a-secret', baseUrl: 'acceptance://scripted',
+      maxTokens: 4096, contextWindowTokens: 32768, temperature: 0, isDefault: true,
+      promptCacheKeyEnabled: true, reasoningEffort: 'medium', imageInputEnabled: false
+    }
+  })
+  configIds.push(cacheConfig.configId)
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitFor(() => bodyIncludes('acceptance-cache'), 'cache telemetry model selection')
+  await createNewConversation()
+  await sendMessage('[acceptance:cache-telemetry]')
+  await waitFor(() => bodyIncludes('Prompt cache telemetry was emitted'), 'cache telemetry final reply')
+  await clickElement('.ai-tab', { containsText: '用量', label: 'usage tab' })
+  await waitFor(() => client.evaluate(`Boolean(document.querySelector('.usage-cache-card'))`), 'cache telemetry card')
+  const cacheCard = await client.evaluate(`document.querySelector('.usage-cache-card')?.innerText || ''`)
+  if (!cacheCard.includes('已命中') || !cacheCard.includes('25.00%')
+      || !cacheCard.includes('读取 50 tokens') || !cacheCard.includes('写入 10 tokens')) {
+    throw new Error(`Cache telemetry card mismatch: ${cacheCard}`)
+  }
+  const cacheSummary = await api(`/student/projects/${projectId}/agent/tokens/student/summary`)
+  if (cacheSummary?.cacheStatus !== 'hit' || Number(cacheSummary?.cacheHitRate) !== 25
+      || Number(cacheSummary?.totalCachedTokens) < 50 || Number(cacheSummary?.totalCacheWriteTokens) < 10) {
+    throw new Error(`Durable cache telemetry summary mismatch: ${JSON.stringify(cacheSummary)}`)
+  }
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await clickElement('.ai-tab', { containsText: '用量', label: 'usage tab after refresh' })
+  await waitFor(() => client.evaluate(`(document.querySelector('.usage-cache-card')?.innerText || '').includes('已命中')`), 'cache telemetry replay after refresh')
+  await clickElement('.ai-tab', { containsText: '对话', label: 'chat tab after cache telemetry' })
 
   await createNewConversation()
   await sendMessage('[acceptance:question]')
@@ -772,6 +813,7 @@ async function runScenario() {
     conversationIsolation: true,
     refreshReplayDeduplicated: true,
     internalReasoningProtocolHidden: true,
+    durableCacheTelemetryProjection: true,
     questionReplyComponent: true,
     permissionApprovalRefreshRecovery: true,
     multiToolPermissionBatchProtocolComplete: true,

@@ -64,6 +64,8 @@ import com.labex.labexagent.tool.ToolSelectionPolicy;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
+import com.labex.labexagent.llm.CacheTelemetry;
+import com.labex.labexagent.llm.CacheTelemetryStatus;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
 import com.labex.labexagent.llm.ProviderEventType;
@@ -870,14 +872,19 @@ public class AgentLoopEngine {
                                                 @SuppressWarnings("unchecked")
                                                 Map<String, Object> usageMap = (Map<String, Object>) lr.get("usage");
                                                 if (usageMap != null) {
+                                                    CacheTelemetryStatus cacheStatus = CacheTelemetry.status(
+                                                            llmConfig.promptCacheKeyEnabled(), usageMap);
                                                     this.tokenTracker.recordFromMap(conv.getConversationId(), request.getSessionId(),
                                                             studentId, projectId, llmProvider.getProviderId(), llmConfig.modelName(),
-                                                            usageMap, i, null);
-                                                    int totalTokens = usageMap.containsKey("total_tokens") ?
-                                                            ((Number) usageMap.get("total_tokens")).intValue() : 0;
+                                                            usageMap, cacheStatus, i, null);
+                                                    int totalTokens = intUsage(usageMap, "total_tokens");
                                                     if (totalTokens > 0) {
-                                                        log.info("Iteration {}: sending TOKEN_USAGE, totalTokens={}", i, totalTokens);
-                                                        this.sendEvent(sse, conv, "TOKEN_USAGE", this.tokenUsagePayload(usageMap, i, totalTokens, conv.getConversationId()));
+                                                        log.info("Iteration {}: sending TOKEN_USAGE, totalTokens={}, cacheStatus={}",
+                                                                i, totalTokens, cacheStatus.value());
+                                                        this.sendEvent(sse, conv, "TOKEN_USAGE", this.tokenUsagePayload(
+                                                                usageMap, cacheStatus,
+                                                                CacheTelemetry.hitRate(llmConfig.promptCacheKeyEnabled(), usageMap),
+                                                                i, totalTokens, conv.getConversationId(), false));
                                                     }
                                                 }
                                             } catch (Exception tokenEx) {
@@ -896,16 +903,20 @@ public class AgentLoopEngine {
                                                 int estimatedTotal = estimatedPrompt + estimatedCompletion;
                                                 if (estimatedTotal > 0) {
                                                     log.info("Iteration {}: sending TOKEN_USAGE (estimated), totalTokens={}", i, estimatedTotal);
+                                                    CacheTelemetryStatus cacheStatus = llmConfig.promptCacheKeyEnabled()
+                                                            ? CacheTelemetryStatus.NOT_REPORTED
+                                                            : CacheTelemetryStatus.DISABLED;
                                                     this.tokenTracker.record(conv.getConversationId(), request.getSessionId(),
                                                             studentId, projectId, llmProvider.getProviderId(), llmConfig.modelName(),
-                                                            estimatedPrompt, estimatedCompletion, estimatedTotal, i, null);
-                                                    this.sendEvent(sse, conv, "TOKEN_USAGE", Map.of(
-                                                            "iteration", i,
-                                                            "promptTokens", estimatedPrompt,
-                                                            "completionTokens", estimatedCompletion,
-                                                            "totalTokens", estimatedTotal,
-                                                            "conversationTotal", this.tokenTracker.getTotalTokensByConversation(conv.getConversationId())
-                                                    ));
+                                                            estimatedPrompt, estimatedCompletion, estimatedTotal, 0, 0,
+                                                            cacheStatus, i, null);
+                                                    Map<String, Object> estimatedUsage = new LinkedHashMap<>();
+                                                    estimatedUsage.put("prompt_tokens", estimatedPrompt);
+                                                    estimatedUsage.put("completion_tokens", estimatedCompletion);
+                                                    estimatedUsage.put("total_tokens", estimatedTotal);
+                                                    this.sendEvent(sse, conv, "TOKEN_USAGE", this.tokenUsagePayload(
+                                                            estimatedUsage, cacheStatus, null, i, estimatedTotal,
+                                                            conv.getConversationId(), true));
                                                 }
                                             } catch (Exception estEx) {
                                                 log.debug("Token estimation error: {}", estEx.getMessage());
@@ -2801,19 +2812,30 @@ public class AgentLoopEngine {
         }
     }
 
-    private Map<String, Object> tokenUsagePayload(Map<String, Object> usageMap, int iteration, int totalTokens, String conversationId) {
+    private Map<String, Object> tokenUsagePayload(Map<String, Object> usageMap,
+                                                   CacheTelemetryStatus cacheStatus,
+                                                   Double cacheHitRate,
+                                                   int iteration,
+                                                   int totalTokens,
+                                                   String conversationId,
+                                                   boolean estimated) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        int promptTokens = intUsage(usageMap, "prompt_tokens");
-        int cachedTokens = intUsage(usageMap, "cached_tokens");
-        int cacheWriteTokens = intUsage(usageMap, "cache_write_tokens");
+        CacheTelemetryStatus effectiveStatus = cacheStatus == null
+                ? CacheTelemetryStatus.NOT_REPORTED
+                : cacheStatus;
         payload.put("iteration", iteration);
-        payload.put("promptTokens", promptTokens);
+        payload.put("promptTokens", intUsage(usageMap, "prompt_tokens"));
         payload.put("completionTokens", intUsage(usageMap, "completion_tokens"));
         payload.put("totalTokens", totalTokens);
         payload.put("conversationTotal", this.tokenTracker.getTotalTokensByConversation(conversationId));
-        payload.put("cachedTokens", cachedTokens);
-        payload.put("cacheWriteTokens", cacheWriteTokens);
-        payload.put("cacheHitRate", promptTokens <= 0 ? 0.0 : Math.round((cachedTokens * 10000.0 / promptTokens)) / 100.0);
+        payload.put("cachedTokens", intUsage(usageMap, "cached_tokens"));
+        payload.put("cacheWriteTokens", intUsage(usageMap, "cache_write_tokens"));
+        payload.put("cacheStatus", effectiveStatus.value());
+        payload.put("cacheTelemetryReported", effectiveStatus == CacheTelemetryStatus.HIT
+                || effectiveStatus == CacheTelemetryStatus.MISS
+                || effectiveStatus == CacheTelemetryStatus.WRITE_ONLY);
+        payload.put("cacheHitRate", cacheHitRate);
+        payload.put("estimated", estimated);
         return payload;
     }
 

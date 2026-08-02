@@ -53,12 +53,33 @@ class OpenAiCompatibleProviderUsageTest {
             assertEquals(2, usageChunk.usage().get("completion_tokens"));
             assertEquals(12, usageChunk.usage().get("total_tokens"));
             assertEquals(4, usageChunk.usage().get("cached_tokens"));
+            assertEquals(true, usageChunk.usage().get("cache_usage_reported"));
 
             LlmProvider.StreamChunk doneChunk = chunks.stream()
                     .filter(LlmProvider.StreamChunk::done)
                     .findFirst()
                     .orElseThrow();
             assertEquals(usageChunk.usage(), doneChunk.usage());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void marksCacheUsageAsNotReportedWhenProviderOmitsCacheFields() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n" +
+                    "data: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(),
+                    new LlmProvider.LlmConfig("test-key", baseUrl(server), "test-model", 32, 0.1), chunks::add);
+            LlmProvider.StreamChunk usage = chunks.stream()
+                    .filter(chunk -> "usage".equals(chunk.type())).findFirst().orElseThrow();
+            assertEquals(false, usage.usage().get("cache_usage_reported"));
         } finally {
             server.stop(0);
         }

@@ -413,6 +413,14 @@ public class OpenAiCompatibleProvider implements LlmProvider {
             if (!rb.has("usage") || rb.get("usage").isJsonNull()) return null;
             JsonObject usage = rb.getAsJsonObject("usage");
             Map<String, Object> result = new HashMap<>();
+            boolean cacheUsageReported = hasNestedField(usage, "prompt_tokens_details", "cached_tokens")
+                    || hasNestedField(usage, "input_token_details", "cache_read")
+                    || hasField(usage, "cache_read_input_tokens")
+                    || hasField(usage, "cached_tokens")
+                    || hasNestedField(usage, "input_token_details", "cache_creation")
+                    || hasField(usage, "cache_creation_input_tokens")
+                    || hasNestedField(usage, "cache_creation", "ephemeral_5m_input_tokens")
+                    || hasNestedField(usage, "cache_creation", "ephemeral_1h_input_tokens");
             int cached = firstPositive(
                     nestedInt(usage, "prompt_tokens_details", "cached_tokens"),
                     nestedInt(usage, "input_token_details", "cache_read"),
@@ -447,6 +455,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
             result.put("total_tokens", total);
             result.put("cached_tokens", cached);
             result.put("cache_write_tokens", cacheWrite);
+            result.put("cache_usage_reported", cacheUsageReported);
             return result;
         } catch (Exception e) {
             return null;
@@ -485,6 +494,19 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                 || lower.contains("unrecognized")
                 || lower.contains("unsupported parameter")
                 || lower.contains("extra inputs are not permitted");
+    }
+
+    private boolean hasField(JsonObject root, String fieldName) {
+        return root != null && root.has(fieldName) && !root.get(fieldName).isJsonNull();
+    }
+
+    private boolean hasNestedField(JsonObject root, String objectName, String fieldName) {
+        try {
+            if (root == null || !root.has(objectName) || root.get(objectName).isJsonNull()) return false;
+            return hasField(root.getAsJsonObject(objectName), fieldName);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private int nestedInt(JsonObject root, String objectName, String fieldName) {
