@@ -55,3 +55,20 @@ test('removes protocol delimiters split across dedicated reasoning deltas', () =
   assert.equal(filter.push('nk>private plan</THINK'), 'private plan')
   assert.equal(filter.push('ING>'), '')
 })
+
+test('removes Markdown-escaped internal reasoning tags across streamed deltas', () => {
+  const tagFilter = createInternalReasoningTagStreamFilter()
+  assert.equal(tagFilter.push('\\'), '')
+  assert.equal(tagFilter.push('<THINK\\>private plan\\</TH'), 'private plan')
+  assert.equal(tagFilter.push('INK\\>'), '')
+
+  const blockFilter = createInternalReasoningBlockStreamFilter()
+  assert.equal(blockFilter.push('Visible \\'), 'Visible ')
+  assert.equal(blockFilter.push('<think\\>outer \\<thinking\\>inner\\</thinking\\> tail\\</think\\> answer'), ' answer')
+})
+
+test('keeps nested reasoning private and treats self-closing protocol tags as delimiters only', () => {
+  assert.equal(stripInternalReasoningBlocks('before <think>outer <thinking>inner</thinking> tail</think> after'), 'before  after')
+  assert.equal(stripInternalReasoningBlocks('before <think/> after'), 'before  after')
+  assert.equal(stripInternalReasoningBlocks('before \\<thinking/\\> after'), 'before  after')
+})

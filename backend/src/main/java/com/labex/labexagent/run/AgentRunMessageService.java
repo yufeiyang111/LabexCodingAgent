@@ -124,9 +124,11 @@ public class AgentRunMessageService {
         for (String key : List.of("content", "message", "summary", "delta")) {
             Object value = data.get(key);
             if (value == null) continue;
-            String safe = "FINAL".equals(eventType)
-                    ? InternalReasoningBoundary.stripVisible(String.valueOf(value))
-                    : InternalReasoningBoundary.stripTags(String.valueOf(value));
+            boolean reasoningBody = !"FINAL".equals(eventType)
+                    && ("content".equals(key) || "delta".equals(key));
+            String safe = reasoningBody
+                    ? InternalReasoningBoundary.stripTags(String.valueOf(value))
+                    : InternalReasoningBoundary.stripVisible(String.valueOf(value));
             data.put(key, safe);
         }
     }

@@ -102,4 +102,27 @@ class AgentRunMessageServiceTest {
         assertThat(dirty.getContent()).contains("private plan");
     }
 
+    @Test
+    void reasoningEventKeepsReasoningBodyButRemovesPrivateBlocksFromVisibleMetadata() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(45L);
+            return 1;
+        });
+
+        AgentRunMessage result = new AgentRunMessageService(messages, tasks)
+                .recordEventMessage(7L, "THINK", Map.of(
+                        "content", "\\<think\\>reasoning body\\</think\\>",
+                        "summary", "\\<thinking\\>private title\\</thinking\\>Visible summary"), 22L);
+
+        assertThat(result.getContent()).isEqualTo("reasoning body");
+        assertThat(result.getMetadata()).contains("Visible summary");
+        assertThat(result.getMetadata()).doesNotContain("private title");
+        assertThat(result.getMetadata()).doesNotContainIgnoringCase("<think");
+    }
+
 }

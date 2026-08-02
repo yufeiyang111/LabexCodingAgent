@@ -12,10 +12,13 @@ import java.util.regex.Pattern;
  * 统一约束 Provider 内部推理协议，避免标签进入用户可见输出和持久化回放。
  */
 public final class InternalReasoningBoundary {
+    private static final String RAW_TAG_ATTRIBUTES =
+            "(?:\\s+(?:\"[^\"]*\"|'[^']*'|[^<>\"'])*)?";
     private static final Pattern TAG_PATTERN = Pattern.compile(
-            "(?is)<\\s*(/?)\\s*think(?:ing)?(?:\\s+[^<>]*?)?\\s*>"
-                    + "|&lt;\\s*(/?)\\s*think(?:ing)?(?:\\s+.*?)?\\s*&gt;"
-                    + "|&#(?:0*60|x0*3c);\\s*(/?)\\s*think(?:ing)?(?:\\s+.*?)?\\s*&#(?:0*62|x0*3e);");
+            "(?is)\\\\?<\\s*/?\\s*think(?:ing)?" + RAW_TAG_ATTRIBUTES + "\\s*/?\\s*\\\\?>"
+                    + "|\\\\?&lt;\\s*/?\\s*think(?:ing)?(?:\\s+.*?)?\\s*/?\\s*\\\\?&gt;"
+                    + "|\\\\?&#(?:0*60|x0*3c);\\s*/?\\s*think(?:ing)?(?:\\s+.*?)?"
+                    + "\\s*/?\\s*\\\\?&#(?:0*62|x0*3e);");
 
     private InternalReasoningBoundary() {
     }
@@ -70,10 +73,11 @@ public final class InternalReasoningBoundary {
         }
 
         LinkedHashMap<Object, Object> safe = new LinkedHashMap<>(source);
-        for (String field : List.of("content", "delta")) {
+        for (String field : List.of("content", "delta", "message", "summary", "detail")) {
             Object value = safe.get(field);
             if (value instanceof String text) {
-                safe.put(field, finalProjection ? stripVisible(text) : stripTags(text));
+                boolean reasoningBody = !finalProjection && ("content".equals(field) || "delta".equals(field));
+                safe.put(field, reasoningBody ? stripTags(text) : stripVisible(text));
             }
         }
         return safe;
@@ -89,7 +93,7 @@ public final class InternalReasoningBoundary {
         private final Consumer<String> onReasoning;
         private final Consumer<String> onVisible;
         private final StringBuilder buffer = new StringBuilder();
-        private boolean insideReasoning;
+        private int reasoningDepth;
 
         public VisibleStreamFilter(Consumer<String> onReasoning, Consumer<String> onVisible) {
             this.onReasoning = onReasoning;
@@ -105,7 +109,7 @@ public final class InternalReasoningBoundary {
         public void flush() {
             process();
             if (buffer.length() == 0) return;
-            int safeLength = safeLength(buffer);
+            int safeLength = flushLength(buffer);
             emit(buffer.substring(0, safeLength));
             buffer.setLength(0);
         }
@@ -116,7 +120,11 @@ public final class InternalReasoningBoundary {
                 if (tag != null) {
                     emit(buffer.substring(0, tag.index()));
                     buffer.delete(0, tag.end());
-                    insideReasoning = tag.closing() ? false : true;
+                    if (!tag.selfClosing()) {
+                        reasoningDepth = tag.closing()
+                                ? Math.max(0, reasoningDepth - 1)
+                                : reasoningDepth + 1;
+                    }
                     continue;
                 }
                 int safeLength = safeLength(buffer);
@@ -128,7 +136,7 @@ public final class InternalReasoningBoundary {
 
         private void emit(String text) {
             if (text == null || text.isEmpty()) return;
-            if (insideReasoning) onReasoning.accept(text);
+            if (reasoningDepth > 0) onReasoning.accept(text);
             else onVisible.accept(text);
         }
     }
@@ -153,7 +161,7 @@ public final class InternalReasoningBoundary {
         public void flush() {
             process();
             if (buffer.length() == 0) return;
-            int safeLength = safeLength(buffer);
+            int safeLength = flushLength(buffer);
             emit(buffer.substring(0, safeLength));
             buffer.setLength(0);
         }
@@ -181,17 +189,37 @@ public final class InternalReasoningBoundary {
     private static TagMatch findTag(CharSequence value) {
         Matcher matcher = TAG_PATTERN.matcher(value);
         if (!matcher.find()) return null;
-        boolean closing = "/".equals(matcher.group(1))
-                || "/".equals(matcher.group(2))
-                || "/".equals(matcher.group(3));
-        return new TagMatch(matcher.start(), matcher.end(), closing);
+        String syntax = normalizeTagSyntax(matcher.group());
+        int index = 1;
+        while (index < syntax.length() && Character.isWhitespace(syntax.charAt(index))) index++;
+        boolean closing = index < syntax.length() && syntax.charAt(index) == '/';
+        int end = syntax.length() - 2;
+        while (end >= 0 && Character.isWhitespace(syntax.charAt(end))) end--;
+        boolean selfClosing = end >= 0 && syntax.charAt(end) == '/';
+        return new TagMatch(matcher.start(), matcher.end(), closing, selfClosing);
+    }
+
+    private static String normalizeTagSyntax(String value) {
+        String normalized = value == null ? "" : value;
+        if (normalized.startsWith("\\")) normalized = normalized.substring(1);
+        normalized = normalized.replaceFirst("(?is)^&lt;|^&#(?:0*60|x0*3c);", "<");
+        normalized = normalized.replaceFirst("(?is)\\\\?&gt;$|\\\\?&#(?:0*62|x0*3e);$", ">");
+        if (normalized.endsWith("\\>")) {
+            normalized = normalized.substring(0, normalized.length() - 2) + ">";
+        }
+        return normalized;
+    }
+
+    private static int flushLength(CharSequence value) {
+        return "\\".contentEquals(value) ? 1 : safeLength(value);
     }
 
     private static int safeLength(CharSequence value) {
         String text = value.toString();
         for (int index = 0; index < text.length(); index++) {
             char current = text.charAt(index);
-            if ((current == '<' || current == '&') && couldBeTagPrefix(text.substring(index))) {
+            if ((current == '<' || current == '&' || current == '\\')
+                    && couldBeTagPrefix(text.substring(index))) {
                 return index;
             }
         }
@@ -200,6 +228,11 @@ public final class InternalReasoningBoundary {
 
     private static boolean couldBeTagPrefix(String value) {
         String lower = value.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("\\")) {
+            if (lower.length() == 1) return true;
+            char next = lower.charAt(1);
+            return (next == '<' || next == '&') && couldBeTagPrefix(lower.substring(1));
+        }
         if ("&lt;".startsWith(lower) || "&#60;".startsWith(lower) || "&#x3c;".startsWith(lower)) {
             return true;
         }
@@ -223,7 +256,9 @@ public final class InternalReasoningBoundary {
         while (index < value.length()
                 && !Character.isWhitespace(value.charAt(index))
                 && value.charAt(index) != '>'
-                && value.charAt(index) != '&') {
+                && value.charAt(index) != '&'
+                && value.charAt(index) != '/'
+                && value.charAt(index) != '\\') {
             index++;
         }
         String word = value.substring(wordStart, index);
@@ -232,6 +267,6 @@ public final class InternalReasoningBoundary {
         return "think".equals(word) || "thinking".equals(word);
     }
 
-    private record TagMatch(int index, int end, boolean closing) {
+    private record TagMatch(int index, int end, boolean closing, boolean selfClosing) {
     }
 }

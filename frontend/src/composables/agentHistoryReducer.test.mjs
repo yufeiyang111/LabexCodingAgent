@@ -301,3 +301,14 @@ test('filters split internal reasoning tags while replaying persisted THINK_DELT
   assert.equal(target.thinking, 'private plan')
   assert.equal(target._thinkingDisplay, 'private plan')
 })
+
+
+test('removes protocol delimiters from replayed reasoning summaries', () => {
+  const target = message()
+
+  reduceHistoryEvent('THINK_START', { summary: '\\<think\\>hidden\\</think\\>Analyze problem' }, target)
+  reduceHistoryEvent('THINK_DELTA', { delta: 'Check boundary' }, target)
+  reduceHistoryEvent('THINK', { content: 'Check boundary', summary: '\\<thinking\\>hidden\\</thinking\\>Analysis complete' }, target)
+
+  assert.equal(target.thinkingBlocks[0].summary, 'Analysis complete')
+})

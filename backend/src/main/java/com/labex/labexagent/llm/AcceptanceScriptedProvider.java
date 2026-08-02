@@ -103,11 +103,13 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 prompt.contains("[acceptance:compaction]"), prompt.contains("[acceptance:permission-batch]"),
                 hasResumedInteraction(prompt, "waiting_user"), prompt.contains("[Tool list_files result]"));
         if (prompt.contains("[acceptance:reasoning-boundary]")) {
-            onChunk.accept(new StreamChunk("thinking_delta", "&lt;TH",
+            onChunk.accept(new StreamChunk("thinking_delta", "\\",
                     null, null, null, false, null, null, null, null));
-            onChunk.accept(new StreamChunk("thinking_delta", "INK data-kind=&quot;hidden&quot;&gt;Acceptance runtime scenario selected. &lt;/THINK",
+            onChunk.accept(new StreamChunk("thinking_delta", "<TH",
                     null, null, null, false, null, null, null, null));
-            onChunk.accept(new StreamChunk("thinking_delta", "ING&gt;",
+            onChunk.accept(new StreamChunk("thinking_delta", "INK data-kind=\\\"hidden\\\"\\>Acceptance runtime scenario selected. \\</THINK",
+                    null, null, null, false, null, null, null, null));
+            onChunk.accept(new StreamChunk("thinking_delta", "ING\\>",
                     null, null, null, false, null, null, null, null));
         } else {
             onChunk.accept(new StreamChunk("thinking_delta", "Acceptance runtime scenario selected. ",
@@ -201,12 +203,15 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
 
         String finalText = finalReply(prompt);
         if (prompt.contains("[acceptance:reasoning-boundary]")) {
-            onChunk.accept(new StreamChunk("text_delta", "&lt;thi", null, null, null, false, null,
+            onChunk.accept(new StreamChunk("text_delta", "\\", null, null, null, false, null,
+                    null, null, null));
+            onChunk.accept(new StreamChunk("text_delta", "<thi", null, null, null, false, null,
                     null, null, null));
             onChunk.accept(new StreamChunk("text_delta",
-                    "nk data-channel=&quot;content&quot;&gt;Private content-channel plan. &lt;/think",
+                    "nk data-channel=\\\"content\\\"\\>Private content-channel outer plan. "
+                            + "<thinking>Nested private plan.</thinking> Private content-channel tail. \\</think",
                     null, null, null, false, null, null, null, null));
-            onChunk.accept(new StreamChunk("text_delta", "ing&gt;", null, null, null, false, null,
+            onChunk.accept(new StreamChunk("text_delta", "ing\\>", null, null, null, false, null,
                     null, null, null));
         }
         onChunk.accept(new StreamChunk("text_delta", finalText, null, null, null, false, null,

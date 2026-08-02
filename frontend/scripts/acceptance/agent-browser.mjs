@@ -26,6 +26,37 @@ const consoleErrors = []
 const networkErrors = []
 const networkRequests = new Map()
 
+const internalReasoningProbeSource = `(() => {
+  if (globalThis.__labexInternalReasoningProbeInstalled) return;
+  globalThis.__labexInternalReasoningProbeInstalled = true;
+  globalThis.__labexInternalReasoningLeaks = [];
+  const protocol = /(?:\\\\)?<\\s*\\/?\\s*think(?:ing)?\\b|(?:\\\\)?&lt;\\s*\\/?\\s*think(?:ing)?\\b|(?:\\\\)?&#(?:0*60|x0*3c);\\s*\\/?\\s*think(?:ing)?\\b/gi;
+  const inspect = () => {
+    const root = document.querySelector('.ai-messages');
+    if (!root) return;
+    for (const [surface, value] of [['text', root.innerText || ''], ['html', root.innerHTML || '']]) {
+      protocol.lastIndex = 0;
+      let match;
+      while ((match = protocol.exec(value)) !== null) {
+        const sample = surface + ':' + value.slice(Math.max(0, match.index - 24), Math.min(value.length, match.index + 96));
+        if (!globalThis.__labexInternalReasoningLeaks.includes(sample)) {
+          globalThis.__labexInternalReasoningLeaks.push(sample);
+        }
+      }
+    }
+  };
+  globalThis.__labexInspectInternalReasoningProtocol = inspect;
+  const observe = () => {
+    inspect();
+    if (!document.documentElement) return;
+    const observer = new MutationObserver(inspect);
+    observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+    globalThis.__labexInternalReasoningObserver = observer;
+  };
+  if (document.documentElement) observe();
+  else document.addEventListener('DOMContentLoaded', observe, { once: true });
+})()`
+
 async function api(path, { method = 'GET', body, anonymous = false } = {}) {
   const headers = { Accept: 'application/json' }
   if (!anonymous && token) headers.Authorization = `Bearer ${token}`
@@ -110,6 +141,7 @@ async function launchBrowser() {
       width: 1440, height: 900, deviceScaleFactor: 1, mobile: false
     })
   ])
+  await client.send('Page.addScriptToEvaluateOnNewDocument', { source: internalReasoningProbeSource })
   client.on('Runtime.exceptionThrown', event => {
     consoleErrors.push(event.exceptionDetails?.exception?.description ?? event.exceptionDetails?.text ?? 'Runtime exception')
   })
@@ -379,16 +411,51 @@ async function selectConversationByTitle(title) {
   await waitFor(() => client.evaluate(`!document.querySelector('.ai-session-dropdown')`), 'conversation menu close')
 }
 
-async function assertInternalReasoningProtocolHidden(label) {
-  const leakedFragments = await client.evaluate(`(() => {
-    const text = (document.body?.innerText || '').toLowerCase()
-    return ['<thi', 'nk>acceptance runtime scenario selected.', '</think', 'ing>']
-      .filter(fragment => text.includes(fragment))
+async function resetInternalReasoningLeakProbe() {
+  await client.evaluate(`(() => {
+    globalThis.__labexInternalReasoningLeaks = []
+    globalThis.__labexInspectInternalReasoningProtocol?.()
+    return true
   })()`)
-  if (Array.isArray(leakedFragments) && leakedFragments.length > 0) {
-    throw new Error(`${label} rendered internal reasoning protocol fragments: ${leakedFragments.join(', ')}`)
-  }
 }
+
+async function assertInternalReasoningProtocolHidden(label) {
+  const evidence = await client.evaluate(`(() => {
+    globalThis.__labexInspectInternalReasoningProtocol?.()
+    return {
+      leaks: Array.isArray(globalThis.__labexInternalReasoningLeaks)
+        ? [...globalThis.__labexInternalReasoningLeaks]
+        : [],
+      text: document.querySelector('.ai-messages')?.innerText || '',
+      html: document.querySelector('.ai-messages')?.innerHTML || ''
+    }
+  })()`)
+  if (Array.isArray(evidence?.leaks) && evidence.leaks.length > 0) {
+    throw new Error(`${label} rendered internal reasoning protocol during live projection: ${evidence.leaks.join(' | ')}`)
+  }
+  const protocol = /(?:\\)?<\s*\/?\s*think(?:ing)?\b|(?:\\)?&lt;\s*\/?\s*think(?:ing)?\b|(?:\\)?&#(?:0*60|x0*3c);\s*\/?\s*think(?:ing)?\b/i
+  if (protocol.test(String(evidence?.text || '')) || protocol.test(String(evidence?.html || ''))) {
+    throw new Error(`${label} retained an internal reasoning protocol delimiter in the final DOM`)
+  }
+  return true
+}
+
+function findInternalReasoningProtocol(value, path = '$', matches = []) {
+  if (typeof value === 'string') {
+    const protocol = /(?:\\)?<\s*\/?\s*think(?:ing)?\b|(?:\\)?&lt;\s*\/?\s*think(?:ing)?\b|(?:\\)?&#(?:0*60|x0*3c);\s*\/?\s*think(?:ing)?\b/i
+    if (protocol.test(value)) matches.push(`${path}:${value.slice(0, 160)}`)
+    return matches
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => findInternalReasoningProtocol(item, `${path}[${index}]`, matches))
+    return matches
+  }
+  if (value && typeof value === 'object') {
+    Object.entries(value).forEach(([key, item]) => findInternalReasoningProtocol(item, `${path}.${key}`, matches))
+  }
+  return matches
+}
+
 
 async function runScenario() {
   const username = `browser_${runId.slice(0, 16)}`
@@ -432,17 +499,36 @@ async function runScenario() {
   await waitFor(async () => !(await bodyIncludes(markerA)), 'conversation A detachment')
   if (await bodyIncludes(markerA)) throw new Error('New conversation still renders conversation A context')
 
+  const reasoningPriorTasks = await api(`/student/projects/${projectId}/agent/tasks`)
+  const reasoningPriorTaskIds = new Set(reasoningPriorTasks.map(task => Number(task.taskId)))
+  await resetInternalReasoningLeakProbe()
   await sendMessage('[acceptance:isolation:B-ONLY] [acceptance:reasoning-boundary]')
   await waitFor(() => bodyIncludes(markerB), 'conversation B final reply')
   if (await bodyIncludes(markerA)) throw new Error('Conversation B rendered conversation A context')
-  await assertInternalReasoningProtocolHidden('Live projection')
+  let reasoningBoundaryTask = null
+  await waitFor(async () => {
+    const tasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    reasoningBoundaryTask = tasks
+      .filter(task => !reasoningPriorTaskIds.has(Number(task.taskId)))
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))[0] || null
+    return reasoningBoundaryTask?.status === 'completed'
+  }, 'reasoning-boundary durable task completion')
+  const liveReasoningProtocolHidden = await assertInternalReasoningProtocolHidden('Live projection')
+  const reasoningProjection = await api(`/student/projects/${projectId}/agent/tasks/${reasoningBoundaryTask.taskId}`)
+  const durableReasoningLeaks = findInternalReasoningProtocol({
+    runMessages: reasoningProjection?.runMessages || [],
+    parts: reasoningProjection?.parts || []
+  })
+  if (durableReasoningLeaks.length > 0) {
+    throw new Error(`Durable reasoning projection retained protocol delimiters: ${durableReasoningLeaks.join(' | ')}`)
+  }
 
   await client.send('Page.reload', { ignoreCache: true })
   await waitForWorkspace()
   await waitFor(() => bodyIncludes(markerB), 'conversation B replay after refresh')
   const duplicates = await markerCount(markerB)
   if (duplicates !== 1) throw new Error(`Expected one replayed B marker, found ${duplicates}`)
-  await assertInternalReasoningProtocolHidden('Refresh replay')
+  const replayReasoningProtocolHidden = await assertInternalReasoningProtocolHidden('Refresh replay')
   const cursorKeys = await client.evaluate(`Object.keys(sessionStorage).filter(key => key.startsWith('labex-agent:task-event-cursor:'))`)
   if (!Array.isArray(cursorKeys) || cursorKeys.length === 0) {
     throw new Error('No persisted task event cursor was observed after refresh')
@@ -966,7 +1052,9 @@ async function runScenario() {
     desktopLayoutMetrics: desktopLayout,
     conversationIsolation: true,
     refreshReplayDeduplicated: true,
-    internalReasoningProtocolHidden: true,
+    internalReasoningProtocolHidden: liveReasoningProtocolHidden && replayReasoningProtocolHidden
+      && durableReasoningLeaks.length === 0,
+    reasoningBoundaryTaskId: reasoningBoundaryTask.taskId,
     durableCacheTelemetryProjection: true,
     questionReplyComponent: true,
     permissionApprovalRefreshRecovery: true,

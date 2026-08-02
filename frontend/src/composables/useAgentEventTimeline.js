@@ -55,7 +55,7 @@ export function useAgentEventTimeline(options) {
         break
       case 'THINK_START':
         if (assistantMsg.thinking) {
-          assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: data.summary || '', iteration: data.iteration || 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+          assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), iteration: data.iteration || 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
         }
         assistantMsg.thinking = ''
         assistantMsg._thinkingTagFilter = createInternalReasoningTagStreamFilter()
@@ -77,7 +77,7 @@ export function useAgentEventTimeline(options) {
         assistantMsg._thinkingTagFilter?.reset()
         if (data.content) {
           if (assistantMsg.thinking) {
-            assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: data.summary || '', iteration: data.iteration || 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+            assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), iteration: data.iteration || 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
             assistantMsg.thinking = ''
             assistantMsg._thinkingDisplay = ''
           } else {
@@ -90,7 +90,7 @@ export function useAgentEventTimeline(options) {
         assistantMsg._thinkingTagFilter?.reset()
         if (assistantMsg.thinking && !assistantMsg.streamSaving) {
           flushThinkingDisplay(assistantMsg)
-          assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: data.summary || data.tool || '', iteration: 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+          assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: stripInternalReasoningBlocks(data.summary || data.tool || ''), iteration: 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
           assistantMsg.thinking = ''
           assistantMsg._thinkingDisplay = ''
         }

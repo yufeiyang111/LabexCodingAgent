@@ -314,3 +314,15 @@ test('filters split internal reasoning tags across live THINK_DELTA events', () 
   assert.equal(assistant.thinking, 'private plan')
   assert.equal(assistant._thinkingDisplay, 'private plan')
 })
+
+
+test('removes protocol delimiters from live reasoning summaries', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({ type: 'THINK_START', data: { summary: '\\<think\\>hidden\\</think\\>Analyze problem' } }, assistant)
+  state.handleAgentEvent({ type: 'THINK_DELTA', data: { delta: 'Check boundary' } }, assistant)
+  state.handleAgentEvent({ type: 'THINK', data: { content: 'Check boundary', summary: '\\<thinking\\>hidden\\</thinking\\>Analysis complete' } }, assistant)
+
+  assert.equal(assistant.thinkingBlocks[0].summary, 'Analysis complete')
+})

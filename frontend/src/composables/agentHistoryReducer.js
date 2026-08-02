@@ -163,7 +163,7 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'THINK_START':
       if (message.thinking) {
         message.thinkingBlocks = message.thinkingBlocks || []
-        message.thinkingBlocks.push({ content: message.thinking, summary: data.summary || '', _open: false, _order: nextOrder(message) })
+        message.thinkingBlocks.push({ content: message.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), _open: false, _order: nextOrder(message) })
         message.thinking = ''
       }
       message._hasThinkStart = true
@@ -184,8 +184,8 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message._thinkingTagFilter?.reset()
       if (data.content) {
         message.thinkingBlocks = message.thinkingBlocks || []
-        if (message.thinking) message.thinkingBlocks.push({ content: message.thinking, summary: data.summary || '', _open: false, _order: nextOrder(message) })
-        else if (!message._hasThinkStart) message.thinkingBlocks.push({ content: stripInternalReasoningTags(data.content), summary: data.summary || '', _open: false, _order: nextOrder(message) })
+        if (message.thinking) message.thinkingBlocks.push({ content: message.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), _open: false, _order: nextOrder(message) })
+        else if (!message._hasThinkStart) message.thinkingBlocks.push({ content: stripInternalReasoningTags(data.content), summary: stripInternalReasoningBlocks(data.summary || ''), _open: false, _order: nextOrder(message) })
         message.thinking = ''
         message._hasThinkStart = false
       }
@@ -194,7 +194,7 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message._thinkingTagFilter?.reset()
       if (message.thinking) {
         message.thinkingBlocks = message.thinkingBlocks || []
-        message.thinkingBlocks.push({ content: message.thinking, summary: data.summary || data.tool || '', _open: false, _order: nextOrder(message) })
+        message.thinkingBlocks.push({ content: message.thinking, summary: stripInternalReasoningBlocks(data.summary || data.tool || ''), _open: false, _order: nextOrder(message) })
         message.thinking = ''
       }
       message.toolCalls = message.toolCalls || []
