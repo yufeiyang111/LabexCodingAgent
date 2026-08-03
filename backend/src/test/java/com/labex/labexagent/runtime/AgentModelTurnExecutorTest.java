@@ -77,6 +77,24 @@ class AgentModelTurnExecutorTest {
     }
 
     @Test
+    void keepsExplicitTextToolEnvelopeOutOfVisibleFinalDeltas() throws Exception {
+        List<String> events = new ArrayList<>();
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
+        String envelope = "<tool_call>{\"name\":\"list_files\",\"arguments\":{}}</tool_call>";
+        LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {
+            callback.accept(chunk("text_delta", "<to", null, null, null));
+            callback.accept(chunk("text_delta", envelope.substring(3), null, null, null));
+            callback.accept(chunk("done", "", null, null, null));
+        });
+
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request(provider, events));
+
+        assertEquals(AgentModelTurnExecutor.ResultType.TEXT, result.type());
+        assertEquals(envelope, result.content());
+        assertFalse(events.contains("FINAL_DELTA"));
+    }
+
+    @Test
     void preservesAllNativeToolCallsInProviderOrder() throws Exception {
         AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
         LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {

@@ -69,6 +69,17 @@ class AgentLoopEngineStreamingContractTest {
         assertFalse(source.contains("this.streamFinal(sse, conv, this.buildStopFinal(pause.title()"));
     }
     @Test
+    void textToolFallbackUsesStrictTypedParsingSchemaGateAndBoundedRecovery() {
+        assertTrue(source.contains("ToolCallExtractor.extract(content)"));
+        assertTrue(source.contains("new TextToolCallStreamBoundary(projectVisible)"));
+        assertTrue(source.contains("resolveRecovered(ctx, invTool, parsedArgs, visibleLanguage)"));
+        assertTrue(source.contains("MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES = 2"));
+        assertTrue(source.contains("text_tool_call_recovery_exhausted"));
+        assertFalse(source.contains("ToolCallExtractor.extractToolName"));
+        assertFalse(source.contains("ToolCallExtractor.extractToolArgs"));
+        assertFalse(source.contains("extracted tool={} args={}"));
+    }
+    @Test
     void wrapsProviderStreamWithHardTimeout() {
         assertTrue(source.contains("PROVIDER_FIRST_EVENT_TIMEOUT_MS"));
         assertTrue(source.contains("future.get(timeoutMs, TimeUnit.MILLISECONDS)"));

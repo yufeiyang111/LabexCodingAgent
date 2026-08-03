@@ -130,6 +130,7 @@ public class AgentLoopEngine {
             new AgentThreadFactory(),
             new ThreadPoolExecutor.AbortPolicy());
     private static final long PROVIDER_FIRST_EVENT_TIMEOUT_MS = 45_000L;
+    private static final int MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES = 2;
     private final StudentProjectService studentProjectService;
     private final ToolRegistry toolRegistry;
     private AgentToolTurnExecutor toolTurnExecutor;
@@ -760,6 +761,7 @@ public class AgentLoopEngine {
             int i = 1;
             AgentLoopGuard loopGuard = new AgentLoopGuard(loopProperties);
             ContextOverflowRecoveryPolicy overflowRecoveryPolicy = new ContextOverflowRecoveryPolicy();
+            int textToolCallRecoveryFailures = 0;
             while (true) {
                 block19: {
                     boolean executed;
@@ -1113,14 +1115,80 @@ public class AgentLoopEngine {
                                     if (!"text".equals(type)) break block21;
                                     content = lr.get("content") != null ? lr.get("content").toString() : "";
                                     String modelThinkingFromLr = lr.get("thinking") != null ? this.cleanModelOutput(lr.get("thinking").toString()) : "";
-                                    String invTool = ToolCallExtractor.extractToolName((String)content);
-                                    if (invTool == null || invTool.isEmpty()) break block22;
+                                    ToolCallExtractor.Extraction recoveredTextCall = ToolCallExtractor.extract(content);
+                                    if (recoveredTextCall.status() == ToolCallExtractor.Status.NONE) break block22;
                                     executed = true;
-                                    String invArgs = ToolCallExtractor.extractToolArgs((String)content, (String)invTool);
-                                    log.info("Iteration {}: extracted tool={} args={}", new Object[]{i, invTool, invArgs});
-                                    JsonObject parsedArgs = this.parseArgs(invArgs);
+                                    String invTool = recoveredTextCall.toolName();
+                                    JsonObject parsedArgs = recoveredTextCall.arguments();
+                                    String recoveredRejection = "";
+                                    if (!recoveredTextCall.executable()) {
+                                        recoveredRejection = this.localText(visibleLanguage,
+                                                "文本工具调用信封无效（" + recoveredTextCall.status().name().toLowerCase(Locale.ROOT)
+                                                        + "），已拒绝执行。",
+                                                "The text tool-call envelope is "
+                                                        + recoveredTextCall.status().name().toLowerCase(Locale.ROOT)
+                                                        + " and was rejected.");
+                                    } else {
+                                        AgentToolTurnExecutor.ToolResolution recoveredResolution =
+                                                this.toolTurnExecutor.resolveRecovered(ctx, invTool, parsedArgs, visibleLanguage);
+                                        if (!recoveredResolution.allowed()) {
+                                            recoveredRejection = recoveredResolution.rejection().getContent();
+                                        }
+                                    }
+                                    if (!recoveredRejection.isBlank()) {
+                                        textToolCallRecoveryFailures++;
+                                        String recoveryReason = recoveredTextCall.reason().isBlank()
+                                                ? recoveredRejection : recoveredTextCall.reason();
+                                        String recoverySummary = this.localText(visibleLanguage,
+                                                "拒绝不安全的文本工具调用", "Rejected unsafe text tool call");
+                                        this.appendRunLog(runLog,
+                                                "\n### Rejected text tool-call recovery\n\n- Status: `"
+                                                        + recoveredTextCall.status().name().toLowerCase(Locale.ROOT)
+                                                        + "`\n- Format: `" + this.safeLogText(recoveredTextCall.format())
+                                                        + "`\n- Reason: " + this.safeLogText(recoveryReason)
+                                                        + "\n- Recovery attempt: " + textToolCallRecoveryFailures + "/"
+                                                        + MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES + "\n");
+                                        log.warn("Iteration {}: rejected text tool-call recovery status={} format={} attempt={}/{}",
+                                                i, recoveredTextCall.status(), recoveredTextCall.format(),
+                                                textToolCallRecoveryFailures, MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES);
+                                        this.sendThought(sse, conv, i, recoverySummary, recoveredRejection, task.getTaskId());
+                                        this.writeAgentCheckpoint(project, request, task, ctx,
+                                                "text_tool_call_rejected", recoveredRejection, invTool, "", runLog);
+                                        loopGuard.recordModelNoProgress();
+                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                                Map.of("role", "assistant", "content", content));
+                                        if (textToolCallRecoveryFailures >= MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES) {
+                                            String stopReason = this.localText(visibleLanguage,
+                                                    "模型连续返回无法安全执行的文本工具调用。系统已经停止，避免误执行或无限重试。请切换支持原生 tool call 的模型，或调整 Provider 兼容配置。",
+                                                    "The model repeatedly returned text tool calls that could not be executed safely. The run stopped to prevent unsafe execution or an infinite retry. Use a model with native tool calling or correct the provider compatibility settings.");
+                                            this.sendEvent(sse, conv, "ERROR", Map.of(
+                                                    "message", recoverySummary + ": " + recoveredRejection,
+                                                    "iteration", i,
+                                                    "reasonCode", "text_tool_call_recovery_exhausted"));
+                                            this.streamFinal(sse, conv,
+                                                    this.buildStopFinal(recoverySummary, stopReason, project, runLog, visibleLanguage),
+                                                    visibleLanguage);
+                                            this.failTaskAndProject(sse, conv, task, recoverySummary, stopReason);
+                                            this.writeAgentCheckpoint(project, request, task, ctx,
+                                                    "failed_text_tool_call_recovery", stopReason, invTool, "", runLog);
+                                            this.sendEvent(sse, conv, "DONE", Map.of(
+                                                    "message", recoverySummary,
+                                                    "iterations", i,
+                                                    "reasonCode", "text_tool_call_recovery_exhausted"));
+                                            emitter.complete();
+                                            return;
+                                        }
+                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                                Map.of("role", "user", "content",
+                                                        "Your previous text tool call was rejected because it was incomplete, ambiguous, invalid, unknown, not exposed in this turn, or did not match the tool schema. "
+                                                                + "Retry once using the provider's native structured tool-call protocol. Do not describe or embed a tool call in ordinary text."));
+                                        break block19;
+                                    }
                                     JsonObject publicArgs = this.publicToolArguments(invTool, parsedArgs);
-                                    this.appendRunLog(runLog, "\n### Recovered tool call from text\n\n- Tool: `" + this.safeLogText(invTool) + "`\n- Args:\n\n```json\n" + GSON.toJson((JsonElement)publicArgs) + "\n```\n");
+                                    this.appendRunLog(runLog, "\n### Recovered tool call from explicit text envelope\n\n- Tool: `"
+                                            + this.safeLogText(invTool) + "`\n- Format: `"
+                                            + this.safeLogText(recoveredTextCall.format())
+                                            + "`\n- Public args:\n\n```json\n" + GSON.toJson((JsonElement)publicArgs) + "\n```\n");
                                     // Send local thinking only if streaming didn't already cover it
                                     if (modelThinkingFromLr == null || modelThinkingFromLr.isBlank()) {
                                         this.sendThought(sse, conv, i, this.toolNarrator.visibleActionSummary(invTool, publicArgs, visibleLanguage), this.toolNarrator.buildToolThought(invTool, publicArgs, true, visibleLanguage), task.getTaskId());

@@ -136,6 +136,15 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return;
         }
 
+        if (prompt.contains("[acceptance:text-tool-fallback]")
+                && !prompt.contains("[Tool list_files result]")) {
+            onChunk.accept(new StreamChunk("text_delta",
+                    "<tool_call>{\"name\":\"list_files\",\"arguments\":{\"path\":\"\"}}</tool_call>",
+                    null, null, null, false, null, null, null, null));
+            onChunk.accept(new StreamChunk("done", "", null, null, null, true, usageFor(prompt),
+                    null, null, null));
+            return;
+        }
         if (prompt.contains("[acceptance:tool]") && !prompt.contains("[Tool list_files result]")) {
             emitTool(onChunk, "list_files", "{\"path\":\"\"}", "acceptance-tool-list");
             return;
@@ -347,6 +356,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return "## Summary\n**Completed**\n- Prompt cache telemetry was emitted by the acceptance provider.\n"
                     + "**Verification**\n- The durable token usage event reports 50 cached tokens from 200 prompt tokens.\n"
                     + "**Risk**\n- These deterministic usage values are acceptance-profile only.";
+        }
+        if (prompt.contains("[acceptance:text-tool-fallback]")) {
+            return "## Summary\n**Completed**\n- The strict explicit text tool-call fallback executed `list_files`.\n"
+                    + "**Verification**\n- Ordinary prose remains non-executable; this acceptance-only envelope passed tool selection and schema validation.\n"
+                    + "**Risk**\n- Native structured tool calls remain the preferred production protocol.";
         }
         if (prompt.contains("[acceptance:tool]")) {
             return "## Summary\n**Completed**\n- The production Agent loop executed `list_files` and returned its result.\n"

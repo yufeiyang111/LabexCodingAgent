@@ -61,6 +61,21 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void emitsOneExplicitTextEnvelopeForStrictFallbackAcceptance() {
+        List<LlmProvider.StreamChunk> first = stream("[acceptance:text-tool-fallback]");
+
+        assertFalse(first.stream().anyMatch(chunk -> "tool_call".equals(chunk.type())));
+        assertEquals("<tool_call>{\"name\":\"list_files\",\"arguments\":{\"path\":\"\"}}</tool_call>",
+                text(first));
+        assertTrue(first.stream().anyMatch(chunk -> "done".equals(chunk.type())));
+
+        String completed = text(stream(
+                "[acceptance:text-tool-fallback]",
+                "[Tool list_files result]\nREADME.md"));
+        assertTrue(completed.contains("strict explicit text tool-call fallback"));
+    }
+
+    @Test
     void emitsAStableNativeToolCallThenACompleteFinalReply() {
         List<LlmProvider.StreamChunk> first = stream("[acceptance:tool] 请检查项目根目录");
 
@@ -304,6 +319,7 @@ class AcceptanceScriptedProviderTest {
                 "[Tool list_files result]\nREADME.md"));
         assertTrue(completed.contains("durable compaction epoch"));
     }
+
     private List<LlmProvider.StreamChunk> stream(String... contents) {
         List<Map<String, Object>> messages = new ArrayList<>();
         for (String content : contents) {

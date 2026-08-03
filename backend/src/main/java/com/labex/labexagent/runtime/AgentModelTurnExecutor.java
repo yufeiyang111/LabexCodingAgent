@@ -107,10 +107,9 @@ public final class AgentModelTurnExecutor {
                 throw new IllegalStateException("Failed to project reasoning delta", eventFailure);
             }
         };
-        Consumer<String> publishVisible = delta -> {
+        Consumer<String> projectVisible = delta -> {
             if (delta == null || delta.isEmpty()) return;
             try {
-                content.append(delta);
                 request.eventSink().transientEvent("FINAL_DELTA", Map.of(
                         "delta", delta,
                         "taskId", request.taskId()));
@@ -118,10 +117,17 @@ public final class AgentModelTurnExecutor {
                 throw new IllegalStateException("Failed to project visible delta", eventFailure);
             }
         };
+        TextToolCallStreamBoundary textToolCallStreamBoundary =
+                new TextToolCallStreamBoundary(projectVisible);
+        Consumer<String> collectVisible = delta -> {
+            if (delta == null || delta.isEmpty()) return;
+            content.append(delta);
+            textToolCallStreamBoundary.push(delta);
+        };
         InternalReasoningBoundary.TagStreamFilter dedicatedReasoningFilter =
                 new InternalReasoningBoundary.TagStreamFilter(publishThinking);
         InternalReasoningBoundary.VisibleStreamFilter visibleContentFilter =
-                new InternalReasoningBoundary.VisibleStreamFilter(publishThinking, publishVisible);
+                new InternalReasoningBoundary.VisibleStreamFilter(publishThinking, collectVisible);
 
         Future<?> future = executorService.submit(() -> request.provider().chatStream(
                 request.systemPrompt(), request.messages(), request.tools(), request.config(),
@@ -154,6 +160,7 @@ public final class AgentModelTurnExecutor {
                             case DONE -> {
                                 dedicatedReasoningFilter.flush();
                                 visibleContentFilter.flush();
+                                textToolCallStreamBoundary.finish();
                                 terminalEvent[0] = true;
                                 if (chunk.usage() != null) usage.set(chunk.usage());
                             }

@@ -76,6 +76,7 @@ $evidence = [ordered]@{
     authoritativeFailureProjection = $false
     authoritativeCancellationProjection = $false
     authoritativeModelRetryProjection = $false
+    strictTextToolFallback = $false
     isolatedDatabase = $false
     cleanup = $false
 }
@@ -385,6 +386,43 @@ try {
     Invoke-ApiData -Path "/student/model-configs/$smallConfigId" -Method DELETE | Out-Null
     $smallConfigId = $null
 
+    $textFallbackEvents = Invoke-AgentStream -Message '[acceptance:text-tool-fallback] strict envelope execution'
+    $textFallbackVisible = (($textFallbackEvents | Where-Object { $_.type -eq 'FINAL_DELTA' } |
+        ForEach-Object { [string]$_.data.delta }) -join '')
+    if ($textFallbackVisible -match '(?i)<\s*(?:minimax:)?(?:tool_call|invoke)\b') {
+        throw 'Explicit text tool-call envelope leaked into visible FINAL_DELTA projection.'
+    }
+    $textFallbackCall = Get-RequiredEvent -Events $textFallbackEvents -Type 'TOOL_CALL'
+    if ([string]$textFallbackCall.data.tool -ne 'list_files') {
+        throw "Strict text fallback executed the wrong tool: $($textFallbackCall.data.tool)"
+    }
+    if ([string]$textFallbackCall.data.toolCallId -notlike 'recovered:v1:*') {
+        throw "Strict text fallback did not use a deterministic recovered identity: $($textFallbackCall.data.toolCallId)"
+    }
+    if ($textFallbackEvents | Where-Object { $_.type -in @('COMMAND_APPROVAL_REQUIRED', 'PERMISSION_ASK') }) {
+        throw 'Read-only strict text fallback unexpectedly requested approval.'
+    }
+    $textFallbackObserve = $textFallbackEvents | Where-Object {
+        $_.type -eq 'OBSERVE' -and [string]$_.data.tool -eq 'list_files' -and [bool]$_.data.success
+    } | Select-Object -First 1
+    if (-not $textFallbackObserve) {
+        throw 'Strict text fallback did not execute list_files through the production tool pipeline.'
+    }
+    $textFallbackTaskId = [long]$textFallbackCall.data.taskId
+    $textFallbackTask = Wait-TaskTerminal -TaskId $textFallbackTaskId
+    if ($textFallbackTask.status -ne 'completed') {
+        throw "Strict text fallback task ended as $($textFallbackTask.status)."
+    }
+    $textFallbackSnapshot = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$textFallbackTaskId"
+    $textFallbackPart = @($textFallbackSnapshot.parts) | Where-Object {
+        [string]$_.partType -eq 'tool' -and
+        [string]$_.toolCallId -eq [string]$textFallbackCall.data.toolCallId -and
+        [string]$_.tool -eq 'list_files' -and [string]$_.status -eq 'completed'
+    } | Select-Object -First 1
+    if (-not $textFallbackPart) {
+        throw 'Strict text fallback has no completed durable Tool Part with the recovered identity.'
+    }
+    $evidence.strictTextToolFallback = $true
     $completionStreamEvents = Invoke-AgentStream -Message '[acceptance:evidence] persist completion evidence'
     $completionTaskId = [long](($completionStreamEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
     $completionApproval = $completionStreamEvents | Where-Object { $_.type -eq 'COMMAND_APPROVAL_REQUIRED' } | Select-Object -First 1

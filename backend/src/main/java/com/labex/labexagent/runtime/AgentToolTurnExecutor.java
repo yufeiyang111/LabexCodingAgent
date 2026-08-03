@@ -19,6 +19,7 @@ public final class AgentToolTurnExecutor {
             runnable -> { Thread thread = new Thread(runnable, "labex-agent-tool-turn"); thread.setDaemon(true); return thread; },
             new ThreadPoolExecutor.AbortPolicy());
     private final ToolRegistry registry;
+    private final ToolArgumentSchemaValidator argumentSchemaValidator = new ToolArgumentSchemaValidator();
 
     public AgentToolTurnExecutor(ToolRegistry registry) {
         this.registry = registry;
@@ -41,6 +42,24 @@ public final class AgentToolTurnExecutor {
                 : ToolResolution.allowed(tool);
     }
 
+    /** 文本兼容恢复必须在写入 Tool Part 或执行前通过本轮 schema 门禁。 */
+    public ToolResolution resolveRecovered(AgentContext context, String toolName, JsonObject arguments, String language) {
+        ToolResolution resolution = resolve(context, toolName, language);
+        if (!resolution.allowed()) {
+            return resolution;
+        }
+        ToolArgumentSchemaValidator.Validation validation = argumentSchemaValidator.validate(
+                resolution.tool().definition(), arguments == null ? new JsonObject() : arguments);
+        if (validation.valid()) {
+            return resolution;
+        }
+        String detail = "zh".equalsIgnoreCase(language)
+                ? "工具 `" + toolName + "` 的恢复参数不符合本轮 schema（" + validation.code()
+                        + "，位置 " + validation.path() + "），已拒绝执行。"
+                : "Recovered arguments for tool '" + toolName + "' do not match this turn's schema ("
+                        + validation.code() + " at " + validation.path() + ").";
+        return ToolResolution.rejected(ToolResult.failed(detail));
+    }
     public ToolResult execute(AgentTool tool, AgentContext context, JsonObject arguments, String toolName) throws Exception {
         long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments);
         Future<ToolResult> future = EXECUTOR.submit(() -> tool.execute(context, arguments));
