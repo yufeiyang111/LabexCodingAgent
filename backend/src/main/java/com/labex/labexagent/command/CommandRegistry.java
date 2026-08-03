@@ -15,8 +15,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 命令注册表 - 工业级别的命令管理系统
- * 完全复刻Opencode的命令架构
+ * 命令模板注册表；副作用统一交给 Agent 工具与审批运行时。
  */
 @Component
 public class CommandRegistry {

@@ -21,6 +21,7 @@ LabexAgent 是从 Labex 云编程工作台剥离出来的独立版本：Spring B
 - 修改前必须先定位架构归属：运行生命周期、持久化 transcript、上下文压缩、Provider 协议、工具执行、审批、事件投影、前端 reducer 分别由哪个模块负责。
 - 不得因为某个调用点缺少能力，就在 controller、tool、loop、composable 中临时增加第二套 Provider 历史、任务状态、审批等待或上下文摘要。
 - 不得新增没有明确唯一所有者的 `Service`、fallback、registry、全局 Map、前端本地状态或字符串协议；如果已有路径失效，应修复或删除旧路径，而不是并行堆叠。
+- Slash command 的唯一后端职责是通过 AgentCommandService / CommandRegistry 解析模板；任何文件、Git、测试、构建或系统副作用都必须回到 Agent Tool + permission/approval + durable task，不得重新引入并行 CommandExecutor。
 - 不得把“能编译”“mock 返回正确”“字符串里出现某个方法名”作为核心状态机或恢复能力的唯一验证。
 - Agent 生成的改动必须小步、可回滚、可定位；跨层改动先写计划，先加失败回归测试，再改实现。
 - 不得把兼容代码当作永久架构。兼容期必须写明读取/写入方向、退出条件、删除版本和验证命令。

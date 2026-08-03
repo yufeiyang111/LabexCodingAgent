@@ -4,8 +4,6 @@ import com.google.gson.Gson;
 import com.labex.entity.AgentModelConfig;
 import com.labex.entity.AgentConversation;
 import com.labex.entity.StudentProject;
-import com.labex.labexagent.command.CommandExecutor;
-import com.labex.labexagent.command.CommandExecutor.CommandResult;
 import com.labex.labexagent.command.CommandInfo;
 import com.labex.labexagent.command.CommandRegistry;
 import com.labex.labexagent.dto.PromptOptimizationRequest;
@@ -22,8 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Agent命令服务 - 工业级别的命令处理系统
- * 完全复刻Opencode的命令架构
+ * 解析 slash command 模板；不建立第二套命令副作用运行时。
  */
 @Service
 public class AgentCommandService {
@@ -33,20 +30,17 @@ public class AgentCommandService {
     private final StudentProjectService studentProjectService;
     private final AgentConversationService conversationService;
     private final CommandRegistry commandRegistry;
-    private final CommandExecutor commandExecutor;
     private final AgentModelConfigService modelConfigService;
     private final LlmProviderFactory providerFactory;
 
     public AgentCommandService(StudentProjectService studentProjectService,
                               AgentConversationService conversationService,
                               CommandRegistry commandRegistry,
-                              CommandExecutor commandExecutor,
                               AgentModelConfigService modelConfigService,
                               LlmProviderFactory providerFactory) {
         this.studentProjectService = studentProjectService;
         this.conversationService = conversationService;
         this.commandRegistry = commandRegistry;
-        this.commandExecutor = commandExecutor;
         this.modelConfigService = modelConfigService;
         this.providerFactory = providerFactory;
 

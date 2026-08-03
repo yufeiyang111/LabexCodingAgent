@@ -4,8 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 命令信息 - 工业级别的命令元数据
- * 完全复刻Opencode的命令配置结构
+ * 命令元数据：描述 slash command 模板，不直接执行副作用。
  */
 public record CommandInfo(
     String name,                    // 命令名称
