@@ -78,10 +78,24 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
     @Override
     public Map<String, Object> chatWithTools(String sysPrompt, List<Map<String, Object>> messages,
                                               List<Map<String, Object>> tools, LlmConfig config) {
+        return chatWithTools(sysPrompt, messages, tools, config, CancellationToken.none());
+    }
+
+    @Override
+    public Map<String, Object> chatWithTools(String sysPrompt, List<Map<String, Object>> messages,
+                                              List<Map<String, Object>> tools, LlmConfig config,
+                                              CancellationToken cancellationToken) {
+        CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
+        if (token.isCancellationRequested()) {
+            return cancelledResponse();
+        }
         String prompt = flatten(messages);
         if (isCompactionRequest(sysPrompt)) {
             if (prompt.contains("[acceptance:compaction-cancel]")) {
-                holdCompactionRequest();
+                holdCompactionRequest(token);
+            }
+            if (token.isCancellationRequested()) {
+                return cancelledResponse();
             }
             String marker = prompt.contains("[acceptance:compaction]") ? " [acceptance:compaction]" : "";
             String summary = "Acceptance compaction preserved the active task, verified state, and next runtime action." + marker;
@@ -292,10 +306,10 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
     }
 
     /** acceptance profile 内暂挂没有 token 的 compaction Provider 调用，供真实 interrupt 竞态验收。 */
-    private void holdCompactionRequest() {
+    private void holdCompactionRequest(CancellationToken token) {
         long configured = Long.getLong("labex.acceptance.compaction.hold.ms", 4000L);
         long remaining = Math.max(0L, Math.min(15000L, configured));
-        while (remaining > 0L) {
+        while (remaining > 0L && !token.isCancellationRequested()) {
             long slice = Math.min(100L, remaining);
             try {
                 Thread.sleep(slice);
@@ -305,6 +319,10 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             }
             remaining -= slice;
         }
+    }
+
+    private Map<String, Object> cancelledResponse() {
+        return Map.of("type", "cancelled", "message", "Provider request cancelled", "content", "");
     }
 
     private void holdCheckoutLease(CancellationToken token) {

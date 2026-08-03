@@ -74,7 +74,7 @@ public class CompactionAgent {
                     "role", "user",
                     "content", buildInput(messages, taskRequest, context, selected)));
             Map<String, Object> response = provider.chatWithTools(systemPrompt(), promptMessages, List.of(),
-                    compactionConfig);
+                    compactionConfig, cancellationToken);
             if (cancellationToken != null && cancellationToken.isCancellationRequested()) {
                 return Result.failure("Compaction cancelled");
             }

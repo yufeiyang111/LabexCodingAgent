@@ -11,13 +11,20 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URISyntaxException;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,16 +71,35 @@ public class OpenAiCompatibleProvider implements LlmProvider {
     @Override
     public Map<String, Object> chatWithTools(String sysPrompt, List<Map<String, Object>> msgs,
                                               List<Map<String, Object>> tools, LlmConfig config) {
+        return chatWithTools(sysPrompt, msgs, tools, config, CancellationToken.none());
+    }
+
+    @Override
+    public Map<String, Object> chatWithTools(String sysPrompt, List<Map<String, Object>> msgs,
+                                              List<Map<String, Object>> tools, LlmConfig config,
+                                              CancellationToken cancellationToken) {
+        CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
+        if (token.isCancellationRequested()) {
+            return cancelledResponse();
+        }
         try {
             String body = buildRequestBody(sysPrompt, msgs, tools, config, false);
             String url = buildApiUrl(config.baseUrl(), "/chat/completions");
-            String response = httpPost(url, body, config.apiKey(), config);
+            String response = httpPost(url, body, config.apiKey(), config, token);
+            if (token.isCancellationRequested()) {
+                return cancelledResponse();
+            }
             return parseResponse(response);
+        } catch (CancellationException cancelled) {
+            return cancelledResponse();
         } catch (Exception e) {
+            if (token.isCancellationRequested()) {
+                return cancelledResponse();
+            }
             if (config.reasoningEffort() != null && !config.reasoningEffort().isBlank()
                     && shouldRetryWithoutReasoningEffortMessage(e.getMessage())) {
                 log.info("LLM_CHAT_RETRY_WITHOUT_REASONING_EFFORT model={}", config.modelName());
-                return chatWithTools(sysPrompt, msgs, tools, config.withoutReasoningEffort());
+                return chatWithTools(sysPrompt, msgs, tools, config.withoutReasoningEffort(), token);
             }
             log.error("LLM chat error: {}", e.getMessage());
             return Map.of("type", "error", "message", "LLM error: " + e.getMessage(), "content", "");
@@ -563,46 +589,90 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         return 0;
     }
 
-    private String httpPost(String url, String body, String apiKey, LlmConfig config) throws Exception {
+    private String httpPost(String url, String body, String apiKey, LlmConfig config,
+                            CancellationToken cancellationToken) throws Exception {
+        CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
+        URI uri = outboundUrlPolicy.validate(url).uri();
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofMillis(config.effectiveConnectTimeoutMs()))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
         int retries = 0;
         while (true) {
-            HttpURLConnection conn = null;
+            throwIfCancelled(token);
+            HttpRequest request = HttpRequest.newBuilder(uri)
+                    .timeout(Duration.ofMillis(config.effectiveReadTimeoutMs()))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
             try {
-                conn = openConnection(url);
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("Authorization", "Bearer " + apiKey);
-                conn.setRequestProperty("Connection", "keep-alive");
-                conn.setDoOutput(true);
-                conn.setConnectTimeout(config.effectiveConnectTimeoutMs());
-                conn.setReadTimeout(config.effectiveReadTimeoutMs());
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(body.getBytes(StandardCharsets.UTF_8));
+                CompletableFuture<HttpResponse<String>> responseFuture = client.sendAsync(
+                        request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                try (CancellationToken.Registration ignored = token.onCancellation(
+                        () -> responseFuture.cancel(true))) {
+                    HttpResponse<String> response = awaitResponse(responseFuture, token);
+                    throwIfCancelled(token);
+                    int code = response.statusCode();
+                    if (code == 200) {
+                        return response.body() == null ? "" : response.body();
+                    }
+                    ProviderFailure failure = retryPolicy.httpFailure(
+                            code, "API error " + code + ": " + (response.body() == null ? "" : response.body()));
+                    if (retryPolicy.shouldRetry(failure, retries, config)
+                            && retryPolicy.backoff(token, retries++)) {
+                        continue;
+                    }
+                    throw new RuntimeException(failure.message());
                 }
-                int code = conn.getResponseCode();
-                if (code == 200) {
-                    return readAll(conn.getInputStream());
-                }
-                String error = readAll(conn.getErrorStream());
-                ProviderFailure failure = retryPolicy.httpFailure(code, "API error " + code + ": " + error);
-                if (retryPolicy.shouldRetry(failure, retries, config)
-                        && retryPolicy.backoff(CancellationToken.none(), retries++)) {
-                    continue;
-                }
-                throw new RuntimeException(failure.message());
+            } catch (CancellationException cancelled) {
+                throw cancelled;
             } catch (RuntimeException e) {
+                if (token.isCancellationRequested()) {
+                    throw new CancellationException("Provider request cancelled");
+                }
                 throw e;
             } catch (Exception e) {
+                if (token.isCancellationRequested()) {
+                    throw new CancellationException("Provider request cancelled");
+                }
                 ProviderFailure failure = retryPolicy.exceptionFailure(e);
                 if (retryPolicy.shouldRetry(failure, retries, config)
-                        && retryPolicy.backoff(CancellationToken.none(), retries++)) {
+                        && retryPolicy.backoff(token, retries++)) {
                     continue;
                 }
                 throw e;
-            } finally {
-                if (conn != null) conn.disconnect();
             }
         }
+    }
+
+    private HttpResponse<String> awaitResponse(CompletableFuture<HttpResponse<String>> responseFuture,
+                                                CancellationToken token) throws Exception {
+        try {
+            return responseFuture.get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            if (token != null && token.isCancellationRequested()) {
+                throw new CancellationException("Provider request cancelled");
+            }
+            throw interrupted;
+        } catch (ExecutionException execution) {
+            Throwable cause = execution.getCause();
+            if (cause instanceof Exception exception) {
+                throw exception;
+            }
+            throw execution;
+        }
+    }
+
+    private void throwIfCancelled(CancellationToken token) {
+        if (token != null && token.isCancellationRequested()) {
+            throw new CancellationException("Provider request cancelled");
+        }
+    }
+
+    private Map<String, Object> cancelledResponse() {
+        return Map.of("type", "cancelled", "message", "Provider request cancelled", "content", "");
     }
 
     private String readAll(java.io.InputStream is) {

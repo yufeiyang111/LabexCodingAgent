@@ -2,6 +2,7 @@ package com.labex.labexagent.llm;
 
 import com.labex.labexagent.runtime.CancellationToken;
 import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
 
 /** Bounded retry policy for request failures that occur before a provider response is consumed. */
 public class ProviderRetryPolicy {
@@ -66,7 +67,7 @@ public class ProviderRetryPolicy {
     }
 
     public ProviderFailure exceptionFailure(Exception exception) {
-        if (exception instanceof SocketTimeoutException) {
+        if (exception instanceof SocketTimeoutException || exception instanceof HttpTimeoutException) {
             return new ProviderFailure(ProviderFailureType.TIMEOUT, null, exception.getMessage(), true);
         }
         return new ProviderFailure(ProviderFailureType.NETWORK, null,

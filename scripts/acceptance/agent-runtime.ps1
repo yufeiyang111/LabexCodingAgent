@@ -70,6 +70,7 @@ $evidence = [ordered]@{
     manualCompaction = $false
     compactionEpochRecovery = $false
     compactionCancellationTerminal = $false
+    compactionCancellationElapsedMs = $null
     staticContextBlocked = $false
     contextWindowUnconfigured = $false
     completionEvidence = $false
@@ -916,10 +917,16 @@ WHERE event_id = (
     if ([string]$runningCompaction.task.status -notin @('running', 'preparing')) {
         throw "Compaction cancellation task was not active while its compaction was running: $($runningCompaction.task.status)"
     }
+    $compactionCancelTimer = [Diagnostics.Stopwatch]::StartNew()
     Invoke-ApiData -Path "/student/projects/$projectId/agent/interrupt" -Method POST -Body @{
         sessionId = [string]$runningCompaction.task.sessionId; taskId = [string]$compactionCancelTaskId
     } | Out-Null
     $compactionCancelledTask = Wait-TaskTerminal -TaskId $compactionCancelTaskId -Seconds 60
+    $compactionCancelTimer.Stop()
+    $compactionCancellationElapsedMs = [int]$compactionCancelTimer.ElapsedMilliseconds
+    if ($compactionCancellationElapsedMs -ge 5000) {
+        throw "Compaction cancellation took ${compactionCancellationElapsedMs}ms despite a cancellation-aware Provider contract."
+    }
     if ([string]$compactionCancelledTask.status -ne 'cancelled') {
         throw "Compaction cancellation task ended as $($compactionCancelledTask.status), expected cancelled."
     }
@@ -938,6 +945,7 @@ WHERE event_id = (
         throw 'Compaction cancellation did not persist one failed projection, zero completed projections, and one task cancellation.'
     }
     $evidence.compactionCancellationTerminal = $true
+    $evidence.compactionCancellationElapsedMs = $compactionCancellationElapsedMs
 
     $compactionRestartEvents = Invoke-AgentStream -Message '[acceptance:compaction] [acceptance:compaction-restart] durable epoch restart recovery'
     $firstCompactionQuestion = Get-RequiredEvent -Events $compactionRestartEvents -Type 'USER_QUESTION'

@@ -8,6 +8,8 @@ import com.labex.labexagent.runtime.CancellationToken;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.Profile;
 
@@ -335,6 +337,32 @@ class AcceptanceScriptedProviderTest {
                     List.of(), config());
             assertEquals("text", response.get("type"));
             assertTrue(String.valueOf(response.get("content")).contains("Acceptance compaction preserved"));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("labex.acceptance.compaction.hold.ms");
+            } else {
+                System.setProperty("labex.acceptance.compaction.hold.ms", previous);
+            }
+        }
+    }
+
+    @Test
+    void cancellationTokenReleasesTheBoundedCompactionHold() {
+        String previous = System.getProperty("labex.acceptance.compaction.hold.ms");
+        System.setProperty("labex.acceptance.compaction.hold.ms", "12000");
+        AtomicInteger checks = new AtomicInteger();
+        CancellationToken token = () -> checks.incrementAndGet() >= 3;
+        try {
+            long started = System.nanoTime();
+            Map<String, Object> response = provider.chatWithTools(
+                    "You are a context compaction agent. Return nextActions and openRisks.",
+                    List.of(Map.of("role", "user",
+                            "content", "[acceptance:compaction] [acceptance:compaction-cancel]")),
+                    List.of(), config(), token);
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+            assertEquals("cancelled", response.get("type"));
+            assertTrue(elapsedMillis < 1_000L, "Cancellation-aware hold took " + elapsedMillis + "ms");
         } finally {
             if (previous == null) {
                 System.clearProperty("labex.acceptance.compaction.hold.ms");

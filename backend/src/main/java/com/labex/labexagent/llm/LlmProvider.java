@@ -22,6 +22,12 @@ public interface LlmProvider {
     Map<String, Object> chatWithTools(String sysPrompt, List<Map<String, Object>> msgs,
                                        List<Map<String, Object>> tools, LlmConfig config);
 
+    default Map<String, Object> chatWithTools(String sysPrompt, List<Map<String, Object>> msgs,
+                                              List<Map<String, Object>> tools, LlmConfig config,
+                                              CancellationToken cancellationToken) {
+        return chatWithTools(sysPrompt, msgs, tools, config);
+    }
+
     void chatStream(String sysPrompt, List<Map<String, Object>> msgs,
                      List<Map<String, Object>> tools, LlmConfig config,
                      Consumer<StreamChunk> onChunk);

@@ -1,5 +1,6 @@
 package com.labex.labexagent.llm;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -17,6 +18,15 @@ class ProviderRetryPolicyTest {
 
         assertTrue(policy.shouldRetry(timeout, 0, config));
         assertFalse(policy.shouldRetry(timeout, 1, config));
+    }
+
+    @Test
+    void classifiesJdkHttpRequestTimeoutAsATimeoutFailure() {
+        ProviderFailure failure = policy.exceptionFailure(
+                new java.net.http.HttpTimeoutException("request timed out"));
+
+        assertEquals(ProviderFailureType.TIMEOUT, failure.type());
+        assertTrue(failure.retryable());
     }
 
     @Test

@@ -31,7 +31,7 @@ class CompactionAgentTest {
 
         LlmProvider provider = mock(LlmProvider.class);
         LlmProvider.LlmConfig config = configFor(dedicated);
-        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class))).thenReturn(Map.of(
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class))).thenReturn(Map.of(
                 "type", "text",
                 "content", """
                         {"summary":"Implemented the context policy and need to keep the runtime safe.",
@@ -46,8 +46,9 @@ class CompactionAgentTest {
         when(providerFactory.buildConfig(dedicated)).thenReturn(config);
 
         CompactionAgent agent = new CompactionAgent(providerFactory, modelConfigService);
+        CancellationToken cancellationToken = mock(CancellationToken.class);
         CompactionAgent.Result result = agent.compact(7, primary, messages(), "Improve context management", null,
-                CancellationToken.none());
+                cancellationToken);
 
         assertTrue(result.success());
         assertTrue(result.checkpoint().contains("version=\"3\""));
@@ -56,7 +57,7 @@ class CompactionAgentTest {
         assertTrue(result.dedicatedModelSelected());
         ArgumentCaptor<List<Map<String, Object>>> tools = ArgumentCaptor.forClass(List.class);
         ArgumentCaptor<LlmProvider.LlmConfig> usedConfig = ArgumentCaptor.forClass(LlmProvider.LlmConfig.class);
-        verify(provider).chatWithTools(anyString(), anyList(), tools.capture(), usedConfig.capture());
+        verify(provider).chatWithTools(anyString(), anyList(), tools.capture(), usedConfig.capture(), same(cancellationToken));
         assertTrue(tools.getValue().isEmpty());
         assertTrue(usedConfig.getValue().temperature() == 0.0);
         assertFalse(usedConfig.getValue().promptCacheKeyEnabled());
@@ -67,7 +68,7 @@ class CompactionAgentTest {
         AgentModelConfig config = modelConfig(1, "primary", 1);
         LlmProvider provider = mock(LlmProvider.class);
         LlmProvider.LlmConfig llmConfig = configFor(config);
-        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class)))
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class)))
                 .thenReturn(Map.of("type", "text", "content", "not json"));
         LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
         when(providerFactory.resolveProvider(config)).thenReturn(provider);
@@ -77,7 +78,7 @@ class CompactionAgentTest {
         CompactionAgent.Result malformed = agent.compact(7, config, messages(), "task", null, CancellationToken.none());
         assertFalse(malformed.success());
 
-        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class))).thenReturn(Map.of(
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class))).thenReturn(Map.of(
                 "type", "text",
                 "content", """
                         {"summary":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
@@ -116,7 +117,7 @@ class CompactionAgentTest {
         AgentModelConfig config = modelConfig(1, "primary", 1);
         LlmProvider provider = mock(LlmProvider.class);
         LlmProvider.LlmConfig llmConfig = configFor(config);
-        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class)))
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class)))
                 .thenReturn(Map.of("type", "text", "content", """
                         <THINK data-kind='hidden'>private compaction plan</THINKING>
                         {"summary":"Safe checkpoint.","facts":[],"nextActions":[],
