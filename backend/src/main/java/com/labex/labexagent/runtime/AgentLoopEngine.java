@@ -518,28 +518,21 @@ public class AgentLoopEngine {
         }
     }
 
-    /**
-     * Provider buffer 仅是派生投影；必须先持久化事实，再更新本地缓存。
-     */
-    private void appendProviderMessage(List<Map<String, Object>> target, Long taskId, long executionEpoch,
-                                       Map<String, Object> message) {
-        if (target == null) {
-            throw new IllegalArgumentException("Provider projection buffer is required");
-        }
+    /** Provider 消息只写入 durable transcript；下一次读取统一经过 projector。 */
+    private void appendProviderMessage(Long taskId, long executionEpoch, Map<String, Object> message) {
         Map<String, Object> durableCopy = this.providerMessageProjector.copyMessage(message);
         AgentRunTranscriptService transcriptService = this.requireTranscriptService();
         transcriptService.appendMessage(taskId, executionEpoch,
                 transcriptService.nextSequence(taskId), durableCopy);
-        target.add(durableCopy);
     }
 
-    private void appendProviderMessages(List<Map<String, Object>> target, Long taskId, long executionEpoch,
+    private void appendProviderMessages(Long taskId, long executionEpoch,
                                         Collection<? extends Map<String, Object>> messages) {
         if (messages == null) {
             return;
         }
         for (Map<String, Object> message : messages) {
-            this.appendProviderMessage(target, taskId, executionEpoch, message);
+            this.appendProviderMessage(taskId, executionEpoch, message);
         }
     }
 
@@ -705,7 +698,6 @@ public class AgentLoopEngine {
                     studentId, modelConfig.getConfigId(), llmConfig.baseUrl(), llmConfig.modelName(),
                     sysPrompt, GSON.toJson(tools)));
             long transcriptEpoch = task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch();
-            List<Map<String, Object>> msgs = new ArrayList<>();
             String activeFileContent = this.readActiveFile(studentId, projectId, request.getActivePath());
             String projectRules = this.readProjectRules(studentId, projectId);
             String projectIndex = this.readProjectIndex(studentId, projectId);
@@ -721,35 +713,34 @@ public class AgentLoopEngine {
             ContextUsageEstimator.PromptContext contextPrompt = ContextUsageEstimator.PromptContext.of(
                     projectRules, memoryContext, sessionContext, recentRunLog, checkpoint, globalSkills,
                     mcpContext, modePolicy, languagePolicy, initialContextMessage);
-            boolean transcriptRestored = false;
+            List<Map<String, Object>> persistedMessages;
             try {
                 AgentTranscriptProjectionService durableProjector = this.requireTranscriptProjectionService();
-                List<Map<String, Object>> persistedMessages = resumedRun
-                        && request.getResumeInteractionId() != null
+                persistedMessages = resumedRun && request.getResumeInteractionId() != null
                         ? durableProjector.loadDurableProjectionForInteractionResume(task.getTaskId()).messages()
                         : durableProjector.loadDurableProjection(task.getTaskId()).messages();
-                if (!persistedMessages.isEmpty()) {
-                    this.replaceProviderProjection(msgs, persistedMessages);
-                    transcriptRestored = true;
-                }
             } catch (RuntimeException transcriptFailure) {
                 throw new IllegalStateException(
                         "Unable to restore durable Provider transcript for taskId=" + task.getTaskId(),
                         transcriptFailure);
             }
+            boolean transcriptRestored = !persistedMessages.isEmpty();
             if (!transcriptRestored) {
-                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", initialContextMessage));
-                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", request.getMessage()));
+                this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
+                        Map.of("role", "user", "content", initialContextMessage));
+                this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
+                        Map.of("role", "user", "content", request.getMessage()));
             } else if (resumedRun) {
                 if (request.getResumeInteractionId() != null) {
                     AgentRunInteraction interaction = this.runInteractionService.findById(request.getResumeInteractionId());
                     List<Map<String, Object>> toolResults = this.requireTranscriptService()
-                            .resolvedInteractionToolResults(interaction, msgs);
-                    this.appendProviderMessages(msgs, task.getTaskId(), transcriptEpoch, toolResults);
+                            .resolvedInteractionToolResults(interaction, persistedMessages);
+                    this.appendProviderMessages(task.getTaskId(), transcriptEpoch, toolResults);
                 }
                 if (request.getMessage() != null && !request.getMessage().isBlank()) {
                     // 持久化运行时边界说明。
-                    this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", request.getMessage()));
+                    this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
+                            Map.of("role", "user", "content", request.getMessage()));
                 }
             }
             log.info("AGENT_CONTEXT_READY taskId={} buildMs={} systemPromptChars={} contextChars={} userChars={} toolCount={} toolSchemaChars={} estimatedContextTokens={}",
@@ -829,7 +820,7 @@ public class AgentLoopEngine {
                                         }
                                         // Apply the OpenCode-style soft budget before sending the next provider request.
                                         ContextManagementResult contextManagement = this.manageContextBeforeModel(
-                                                msgs, sysPrompt, tools, contextWindowPolicy, request.getMessage(), ctx,
+                                                sysPrompt, tools, contextWindowPolicy, request.getMessage(), ctx,
                                                 sse, conv, modelConfig, studentId, cancellationToken, transcriptEpoch);
                                         List<Map<String, Object>> providerMessages = this.providerMessagesForBudget(task.getTaskId());
                                         ContextAdmissionDecision admission = this.evaluateContextAdmission(
@@ -899,7 +890,7 @@ public class AgentLoopEngine {
                                         } else {
                                             // Estimate tokens when provider doesn't return usage
                                             try {
-                                                int estimatedPrompt = sysPrompt.length() / 4 + msgs.stream().mapToInt(m -> {
+                                                int estimatedPrompt = sysPrompt.length() / 4 + providerMessages.stream().mapToInt(m -> {
                                                     Object c = m.get("content");
                                                     return c != null ? c.toString().length() / 4 : 0;
                                                 }).sum();
@@ -965,7 +956,7 @@ public class AgentLoopEngine {
                                         String modelContent = lr.get("content") == null ? "" : lr.get("content").toString();
                                         String modelThinkingRaw = lr.get("thinking") != null ? lr.get("thinking").toString() : "";
                                         String modelThinking = this.cleanModelOutput(modelThinkingRaw);
-                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.assistantMessage(modelContent, nativeToolCalls));
+                                        this.appendProviderMessage(task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.assistantMessage(modelContent, nativeToolCalls));
 
                                         // 先对整批调用做 admission，再一次性持久为 pending 或 error Part。
                                         // Provider 原始 tool_calls 是 transcript 事实；可执行参数则必须先通过类型和 schema 门禁。
@@ -1022,7 +1013,7 @@ public class AgentLoopEngine {
                                                 this.writeAgentCheckpoint(project, request, task, ctx,
                                                         "native_tool_input_rejected", rejectionDetail, tn, "", runLog);
                                                 this.sendObserve(sse, conv, i, tn, rejected, task.getTaskId());
-                                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
                                                         this.toolCallBatchProtocol.toolResultMessage(call,
                                                                 "[Tool " + tn + " result]\n"
                                                                         + this.compactToolResultForModel(tn, rejected)));
@@ -1040,11 +1031,11 @@ public class AgentLoopEngine {
                                                 String loopMessage = this.loopGuardMessage(loopDecision, tn, visibleLanguage);
                                                 ToolResult blockedResult = this.loopGuardResult(loopDecision, tn, toolCallId, ctx, visibleLanguage, loopMessage);
                                                 this.journalToolResult(task.getTaskId(), toolCallId, tn, publicArgs, i, blockedResult);
-                                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(call,
+                                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(call,
                                                         "[Tool " + tn + " result]\n" + loopMessage));
                                                 String skippedMessage = "Skipped because an earlier tool call in the same model turn was blocked by the loop guard.";
                                                 this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i, skippedMessage);
-                                                this.appendRemainingBatchToolResults(msgs, task.getTaskId(), transcriptEpoch,
+                                                this.appendRemainingBatchToolResults(task.getTaskId(), transcriptEpoch,
                                                         nativeAdmissions, batchIndex + 1, skippedMessage);
                                                 String visibleSignature = tn + ":" + this.toolNarrator.toolTarget(this.safeTool(tn), publicArgs);
                                                 this.appendRunLog(runLog, "\n- " + loopMessage + "\n");
@@ -1065,7 +1056,7 @@ public class AgentLoopEngine {
                                                     return;
                                                 }
                                                 this.writeAgentCheckpoint(project, request, task, ctx, "loop_guard_strategy_switch", loopMessage, tn, "", runLog);
-                                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
+                                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
                                                         + "\nDo not repeat the blocked pattern. Change the tool, target, scope, or verification method; use existing evidence; or finish if the task is complete."));
                                                 executed = true;
                                                 break block19;
@@ -1080,13 +1071,13 @@ public class AgentLoopEngine {
                                                 String blockedResultForModel = "[Tool " + tn + " result]\n"
                                                         + this.compactToolResultForModel(tn, res);
                                                 this.journalToolBlocked(task.getTaskId(), toolCallId, tn, publicArgs, i, res.getContent());
-                                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
                                                         this.toolCallBatchProtocol.toolResultMessage(call, blockedResultForModel));
                                                 this.appendToolResult(runLog, res);
                                                 String skippedMessage = "Skipped because an earlier tool call in the same model turn is blocked by the environment.";
                                                 this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i,
                                                         skippedMessage);
-                                                this.appendRemainingBatchToolResults(msgs, task.getTaskId(), transcriptEpoch,
+                                                this.appendRemainingBatchToolResults(task.getTaskId(), transcriptEpoch,
                                                         nativeAdmissions, batchIndex + 1, skippedMessage);
                                                 this.stopForEnvironmentBlocker(sse, conv, task, project, request, ctx, runLog, i, tn,
                                                         res, environmentBlocker.get(), visibleLanguage, emitter);
@@ -1140,13 +1131,13 @@ public class AgentLoopEngine {
                                             String resultForModel = "[Tool " + tn + " result]\n"
                                                     + this.compactToolResultForModel(tn, res) + planNote + stageNote
                                                     + "\nContinue using tools when needed. Only output the final summary after all plan tasks are complete and verified.";
-                                            this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(call, resultForModel));
+                                            this.appendProviderMessage(task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(call, resultForModel));
                                             if (isMissingPlanCompletion(tn, ta, res)) {
                                                 String skippedMessage = "Skipped because completing a plan requires an existing plan.";
                                                 this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i, skippedMessage);
-                                                this.appendRemainingBatchToolResults(msgs, task.getTaskId(), transcriptEpoch,
+                                                this.appendRemainingBatchToolResults(task.getTaskId(), transcriptEpoch,
                                                         nativeAdmissions, batchIndex + 1, skippedMessage);
-                                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content",
+                                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content",
                                                         "No execution plan exists. Create a plan before completing plan items; do not submit more complete actions in the same turn."));
                                                 executed = true;
                                                 break block19;
@@ -1182,7 +1173,7 @@ public class AgentLoopEngine {
                                                 emitter.complete();
                                                 return;
                                             }
-                                            this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                            this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
                                                     Map.of("role", "user", "content",
                                                             "One or more native tool calls were rejected before execution because their arguments were missing, malformed, not a JSON object, unavailable in this turn, or incompatible with the exposed schema. "
                                                                     + "Retry with complete JSON object arguments that exactly match the selected tool schema. Do not repeat rejected arguments."));
@@ -1233,7 +1224,7 @@ public class AgentLoopEngine {
                                         this.writeAgentCheckpoint(project, request, task, ctx,
                                                 "text_tool_call_rejected", recoveredRejection, invTool, "", runLog);
                                         loopGuard.recordModelNoProgress();
-                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                        this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
                                                 Map.of("role", "assistant", "content", content));
                                         if (textToolCallRecoveryFailures >= MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES) {
                                             String stopReason = this.localText(visibleLanguage,
@@ -1256,7 +1247,7 @@ public class AgentLoopEngine {
                                             emitter.complete();
                                             return;
                                         }
-                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                        this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
                                                 Map.of("role", "user", "content",
                                                         "Your previous text tool call was rejected because it was incomplete, ambiguous, invalid, unknown, not exposed in this turn, or did not match the tool schema. "
                                                                 + "Retry once using the provider's native structured tool-call protocol. Do not describe or embed a tool call in ordinary text."));
@@ -1298,8 +1289,8 @@ public class AgentLoopEngine {
                                             return;
                                         }
                                         this.writeAgentCheckpoint(project, request, task, ctx, "loop_guard_strategy_switch", loopMessage, invTool, "", runLog);
-                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ""));
-                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
+                                        this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ""));
+                                        this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
                                                 + "\nDo not repeat the blocked pattern. Change the tool, target, scope, or verification method; use existing evidence; or finish if the task is complete."));
                                         break block19;
                                     }
@@ -1346,8 +1337,8 @@ public class AgentLoopEngine {
                                     String planStatus2 = ctx.getPlanSummary();
                                     Object planNote2 = planStatus2.isEmpty() ? "" : "\nCurrent plan progress:\n" + planStatus2;
                                     String stageNote2 = "\nCurrent engineering stage: " + ctx.getStage();
-                                    this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ""));
-                                    this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Tool " + invTool + " result]\n" + this.compactToolResultForModel(invTool, res) + (String)planNote2 + stageNote2 + "\nCall tools to continue. Complete all plan tasks and verify before final summary."));
+                                    this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ""));
+                                    this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Tool " + invTool + " result]\n" + this.compactToolResultForModel(invTool, res) + (String)planNote2 + stageNote2 + "\nCall tools to continue. Complete all plan tasks and verify before final summary."));
                                     break block19;
                                 }
                                 cleaned = this.cleanModelOutput(content);
@@ -1356,8 +1347,8 @@ public class AgentLoopEngine {
                                 log.info("Iteration {}: empty/marker-only response, nudging model", i);
                                 loopGuard.recordModelNoProgress();
                                 this.appendRunLog(runLog, "\n- Model returned empty/marker-only response, requesting continuation.\n");
-                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", content));
-                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "Task not done. Call tools to execute next step. Do not output plain text ending."));
+                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", content));
+                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "Task not done. Call tools to execute next step. Do not output plain text ending."));
                                 executed = true;
                                 break block19;
                             }
@@ -1369,8 +1360,8 @@ public class AgentLoopEngine {
                             loopGuard.recordModelNoProgress();
                             this.appendRunLog(runLog, "\n- Model returned mid-placeholder text, rejecting as final, continuing: `" + this.safeLogText(ft) + "`\n");
             this.writeAgentCheckpoint(project, request, task, ctx, "continuing_after_premature_final", "Model returned mid-placeholder text, rejected as final.", "", ft, runLog);
-                            this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
-                            this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", this.buildContinuationInstruction(ctx)));
+                            this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
+                            this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", this.buildContinuationInstruction(ctx)));
                             executed = true;
                             break block19;
                         }
@@ -1378,9 +1369,9 @@ public class AgentLoopEngine {
                             loopGuard.recordModelNoProgress();
                             this.appendRunLog(runLog, "\n- Plan has unfinished tasks, rejecting premature end. Remaining: " + ctx.getPlanSummary() + "\n");
                             this.writeAgentCheckpoint(project, request, task, ctx, "continuing_open_plan", "Plan has unfinished tasks, rejecting premature end.", "", ft, runLog);
-                            this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
+                            this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
                             String planMsg = "Your plan has unfinished tasks. Cannot end yet. Continue execution:\n" + ctx.getPlanSummary() + "\nUse create_plan complete to mark done items, then continue next item.";
-                            this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", planMsg));
+                            this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", planMsg));
                             executed = true;
                             break block19;
                         } else {
@@ -1390,8 +1381,8 @@ public class AgentLoopEngine {
                             if (shouldRejectFinalReply(request.getMessage(), ft)) {
                                 loopGuard.recordModelNoProgress();
                                 this.appendRunLog(runLog, "\n- Reply quality insufficient (length=" + ft.length() + ", noStructure=" + noStructure + ", noSubstance=" + noSubstance + "), rejecting as final.\n");
-                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
-                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "Reply too short to be final. Output complete structured summary:\n## Summary\n**Completed**\n- What was modified\n**Verification**\n- How it was verified\n**Suggestions**\n- Next steps"));
+                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
+                                this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "Reply too short to be final. Output complete structured summary:\n## Summary\n**Completed**\n- What was modified\n**Verification**\n- How it was verified\n**Suggestions**\n- Next steps"));
                                 executed = true;
                                 break block19;
                             } else {
@@ -1407,8 +1398,8 @@ public class AgentLoopEngine {
                                         this.appendRunLog(runLog, "\n- Server completion evidence rejected the model final response.\n");
                                         this.writeAgentCheckpoint(project, request, task, ctx, "continuing_missing_completion_evidence",
                                                 completion.guidance(), "", this.limitForContext(ft, 2000), runLog);
-                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
-                                        this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", completion.guidance()));
+                                        this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
+                                        this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", completion.guidance()));
                                         executed = true;
                                         break block19;
                                     }
@@ -1431,7 +1422,10 @@ public class AgentLoopEngine {
                         this.appendRunLog(runLog, "\n### Model error\n\n" + this.safeLogText(errMsg) + "\n");
                         // 上下文溢出只允许有限策略切换：先压缩，再减少工具 schema，之后明确停止。
                         if (this.isContextOverflowError(errMsg)) {
-                            int tokensBeforeRecovery = this.estimateProviderRequestTokens(sysPrompt, tools, msgs, modelConfig);
+                            List<Map<String, Object>> overflowMessagesBefore =
+                                    this.providerMessagesForBudget(task.getTaskId());
+                            int tokensBeforeRecovery = this.estimateProviderRequestTokens(
+                                    sysPrompt, tools, overflowMessagesBefore, modelConfig);
                             String overflowStrategy = "NONE";
                             boolean recovered = false;
                             ContextOverflowRecoveryPolicy.Action recoveryAction = overflowRecoveryPolicy.next(
@@ -1445,12 +1439,13 @@ public class AgentLoopEngine {
                                             : contextWindowPolicy.tailTurns();
                                     int preserveRecentTokens = contextWindowPolicy == null
                                             ? 8_000 : contextWindowPolicy.preserveRecentTokens();
-                                    ContextManagementResult compaction = this.compactContextWithFallback(msgs, sysPrompt, tools,
+                                    ContextManagementResult compaction = this.compactContextWithFallback(sysPrompt, tools,
                                             request.getMessage(), ctx, sse, conv, modelConfig, studentId, cancellationToken,
                                             keepRecentTurns, preserveRecentTokens, tokensBeforeRecovery, "provider_overflow",
                                             transcriptEpoch);
                                     overflowStrategy = compaction.strategy();
-                                    int afterCompaction = this.estimateProviderRequestTokens(sysPrompt, tools, msgs, modelConfig);
+                                    int afterCompaction = this.estimateProviderRequestTokens(sysPrompt, tools,
+                                            this.providerMessagesForBudget(task.getTaskId()), modelConfig);
                                     recovered = compaction.changed()
                                             && hasContextCompactionProgress(tokensBeforeRecovery, afterCompaction);
                                 } catch (Exception compactErr) {
@@ -1462,11 +1457,13 @@ public class AgentLoopEngine {
                             }
                             if (!recovered && recoveryAction == ContextOverflowRecoveryPolicy.Action.REDUCE_TOOL_SCHEMA) {
                                 int toolCountBefore = tools.size();
+                                List<Map<String, Object>> overflowMessagesBeforeToolReduction =
+                                        this.providerMessagesForBudget(task.getTaskId());
                                 int tokensBeforeToolReduction = this.estimateProviderRequestTokens(
-                                        sysPrompt, tools, msgs, modelConfig);
+                                        sysPrompt, tools, overflowMessagesBeforeToolReduction, modelConfig);
                                 boolean reduced = this.reduceToolSchemaForOverflow(tools);
                                 int tokensAfterToolReduction = this.estimateProviderRequestTokens(
-                                        sysPrompt, tools, msgs, modelConfig);
+                                        sysPrompt, tools, this.providerMessagesForBudget(task.getTaskId()), modelConfig);
                                 recovered = reduced && hasContextCompactionProgress(
                                         tokensBeforeToolReduction, tokensAfterToolReduction);
                                 overflowStrategy = "REDUCED_TOOL_SCHEMA";
@@ -1479,9 +1476,12 @@ public class AgentLoopEngine {
                                                             "recoveryAttempt", overflowRecoveryPolicy.attempts())));
                                 }
                             }
-                            int tokensAfterRecovery = this.estimateProviderRequestTokens(sysPrompt, tools, msgs, modelConfig);
+                            List<Map<String, Object>> overflowMessagesAfter =
+                                    this.providerMessagesForBudget(task.getTaskId());
+                            int tokensAfterRecovery = this.estimateProviderRequestTokens(
+                                    sysPrompt, tools, overflowMessagesAfter, modelConfig);
                             this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
-                                    sysPrompt, tools, contextPrompt, msgs, overflowStrategy);
+                                    sysPrompt, tools, contextPrompt, overflowMessagesAfter, overflowStrategy);
                             if (!recovered || !hasContextCompactionProgress(tokensBeforeRecovery, tokensAfterRecovery)) {
                                 String modelFailTitle = this.localText(visibleLanguage, "上下文窗口超限", "Context window exceeded");
                                 String modelFailReason = this.localText(visibleLanguage,
@@ -1500,7 +1500,7 @@ public class AgentLoopEngine {
                                 emitter.complete();
                                 return;
                             }
-                            this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content",
+                            this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content",
                                     "Context recovery changed the request safely. Continue from where you left off. "
                                             + "Re-read files with read_file or grep when exact output is needed."));
                             executed = true;
@@ -2825,10 +2825,10 @@ public class AgentLoopEngine {
     }
 
     /** 估算消息列表的总 token 数 */
-    private int estimateMessagesTokens(List<Map<String, Object>> msgs, String sysPrompt) {
+    private int estimateMessagesTokens(List<Map<String, Object>> messages, String sysPrompt) {
         int total = estimateTokens(sysPrompt);
-        for (Map<String, Object> msg : msgs) {
-            Object content = msg.get("content");
+        for (Map<String, Object> message : messages) {
+            Object content = message.get("content");
             if (content instanceof String s) total += estimateTokens(s);
         }
         return total;
@@ -2999,8 +2999,7 @@ public class AgentLoopEngine {
         }
     }
 
-    private ContextManagementResult manageContextBeforeModel(List<Map<String, Object>> msgs,
-                                                             String sysPrompt,
+    private ContextManagementResult manageContextBeforeModel(String sysPrompt,
                                                              List<Map<String, Object>> tools,
                                                              ContextWindowPolicy policy,
                                                              String userRequest,
@@ -3018,19 +3017,18 @@ public class AgentLoopEngine {
         List<Map<String, Object>> budgetMessages = this.providerMessagesForBudget(context == null ? null : context.getTaskId());
         int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, budgetMessages,
                 activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
-        // The durable Provider transcript is authoritative; do not prune the in-memory copy.
+        // Provider 预算与压缩选择都从同一个 durable projection 读取。
         ContextWindowSupervisor.Decision decision = new ContextWindowSupervisor().decide(
                 policy, estimatedTokens, false);
         if (decision.action() == ContextWindowSupervisor.Action.NONE) {
             return ContextManagementResult.none();
         }
-        return this.compactContextWithFallback(msgs, sysPrompt, tools, userRequest, context, sse, conversation,
+        return this.compactContextWithFallback(sysPrompt, tools, userRequest, context, sse, conversation,
                 activeModelConfig, studentId, cancellationToken, policy.tailTurns(), policy.preserveRecentTokens(),
                 estimatedTokens, "proactive", executionEpoch);
     }
 
-    private ContextManagementResult compactContextWithFallback(List<Map<String, Object>> msgs,
-                                                                String sysPrompt,
+    private ContextManagementResult compactContextWithFallback(String sysPrompt,
                                                                 List<Map<String, Object>> tools,
                                                                 String userRequest,
                                                                 AgentContext context,
@@ -3044,17 +3042,17 @@ public class AgentLoopEngine {
                                                                 int tokensBefore,
                                                                 String trigger,
                                                                  long executionEpoch) throws Exception {
-        CompactionSelection selection = CompactionSelection.select(msgs, keepRecentTurns,
-                preserveRecentTokens, this.requestTokenEstimator);
+        if (context == null || context.getTaskId() == null || context.getProject() == null) {
+            throw new IllegalStateException("Durable compaction requires task, project, and execution context");
+        }
+        Long taskId = context.getTaskId();
+        CompactionSelection selection = this.selectDurableCompaction(
+                taskId, keepRecentTurns, preserveRecentTokens);
         if (!selection.changed()) {
             return ContextManagementResult.none();
         }
         AgentCompactionService compactionService = this.requireCompactionService();
         AgentRunTranscriptService transcriptService = this.requireTranscriptService();
-        if (context == null || context.getTaskId() == null || context.getProject() == null) {
-            throw new IllegalStateException("Durable compaction requires task, project, and execution context");
-        }
-        Long taskId = context.getTaskId();
         String previousSummary = compactionService.previousSummary(taskId);
         List<Map<String, Object>> headForSummary = this.compactionHead(selection.compactedHead(), previousSummary);
         long sourceMaxSequence = transcriptService.nextSequence(taskId) - 1L;
@@ -3080,7 +3078,6 @@ public class AgentLoopEngine {
             List<Map<String, Object>> projected = selection.projectedWithSummary(modelResult.checkpoint());
             int afterTokens = this.estimateProviderRequestTokens(sysPrompt, tools, projected, activeModelConfig);
             if (afterTokens < tokensBefore) {
-                this.replaceProviderProjection(msgs, projected);
                 compactionService.complete(compactionRecord, modelResult.checkpoint(), afterTokens);
                 Map<String, Object> details = compactionModelDetails(modelResult);
                 details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
@@ -3104,7 +3101,6 @@ public class AgentLoopEngine {
             List<Map<String, Object>> projected = selection.projectedWithSummary(deterministicCheckpoint);
             int afterTokens = this.estimateProviderRequestTokens(sysPrompt, tools, projected, activeModelConfig);
             if (afterTokens < tokensBefore) {
-                this.replaceProviderProjection(msgs, projected);
                 compactionService.complete(compactionRecord, deterministicCheckpoint, afterTokens);
                 Map<String, Object> details = new LinkedHashMap<>();
                 details.put("reason", modelResult.reason());
@@ -3118,6 +3114,13 @@ public class AgentLoopEngine {
         }
         compactionService.fail(compactionRecord, modelResult.reason());
         return ContextManagementResult.none();
+    }
+
+    CompactionSelection selectDurableCompaction(Long taskId, int keepRecentTurns,
+                                                int preserveRecentTokens) {
+        List<Map<String, Object>> durableMessages = this.providerMessagesForBudget(taskId);
+        return CompactionSelection.select(durableMessages, keepRecentTurns,
+                preserveRecentTokens, this.requestTokenEstimator);
     }
 
     private int estimateProviderRequestTokens(String sysPrompt,
@@ -3150,16 +3153,6 @@ public class AgentLoopEngine {
         return result;
     }
 
-    private void replaceProviderProjection(List<Map<String, Object>> target,
-                                            List<Map<String, Object>> messages) {
-        target.clear();
-        if (messages == null) {
-            return;
-        }
-        for (Map<String, Object> message : messages) {
-            target.add(this.providerMessageProjector.copyMessage(message));
-        }
-    }
     private boolean canReduceToolSchema(List<Map<String, Object>> tools) {
         return tools != null && tools.size() > 12;
     }
@@ -3464,7 +3457,7 @@ public class AgentLoopEngine {
         }).collect(Collectors.toList());
     }
 
-    private void appendRemainingBatchToolResults(List<Map<String, Object>> messages, Long taskId,
+    private void appendRemainingBatchToolResults(Long taskId,
                                                  long transcriptEpoch,
                                                  List<NativeToolAdmission> admissions,
                                                  int startIndex, String skippedReason) {
@@ -3475,7 +3468,7 @@ public class AgentLoopEngine {
             String content = nativeAdmission.allowed()
                     ? skippedReason
                     : this.compactToolResultForModel(call.toolName(), nativeAdmission.rejection());
-            this.appendProviderMessage(messages, taskId, transcriptEpoch,
+            this.appendProviderMessage(taskId, transcriptEpoch,
                     this.toolCallBatchProtocol.toolResultMessage(call,
                             "[Tool " + call.toolName() + " result]\n" + content));
         }
@@ -3621,59 +3614,6 @@ public class AgentLoopEngine {
         this.sendEvent(sse, conv, "FINAL", Map.of("content", visibleText, "summary", this.finalResponseSummary(visibleLanguage)));
     }
 
-    private void streamFinalFromProvider(AgentSsePublisher sse, AgentConversation conv,
-                                          String sysPrompt, List<Map<String, Object>> msgs,
-                                          LlmProvider provider, LlmProvider.LlmConfig config) throws Exception {
-        this.streamFinalFromProvider(sse, conv, sysPrompt, msgs, provider, config, "en");
-    }
-
-    private void streamFinalFromProvider(AgentSsePublisher sse, AgentConversation conv,
-                                          String sysPrompt, List<Map<String, Object>> msgs,
-                                          LlmProvider provider, LlmProvider.LlmConfig config,
-                                          String visibleLanguage) throws Exception {
-        StringBuilder contentBuf = new StringBuilder();
-        java.util.function.Consumer<String> emitThinking = delta -> {
-            if (delta == null || delta.isEmpty()) return;
-            try {
-                sse.sendTransient("THINK_DELTA", Map.of("messageId", "final-think", "delta", delta));
-            } catch (Exception eventFailure) {
-                throw new IllegalStateException("Failed to project final reasoning delta", eventFailure);
-            }
-        };
-        java.util.function.Consumer<String> emitVisible = delta -> {
-            if (delta == null || delta.isEmpty()) return;
-            try {
-                contentBuf.append(delta);
-                sse.sendTransient("FINAL_DELTA", Map.of("delta", delta));
-            } catch (Exception eventFailure) {
-                throw new IllegalStateException("Failed to project final visible delta", eventFailure);
-            }
-        };
-        InternalReasoningBoundary.TagStreamFilter dedicatedReasoningFilter =
-                new InternalReasoningBoundary.TagStreamFilter(emitThinking);
-        InternalReasoningBoundary.VisibleStreamFilter visibleContentFilter =
-                new InternalReasoningBoundary.VisibleStreamFilter(emitThinking, emitVisible);
-        provider.chatStream(sysPrompt, msgs, null, config, chunk -> {
-            try {
-                if ("text_delta".equals(chunk.type())) {
-                    visibleContentFilter.push(chunk.content());
-                } else if ("thinking_delta".equals(chunk.type())) {
-                    dedicatedReasoningFilter.push(chunk.content());
-                } else if ("done".equals(chunk.type())) {
-                    dedicatedReasoningFilter.flush();
-                    visibleContentFilter.flush();
-                } else if ("error".equals(chunk.type())) {
-                    sse.send("ERROR", Map.of("message", chunk.content()));
-                }
-            } catch (Exception e) {
-                log.warn("Stream chunk send error: {}", e.getMessage());
-            }
-        });
-        dedicatedReasoningFilter.flush();
-        visibleContentFilter.flush();
-        String finalContent = InternalReasoningBoundary.stripVisible(contentBuf.toString());
-        this.sendEvent(sse, conv, "FINAL", Map.of("content", finalContent, "summary", this.finalResponseSummary(visibleLanguage)));
-    }
 
     private String visibleLanguage(String userMessage) {
         return this.visibleLanguage(userMessage, null);

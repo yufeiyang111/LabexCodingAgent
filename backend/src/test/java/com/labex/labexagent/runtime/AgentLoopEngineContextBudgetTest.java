@@ -8,6 +8,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentModelConfig;
+import com.labex.labexagent.context.AgentCompactionService;
+import com.labex.labexagent.context.AgentRequestTokenEstimator;
+import com.labex.labexagent.context.CompactionSelection;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.tool.ToolRegistry;
 import java.lang.reflect.Constructor;
@@ -41,6 +44,28 @@ class AgentLoopEngineContextBudgetTest {
         assertEquals(durableMessages, engine.providerMessagesForBudget(71L));
         assertThrows(IllegalStateException.class,
                 () -> engine.providerMessagesForBudget(null));
+    }
+
+    @Test
+    void selectsCompactionBoundariesFromTheDurableProjectionOnly() throws Exception {
+        AgentLoopEngine engine = newEngine();
+        AgentTranscriptProjectionService projection = mock(AgentTranscriptProjectionService.class);
+        List<Map<String, Object>> durableMessages = List.of(
+                Map.of("role", "user", "content", "old request"),
+                Map.of("role", "assistant", "content", "old answer"),
+                Map.of("role", "user", "content", "recent request"),
+                Map.of("role", "assistant", "content", "recent answer"));
+        when(projection.loadProviderMessages(72L)).thenReturn(durableMessages);
+        var projectionField = AgentLoopEngine.class.getDeclaredField("transcriptProjectionService");
+        projectionField.setAccessible(true);
+        projectionField.set(engine, projection);
+        engine.setContextCompactionServices(mock(AgentCompactionService.class), new AgentRequestTokenEstimator());
+
+        CompactionSelection selection = engine.selectDurableCompaction(72L, 1, 8_000);
+
+        assertTrue(selection.changed());
+        assertEquals("old request", selection.compactedHead().get(0).get("content"));
+        assertEquals("recent request", selection.retainedTail().get(0).get("content"));
     }
 
     @Test

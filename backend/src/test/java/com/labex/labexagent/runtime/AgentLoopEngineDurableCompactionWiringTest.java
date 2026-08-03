@@ -10,7 +10,20 @@ import org.junit.jupiter.api.Test;
 class AgentLoopEngineDurableCompactionWiringTest {
 
     @Test
-    void restoresFromCompactionAwareProjectionAndReplacesMemoryWithoutAppendingFacts() throws Exception {
+    void removesTheRetiredMutableProviderTranscriptFromTheRunLoop() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));
+
+        assertFalse(source.contains("List<Map<String, Object>> msgs = new ArrayList<>()"));
+        assertFalse(source.contains("CompactionSelection.select(msgs"));
+        assertFalse(source.contains("estimateProviderRequestTokens(sysPrompt, tools, msgs"));
+        assertFalse(source.contains("streamFinalFromProvider("));
+        assertFalse(source.contains("replaceProviderProjection("));
+        assertTrue(source.contains("selectDurableCompaction("));
+    }
+
+    @Test
+    void restoresFromCompactionAwareProjectionAndAppendsOnlyDurableFacts() throws Exception {
         String source = Files.readString(Path.of(
                 "src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));
 

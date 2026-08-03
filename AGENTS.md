@@ -38,7 +38,7 @@ LabexAgent 是从 Labex 云编程工作台剥离出来的独立版本：Spring B
 | 文件改动和验证证据 | workspace + Git/change-set + verification | Agent 自述、diff 文本、前端缓存 |
 | workspace 记忆 | 明确作用域的 workspace/conversation memory | `AgentContext` 中未持久化的 prompt 片段 |
 
-在 transcript 收敛完成前，必须明确：`AgentRunMessage` / `AgentRunPart` 已用于运行/UI 回放，但 Provider 请求还不能宣称已经以它们为唯一读取来源。任何临时 `msgs`、`AgentContext`、`ContextUsageRegistry`、前端 composable 状态、SSE/EventSource 连接、`AgentConversation.summary` 或 Markdown 摘要都只能是派生缓存。
+Provider 请求、预算、压缩选择和恢复必须以 `AgentRunMessage` / `AgentRunPart` 经 `AgentTranscriptProjectionService` 生成的 durable projection 为唯一读取来源。`AgentLoopEngine` 不得维护跨迭代的可变 `msgs` transcript；`AgentContext`、`ContextUsageRegistry`、前端 composable 状态、SSE/EventSource 连接、`AgentConversation.summary` 或 Markdown 摘要都只能是派生缓存或只读兼容投影。
 
 所有派生数据必须能从权威事实重建；不能反过来把派生数据写回成新的事实源。
 

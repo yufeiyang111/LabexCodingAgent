@@ -14,8 +14,8 @@ class AgentLoopEngineStreamingContractTest {
     @Test
     void forwardsProviderTextAndThinkingDeltasWithoutArtificialDelay() {
         assertTrue(source.contains("case TEXT_DELTA ->"));
-        assertTrue(source.contains("sse.sendTransient(\"FINAL_DELTA\""));
-        assertTrue(source.contains("sse.sendTransient(\"THINK_DELTA\""));
+        assertTrue(source.contains("request.eventSink().transientEvent(\"FINAL_DELTA\""));
+        assertTrue(source.contains("request.eventSink().transientEvent(\"THINK_DELTA\""));
         assertTrue(source.contains("THINK_SNAPSHOT"));
         assertFalse(source.contains("Thread.sleep(28L)"));
         assertFalse(source.contains("chunkThought(deltaChunk)"));
