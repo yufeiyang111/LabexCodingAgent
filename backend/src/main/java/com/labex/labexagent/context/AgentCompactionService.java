@@ -1,15 +1,18 @@
 package com.labex.labexagent.context;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.labex.labexagent.runtime.AgentProviderMessageProjector;
 import com.labex.mapper.AgentCompactionRecordMapper;
 import java.lang.reflect.Type;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.LongFunction;
 import org.springframework.stereotype.Service;
@@ -57,7 +60,9 @@ public class AgentCompactionService {
         record.setEstimatedTokensBefore(Math.max(0, request.estimatedTokensBefore()));
         record.setModelWindowTokens(Math.max(0, request.modelWindowTokens()));
         record.setReservedOutputTokens(Math.max(0, request.reservedOutputTokens()));
-        mapper.insert(record);
+        if (mapper.insert(record) != 1 || record.getCompactionId() == null) {
+            throw new IllegalStateException("Unable to persist compaction start record");
+        }
         return record;
     }
 
@@ -67,21 +72,102 @@ public class AgentCompactionService {
         if (summary == null || summary.isBlank()) {
             throw new IllegalArgumentException("Completed compaction summary is required");
         }
-        record.setSummary(summary);
-        record.setEstimatedTokensAfter(Math.max(0, estimatedTokensAfter));
-        record.setFailureReason(null);
-        record.setStatus("completed");
-        mapper.updateById(record);
+        int normalizedTokens = Math.max(0, estimatedTokensAfter);
+        LocalDateTime now = LocalDateTime.now();
+        int updated = mapper.update(null, finalizationUpdate(record)
+                .set("summary", summary)
+                .set("estimated_tokens_after", normalizedTokens)
+                .set("failure_reason", null)
+                .set("status", "completed")
+                .set("update_time", now));
+        if (updated == 1) {
+            applyCompleted(record, summary, normalizedTokens, now);
+            return;
+        }
+        AgentCompactionRecord persisted = mapper.selectById(record.getCompactionId());
+        if (sameCompletedResult(persisted, record, summary, normalizedTokens)) {
+            applyCompleted(record, summary, normalizedTokens, persisted.getUpdateTime());
+            return;
+        }
+        throw new IllegalStateException("Unable to persist completed compaction state");
     }
 
     @Transactional(rollbackFor = Exception.class)
     public void fail(AgentCompactionRecord record, String failureReason) {
         requirePersisted(record);
-        record.setFailureReason(safe(failureReason));
-        record.setStatus("failed");
-        mapper.updateById(record);
+        String normalizedReason = safe(failureReason);
+        LocalDateTime now = LocalDateTime.now();
+        int updated = mapper.update(null, finalizationUpdate(record)
+                .set("failure_reason", normalizedReason)
+                .set("status", "failed")
+                .set("update_time", now));
+        if (updated == 1) {
+            applyFailed(record, normalizedReason, now);
+            return;
+        }
+        AgentCompactionRecord persisted = mapper.selectById(record.getCompactionId());
+        if (sameFailedResult(persisted, record, normalizedReason)) {
+            applyFailed(record, normalizedReason, persisted.getUpdateTime());
+            return;
+        }
+        throw new IllegalStateException("Unable to persist failed compaction state");
     }
 
+    /** 启动恢复按主键游标分页读取 running epoch，避免无界加载和重复扫描有效 lease。 */
+    public List<AgentCompactionRecord> runningRecordsAfter(long compactionIdExclusive, int limit) {
+        int boundedLimit = Math.max(1, Math.min(limit, 500));
+        List<AgentCompactionRecord> records = mapper.selectList(new LambdaQueryWrapper<AgentCompactionRecord>()
+                .eq(AgentCompactionRecord::getStatus, "running")
+                .gt(AgentCompactionRecord::getCompactionId, Math.max(0L, compactionIdExclusive))
+                .orderByAsc(AgentCompactionRecord::getCompactionId)
+                .last("LIMIT " + boundedLimit));
+        return records == null ? List.of() : records;
+    }
+
+    private UpdateWrapper<AgentCompactionRecord> finalizationUpdate(AgentCompactionRecord record) {
+        return new UpdateWrapper<AgentCompactionRecord>()
+                .eq("compaction_id", record.getCompactionId())
+                .eq("task_id", record.getTaskId())
+                .eq("compaction_epoch", record.getCompactionEpoch())
+                .eq("status", "running");
+    }
+
+    private boolean sameCompletedResult(AgentCompactionRecord persisted, AgentCompactionRecord requested,
+                                        String summary, int estimatedTokensAfter) {
+        return sameIdentity(persisted, requested)
+                && "completed".equalsIgnoreCase(persisted.getStatus())
+                && Objects.equals(summary, persisted.getSummary())
+                && Objects.equals(estimatedTokensAfter, persisted.getEstimatedTokensAfter());
+    }
+
+    private boolean sameFailedResult(AgentCompactionRecord persisted, AgentCompactionRecord requested,
+                                     String failureReason) {
+        return sameIdentity(persisted, requested)
+                && "failed".equalsIgnoreCase(persisted.getStatus())
+                && Objects.equals(failureReason, safe(persisted.getFailureReason()));
+    }
+
+    private boolean sameIdentity(AgentCompactionRecord persisted, AgentCompactionRecord requested) {
+        return persisted != null
+                && Objects.equals(persisted.getCompactionId(), requested.getCompactionId())
+                && Objects.equals(persisted.getTaskId(), requested.getTaskId())
+                && Objects.equals(persisted.getCompactionEpoch(), requested.getCompactionEpoch());
+    }
+
+    private void applyCompleted(AgentCompactionRecord record, String summary, int estimatedTokensAfter,
+                                LocalDateTime updateTime) {
+        record.setSummary(summary);
+        record.setEstimatedTokensAfter(estimatedTokensAfter);
+        record.setFailureReason(null);
+        record.setStatus("completed");
+        record.setUpdateTime(updateTime == null ? LocalDateTime.now() : updateTime);
+    }
+
+    private void applyFailed(AgentCompactionRecord record, String failureReason, LocalDateTime updateTime) {
+        record.setFailureReason(failureReason);
+        record.setStatus("failed");
+        record.setUpdateTime(updateTime == null ? LocalDateTime.now() : updateTime);
+    }
     /** 返回任务压缩记录的安全审计投影，不暴露摘要和原始 transcript。 */
     public List<Map<String, Object>> publicHistory(Long taskId) {
         if (taskId == null || taskId <= 0) {
@@ -183,8 +269,9 @@ public class AgentCompactionService {
     }
 
     private void requirePersisted(AgentCompactionRecord record) {
-        if (record == null || record.getCompactionId() == null) {
-            throw new IllegalArgumentException("Persisted compaction record is required");
+        if (record == null || record.getCompactionId() == null
+                || record.getTaskId() == null || record.getCompactionEpoch() == null) {
+            throw new IllegalArgumentException("Persisted compaction identity is required");
         }
     }
 

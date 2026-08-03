@@ -1,6 +1,7 @@
 package com.labex.labexagent.context;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -32,6 +33,7 @@ class AgentCompactionServiceTest {
             record.setCompactionId(41L);
             return 1;
         }).when(mapper).insert(any());
+        when(mapper.update(any(), any())).thenReturn(1);
         AgentCompactionService service = new AgentCompactionService(mapper);
         List<Map<String, Object>> messages = List.of(
                 Map.of("role", "user", "content", "old request"),
@@ -58,7 +60,71 @@ class AgentCompactionServiceTest {
         assertThat(record.getStatus()).isEqualTo("completed");
         assertThat(record.getSummary()).isEqualTo("new durable summary");
         assertThat(record.getEstimatedTokensAfter()).isEqualTo(1_200);
-        verify(mapper).updateById(record);
+        verify(mapper).update(any(), any());
+    }
+
+    @Test
+    void rejectsACompactionStartThatWasNotPersisted() {
+        AgentCompactionRecordMapper mapper = mock(AgentCompactionRecordMapper.class);
+        when(mapper.selectOne(any())).thenReturn(null);
+        when(mapper.insert(any())).thenReturn(0);
+        AgentCompactionService service = new AgentCompactionService(mapper);
+
+        assertThatThrownBy(() -> service.start(startRequest()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("persist");
+    }
+
+    @Test
+    void doesNotPublishAnInMemoryCompletionWhenTheDatabaseCasMisses() {
+        AgentCompactionRecordMapper mapper = mock(AgentCompactionRecordMapper.class);
+        AgentCompactionRecord record = runningRecord();
+        when(mapper.update(any(), any())).thenReturn(0);
+        when(mapper.selectById(record.getCompactionId())).thenReturn(record);
+        AgentCompactionService service = new AgentCompactionService(mapper);
+
+        assertThatThrownBy(() -> service.complete(record, "new durable summary", 1_200))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("persist");
+        assertThat(record.getStatus()).isEqualTo("running");
+        assertThat(record.getSummary()).isNull();
+        assertThat(record.getEstimatedTokensAfter()).isNull();
+    }
+
+    @Test
+    void repeatsAnIdenticalPersistedCompletionIdempotently() {
+        AgentCompactionRecordMapper mapper = mock(AgentCompactionRecordMapper.class);
+        AgentCompactionRecord record = runningRecord();
+        AgentCompactionRecord persisted = runningRecord();
+        persisted.setStatus("completed");
+        persisted.setSummary("new durable summary");
+        persisted.setEstimatedTokensAfter(1_200);
+        when(mapper.update(any(), any())).thenReturn(0);
+        when(mapper.selectById(record.getCompactionId())).thenReturn(persisted);
+        AgentCompactionService service = new AgentCompactionService(mapper);
+
+        service.complete(record, "new durable summary", 1_200);
+
+        assertThat(record.getStatus()).isEqualTo("completed");
+        assertThat(record.getSummary()).isEqualTo("new durable summary");
+        assertThat(record.getEstimatedTokensAfter()).isEqualTo(1_200);
+    }
+
+    @Test
+    void repeatsAnIdenticalPersistedFailureIdempotently() {
+        AgentCompactionRecordMapper mapper = mock(AgentCompactionRecordMapper.class);
+        AgentCompactionRecord record = runningRecord();
+        AgentCompactionRecord persisted = runningRecord();
+        persisted.setStatus("failed");
+        persisted.setFailureReason("restart recovery");
+        when(mapper.update(any(), any())).thenReturn(0);
+        when(mapper.selectById(record.getCompactionId())).thenReturn(persisted);
+        AgentCompactionService service = new AgentCompactionService(mapper);
+
+        service.fail(record, "restart recovery");
+
+        assertThat(record.getStatus()).isEqualTo("failed");
+        assertThat(record.getFailureReason()).isEqualTo("restart recovery");
     }
 
     @Test
@@ -141,4 +207,24 @@ class AgentCompactionServiceTest {
                 Map.of("role", "user", "content", "after restart"));
         assertThat(projection.compactionEpoch()).isEqualTo(2L);
     }
-}
+
+    private AgentCompactionService.StartRequest startRequest() {
+        List<Map<String, Object>> messages = List.of(
+                Map.of("role", "user", "content", "old request"),
+                Map.of("role", "assistant", "content", "old answer"),
+                Map.of("role", "user", "content", "recent request"),
+                Map.of("role", "assistant", "content", "recent answer"));
+        CompactionSelection selection = CompactionSelection.select(messages, 1, 2_000, estimator);
+        return new AgentCompactionService.StartRequest(
+                7L, "conversation-7", 11, 22, 3L, "provider_overflow", "previous summary",
+                selection, 15L, 3_200, 4_096, 512);
+    }
+
+    private AgentCompactionRecord runningRecord() {
+        AgentCompactionRecord record = new AgentCompactionRecord();
+        record.setCompactionId(41L);
+        record.setTaskId(7L);
+        record.setCompactionEpoch(1L);
+        record.setStatus("running");
+        return record;
+    }}

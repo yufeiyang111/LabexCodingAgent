@@ -54,6 +54,7 @@ $backendProcess = $null
 $token = $null
 $projectId = $null
 $configId = $null
+$compactionConfigId = $null
 $smallConfigId = $null
 $unconfiguredConfigId = $null
 $evidence = [ordered]@{
@@ -67,6 +68,7 @@ $evidence = [ordered]@{
     runMessagePartProjection = $false
     toolPartAuthority = $false
     manualCompaction = $false
+    compactionEpochRecovery = $false
     staticContextBlocked = $false
     contextWindowUnconfigured = $false
     completionEvidence = $false
@@ -321,6 +323,29 @@ function Wait-TaskBySession {
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "Session $SessionId did not reach the expected task state within $Seconds seconds."
+}
+
+function Wait-TaskPendingInteraction {
+    param(
+        [long]$TaskId,
+        [string]$PreviousRequestId = '',
+        [int]$Seconds = 60
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    do {
+        $task = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$TaskId"
+        $pendingProperty = $task.PSObject.Properties['pendingInteraction']
+        $pending = if ($pendingProperty) { $pendingProperty.Value } else { $null }
+        if ($task.status -in @('completed','failed','cancelled','timeout')) {
+            throw "Task $TaskId reached terminal state $($task.status) before the expected interaction."
+        }
+        if ($task.status -eq 'waiting_user' -and $pending -and
+            [string]$pending.requestId -ne $PreviousRequestId) {
+            return $task
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Task $TaskId did not expose a new waiting_user interaction within $Seconds seconds."
 }
 
 function Get-TaskEvents {
@@ -848,6 +873,93 @@ WHERE event_id = (
     }
     $evidence.authoritativeModelRetryProjection = $true
 
+    $compactionConfig = Invoke-ApiData -Path '/student/model-configs' -Method POST -Body @{
+        configName = 'Acceptance Compaction Restart'; provider = 'acceptance_scripted'; modelName = 'acceptance-compaction-restart'
+        apiKey = 'acceptance-placeholder-not-a-secret'; baseUrl = 'acceptance://scripted'; maxTokens = 4096; contextWindowTokens = 32768
+        temperature = 0.0; isDefault = $false; promptCacheKeyEnabled = $false
+        reasoningEffort = 'medium'; imageInputEnabled = $false
+        compactionAuto = $true; compactionPrune = $false; compactionTailTurns = 1
+        compactionPreserveRecentTokens = 8000; compactionReservedTokens = 4096; compactionThresholdPercent = 70
+    }
+    $compactionConfigId = [int]$compactionConfig.configId
+    $configId = $compactionConfigId
+    $compactionRestartEvents = Invoke-AgentStream -Message '[acceptance:compaction] [acceptance:compaction-restart] durable epoch restart recovery'
+    $firstCompactionQuestion = Get-RequiredEvent -Events $compactionRestartEvents -Type 'USER_QUESTION'
+    $compactionTaskId = [long]$firstCompactionQuestion.data.taskId
+    $firstCompactionRequestId = [string]$firstCompactionQuestion.data.requestId
+    Invoke-ApiData -Path "/student/projects/$projectId/agent/question/reply" -Method POST -Body @{
+        requestId = $firstCompactionRequestId; action = 'answer'; answer = 'continue compaction acceptance'
+    } | Out-Null
+    $checkpointWait = Wait-TaskPendingInteraction -TaskId $compactionTaskId -PreviousRequestId $firstCompactionRequestId -Seconds 90
+    $completedCompactions = @($checkpointWait.compactions | Where-Object { [string]$_.status -eq 'completed' } |
+        Sort-Object { [long]$_.compactionEpoch })
+    if ($completedCompactions.Count -eq 0) {
+        throw "Task $compactionTaskId reached the restart checkpoint without a completed durable compaction."
+    }
+    $completedEpoch = [long]$completedCompactions[-1].compactionEpoch
+    $compactionInsertSql = @"
+INSERT INTO t_agent_compaction_record (
+    task_id, conversation_id, student_id, project_id, execution_epoch, compaction_epoch,
+    trigger_reason, status, previous_summary, summary, compacted_head, retained_tail,
+    tail_start_index, retained_turns, source_max_sequence, estimated_tokens_before,
+    estimated_tokens_after, model_window_tokens, reserved_output_tokens, failure_reason,
+    create_time, update_time
+)
+SELECT task_id, conversation_id, student_id, project_id, execution_epoch, compaction_epoch + 1,
+       'acceptance_restart_fault', 'running', previous_summary, NULL, compacted_head, retained_tail,
+       tail_start_index, retained_turns, source_max_sequence, estimated_tokens_before,
+       NULL, model_window_tokens, reserved_output_tokens, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM t_agent_compaction_record
+WHERE compaction_id = (
+    SELECT MAX(compaction_id) FROM t_agent_compaction_record
+    WHERE task_id = $compactionTaskId AND status = 'completed'
+);
+"@
+    Invoke-AcceptanceSql -Sql $compactionInsertSql | Out-Null
+    $beforeCompactionRestart = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$compactionTaskId"
+    $syntheticRunning = @($beforeCompactionRestart.compactions | Where-Object {
+        [string]$_.triggerReason -eq 'acceptance_restart_fault' -and [string]$_.status -eq 'running'
+    })
+    if ($syntheticRunning.Count -ne 1 -or [long]$syntheticRunning[0].compactionEpoch -ne ($completedEpoch + 1)) {
+        throw "Synthetic running compaction was not persisted at epoch $($completedEpoch + 1)."
+    }
+
+    Restart-AcceptanceBackend
+    $afterCompactionRestart = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$compactionTaskId"
+    if ([string]$afterCompactionRestart.status -ne 'waiting_user') {
+        throw "Compaction checkpoint task $compactionTaskId was $($afterCompactionRestart.status) after restart."
+    }
+    $syntheticFailed = @($afterCompactionRestart.compactions | Where-Object {
+        [string]$_.triggerReason -eq 'acceptance_restart_fault'
+    })
+    if ($syntheticFailed.Count -ne 1 -or [string]$syntheticFailed[0].status -ne 'failed' -or
+        [string]$syntheticFailed[0].failureReason -notlike '*without the original compaction execution lease*') {
+        throw "Interrupted compaction epoch was not closed by startup recovery: $($syntheticFailed | ConvertTo-Json -Compress -Depth 5)"
+    }
+    $preservedCompleted = @($afterCompactionRestart.compactions | Where-Object {
+        [string]$_.status -eq 'completed' -and [long]$_.compactionEpoch -eq $completedEpoch
+    })
+    if ($preservedCompleted.Count -ne 1) {
+        throw "Startup recovery did not preserve completed compaction epoch $completedEpoch."
+    }
+    $secondCompactionRequestId = [string]$afterCompactionRestart.pendingInteraction.requestId
+    if ([string]::IsNullOrWhiteSpace($secondCompactionRequestId) -or $secondCompactionRequestId -eq $firstCompactionRequestId) {
+        throw 'Restart checkpoint did not expose the second durable question interaction.'
+    }
+    Invoke-ApiData -Path "/student/projects/$projectId/agent/question/reply" -Method POST -Body @{
+        requestId = $secondCompactionRequestId; action = 'answer'; answer = 'continue after restart'
+    } | Out-Null
+    Assert-SameTaskContinuation -TaskId $compactionTaskId -RequiredType 'COMPACTION_COMPLETED'
+    $completedAfterResume = @(($(Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$compactionTaskId").compactions) |
+        Where-Object { [string]$_.status -eq 'completed' } | Sort-Object { [long]$_.compactionEpoch })
+    if ($completedAfterResume.Count -eq 0 -or [long]$completedAfterResume[-1].compactionEpoch -ne $completedEpoch) {
+        throw 'Interaction resume did not continue from the previously completed compaction epoch.'
+    }
+    $evidence.compactionEpochRecovery = $true
+    Invoke-ApiData -Path "/student/model-configs/$compactionConfigId" -Method DELETE | Out-Null
+    $compactionConfigId = $null
+    $configId = $originalConfigId
+
     $seedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed]'
     $seedDone = Get-RequiredEvent -Events $seedEvents -Type 'DONE'
     $seedTaskId = [long](($seedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
@@ -858,6 +970,7 @@ WHERE event_id = (
     if ($compactionTask.status -ne 'completed') { throw "压缩任务状态为 $($compactionTask.status)。" }
     $evidence.manualCompaction = $true
 
+    if ($compactionConfigId) { Invoke-ApiData -Path "/student/model-configs/$compactionConfigId" -Method DELETE | Out-Null; $compactionConfigId = $null }
     if ($smallConfigId) { Invoke-ApiData -Path "/student/model-configs/$smallConfigId" -Method DELETE | Out-Null; $smallConfigId = $null }
     if ($unconfiguredConfigId) { Invoke-ApiData -Path "/student/model-configs/$unconfiguredConfigId" -Method DELETE | Out-Null; $unconfiguredConfigId = $null }
     Invoke-ApiData -Path "/student/model-configs/$configId" -Method DELETE | Out-Null
@@ -882,6 +995,10 @@ WHERE event_id = (
 } finally {
     try {
         if ($backendProcess -and -not $backendProcess.HasExited -and $token) {
+            if ($compactionConfigId) {
+                Invoke-ApiData -Path "/student/model-configs/$compactionConfigId" -Method DELETE | Out-Null
+                if ($configId -eq $compactionConfigId) { $configId = $null }
+            }
             if ($smallConfigId) { Invoke-ApiData -Path "/student/model-configs/$smallConfigId" -Method DELETE | Out-Null }
             if ($unconfiguredConfigId) { Invoke-ApiData -Path "/student/model-configs/$unconfiguredConfigId" -Method DELETE | Out-Null }
             if ($configId) { Invoke-ApiData -Path "/student/model-configs/$configId" -Method DELETE | Out-Null }

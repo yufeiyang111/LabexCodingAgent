@@ -351,6 +351,27 @@ class AcceptanceScriptedProviderTest {
         assertTrue(completed.contains("durable compaction epoch"));
     }
 
+    @Test
+    void exposesASecondQuestionAfterTheCompactionToolResultForRestartRecovery() {
+        LlmProvider.StreamChunk checkpointQuestion = stream(
+                "[acceptance:compaction] [acceptance:compaction-restart] long context scenario",
+                "Resolution status: answered",
+                "[Tool list_files result]\nREADME.md").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+
+        assertEquals("question", checkpointQuestion.toolName());
+        assertEquals("acceptance-compaction-restart-question", checkpointQuestion.toolCallId());
+
+        List<LlmProvider.StreamChunk> resumed = stream(
+                "[acceptance:compaction] [acceptance:compaction-restart] long context scenario",
+                "[Tool list_files result]\nREADME.md",
+                "Original interaction payload: [acceptance:compaction-restart-wait]",
+                "Resolution status: answered");
+        assertTrue(resumed.stream().noneMatch(chunk -> "tool_call".equals(chunk.type())));
+        assertTrue(text(resumed).contains("durable compaction epoch"));
+    }
+
     private List<LlmProvider.StreamChunk> stream(String... contents) {
         List<Map<String, Object>> messages = new ArrayList<>();
         for (String content : contents) {

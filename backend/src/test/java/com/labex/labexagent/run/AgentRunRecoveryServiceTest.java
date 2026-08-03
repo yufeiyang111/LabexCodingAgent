@@ -11,11 +11,53 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.context.AgentCompactionRecord;
+import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class AgentRunRecoveryServiceTest {
+
+    @Test
+    void closesRunningCompactionWhenTheLeaseBelongsToANewerExecutionEpoch() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunExecutionLeaseService leaseService = mock(AgentRunExecutionLeaseService.class);
+        AgentCompactionService compactionService = mock(AgentCompactionService.class);
+        AgentCompactionRecord record = runningCompaction(41L, 71L, 3L);
+        AgentTask task = task(71L, AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        when(compactionService.runningRecordsAfter(0L, 200)).thenReturn(List.of(record));
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(leaseService.hasActiveLease(eq(task), any())).thenReturn(true);
+        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper,
+                mock(AgentRunLifecycleService.class), leaseService, mock(AgentRunTakeoverScheduler.class),
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class), compactionService);
+
+        assertEquals(1, service.recoverInterruptedCompactions());
+
+        verify(compactionService).fail(eq(record), anyString());
+    }
+
+    @Test
+    void keepsRunningCompactionForTheSameActiveExecutionLease() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunExecutionLeaseService leaseService = mock(AgentRunExecutionLeaseService.class);
+        AgentCompactionService compactionService = mock(AgentCompactionService.class);
+        AgentCompactionRecord record = runningCompaction(41L, 71L, 3L);
+        AgentTask task = task(71L, AgentRunState.RUNNING);
+        task.setExecutionEpoch(3L);
+        when(compactionService.runningRecordsAfter(0L, 200)).thenReturn(List.of(record));
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        when(leaseService.hasActiveLease(eq(task), any())).thenReturn(true);
+        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper,
+                mock(AgentRunLifecycleService.class), leaseService, mock(AgentRunTakeoverScheduler.class),
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class), compactionService);
+
+        assertEquals(0, service.recoverInterruptedCompactions());
+
+        verify(compactionService, never()).fail(any(), anyString());
+    }
 
     @Test
     void failsQueuedRunsThatWereInterruptedByAServiceRestart() {
@@ -114,7 +156,7 @@ class AgentRunRecoveryServiceTest {
         AgentRunMessageService messageService = mock(AgentRunMessageService.class);
         AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle,
                 mock(AgentRunExecutionLeaseService.class), mock(AgentRunTakeoverScheduler.class),
-                partService, messageService);
+                partService, messageService, mock(AgentCompactionService.class));
 
         assertEquals(1, service.recoverInterruptedRuns());
         verify(lifecycle).recordRecoveryAttemptIfCurrent(74L, AgentRunState.WAITING_USER);
@@ -139,6 +181,17 @@ class AgentRunRecoveryServiceTest {
                                                        AgentRunTakeoverScheduler takeoverScheduler) {
         return new AgentRunRecoveryService(taskMapper, lifecycle,
                 mock(AgentRunExecutionLeaseService.class), takeoverScheduler,
-                mock(AgentRunPartService.class), mock(AgentRunMessageService.class));
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class),
+                mock(AgentCompactionService.class));
+    }
+
+    private AgentCompactionRecord runningCompaction(Long compactionId, Long taskId, Long executionEpoch) {
+        AgentCompactionRecord record = new AgentCompactionRecord();
+        record.setCompactionId(compactionId);
+        record.setTaskId(taskId);
+        record.setExecutionEpoch(executionEpoch);
+        record.setCompactionEpoch(2L);
+        record.setStatus("running");
+        return record;
     }
 }

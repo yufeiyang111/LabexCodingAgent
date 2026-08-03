@@ -2,9 +2,13 @@ package com.labex.labexagent.run;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.context.AgentCompactionRecord;
+import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.mapper.AgentTaskMapper;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +19,9 @@ import org.springframework.stereotype.Service;
 @Service
 public class AgentRunRecoveryService {
     private static final Logger log = LoggerFactory.getLogger(AgentRunRecoveryService.class);
+    private static final int COMPACTION_RECOVERY_BATCH_SIZE = 200;
+    private static final String INTERRUPTED_COMPACTION_REASON =
+            "Agent service restarted without the original compaction execution lease";
     private static final List<String> INTERRUPTED_STATES = List.of(
             "queued", "preparing", "running", "waiting_approval", "waiting_user", "waiting_workspace",
             "waiting_environment", "retrying", "cancelling");
@@ -25,24 +32,85 @@ public class AgentRunRecoveryService {
     private final AgentRunTakeoverScheduler takeoverScheduler;
     private final AgentRunPartService partService;
     private final AgentRunMessageService messageService;
+    private final AgentCompactionService compactionService;
 
     @Autowired
     public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
                                    AgentRunExecutionLeaseService executionLeaseService,
                                    AgentRunTakeoverScheduler takeoverScheduler,
                                    AgentRunPartService partService,
-                                   AgentRunMessageService messageService) {
+                                   AgentRunMessageService messageService,
+                                   AgentCompactionService compactionService) {
         this.taskMapper = taskMapper;
         this.lifecycleService = lifecycleService;
         this.executionLeaseService = executionLeaseService;
         this.takeoverScheduler = takeoverScheduler;
         this.partService = partService;
         this.messageService = messageService;
+        this.compactionService = compactionService;
     }
 
     @EventListener(ApplicationReadyEvent.class)
     public void recoverAfterStartup() {
+        recoverInterruptedCompactions();
         recoverInterruptedRuns();
+    }
+
+    /**
+     * 启动时关闭已经失去原执行租约的 running compaction。
+     * 只有 task、execution epoch 与活动租约同时匹配时，才可能是其他实例仍在合法执行。
+     */
+    public int recoverInterruptedCompactions() {
+        long cursor = 0L;
+        int recovered = 0;
+        while (true) {
+            List<AgentCompactionRecord> records = compactionService.runningRecordsAfter(
+                    cursor, COMPACTION_RECOVERY_BATCH_SIZE);
+            if (records == null || records.isEmpty()) {
+                return recovered;
+            }
+            for (AgentCompactionRecord record : records) {
+                Long compactionId = record == null ? null : record.getCompactionId();
+                if (compactionId == null || compactionId <= cursor) {
+                    log.error("Unable to recover running compaction with invalid cursor id={}", compactionId);
+                    return recovered;
+                }
+                cursor = compactionId;
+                try {
+                    AgentTask task = taskMapper.selectById(record.getTaskId());
+                    if (belongsToActiveExecution(task, record, LocalDateTime.now())) {
+                        continue;
+                    }
+                    compactionService.fail(record, INTERRUPTED_COMPACTION_REASON);
+                    recovered++;
+                } catch (Exception e) {
+                    log.error("Unable to recover interrupted compaction compactionId={} taskId={}",
+                            record.getCompactionId(), record.getTaskId(), e);
+                }
+            }
+            if (records.size() < COMPACTION_RECOVERY_BATCH_SIZE) {
+                return recovered;
+            }
+        }
+    }
+
+    private boolean belongsToActiveExecution(AgentTask task, AgentCompactionRecord record, LocalDateTime now) {
+        if (task == null || isTerminal(task.getStatus())) {
+            return false;
+        }
+        return Objects.equals(valueOrZero(task.getExecutionEpoch()), valueOrZero(record.getExecutionEpoch()))
+                && executionLeaseService.hasActiveLease(task, now);
+    }
+
+    private boolean isTerminal(String persistedStatus) {
+        try {
+            AgentRunState state = AgentRunState.fromPersistedStatus(persistedStatus);
+            return state == AgentRunState.COMPLETED
+                    || state == AgentRunState.FAILED
+                    || state == AgentRunState.CANCELLED;
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
     }
 
     public int recoverInterruptedRuns() {

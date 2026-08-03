@@ -172,6 +172,17 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                     "acceptance-compaction-large-tool-call");
             return;
         }
+        if (isCompactionScenario(prompt)
+                && prompt.contains("[acceptance:compaction-restart]")
+                && prompt.contains("[Tool list_files result]")
+                && !prompt.contains("[acceptance:compaction-restart-wait]")) {
+            emitTool(onChunk, "question",
+                    "{\"question\":\"Continue compaction recovery after the JVM restart?\","
+                            + "\"summary\":\"[acceptance:compaction-restart-wait]\","
+                            + "\"options\":[\"Continue after restart\",\"Stop\"]}",
+                    "acceptance-compaction-restart-question");
+            return;
+        }
         if (prompt.contains("[acceptance:permission-batch]")
                 && !hasResumedInteraction(prompt, "waiting_approval")) {
             emitToolBatch(onChunk, List.of(
