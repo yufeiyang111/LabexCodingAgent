@@ -1608,8 +1608,12 @@ public class AgentLoopEngine {
                                       String visibleLanguage, SseEmitter emitter) throws Exception {
         String step = this.localText(visibleLanguage, "用户已取消", "User cancelled");
         String reason = this.localText(visibleLanguage, "用户取消了本次执行", "User cancelled execution");
-        if (!this.taskService.finalizeCancellation(task.getTaskId(), step, reason)) {
+        AgentTaskService.CancellationFinalization finalization = this.taskService.finalizeCancellationWithEvent(
+                task.getTaskId(), step, reason);
+        if (!finalization.finalized()) {
             log.warn("Cancellation finalization was skipped because task {} changed state concurrently", task.getTaskId());
+        } else if (finalization.event() != null) {
+            this.sendPersistedEvent(sse, conv, finalization.event());
         }
         this.appendRunLog(runLog, "\n- Stop reason: user cancelled.\n");
         this.sendEvent(sse, conv, "INTERRUPTED", Map.of("message", reason, "iteration", iteration));

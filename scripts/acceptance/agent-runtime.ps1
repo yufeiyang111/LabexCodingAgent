@@ -74,6 +74,7 @@ $evidence = [ordered]@{
     lifecycleTransitionAudit = $false
     singleAuthoritativeTerminalEvent = $false
     authoritativeFailureProjection = $false
+    authoritativeCancellationProjection = $false
     isolatedDatabase = $false
     cleanup = $false
 }
@@ -591,6 +592,70 @@ try {
     $contenderTask = Wait-TaskTerminal -TaskId $contenderTaskId
     if ($contenderTask.status -notin @('completed', 'failed', 'cancelled')) {
         throw "Checkout contender did not reach a terminal state: $($contenderTask.status)"
+    }
+
+    $cancelSessionId = [Guid]::NewGuid().ToString()
+    $cancelPayload = @{
+        sessionId = $cancelSessionId; conversationId = ''; mode = 'build'
+        message = '[acceptance:checkout-hold] cancel active run'; activePath = ''; modelConfigId = $configId; backgroundRun = $false
+    } | ConvertTo-Json -Compress
+    $cancelJob = Start-Job -ScriptBlock {
+        param($Uri, $Headers, $Body, $Timeout)
+        Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method Post -Headers $Headers -ContentType 'application/json' -Body $Body -TimeoutSec $Timeout | Select-Object -ExpandProperty Content
+    } -ArgumentList $jobUri, $jobHeaders, $cancelPayload, $TimeoutSeconds
+    try {
+        $cancelTask = Wait-TaskBySession -SessionId $cancelSessionId -Statuses @('preparing', 'running') -Seconds 30
+        $cancelTaskId = [long]$cancelTask.taskId
+        Invoke-ApiData -Path "/student/projects/$projectId/agent/interrupt" -Method POST -Body @{
+            sessionId = $cancelSessionId; taskId = [string]$cancelTaskId
+        } | Out-Null
+        Wait-Job -Job $cancelJob -Timeout $TimeoutSeconds | Out-Null
+        $cancelContent = ((Receive-Job -Job $cancelJob -ErrorAction Stop | ForEach-Object { [string]$_ }) -join "`n")
+        $cancelEvents = ConvertFrom-AgentSse -Text $cancelContent
+        $directCancelled = $cancelEvents | Where-Object { $_.type -eq 'RUN_CANCELLED' } | Select-Object -First 1
+        if (-not $directCancelled -or -not $directCancelled.eventId -or
+            -not $directCancelled.data.PSObject.Properties['transition']) {
+            throw 'Direct cancellation stream did not project the authoritative persisted RUN_CANCELLED event.'
+        }
+        $cancelledTask = Wait-TaskTerminal -TaskId $cancelTaskId
+        if ([string]$cancelledTask.status -ne 'cancelled') { throw "Cancelled task status is $($cancelledTask.status)." }
+        $durableCancelEvents = Get-TaskEvents -TaskId $cancelTaskId
+        $requestedCancellation = @($durableCancelEvents | Where-Object { $_.type -eq 'RUN_CANCELLATION_REQUESTED' })
+        $durableCancelled = @($durableCancelEvents | Where-Object { $_.type -eq 'RUN_CANCELLED' })
+        if ($requestedCancellation.Count -ne 1 -or $durableCancelled.Count -ne 1) {
+            throw "Cancellation event count mismatch: requested=$($requestedCancellation.Count), cancelled=$($durableCancelled.Count)."
+        }
+        if ([string]$directCancelled.eventId -ne [string]$durableCancelled[0].eventId) {
+            throw 'Direct and durable cancellation events use different sequence IDs.'
+        }
+        $directTypes = @($cancelEvents | ForEach-Object { [string]$_.type })
+        $cancelledIndex = [array]::IndexOf($directTypes, 'RUN_CANCELLED')
+        $interruptedIndex = [array]::IndexOf($directTypes, 'INTERRUPTED')
+        $finalIndex = [array]::IndexOf($directTypes, 'FINAL')
+        $followingTerminalIndexes = @($interruptedIndex, $finalIndex) | Where-Object { $_ -ge 0 }
+        if ($cancelledIndex -lt 0 -or ($followingTerminalIndexes.Count -gt 0 -and
+            $cancelledIndex -ge ($followingTerminalIndexes | Measure-Object -Minimum).Minimum)) {
+            throw "RUN_CANCELLED was not projected before INTERRUPTED/FINAL: $($directTypes -join ',')."
+        }
+        if ([long]$requestedCancellation[0].eventId -ge [long]$durableCancelled[0].eventId) {
+            throw 'RUN_CANCELLATION_REQUESTED was not persisted before RUN_CANCELLED.'
+        }
+        $cancelTransition = $durableCancelled[0].data.transition
+        if (-not $cancelTransition -or $cancelTransition.previousState -ne 'cancelling' -or
+            $cancelTransition.nextState -ne 'cancelled' -or $cancelTransition.actor -ne 'agent_run_lifecycle') {
+            throw "Cancelled state event is missing canonical transition audit: $($durableCancelled[0].data | ConvertTo-Json -Compress -Depth 8)"
+        }
+        Invoke-ApiData -Path "/student/projects/$projectId/agent/interrupt" -Method POST -Body @{
+            sessionId = $cancelSessionId; taskId = [string]$cancelTaskId
+        } | Out-Null
+        $eventsAfterDuplicateCancel = Get-TaskEvents -TaskId $cancelTaskId
+        if (@($eventsAfterDuplicateCancel | Where-Object { $_.type -eq 'RUN_CANCELLATION_REQUESTED' }).Count -ne 1 -or
+            @($eventsAfterDuplicateCancel | Where-Object { $_.type -eq 'RUN_CANCELLED' }).Count -ne 1) {
+            throw 'A duplicate cancellation request created additional durable cancellation events.'
+        }
+        $evidence.authoritativeCancellationProjection = $true
+    } finally {
+        Remove-Job -Job $cancelJob -Force -ErrorAction SilentlyContinue
     }
 
     $seedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed]'

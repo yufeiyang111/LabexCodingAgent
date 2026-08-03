@@ -180,20 +180,27 @@ class AgentTaskServiceLifecycleTest {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.RUNNING), eq(AgentRunState.CANCELLING),
                 any(), any(), any(), any(), any())).thenReturn(true);
-        when(lifecycle.transitionIfCurrent(eq(72L), eq(AgentRunState.CANCELLING), eq(AgentRunState.CANCELLED),
-                any(), any(), any(), any(), any())).thenReturn(true);
+        AgentRunEvent cancelledEvent = new AgentRunEvent();
+        cancelledEvent.setEventType("RUN_CANCELLED");
+        cancelledEvent.setSequenceNumber(12L);
+        when(lifecycle.transitionIfCurrentResult(eq(72L), eq(AgentRunState.CANCELLING), eq(AgentRunState.CANCELLED),
+                any(), any(), any(), any(), any()))
+                .thenReturn(new AgentRunLifecycleService.TransitionResult(cancelledEvent, true));
         AgentTaskService service = newTaskService(
                 taskMapper,
                 mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class),
                 lifecycle);
 
-        org.junit.jupiter.api.Assertions.assertTrue(service.finalizeCancellation(72L, "Cancelled", "User cancelled"));
+        AgentTaskService.CancellationFinalization finalization = service.finalizeCancellationWithEvent(
+                72L, "Cancelled", "User cancelled");
 
+        org.junit.jupiter.api.Assertions.assertTrue(finalization.finalized());
+        assertSame(cancelledEvent, finalization.event());
         org.mockito.InOrder order = org.mockito.Mockito.inOrder(lifecycle);
         order.verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.RUNNING), eq(AgentRunState.CANCELLING),
                 any(), any(), any(), any(), any());
-        order.verify(lifecycle).transitionIfCurrent(eq(72L), eq(AgentRunState.CANCELLING), eq(AgentRunState.CANCELLED),
+        order.verify(lifecycle).transitionIfCurrentResult(eq(72L), eq(AgentRunState.CANCELLING), eq(AgentRunState.CANCELLED),
                 any(), any(), any(), any(), any());
     }
 

@@ -62,9 +62,17 @@ public class AgentRunLifecycleService {
     public boolean transitionIfCurrent(Long taskId, AgentRunState expectedState, AgentRunState targetState,
                                        String eventType, Object payload, String currentStep, String summary,
                                        String idempotencyKey) {
+        return transitionIfCurrentResult(taskId, expectedState, targetState, eventType, payload,
+                currentStep, summary, idempotencyKey) != null;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public TransitionResult transitionIfCurrentResult(Long taskId, AgentRunState expectedState,
+                                                      AgentRunState targetState, String eventType, Object payload,
+                                                      String currentStep, String summary, String idempotencyKey) {
         require(expectedState, "expectedState");
         return transitionInternal(taskId, expectedState, targetState, eventType, payload, currentStep, summary,
-                idempotencyKey, Map.of()) != null;
+                idempotencyKey, Map.of());
     }
 
     @Transactional(rollbackFor = Exception.class)

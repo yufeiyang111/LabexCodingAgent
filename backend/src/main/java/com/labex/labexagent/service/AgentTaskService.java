@@ -189,43 +189,32 @@ public class AgentTaskService {
      */
     @Transactional(rollbackFor = Exception.class)
     public boolean finalizeCancellation(Long taskId, String currentStep, String summary) {
-        if (taskId == null) {
-            return false;
-        }
+        return this.finalizeCancellationWithEvent(taskId, currentStep, summary).finalized();
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public CancellationFinalization finalizeCancellationWithEvent(Long taskId, String currentStep, String summary) {
+        if (taskId == null) return new CancellationFinalization(false, null);
         AgentTask task = this.task(taskId);
-        if (task == null) {
-            return false;
-        }
+        if (task == null) return new CancellationFinalization(false, null);
         AgentRunState current = this.runState(task.getStatus());
-        if (current == AgentRunState.CANCELLED) {
-            return true;
-        }
+        if (current == AgentRunState.CANCELLED) return new CancellationFinalization(true, null);
         if (current != AgentRunState.CANCELLING) {
             if (!this.requestCancellation(taskId, "Cancellation requested", summary)) {
-                return false;
+                return new CancellationFinalization(false, null);
             }
             task = this.task(taskId);
             current = task == null ? null : this.runState(task.getStatus());
-            if (current == AgentRunState.CANCELLED) {
-                return true;
-            }
-            if (current != AgentRunState.CANCELLING) {
-                return false;
-            }
+            if (current == AgentRunState.CANCELLED) return new CancellationFinalization(true, null);
+            if (current != AgentRunState.CANCELLING) return new CancellationFinalization(false, null);
         }
-        boolean finalized = this.lifecycleService.transitionIfCurrent(
-                taskId,
-                AgentRunState.CANCELLING,
-                AgentRunState.CANCELLED,
-                "RUN_CANCELLED",
-                this.taskUpdatePayload("cancelled", currentStep, summary),
-                currentStep,
-                summary,
+        AgentRunLifecycleService.TransitionResult transition = this.lifecycleService.transitionIfCurrentResult(
+                taskId, AgentRunState.CANCELLING, AgentRunState.CANCELLED, "RUN_CANCELLED",
+                this.taskUpdatePayload("cancelled", currentStep, summary), currentStep, summary,
                 AgentRunTransitionKey.forTaskUpdate(taskId, "cancelled", currentStep, summary));
-        if (finalized) {
-            this.finishTimingIfTerminal(taskId, LocalDateTime.now());
-        }
-        return finalized;
+        if (transition == null) return new CancellationFinalization(false, null);
+        this.finishTimingIfTerminal(taskId, LocalDateTime.now());
+        return new CancellationFinalization(true, transition.event());
     }
 
     /** 为已解决交互创建一次性的持久化 dispatch claim。 */
@@ -615,6 +604,9 @@ public class AgentTaskService {
 
     public List<AgentFileChange> listPendingChanges(Integer studentId, Integer projectId) {
         return this.fileChangeMapper.selectList(new LambdaQueryWrapper<AgentFileChange>().eq(AgentFileChange::getStudentId, studentId).eq(AgentFileChange::getProjectId, projectId).in(AgentFileChange::getStatus, List.of("pending", "applied", "conflicted")).orderByDesc(AgentFileChange::getUpdateTime).last("LIMIT 80"));
+    }
+
+    public record CancellationFinalization(boolean finalized, AgentRunEvent event) {
     }
 
     public record ModelRetrySchedule(int attempt, LocalDateTime nextRetryAt, long delayMs) {
