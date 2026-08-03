@@ -573,7 +573,8 @@ public class AgentLoopEngine {
                 throw new IllegalArgumentException("Project not found");
             }
             runLog = this.createRunLog(project, request);
-            this.appendRunLog(runLog, "# LabexAgent run log\n\n- Session: `" + this.safeLogText(request.getSessionId()) + "`\n- Project: `" + this.safeLogText(project.getProjectName()) + "`\n- Student: `" + studentId + "`\n- Start time: `" + String.valueOf(LocalDateTime.now()) + "`\n\n## User input\n\n" + this.safeLogText(request.getMessage()) + "\n");
+            String userVisibleMessage = request.userVisibleMessage();
+            this.appendRunLog(runLog, "# LabexAgent run log\n\n- Session: `" + this.safeLogText(request.getSessionId()) + "`\n- Project: `" + this.safeLogText(project.getProjectName()) + "`\n- Student: `" + studentId + "`\n- Start time: `" + String.valueOf(LocalDateTime.now()) + "`\n\n## User input\n\n" + this.safeLogText(userVisibleMessage) + "\n");
             boolean resumedRun = request.getResumeTaskId() != null;
             String mode;
             String memoryContext;
@@ -590,15 +591,15 @@ public class AgentLoopEngine {
                 request.setConversationId(conv.getConversationId());
                 request.setSessionId(task.getSessionId());
                 memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
-                visibleLanguage = this.visibleLanguage(request.getMessage(), memoryContext);
+                visibleLanguage = this.visibleLanguage(userVisibleMessage, memoryContext);
             } else {
                 mode = AgentMode.normalize(request.getMode());
                 conv = this.conversationService.ensureConversation(studentId, project, request.getConversationId(), mode,
-                        request.getMessage(), modelConfig);
+                        userVisibleMessage, modelConfig);
                 request.setConversationId(conv.getConversationId());
                 memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
-                visibleLanguage = this.visibleLanguage(request.getMessage(), memoryContext);
-                this.conversationService.saveUserMessage(conv, request.getMessage());
+                visibleLanguage = this.visibleLanguage(userVisibleMessage, memoryContext);
+                this.conversationService.saveUserMessage(conv, userVisibleMessage);
                 task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode,
                         request.getMessage(), request.getActivePath(), modelConfig.getConfigId(),
                         request.isBackgroundRun(), request.getSubmittedAt());

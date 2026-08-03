@@ -7,6 +7,7 @@ public class AgentStreamRequest {
     private String conversationId;
     private String mode;
     private String message;
+    private String displayMessage;
     private String activePath;
     private Integer modelConfigId;
     private Long resumeTaskId;
@@ -31,6 +32,16 @@ public class AgentStreamRequest {
         return this.message;
     }
 
+    public String getDisplayMessage() {
+        return this.displayMessage;
+    }
+
+    public String userVisibleMessage() {
+        return this.displayMessage == null || this.displayMessage.isBlank()
+                ? this.message
+                : this.displayMessage;
+    }
+
     public String getActivePath() {
         return this.activePath;
     }
@@ -49,6 +60,10 @@ public class AgentStreamRequest {
 
     public void setMessage(String message) {
         this.message = message;
+    }
+
+    public void setDisplayMessage(String displayMessage) {
+        this.displayMessage = displayMessage;
     }
 
     public void setActivePath(String activePath) {

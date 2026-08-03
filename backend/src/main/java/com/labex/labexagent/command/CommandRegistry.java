@@ -84,96 +84,48 @@ public class CommandRegistry {
      * 注册会话管理命令
      */
     private void registerSessionCommands() {
-        // /sessions - 切换会话
-        register(CommandInfo.builtin("sessions", "切换会话", "列出所有可用会话并切换到选定会话。"));
-
-        // /new - 新建会话（别名: /clear）
-        registerWithAliases("new", "新建会话", "创建一个新的空会话。", "clear");
-
-        // /compact - 压缩/总结会话（别名: /summarize）
-        registerWithAliases("compact", "压缩当前会话上下文", "压缩当前会话上下文，减少token消耗。之后同一会话会优先读取精简摘要和最近关键事件。", "summarize");
-
-        // /undo - 撤销上一条消息
-        register(CommandInfo.builtin("undo", "撤销上一条消息", "撤销上一条消息及其所有文件更改。"));
-
-        // /redo - 恢复已撤销的消息
-        register(CommandInfo.builtin("redo", "恢复已撤销的消息", "恢复之前撤销的消息及其文件更改。"));
-
-        // /share - 分享会话
-        register(CommandInfo.builtin("share", "分享会话", "生成当前会话的分享链接或摘要文档。"));
-
-        // /unshare - 取消分享
-        register(CommandInfo.builtin("unshare", "取消分享", "取消当前会话的分享。"));
-
-        // /rename - 重命名会话
-        register(CommandInfo.builtin("rename", "重命名会话", "重命名当前会话。使用: /rename 新名称"));
-
-        // /fork - 分叉会话
-        register(CommandInfo.builtin("fork", "分叉会话", "从当前会话创建一个分支会话。"));
-
-        // /copy - 复制会话记录
-        register(CommandInfo.builtin("copy", "复制会话记录", "将当前会话记录复制到剪贴板。"));
-
-        // /export - 导出会话记录
-        register(CommandInfo.builtin("export", "导出会话记录", "将当前会话记录导出为Markdown文件。"));
-
-        // /timeline - 跳转到消息
-        register(CommandInfo.builtin("timeline", "跳转到消息", "跳转到会话中的特定消息。"));
-
-        // /timestamps - 切换时间戳显示
-        registerWithAliases("timestamps", "切换时间戳显示", "切换消息时间戳的显示/隐藏。", "toggle-timestamps");
-
-        // /thinking - 切换思考模式
-        registerWithAliases("thinking", "切换思考模式", "切换AI思考过程的显示/隐藏。", "toggle-thinking");
+        register(CommandInfo.clientAction("sessions", "切换会话", CommandInfo.ClientAction.SESSION_LIST));
+        register(CommandInfo.clientAction("new", "新建会话", CommandInfo.ClientAction.SESSION_NEW, "clear"));
+        register(CommandInfo.clientAction("compact", "压缩当前会话上下文",
+            CommandInfo.ClientAction.CONVERSATION_COMPACT, "summarize"));
+        register(CommandInfo.unavailable("undo", "撤销上一条消息", "消息级撤销尚未接通 durable change-set"));
+        register(CommandInfo.unavailable("redo", "恢复已撤销的消息", "消息级恢复尚未接通 durable change-set"));
+        register(CommandInfo.unavailable("share", "分享会话", "会话分享尚未实现"));
+        register(CommandInfo.unavailable("unshare", "取消分享", "会话分享尚未实现"));
+        register(CommandInfo.unavailable("rename", "重命名会话", "会话重命名尚未接通持久化 API"));
+        register(CommandInfo.clientAction("fork", "分叉会话", CommandInfo.ClientAction.CONVERSATION_FORK));
+        register(CommandInfo.clientAction("copy", "复制会话记录", CommandInfo.ClientAction.CONVERSATION_COPY));
+        register(CommandInfo.clientAction("export", "导出会话记录", CommandInfo.ClientAction.CONVERSATION_EXPORT));
+        register(CommandInfo.unavailable("timeline", "跳转到消息", "消息时间线选择器尚未实现"));
+        register(CommandInfo.clientAction("timestamps", "切换时间戳显示",
+            CommandInfo.ClientAction.TOGGLE_TIMESTAMPS, "toggle-timestamps"));
+        register(CommandInfo.clientAction("thinking", "切换思考过程显示",
+            CommandInfo.ClientAction.TOGGLE_THINKING, "toggle-thinking"));
     }
 
     /**
      * 注册Agent/Model管理命令
      */
     private void registerAgentModelCommands() {
-        // /models - 切换模型
-        register(CommandInfo.builtin("models", "切换模型", "列出所有可用模型并切换到选定模型。"));
-
-        // /agents - 切换Agent
-        register(CommandInfo.builtin("agents", "切换Agent", "列出所有可用Agent并切换到选定Agent。"));
-
-        // /variants - 切换模型变体
-        register(CommandInfo.builtin("variants", "切换模型变体", "切换当前模型的变体（如不同版本）。"));
-
-        // /mcps - 切换MCP服务器
-        register(CommandInfo.builtin("mcps", "切换MCP服务器", "列出并管理MCP服务器连接。"));
-
-        // /connect - 连接Provider
-        register(CommandInfo.builtin("connect", "连接Provider", "连接到新的AI Provider。"));
+        register(CommandInfo.clientAction("models", "切换模型", CommandInfo.ClientAction.MODEL_SETTINGS));
+        register(CommandInfo.unavailable("agents", "切换 Agent", "当前版本使用工作区模式切换，不提供独立 Agent 选择器"));
+        register(CommandInfo.unavailable("variants", "切换模型变体", "模型变体选择器尚未实现"));
+        register(CommandInfo.clientAction("mcps", "管理 MCP 服务器", CommandInfo.ClientAction.MCP_PANEL));
+        register(CommandInfo.clientAction("connect", "连接 Provider", CommandInfo.ClientAction.MODEL_SETTINGS));
     }
 
     /**
      * 注册系统命令
      */
     private void registerSystemCommands() {
-        // /status - 查看状态
-        register(CommandInfo.builtin("status", "查看项目状态", "显示当前项目、会话、Agent和模型的状态信息。"));
-
-        // /help - 显示帮助
-        register(CommandInfo.builtin("help", "显示帮助", "显示所有可用命令的帮助信息。"));
-
-        // /exit - 退出应用（别名: /quit, /q）
-        registerWithAliases("exit", "退出应用", "退出当前会话。", "quit", "q");
-
-        // /themes - 切换主题
-        register(CommandInfo.builtin("themes", "切换主题", "切换UI主题。"));
-
-        // /docs - 打开文档
-        register(CommandInfo.builtin("docs", "打开文档", "打开项目文档或LabexAgent文档。"));
-
-        // /editor - 在外部编辑器中编辑
-        register(CommandInfo.builtin("editor", "在外部编辑器中编辑", "在外部编辑器中编辑当前输入。"));
-
-        // /skills - 打开技能选择器
-        register(CommandInfo.builtin("skills", "打开技能选择器", "打开可用技能的选择器。"));
-
-        // /diff - 打开差异查看器
-        register(CommandInfo.builtin("diff", "打开差异查看器", "打开文件差异查看器。"));
+        register(CommandInfo.clientAction("status", "查看项目状态", CommandInfo.ClientAction.PROJECT_STATUS));
+        register(CommandInfo.clientAction("help", "显示帮助", CommandInfo.ClientAction.COMMAND_HELP));
+        register(CommandInfo.clientAction("exit", "退出工作区", CommandInfo.ClientAction.WORKSPACE_EXIT, "quit", "q"));
+        register(CommandInfo.clientAction("themes", "切换主题", CommandInfo.ClientAction.THEME_SETTINGS));
+        register(CommandInfo.unavailable("docs", "打开文档", "工作区文档入口尚未实现"));
+        register(CommandInfo.unavailable("editor", "在外部编辑器中编辑", "外部编辑器桥接尚未实现"));
+        register(CommandInfo.clientAction("skills", "打开技能选择器", CommandInfo.ClientAction.SKILLS_PANEL));
+        register(CommandInfo.clientAction("diff", "打开差异查看器", CommandInfo.ClientAction.CHANGES_PANEL));
     }
 
     /**
@@ -317,7 +269,7 @@ public class CommandRegistry {
         register(CommandInfo.builtin("index", "生成项目索引", "生成项目紧凑索引，优化大项目处理。"));
 
         // /context - 查看上下文状态
-        register(CommandInfo.builtin("context", "查看上下文状态", "查看当前会话的上下文状态。"));
+        register(CommandInfo.clientAction("context", "查看上下文状态", CommandInfo.ClientAction.CONTEXT_USAGE));
 
         // /rules - 查看规则文件
         register(CommandInfo.builtin("rules", "查看规则文件", "查看项目规则文件状态。"));
@@ -332,7 +284,7 @@ public class CommandRegistry {
         register(CommandInfo.builtin("memory", "查看记忆状态", "查看Agent的记忆状态。"));
 
         // /tokens - 查看token使用
-        register(CommandInfo.builtin("tokens", "查看token使用", "查看当前会话的token使用情况。"));
+        register(CommandInfo.clientAction("tokens", "查看 token 使用", CommandInfo.ClientAction.USAGE_PANEL));
     }
 
     /**
@@ -340,19 +292,8 @@ public class CommandRegistry {
      */
     private void register(CommandInfo command) {
         commands.put(command.name(), command);
-    }
-
-    /**
-     * 注册命令（带别名）
-     */
-    private void registerWithAliases(String name, String description, String template, String... aliases) {
-        CommandInfo command = new CommandInfo(name, description, template, null, null, false,
-            CommandSource.BUILTIN, CommandInfo.extractHints(template), Map.of());
-        commands.put(name, command);
-
-        // 注册别名
-        for (String alias : aliases) {
-            aliasMap.put(alias, name);
+        for (String alias : command.aliases()) {
+            aliasMap.put(alias, command.name());
         }
     }
 
@@ -498,7 +439,8 @@ public class CommandRegistry {
      */
     public void registerMcpCommand(String name, String description, String template) {
         CommandInfo command = new CommandInfo(name, description, template, null, null, false,
-            CommandSource.MCP, CommandInfo.extractHints(template), Map.of());
+            CommandSource.MCP, CommandInfo.extractHints(template), List.of(),
+            CommandInfo.CommandDispatch.AGENT_PROMPT, null, null);
         commands.put(name, command);
     }
 
@@ -509,7 +451,8 @@ public class CommandRegistry {
         // Skill命令不会覆盖已有命令
         if (!commands.containsKey(name)) {
             CommandInfo command = new CommandInfo(name, description, template, null, null, false,
-                CommandSource.SKILL, CommandInfo.extractHints(template), Map.of());
+                CommandSource.SKILL, CommandInfo.extractHints(template), List.of(),
+                CommandInfo.CommandDispatch.AGENT_PROMPT, null, null);
             commands.put(name, command);
         }
     }

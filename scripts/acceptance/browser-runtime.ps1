@@ -129,6 +129,10 @@ function Wait-Http {
 
 
 $backendArguments = @(
+    '-Xms64m',
+    '-Xmx512m',
+    '-XX:MaxMetaspaceSize=256m',
+    '-XX:ReservedCodeCacheSize=128m',
     '-Dfile.encoding=UTF-8', '-jar', $JarPath,
     "--server.port=$BackendPort", '--spring.profiles.active=acceptance,local',
     "--labex-agent.project-base-path=$workspaceRoot",

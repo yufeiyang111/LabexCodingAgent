@@ -2,10 +2,10 @@ package com.labex.labexagent.service;
 
 import com.google.gson.Gson;
 import com.labex.entity.AgentModelConfig;
-import com.labex.entity.AgentConversation;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.command.CommandInfo;
 import com.labex.labexagent.command.CommandRegistry;
+import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.dto.PromptOptimizationRequest;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
@@ -28,18 +28,15 @@ public class AgentCommandService {
     private static final Gson GSON = new Gson();
 
     private final StudentProjectService studentProjectService;
-    private final AgentConversationService conversationService;
     private final CommandRegistry commandRegistry;
     private final AgentModelConfigService modelConfigService;
     private final LlmProviderFactory providerFactory;
 
     public AgentCommandService(StudentProjectService studentProjectService,
-                              AgentConversationService conversationService,
                               CommandRegistry commandRegistry,
                               AgentModelConfigService modelConfigService,
                               LlmProviderFactory providerFactory) {
         this.studentProjectService = studentProjectService;
-        this.conversationService = conversationService;
         this.commandRegistry = commandRegistry;
         this.modelConfigService = modelConfigService;
         this.providerFactory = providerFactory;
@@ -63,75 +60,111 @@ public class AgentCommandService {
     public Map<String, Object> runCommand(Integer studentId, Integer projectId, Map<String, String> request) {
         StudentProject project = this.requireProject(studentId, projectId);
         String message = this.value(request, "message");
-        String command = this.parseCommand(this.value(request, "command"), message);
-        String mode = this.value(request, "mode").isBlank() ? "agent" : this.value(request, "mode");
-
-        // 创建或获取会话
-        AgentConversation conversation = this.conversationService.ensureConversation(
-            studentId, project, this.value(request, "conversationId"), mode,
-            message.isBlank() ? "/" + command : message
-        );
-
-        // 保存用户消息
-        this.conversationService.saveUserMessage(conversation, message.isBlank() ? "/" + command : message);
-
-        // 提取参数
-        String arguments = this.extractArguments(message);
-
-        log.info("执行命令: /{} 参数: {} 会话: {}", command, arguments, conversation.getConversationId());
-
-        // 获取命令信息
-        CommandInfo commandInfo = commandRegistry.getCommand(command);
+        String requestedCommand = this.parseCommand(this.value(request, "command"), message);
+        CommandInfo commandInfo = commandRegistry.getCommand(requestedCommand);
         if (commandInfo == null) {
-            throw new IllegalArgumentException("未知指令 /" + command + "。输入 /help 查看当前支持的指令。");
+            throw new IllegalArgumentException("未知指令 /" + requestedCommand + "。输入 /help 查看当前支持的指令。");
         }
 
-        // 解析命令模板，将参数替换到模板中
-        String resolvedTemplate = commandInfo.resolveTemplate(arguments);
+        String command = commandInfo.name();
+        String arguments = this.extractArguments(message);
+        log.info("Slash command resolved: /{} dispatch={} argumentChars={}", command, commandInfo.dispatch(), arguments.length());
 
-        // 保存命令执行事件（将解析后的模板作为提示词）
-        this.conversationService.saveEvent(conversation, "COMMAND",
-            Map.of(
+        if (commandInfo.dispatch() == CommandInfo.CommandDispatch.UNAVAILABLE) {
+            return Map.of(
                 "command", command,
-                "template", resolvedTemplate,
-                "arguments", arguments,
-                "summary", "执行 /" + command + " 指令"
-            ));
+                "dispatch", commandInfo.dispatch().name(),
+                "success", false,
+                "message", "指令 /" + command + " 尚未接通真实执行能力：" + commandInfo.unavailableReason()
+            );
+        }
 
-        // 返回结果，前端会将解析后的模板作为提示词发送给LLM
+        if (commandInfo.dispatch() == CommandInfo.CommandDispatch.CLIENT_ACTION) {
+            return Map.of(
+                "command", command,
+                "dispatch", commandInfo.dispatch().name(),
+                "action", commandInfo.clientAction().name(),
+                "arguments", arguments,
+                "description", commandInfo.description(),
+                "success", true,
+                "message", "命令 /" + command + " 已交给客户端动作处理"
+            );
+        }
+
+        String resolvedTemplate = commandInfo.resolveTemplate(arguments);
         return Map.of(
-            "conversationId", conversation.getConversationId(),
             "command", command,
+            "dispatch", commandInfo.dispatch().name(),
             "template", resolvedTemplate,
             "arguments", arguments,
             "description", commandInfo.description(),
             "subtask", commandInfo.subtask(),
             "success", true,
-            "message", "命令 /" + command + " 已解析，准备发送给Agent执行"
+            "message", "命令 /" + command + " 已解析，准备发送给 Agent 执行"
         );
+    }
+    /**
+     * 校验 Slash Command 的用户可见输入与 Provider 有效 Prompt，禁止客户端伪造两套语义。
+     */
+    public void prepareAgentStreamRequest(Integer studentId, Integer projectId, AgentStreamRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("Agent stream request is required");
+        }
+        String displayMessage = value(request.getDisplayMessage());
+        if (displayMessage.isBlank()) {
+            return;
+        }
+        requireProject(studentId, projectId);
+        if (!displayMessage.startsWith("/")) {
+            throw new IllegalArgumentException("displayMessage is only supported for slash commands");
+        }
+
+        String requestedCommand = parseCommand("", displayMessage);
+        CommandInfo commandInfo = commandRegistry.getCommand(requestedCommand);
+        if (commandInfo == null) {
+            throw new IllegalArgumentException("未知指令 /" + requestedCommand + "。输入 /help 查看当前支持的指令。");
+        }
+        if (commandInfo.dispatch() != CommandInfo.CommandDispatch.AGENT_PROMPT) {
+            throw new IllegalArgumentException("指令 /" + commandInfo.name() + " 不能进入 Agent prompt 运行时");
+        }
+
+        String expectedPrompt = value(commandInfo.resolveTemplate(extractArguments(displayMessage)));
+        String submittedPrompt = value(request.getMessage());
+        if (expectedPrompt.isBlank() || !expectedPrompt.equals(submittedPrompt)) {
+            throw new IllegalArgumentException("Slash Command 的 Provider prompt 与服务端模板不一致，请重新提交");
+        }
+        request.setDisplayMessage(displayMessage);
+        request.setMessage(expectedPrompt);
     }
 
     /**
-     * 获取所有可用命令
+     * 获取所有可用命令。
      */
+    public Map<String, Object> getAvailableCommands(Integer studentId, Integer projectId) {
+        this.requireProject(studentId, projectId);
+        return this.getAvailableCommands();
+    }
     public Map<String, Object> getAvailableCommands() {
         var commands = commandRegistry.getAllCommands().stream()
-            .map(cmd -> Map.of(
-                "name", cmd.name(),
-                "description", cmd.description(),
-                "source", cmd.source().name(),
-                "hints", cmd.hints()
+            .filter(command -> command.dispatch() != CommandInfo.CommandDispatch.UNAVAILABLE)
+            .sorted(java.util.Comparator.comparing(CommandInfo::name))
+            .map(command -> Map.<String, Object>of(
+                "name", command.name(),
+                "description", command.description(),
+                "source", command.source().name(),
+                "hints", command.hints(),
+                "aliases", command.aliases(),
+                "dispatch", command.dispatch().name(),
+                "action", command.clientAction() == null ? "" : command.clientAction().name(),
+                "subtask", command.subtask()
             ))
             .toList();
 
-        var stats = commandRegistry.getStatistics();
-
         return Map.of(
             "commands", commands,
-            "statistics", stats
+            "statistics", commandRegistry.getStatistics()
         );
     }
-
     /**
      * 获取命令信息
      */
@@ -141,18 +174,22 @@ public class AgentCommandService {
             return Map.of("error", "命令不存在: " + commandName);
         }
 
-        return Map.of(
-            "name", command.name(),
-            "description", command.description(),
-            "template", command.template() != null ? command.template() : "",
-            "source", command.source().name(),
-            "agent", command.agent() != null ? command.agent() : "",
-            "model", command.model() != null ? command.model() : "",
-            "subtask", command.subtask(),
-            "hints", command.hints()
+        return Map.ofEntries(
+            Map.entry("name", command.name()),
+            Map.entry("description", command.description()),
+            Map.entry("template", command.template() != null ? command.template() : ""),
+            Map.entry("source", command.source().name()),
+            Map.entry("agent", command.agent() != null ? command.agent() : ""),
+            Map.entry("model", command.model() != null ? command.model() : ""),
+            Map.entry("subtask", command.subtask()),
+            Map.entry("hints", command.hints()),
+            Map.entry("aliases", command.aliases()),
+            Map.entry("dispatch", command.dispatch().name()),
+            Map.entry("action", command.clientAction() == null ? "" : command.clientAction().name()),
+            Map.entry("available", command.dispatch() != CommandInfo.CommandDispatch.UNAVAILABLE),
+            Map.entry("unavailableReason", command.unavailableReason() == null ? "" : command.unavailableReason())
         );
     }
-
     /**
      * 注册自定义命令
      */

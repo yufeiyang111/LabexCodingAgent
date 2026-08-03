@@ -221,7 +221,7 @@
                   </div>
                   <div class="ai-msg-body">
                     <!-- Merged Thinking + Tool Calls (by time order) -->
-                    <template v-if="(msg.thinkingBlocks && msg.thinkingBlocks.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0)">
+                    <template v-if="(showThinkingProcess && msg.thinkingBlocks && msg.thinkingBlocks.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0)">
                       <template v-for="item in getMergedItems(msg)" :key="item._order">
                         <div v-if="item.type === 'thinking'" class="ai-thinking-block" :class="{ 'is-open': item.data._open }">
                           <div class="ai-thinking-header" @click="item.data._open = !item.data._open">
@@ -274,7 +274,7 @@
                       </template>
                     </template>
                     <!-- Current Thinking (streaming) -->
-                    <div v-if="msg.thinking" class="ai-thinking-block active is-open">
+                    <div v-if="showThinkingProcess && msg.thinking" class="ai-thinking-block active is-open">
                       <div class="ai-thinking-header">
                         <svg class="ai-think-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(90deg)"><polyline points="9 18 15 12 9 6"/></svg>
                         <span>思考过程...</span>
@@ -313,7 +313,7 @@
                         {{ msg.environmentRetrying ? '\u6b63\u5728\u6062\u590d\u4efb\u52a1...' : '\u73af\u5883\u6062\u590d\u540e\u91cd\u8bd5' }}
                       </button>
                       <!-- 消息时间戳 -->
-                      <div v-if="msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</div>
+                      <div v-if="showMessageTimestamps && msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</div>
                     </div>
                     <!-- Token Usage (on last assistant message) -->
                     <CompletionEvidenceCard
@@ -811,6 +811,7 @@ import { useContextManagement, contextManagementTitle, contextManagementStatusTe
 import { useThemeStore } from '@/stores/theme'
 import { loadWorkspaceResources } from '@/composables/workspaceInitialization'
 import { useConversationState } from '@/composables/useConversationState'
+import { normalizeCommandCatalog, resolveSlashCommand } from '@/composables/slashCommandRuntime'
 import { createConversationSelectionGuard } from '@/composables/conversationSelectionGuard'
 import { useAgentInteraction } from '@/composables/useAgentInteraction'
 import { useAgentExtensions } from '@/composables/useAgentExtensions'
@@ -949,101 +950,10 @@ const selectedCommandIndex = ref(0)
 const commandSearchRef = ref(null)
 const commandListRef = ref(null)
 
-// 完整的命令列表（复刻Opencode）
-const commandList = [
-  // 服务端LLM提示命令
-  { name: 'init', description: '引导式 LabexAgent.md 创建/更新', category: 'LLM', aliases: [] },
-  { name: 'review', description: '代码审查 [commit|branch|pr]', category: 'LLM', aliases: [] },
-
-  // 会话管理命令
-  { name: 'sessions', description: '切换会话', category: '会话', aliases: [] },
-  { name: 'new', description: '新建会话', category: '会话', aliases: ['clear'] },
-  { name: 'compact', description: '压缩会话上下文，减少token消耗', category: '会话', aliases: ['summarize'] },
-  { name: 'undo', description: '撤销上一条消息', category: '会话', aliases: [] },
-  { name: 'redo', description: '恢复已撤销的消息', category: '会话', aliases: [] },
-  { name: 'share', description: '分享会话', category: '会话', aliases: [] },
-  { name: 'unshare', description: '取消分享', category: '会话', aliases: [] },
-  { name: 'rename', description: '重命名会话', category: '会话', aliases: [] },
-  { name: 'fork', description: '分叉会话', category: '会话', aliases: [] },
-  { name: 'copy', description: '复制会话记录', category: '会话', aliases: [] },
-  { name: 'export', description: '导出会话记录', category: '会话', aliases: [] },
-  { name: 'timeline', description: '跳转到消息', category: '会话', aliases: [] },
-  { name: 'timestamps', description: '切换时间戳显示', category: '会话', aliases: ['toggle-timestamps'] },
-  { name: 'thinking', description: '切换思考模式', category: '会话', aliases: ['toggle-thinking'] },
-
-  // Agent/Model管理命令
-  { name: 'models', description: '切换模型', category: 'Agent', aliases: [] },
-  { name: 'agents', description: '切换Agent', category: 'Agent', aliases: [] },
-  { name: 'variants', description: '切换模型变体', category: 'Agent', aliases: [] },
-  { name: 'mcps', description: '切换MCP服务器', category: 'Agent', aliases: [] },
-  { name: 'connect', description: '连接Provider', category: 'Agent', aliases: [] },
-
-  // 系统命令
-  { name: 'status', description: '查看项目状态', category: '系统', aliases: [] },
-  { name: 'help', description: '显示帮助信息', category: '系统', aliases: [] },
-  { name: 'exit', description: '退出应用', category: '系统', aliases: ['quit', 'q'] },
-  { name: 'themes', description: '切换主题', category: '系统', aliases: [] },
-  { name: 'docs', description: '打开文档', category: '系统', aliases: [] },
-  { name: 'editor', description: '在外部编辑器中编辑', category: '系统', aliases: [] },
-  { name: 'skills', description: '打开技能选择器', category: '系统', aliases: [] },
-  { name: 'diff', description: '打开差异查看器', category: '系统', aliases: [] },
-
-  // 开发工作流命令
-  { name: 'fix', description: '修复问题', category: '开发', aliases: [] },
-  { name: 'explain', description: '解释代码', category: '开发', aliases: [] },
-  { name: 'refactor', description: '重构代码', category: '开发', aliases: [] },
-  { name: 'optimize', description: '优化性能', category: '开发', aliases: [] },
-  { name: 'clean', description: '清理项目', category: '开发', aliases: [] },
-  { name: 'reset', description: '重置项目', category: '开发', aliases: [] },
-
-  // 文件操作命令
-  { name: 'create', description: '创建文件/目录', category: '文件', aliases: [] },
-  { name: 'delete', description: '删除文件/目录', category: '文件', aliases: [] },
-  { name: 'rename-file', description: '重命名文件', category: '文件', aliases: [] },
-  { name: 'search', description: '搜索代码', category: '文件', aliases: [] },
-  { name: 'move', description: '移动文件', category: '文件', aliases: [] },
-  { name: 'copy-file', description: '复制文件', category: '文件', aliases: [] },
-
-  // Git命令
-  { name: 'git', description: '执行Git命令', category: 'Git', aliases: [] },
-  { name: 'commit', description: '提交更改', category: 'Git', aliases: [] },
-  { name: 'push', description: '推送更改', category: 'Git', aliases: [] },
-  { name: 'pull', description: '拉取更改', category: 'Git', aliases: [] },
-  { name: 'branch', description: '分支管理', category: 'Git', aliases: [] },
-  { name: 'merge', description: '合并分支', category: 'Git', aliases: [] },
-  { name: 'stash', description: '暂存更改', category: 'Git', aliases: [] },
-
-  // 测试命令
-  { name: 'test', description: '运行测试', category: '测试', aliases: [] },
-  { name: 'test-file', description: '为文件生成测试', category: '测试', aliases: [] },
-  { name: 'coverage', description: '测试覆盖率', category: '测试', aliases: [] },
-  { name: 'benchmark', description: '性能基准测试', category: '测试', aliases: [] },
-
-  // 部署命令
-  { name: 'deploy', description: '部署项目', category: '部署', aliases: [] },
-  { name: 'build', description: '构建项目', category: '部署', aliases: [] },
-  { name: 'start', description: '启动服务', category: '部署', aliases: [] },
-  { name: 'stop', description: '停止服务', category: '部署', aliases: [] },
-  { name: 'restart', description: '重启服务', category: '部署', aliases: [] },
-  { name: 'logs', description: '查看日志', category: '部署', aliases: [] },
-
-  // 分析命令
-  { name: 'lint', description: '代码检查', category: '分析', aliases: [] },
-  { name: 'format', description: '代码格式化', category: '分析', aliases: [] },
-  { name: 'typecheck', description: '类型检查', category: '分析', aliases: [] },
-  { name: 'security', description: '安全扫描', category: '分析', aliases: [] },
-  { name: 'deps', description: '依赖管理', category: '分析', aliases: [] },
-  { name: 'env', description: '环境变量', category: '分析', aliases: [] },
-  { name: 'doctor', description: '项目诊断', category: '分析', aliases: [] },
-  { name: 'index', description: '生成项目索引', category: '分析', aliases: [] },
-  { name: 'context', description: '查看上下文状态', category: '分析', aliases: [] },
-  { name: 'rules', description: '查看规则文件', category: '分析', aliases: [] },
-  { name: 'checkpoint', description: '创建检查点', category: '分析', aliases: [] },
-  { name: 'restore', description: '恢复检查点', category: '分析', aliases: [] },
-  { name: 'memory', description: '查看记忆状态', category: '分析', aliases: [] },
-  { name: 'tokens', description: '查看token使用', category: '分析', aliases: [] },
-]
-
+// Slash command 目录由后端 typed metadata 投影，前端只持有可重建视图。
+const commandList = ref([])
+const showMessageTimestamps = ref(true)
+const showThinkingProcess = ref(true)
 // Model config dialog state
 const mcEditing = ref(false)
 const mcTemplateSelecting = ref(false)
@@ -1191,7 +1101,8 @@ onMounted(async () => {
   const secondaryResources = loadWorkspaceResources([
     () => loadModelConfigs(),
     () => loadAgentExtensions(),
-    () => loadConversations()
+    () => loadConversations(),
+    () => loadCommandCatalog()
   ])
   await loadRoot()
   void secondaryResources.then(async () => {
@@ -1226,86 +1137,128 @@ async function exportProject() {
   try { const r = await projectApi.exportProject(projectId.value); const blob = r.data instanceof Blob ? r.data : new Blob([r.data], { type: 'application/zip' }); const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = (projectName.value || 'project') + '.zip'; document.body.appendChild(a); a.click(); document.body.removeChild(a); window.URL.revokeObjectURL(url); ElMessage.success('导出成功') } catch (e) { ElMessage.error('导出失败: ' + (e?.response?.data?.message || e?.message || '未知错误')) }
 }
 
+async function loadCommandCatalog() {
+  try {
+    const response = await projectApi.agentCommands(projectId.value)
+    commandList.value = normalizeCommandCatalog(response)
+  } catch (error) {
+    commandList.value = []
+    ElMessage.warning('命令目录加载失败，slash command 已安全禁用')
+  }
+}
+
+function buildConversationMarkdown() {
+  const title = currentSessionName.value || '会话'
+  const body = messages.value.map(message => {
+    const role = message.role === 'user' ? '用户' : 'Agent'
+    return `## ${role}\n\n${message.content || ''}`
+  }).join('\n\n')
+  return `# ${title}\n\n${body}`.trim() + '\n'
+}
+
+async function copyConversationTranscript() {
+  if (!messages.value.length) throw new Error('当前会话没有可复制的记录')
+  if (!navigator.clipboard?.writeText) throw new Error('当前浏览器不支持剪贴板写入')
+  await navigator.clipboard.writeText(buildConversationMarkdown())
+  ElMessage.success('会话记录已复制')
+}
+
+function exportConversationTranscript() {
+  if (!messages.value.length) throw new Error('当前会话没有可导出的记录')
+  const blob = new Blob([buildConversationMarkdown()], { type: 'text/markdown;charset=utf-8' })
+  const url = window.URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${(currentSessionName.value || 'conversation').replace(/[\\/:*?"<>|]/g, '_')}.md`
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  window.URL.revokeObjectURL(url)
+  ElMessage.success('会话记录已导出')
+}
+
+function buildClientSlashActions() {
+  return {
+    SESSION_LIST: async () => {
+      await loadConversations()
+      showSessions.value = true
+    },
+    SESSION_NEW: async () => createNewSession(),
+    CONVERSATION_COMPACT: async () => compactCurrentConversation(),
+    CONVERSATION_FORK: async () => forkCurrentConversation(),
+    CONVERSATION_COPY: async () => copyConversationTranscript(),
+    CONVERSATION_EXPORT: async () => exportConversationTranscript(),
+    TOGGLE_TIMESTAMPS: async () => {
+      showMessageTimestamps.value = !showMessageTimestamps.value
+      ElMessage.success(showMessageTimestamps.value ? '已显示消息时间戳' : '已隐藏消息时间戳')
+    },
+    TOGGLE_THINKING: async () => {
+      showThinkingProcess.value = !showThinkingProcess.value
+      ElMessage.success(showThinkingProcess.value ? '已显示思考过程' : '已隐藏思考过程')
+    },
+    MODEL_SETTINGS: async () => { showModelConfig.value = true },
+    THEME_SETTINGS: async () => themeStore.openSettings(),
+    CHANGES_PANEL: async () => selectAiTab('review'),
+    SKILLS_PANEL: async () => {
+      activeExtensionTab.value = 'skills'
+      await loadAgentExtensions()
+      await selectAiTab('extensions')
+    },
+    MCP_PANEL: async () => {
+      activeExtensionTab.value = 'mcp'
+      await loadAgentExtensions()
+      await selectAiTab('extensions')
+    },
+    USAGE_PANEL: async () => selectAiTab('usage'),
+    CONTEXT_USAGE: async () => openContextUsageDialog(),
+    PROJECT_STATUS: async () => ElMessage.info(
+      `项目：${projectName.value || '-'} · 会话：${currentSessionName.value || '-'} · 模式：${agentMode.value} · 模型：${currentModelName.value}`
+    ),
+    COMMAND_HELP: async () => {
+      showCommandPalette.value = true
+      commandSearch.value = ''
+      selectedCommandIndex.value = 0
+      await nextTick()
+      commandSearchRef.value?.focus()
+    },
+    WORKSPACE_EXIT: async () => router.push({ name: 'Projects' })
+  }
+}
 // AI methods
 async function sendMessage() {
   const q = agentInput.value.trim()
   if (!q || agentLoading.value) return
-  if (/^\/(compact|summarize)\s*$/i.test(q)) {
-    agentInput.value = ''
-    await compactCurrentConversation()
-    return
-  }
 
-  // 检测是否以 / 开头，如果是则调用命令执行API
   let messageToSend = q
+  let displayMessage = null
   if (q.startsWith('/')) {
+    // 先关闭输入时产生的旧面板，允许 /help 等客户端动作按需重新打开目标 UI。
+    closeCommandPalette()
     try {
-      // 解析命令和参数
-      const parts = q.split(/\s+/)
-      const command = parts[0].slice(1) // 去掉开头的 /
-      const arguments_ = parts.slice(1).join(' ')
-
-      // 调用命令执行API
-      const commandResponse = await projectApi.runCommand(projectId.value, {
-        command: command,
-        message: q,
-        conversationId: currentAgentSession.value?.conversationId,
-        mode: agentMode.value
+      const commandResult = await resolveSlashCommand({
+        raw: q,
+        runCommand: request => projectApi.runCommand(projectId.value, request),
+        requestContext: {
+          conversationId: currentAgentSession.value?.conversationId,
+          mode: agentMode.value
+        },
+        clientActions: buildClientSlashActions()
       })
-
-      if (commandResponse.data?.success) {
-        // 将命令模板作为提示词发送给LLM
-        messageToSend = commandResponse.data.template || q
-
-        // 如果是子任务命令，显示特殊提示
-        if (commandResponse.data.subtask) {
-          messages.value.push({ role: 'user', content: q })
-          messages.value.push({
-            role: 'assistant',
-            content: `🔄 正在执行子任务: /${command}\n\n${commandResponse.data.description}`,
-            thinking: '',
-            _thinkingDisplay: '',
-            _thinkingTimer: null,
-            thinkingBlocks: [],
-            toolCalls: [],
-            plan: null,
-            isStreaming: false,
-            error: null,
-            _nextOrder: 0
-          })
-          agentInput.value = ''
-          await nextTick()
-          scrollDown()
-          return
-        }
-      } else {
-        // 命令执行失败，显示错误信息
-        messages.value.push({ role: 'user', content: q })
-        messages.value.push({
-          role: 'assistant',
-          content: `❌ 命令执行失败: ${commandResponse.data?.message || '未知错误'}`,
-          thinking: '',
-          _thinkingDisplay: '',
-          _thinkingTimer: null,
-          thinkingBlocks: [],
-          toolCalls: [],
-          plan: null,
-          isStreaming: false,
-          error: null,
-          _nextOrder: 0
-        })
+      if (commandResult.kind === 'handled') {
         agentInput.value = ''
-        await nextTick()
-        scrollDown()
         return
       }
-    } catch (e) {
-      console.error('命令执行失败:', e)
-      // 如果命令执行失败，继续使用原始消息
-      messageToSend = q
+      messageToSend = commandResult.prompt
+      displayMessage = q
+      if (commandResult.subtask) {
+        ElMessage.info(`正在执行子任务：/${commandResult.command}`)
+      }
+    } catch (error) {
+      console.error('命令执行失败:', error)
+      ElMessage.error(error?.message || '命令执行失败')
+      return
     }
   }
-
   messages.value.push({ role: 'user', content: q, timestamp: Date.now() })
   messages.value.push({ role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), conversationId: currentAgentSession.value?.conversationId || null, timing: createMessageTiming() })
   const assistantMsg = messages.value[messages.value.length - 1]
@@ -1322,6 +1275,7 @@ async function sendMessage() {
       conversationId: currentAgentSession.value?.conversationId,
       mode: agentMode.value,
       message: messageToSend,
+      displayMessage,
       activePath: activePath.value || '',
       modelConfigId: selectedModelConfigId.value || null
     }, {
@@ -1690,6 +1644,10 @@ async function handleQuestionReply(payload) {
   const result = await submitQuestionReply(payload)
   if (result.reason === 'answer_required') {
     ElMessage.warning('\u8bf7\u5148\u8f93\u5165\u56de\u7b54')
+    return
+  }
+  if (result.reason === 'request_missing') {
+    ElMessage.warning('提问请求仍在同步，请稍后重试')
     return
   }
   if (result.success) {
@@ -2271,7 +2229,7 @@ async function deleteConversation(conversation) {
 
 function getMergedItems(msg) {
   const items = []
-  if (msg.thinkingBlocks) {
+  if (showThinkingProcess.value && msg.thinkingBlocks) {
     for (const tb of msg.thinkingBlocks) {
       items.push({ type: 'thinking', data: tb, _order: tb._order || 0 })
     }
@@ -3141,8 +3099,8 @@ function showCommandMenu() {
 // 命令选择器相关方法
 const filteredCommands = computed(() => {
   const search = commandSearch.value.toLowerCase().trim()
-  if (!search) return commandList
-  return commandList.filter(cmd =>
+  if (!search) return commandList.value
+  return commandList.value.filter(cmd =>
     cmd.name.toLowerCase().includes(search) ||
     cmd.description.toLowerCase().includes(search) ||
     cmd.category.toLowerCase().includes(search) ||

@@ -2,6 +2,11 @@ You are running the `/review` command for the LabexAgent workspace.
 
 Goal: review code changes for correctness, security, and maintainability. Default target is uncommitted changes; accept a target like `commit`, `branch <name>`, or `pr <number>`.
 
+Requested review target:
+$ARGUMENTS
+
+If the requested review target is blank, review the uncommitted changes.
+
 Steps:
 1. Determine the diff scope (uncommitted, last commit, branch comparison, or PR).
 2. Read each changed file end-to-end; do not skim.

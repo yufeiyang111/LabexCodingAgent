@@ -1,5 +1,6 @@
 package com.labex.labexagent.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,7 +23,8 @@ class AgentCommandArchitectureContractTest {
         assertNotNull(init);
         assertFalse(init.template().isBlank());
         assertNotNull(compactAlias);
-        assertFalse(compactAlias.template().isBlank());
+        assertEquals(com.labex.labexagent.command.CommandInfo.CommandDispatch.CLIENT_ACTION, compactAlias.dispatch());
+        assertEquals(com.labex.labexagent.command.CommandInfo.ClientAction.CONVERSATION_COMPACT, compactAlias.clientAction());
     }
 
     @Test

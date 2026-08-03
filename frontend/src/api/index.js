@@ -19,6 +19,9 @@ export const projectApi = {
   optimizePrompt(projectId, data) {
     return request.post('/student/projects/' + projectId + '/agent/prompt/optimize', data)
   },
+  agentCommands(projectId) {
+    return request.get('/student/projects/' + projectId + '/agent/commands')
+  },
   runCommand(projectId, data) {
     return request.post('/student/projects/' + projectId + '/agent/commands', data)
   },

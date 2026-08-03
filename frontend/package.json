@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "test": "node scripts/run-tests.mjs",
     "check:chunks": "node scripts/check-chunk-budget.mjs",
-    "test:acceptance:unit": "node --test scripts/acceptance/agent-sse.test.mjs scripts/acceptance/browser-error-policy.test.mjs scripts/acceptance/browser-text.test.mjs scripts/acceptance/cdp-client.test.mjs scripts/acceptance/vite-config.test.mjs",
+    "test:acceptance:unit": "node --test scripts/acceptance/agent-sse.test.mjs scripts/acceptance/browser-error-policy.test.mjs scripts/acceptance/browser-text.test.mjs scripts/acceptance/cdp-client.test.mjs scripts/acceptance/runtime-config.test.mjs scripts/acceptance/vite-config.test.mjs",
     "acceptance:browser": "node scripts/acceptance/agent-browser.mjs"
   },
   "dependencies": {

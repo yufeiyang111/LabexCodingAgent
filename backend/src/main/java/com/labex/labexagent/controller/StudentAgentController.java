@@ -194,7 +194,9 @@ public class StudentAgentController {
 
     @PostMapping(value={"/stream"}, produces={"text/event-stream"})
     public SseEmitter stream(@PathVariable Integer projectId, @RequestBody AgentStreamRequest request, Authentication auth) {
-        return this.agentLoopEngine.start(this.getStudentId(auth), projectId, request);
+        Integer studentId = this.getStudentId(auth);
+        this.commandService.prepareAgentStreamRequest(studentId, projectId, request);
+        return this.agentLoopEngine.start(studentId, projectId, request);
     }
 
     @GetMapping(value = {"/tasks/{taskId}/events"}, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -228,6 +230,14 @@ public class StudentAgentController {
         }
     }
 
+    @GetMapping(value={"/commands"})
+    public Result<Map<String, Object>> commands(@PathVariable Integer projectId, Authentication auth) {
+        try {
+            return Result.success(this.commandService.getAvailableCommands(this.getStudentId(auth), projectId));
+        } catch (Exception e) {
+            return Result.error(e.getMessage());
+        }
+    }
     @PostMapping(value={"/commands"})
     public Result<Map<String, Object>> runCommand(@PathVariable Integer projectId, @RequestBody Map<String, String> request, Authentication auth) {
         try {

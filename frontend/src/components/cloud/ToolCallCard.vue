@@ -94,6 +94,7 @@
           <div class="tc-question-kicker">等待用户输入</div>
           <div class="tc-question-title">{{ questionRequest.summary || 'Agent 需要你的回答' }}</div>
           <div class="tc-question-text">{{ questionRequest.question }}</div>
+          <div v-if="!questionRequestReady" class="tc-question-sync" role="status">正在同步可恢复提问请求，请稍候...</div>
           <div v-if="questionOptions.length" class="tc-question-options">
             <button
               v-for="option in questionOptions"
@@ -111,8 +112,8 @@
             @click.stop
           />
           <div class="tc-approval-actions">
-            <button type="button" class="tc-approval-btn primary" @click.stop="emitQuestion('answer')">发送回答</button>
-            <button type="button" class="tc-approval-btn danger" @click.stop="emitQuestion('cancel')">取消这次提问</button>
+            <button type="button" class="tc-approval-btn primary" :disabled="!questionRequestReady" @click.stop="emitQuestion('answer')">{{ questionRequestReady ? '发送回答' : '同步请求中...' }}</button>
+            <button type="button" class="tc-approval-btn danger" :disabled="!questionRequestReady" @click.stop="emitQuestion('cancel')">取消这次提问</button>
           </div>
         </div>
 
@@ -232,6 +233,9 @@ const isCommandApproval = computed(() => props.call.status === 'waiting_approval
 const commandApproval = computed(() => props.call.commandApproval || {})
 const isQuestionAsk = computed(() => props.call.status === 'waiting_user' && !!props.call.questionRequest)
 const questionRequest = computed(() => props.call.questionRequest || {})
+const questionRequestReady = computed(() => Boolean(
+  questionRequest.value.requestId || questionRequest.value.interactionId
+))
 const questionOptions = computed(() => Array.isArray(questionRequest.value.options) ? questionRequest.value.options.filter(Boolean) : [])
 
 const isEditTool = computed(() => ['edit_file', 'write_file', 'apply_patch'].includes(props.call.name))
@@ -281,6 +285,7 @@ function setQuestionAnswer(option) {
 }
 
 function emitQuestion(action) {
+  if (!questionRequestReady.value) return
   emit('question', { call: props.call, action, answer: answerDraft.value.trim() })
 }
 
@@ -488,6 +493,12 @@ watch(() => props.call.questionRequest, (request) => {
   margin-bottom: 8px;
 }
 
+.tc-question-sync {
+  margin-bottom: 8px;
+  color: #6d28d9;
+  font-size: 11px;
+  line-height: 1.5;
+}
 .tc-question-options {
   display: flex;
   flex-wrap: wrap;
@@ -585,6 +596,10 @@ watch(() => props.call.questionRequest, (request) => {
   padding: 0 10px;
 }
 
+.tc-approval-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .tc-approval-btn.primary {
   background: #111827;
   border-color: #111827;

@@ -4,14 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentModelConfig;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.command.CommandInfo;
@@ -57,18 +55,13 @@ class AgentCommandServicePromptOptimizationTest {
     @Test
     void runCommandOnlyResolvesTheRegisteredTemplateForTheAgentRuntime() {
         StudentProjectService projectService = mock(StudentProjectService.class);
-        AgentConversationService conversationService = mock(AgentConversationService.class);
         CommandRegistry registry = mock(CommandRegistry.class);
         StudentProject project = new StudentProject();
         project.setProjectId(3);
-        AgentConversation conversation = new AgentConversation();
-        conversation.setConversationId("conversation-1");
         CommandInfo command = CommandInfo.builtin("review", "Review code", "Review this target: $ARGUMENTS");
         when(projectService.getOwnedProject(7, 3)).thenReturn(project);
-        when(conversationService.ensureConversation(7, project, "conversation-1", "build", "/review src/App.vue"))
-                .thenReturn(conversation);
         when(registry.getCommand("review")).thenReturn(command);
-        AgentCommandService service = new AgentCommandService(projectService, conversationService, registry,
+        AgentCommandService service = new AgentCommandService(projectService, registry,
                 mock(AgentModelConfigService.class), mock(LlmProviderFactory.class));
 
         Map<String, Object> result = service.runCommand(7, 3, Map.of(
@@ -79,8 +72,8 @@ class AgentCommandServicePromptOptimizationTest {
 
         assertEquals("Review this target: src/App.vue", result.get("template"));
         assertEquals(true, result.get("success"));
-        verify(conversationService).saveUserMessage(conversation, "/review src/App.vue");
-        verify(conversationService).saveEvent(same(conversation), eq("COMMAND"), any());
+        assertEquals("AGENT_PROMPT", result.get("dispatch"));
+        assertEquals(false, result.containsKey("conversationId"));
     }
 
     @Test
@@ -137,7 +130,6 @@ class AgentCommandServicePromptOptimizationTest {
                                         LlmProviderFactory providerFactory) {
         return new AgentCommandService(
                 projectService,
-                mock(AgentConversationService.class),
                 mock(CommandRegistry.class),
                 modelConfigService,
                 providerFactory

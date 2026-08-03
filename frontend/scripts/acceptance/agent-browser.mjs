@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -23,6 +23,7 @@ let configId = null
 const configIds = []
 let browser = null
 let profileDir = null
+let downloadDir = null
 let client = null
 const consoleErrors = []
 const networkErrors = []
@@ -139,6 +140,8 @@ async function waitForJson(url, predicate = value => Boolean(value)) {
 async function launchBrowser() {
   const executable = await findBrowserExecutable()
   profileDir = await mkdtemp(join(tmpdir(), 'labex-agent-browser-'))
+  downloadDir = join(profileDir, 'downloads')
+  await mkdir(downloadDir, { recursive: true })
   browser = spawn(executable, [
     '--headless=new',
     '--disable-gpu',
@@ -163,6 +166,11 @@ async function launchBrowser() {
       width: 1440, height: 900, deviceScaleFactor: 1, mobile: false
     })
   ])
+  await client.send('Browser.grantPermissions', {
+    origin: uiBase,
+    permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
+  })
+  await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: downloadDir })
   await client.send('Page.addScriptToEvaluateOnNewDocument', { source: internalReasoningProbeSource })
   client.on('Runtime.exceptionThrown', event => {
     consoleErrors.push(event.exceptionDetails?.exception?.description ?? event.exceptionDetails?.text ?? 'Runtime exception')
@@ -324,7 +332,7 @@ async function waitForAgentIdle(label = 'agent terminal state') {
 
 async function sendMessage(message) {
   const encoded = JSON.stringify(message)
-  const visiblePrefix = JSON.stringify(message.slice(0, 96))
+  const visiblePrefix = JSON.stringify(message.slice(0, 96).replace(/\s+/g, ' '))
   await client.evaluate(`(() => {
     const textarea = document.querySelector('.ai-input-text-area textarea');
     if (!textarea) throw new Error('Agent textarea missing');
@@ -360,7 +368,7 @@ async function sendMessage(message) {
   await delay(350)
   const submittedByKeyboard = await client.evaluate(`(() => {
     const textarea = document.querySelector('.ai-input-text-area textarea');
-    return textarea?.value === '' && document.body.innerText.includes(${visiblePrefix});
+    return textarea?.value === '' && (document.body.innerText || '').replace(/\\s+/g, ' ').includes(${visiblePrefix});
   })()`)
   if (!submittedByKeyboard) {
     // 刷新后的首次合成按键偶尔会丢失；等待真正的发送按钮恢复后走完整鼠标事件链。
@@ -370,12 +378,51 @@ async function sendMessage(message) {
   await waitFor(
     () => client.evaluate(`(() => {
       const textarea = document.querySelector('.ai-input-text-area textarea');
-      return textarea?.value === '' && document.body.innerText.includes(${visiblePrefix});
+      return textarea?.value === '' && (document.body.innerText || '').replace(/\\s+/g, ' ').includes(${visiblePrefix});
     })()`),
     `submitted user message ${message.slice(0, 96)}`
   )
 }
 
+async function submitClientCommand(command, { expectPaletteDismissed = true } = {}) {
+  const encoded = JSON.stringify(command)
+  await client.evaluate(`(() => {
+    const textarea = document.querySelector('.ai-input-text-area textarea');
+    if (!textarea) throw new Error('Agent textarea missing');
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, ${encoded});
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    textarea.focus();
+    return true;
+  })()`)
+  const ready = () => client.evaluate(`(() => {
+    const textarea = document.querySelector('.ai-input-text-area textarea');
+    const submit = document.querySelector('button.ai-submit-btn');
+    return textarea?.value === ${encoded} && !textarea.disabled && Boolean(submit) && !submit.disabled;
+  })()`)
+  await waitFor(ready, `client command composer readiness ${command}`)
+  await client.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13
+  })
+  await client.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13
+  })
+  await delay(250)
+  if (await client.evaluate(`document.querySelector('.ai-input-text-area textarea')?.value === ${encoded}`)) {
+    await waitFor(ready, `client command fallback readiness ${command}`)
+    await clickElement('button.ai-submit-btn', { label: `client command ${command}` })
+  }
+  await waitFor(
+    () => client.evaluate(`document.querySelector('.ai-input-text-area textarea')?.value === ''`),
+    `client command completion ${command}`
+  )
+  if (expectPaletteDismissed) {
+    await waitFor(
+      () => client.evaluate(`!document.querySelector('.command-palette')`),
+      `client command palette dismissal ${command}`
+    )
+  }
+}
 async function bodyIncludes(text) {
   return client.evaluate(`document.body.innerText.includes(${JSON.stringify(text)})`)
 }
@@ -515,14 +562,112 @@ async function runScenario() {
   await navigate(`${uiBase}/workspace/${projectId}`)
   await waitForWorkspace()
   const desktopLayout = await assertDesktopWorkspaceLayout()
+  const commandCatalog = await api(`/student/projects/${projectId}/agent/commands`)
+  const commandByName = new Map((commandCatalog?.commands || []).map(command => [command.name, command]))
+  if (commandByName.get('new')?.dispatch !== 'CLIENT_ACTION'
+      || commandByName.get('new')?.action !== 'SESSION_NEW'
+      || commandByName.get('copy')?.action !== 'CONVERSATION_COPY'
+      || commandByName.get('export')?.action !== 'CONVERSATION_EXPORT'
+      || commandByName.get('review')?.dispatch !== 'AGENT_PROMPT'
+      || commandByName.has('rename')) {
+    throw new Error(`Typed slash command catalog is invalid: ${JSON.stringify(commandCatalog)}`)
+  }
+  const conversationsBeforeCommandResolution = await api(`/student/projects/${projectId}/agent/conversations`)
+  const reviewResolution = await api(`/student/projects/${projectId}/agent/commands`, {
+    method: 'POST',
+    body: { command: 'review', message: '/review src/App.vue', mode: 'build' }
+  })
+  const conversationsAfterCommandResolution = await api(`/student/projects/${projectId}/agent/conversations`)
+  if (reviewResolution?.dispatch !== 'AGENT_PROMPT'
+      || !String(reviewResolution?.template || '').includes('src/App.vue')) {
+    throw new Error(`Slash prompt resolution lost the requested arguments: ${JSON.stringify(reviewResolution)}`)
+  }
+  if (conversationsAfterCommandResolution.length !== conversationsBeforeCommandResolution.length) {
+    throw new Error(`Slash prompt resolution polluted the durable conversation: ${JSON.stringify({
+      before: conversationsBeforeCommandResolution.length,
+      after: conversationsAfterCommandResolution.length
+    })}`)
+  }
+  const renameResolution = await api(`/student/projects/${projectId}/agent/commands`, {
+    method: 'POST',
+    body: { command: 'rename', message: '/rename demo', mode: 'build' }
+  })
+  if (renameResolution?.success !== false || renameResolution?.dispatch !== 'UNAVAILABLE') {
+    throw new Error(`Unavailable slash command did not fail closed: ${JSON.stringify(renameResolution)}`)
+  }
+
+  await submitClientCommand('/help', { expectPaletteDismissed: false })
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.command-palette')) && document.querySelectorAll('.command-item').length > 0`),
+    'help slash command keeps the typed command palette open'
+  )
+  await client.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+  })
+  await client.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+  })
+  await waitFor(() => client.evaluate(`!document.querySelector('.command-palette')`), 'help slash command palette close')
+
+  await submitClientCommand('/models')
+  await waitFor(() => client.evaluate(`Boolean(document.querySelector('.mc-dialog'))`), 'model dialog from slash command')
+  await clickElement('.mc-close-btn', { label: 'model dialog close', native: true })
+  await waitFor(() => client.evaluate(`!document.querySelector('.mc-dialog')`), 'model dialog close after slash command')
+
+  await submitClientCommand('/themes')
+  await waitFor(() => client.evaluate(`Boolean(document.querySelector('.theme-drawer'))`), 'theme drawer from slash command')
+  await clickElement('.theme-drawer__close', { label: 'theme drawer close', native: true })
+  await waitFor(() => client.evaluate(`!document.querySelector('.theme-drawer')`), 'theme drawer close after slash command')
+
+  const slashPromptInput = '/review src/App.vue'
+  const tasksBeforeSlashPrompt = await api(`/student/projects/${projectId}/agent/tasks`)
+  const taskIdsBeforeSlashPrompt = new Set(tasksBeforeSlashPrompt.map(task => Number(task.taskId)))
+  await sendMessage(slashPromptInput)
+  let slashPromptTask = null
+  await waitFor(async () => {
+    const tasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    slashPromptTask = tasks
+      .filter(task => !taskIdsBeforeSlashPrompt.has(Number(task.taskId)))
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))[0] || null
+    return slashPromptTask?.status === 'completed'
+  }, 'slash Agent prompt durable completion')
+  await waitForAgentIdle('slash Agent prompt terminal state')
+  const slashPromptConversationId = await client.evaluate(
+    `sessionStorage.getItem(${JSON.stringify(`labex-agent:selected-conversation:${projectId}`)})`
+  )
+  const slashPromptHistory = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(slashPromptConversationId)}/messages?limit=50`
+  )
+  const slashPromptUserEvent = (slashPromptHistory?.events || []).find(event =>
+    event.eventType === 'USER' && event.content === slashPromptInput
+  )
+  if (!slashPromptUserEvent) {
+    throw new Error(`Slash Agent prompt did not preserve the visible user input: ${JSON.stringify(slashPromptHistory)}`)
+  }
+  const slashPromptProjection = await api(`/student/projects/${projectId}/agent/tasks/${slashPromptTask.taskId}`)
+  const slashProviderPrompt = (slashPromptProjection?.runMessages || []).find(message =>
+    String(message.messageKey || '').startsWith('provider:')
+      && message.role === 'user'
+      && String(message.content || '').includes('Requested review target:')
+      && String(message.content || '').includes('src/App.vue')
+  )
+  if (!slashProviderPrompt) {
+    throw new Error(`Slash Agent prompt was not preserved in the durable Provider transcript: ${JSON.stringify(slashPromptProjection?.runMessages || [])}`)
+  }
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitFor(() => bodyIncludes(slashPromptInput), 'visible slash command replay after refresh')
+  if (await bodyIncludes('You are running the `/review` command for the LabexAgent workspace.')) {
+    throw new Error('Refresh rendered the Provider-effective slash template as the user-visible message')
+  }
 
   const markerA = 'Conversation isolation marker: A-ONLY'
   const markerB = 'Conversation isolation marker: B-ONLY'
   await sendMessage('[acceptance:isolation:A-ONLY]')
   await waitFor(() => bodyIncludes(markerA), 'conversation A final reply')
 
-  await createNewConversation()
-  await waitFor(async () => !(await bodyIncludes(markerA)), 'conversation A detachment')
+  await submitClientCommand('/new')
+  await waitFor(async () => !(await bodyIncludes(markerA)), 'conversation A detachment through /new')
   if (await bodyIncludes(markerA)) throw new Error('New conversation still renders conversation A context')
 
   const reasoningPriorTasks = await api(`/student/projects/${projectId}/agent/tasks`)
@@ -549,6 +694,41 @@ async function runScenario() {
     throw new Error(`Durable reasoning projection retained protocol delimiters: ${durableReasoningLeaks.join(' | ')}`)
   }
 
+  await submitClientCommand('/copy')
+
+  await submitClientCommand('/export')
+  let exportedTranscriptPath = ''
+  await waitFor(async () => {
+    const files = await readdir(downloadDir)
+    const completed = files.find(name => name.endsWith('.md') && !name.endsWith('.crdownload'))
+    if (!completed) return false
+    exportedTranscriptPath = join(downloadDir, completed)
+    return true
+  }, 'conversation Markdown downloaded by /export')
+  const exportedTranscript = await readFile(exportedTranscriptPath, 'utf8')
+  if (!exportedTranscript.includes('[acceptance:isolation:B-ONLY]')
+      || !exportedTranscript.includes('B-ONLY')) {
+    throw new Error(`Slash export omitted the current conversation transcript: ${exportedTranscriptPath}`)
+  }
+
+  const slashForkSourceId = await client.evaluate(
+    `sessionStorage.getItem(${JSON.stringify(`labex-agent:selected-conversation:${projectId}`)})`
+  )
+  const conversationsBeforeUiFork = await api(`/student/projects/${projectId}/agent/conversations`)
+  const conversationIdsBeforeUiFork = new Set(conversationsBeforeUiFork.map(conversation => conversation.conversationId))
+  await submitClientCommand('/fork')
+  let slashForkedConversation = null
+  await waitFor(async () => {
+    const conversations = await api(`/student/projects/${projectId}/agent/conversations`)
+    slashForkedConversation = conversations.find(conversation =>
+      !conversationIdsBeforeUiFork.has(conversation.conversationId)
+        && conversation.parentConversationId === slashForkSourceId
+    ) || null
+    return Boolean(slashForkedConversation?.conversationId)
+  }, 'conversation fork created by /fork')
+  if (!slashForkedConversation || !(await bodyIncludes(markerB))) {
+    throw new Error(`Slash fork did not preserve the current durable history: ${JSON.stringify(slashForkedConversation)}`)
+  }
   await client.send('Page.reload', { ignoreCache: true })
   await waitForWorkspace()
   await waitFor(() => bodyIncludes(markerB), 'conversation B replay after refresh')
@@ -780,6 +960,10 @@ async function runScenario() {
     () => client.evaluate(`Boolean(document.querySelector('.tc-question'))`),
     'durable compaction question component'
   )
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector('.tc-question .tc-approval-btn.primary:not(:disabled)'))`),
+    'durable compaction question request identity'
+  )
   await clickElement('.tc-question .tc-option-btn', { label: 'question option', native: true })
   await waitFor(() => client.evaluate(`Boolean(document.querySelector('.tc-question textarea')?.value?.trim())`), 'question answer selection')
   await clickElement('.tc-question .tc-approval-btn.primary', { label: 'question answer submit', native: true })
@@ -841,10 +1025,17 @@ async function runScenario() {
     (latest, event) => Math.max(latest, Number(event.messageId) || 0),
     0
   )
-  const manualCompaction = await api(
-    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/compact`,
-    { method: 'POST', body: { modelConfigId: compactionConfig.configId } }
-  )
+  const tasksBeforeManualCompaction = await api(`/student/projects/${projectId}/agent/tasks`)
+  const taskIdsBeforeManualCompaction = new Set(tasksBeforeManualCompaction.map(task => Number(task.taskId)))
+  await submitClientCommand('/compact')
+  let manualCompaction = null
+  await waitFor(async () => {
+    const tasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    manualCompaction = tasks
+      .filter(task => !taskIdsBeforeManualCompaction.has(Number(task.taskId)))
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))[0] || null
+    return Boolean(manualCompaction?.taskId)
+  }, 'manual compaction task created by slash command')
   let manualCompactionProjection = null
   await waitFor(async () => {
     try {
@@ -1191,6 +1382,16 @@ async function runScenario() {
     runId,
     projectId,
     desktopLayout: true,
+    typedSlashCommandCatalog: true,
+    slashPromptResolutionPure: true,
+    slashAgentPromptDisplayStable: true,
+    slashClientUiActions: true,
+    slashHelpPalette: true,
+    slashConversationCopy: true,
+    slashConversationExport: true,
+    slashNewConversationIsolation: true,
+    slashManualCompaction: true,
+    slashConversationFork: true,
     desktopLayoutMetrics: desktopLayout,
     conversationIsolation: true,
     refreshReplayDeduplicated: true,
