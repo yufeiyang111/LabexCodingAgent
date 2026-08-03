@@ -237,6 +237,28 @@ export function useAgentEventTimeline(options) {
         agentLoading.value = true
         scheduleAgentRender()
         break
+      case 'RUN_MODEL_RETRY_SCHEDULED':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'retrying'
+        assistantMsg.resumeTaskEventsAfterStream = true
+        assistantMsg.isStreaming = false
+        stopMessageTimer(assistantMsg)
+        agentLoading.value = false
+        logTaskRecovery('MODEL_RETRY_SCHEDULED', {
+          taskId: assistantMsg.taskId,
+          attempt: data.attempt || 0,
+          nextRetryAt: data.nextRetryAt || '',
+          taskStatus: assistantMsg.runState
+        })
+        scheduleAgentRender()
+        break
+      case 'RUN_MODEL_RETRY_STARTED':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'recovering'
+        assistantMsg.isStreaming = true
+        agentLoading.value = true
+        scheduleAgentRender()
+        break
       case 'RUN_STATE_QUEUED':
       case 'RUN_STATE_PREPARING':
       case 'RUN_STATE_RUNNING':
@@ -251,11 +273,18 @@ export function useAgentEventTimeline(options) {
         break
       }
       case 'RUN_STATE_COMPLETED':
+      case 'RUN_STATE_FAILED':
+      case 'RUN_STATE_CANCELLED': {
+        const fallbackState = type.substring('RUN_STATE_'.length).toLowerCase()
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
-        assistantMsg.runState = data.state || 'completed'
+        assistantMsg.runState = normalizeAgentRunState(data.state || data.taskStatus) || fallbackState
         resolveWaitingInteractions(assistantMsg)
+        assistantMsg.isStreaming = false
+        stopMessageTimer(assistantMsg)
+        agentLoading.value = false
         scheduleAgentRender()
         break
+      }
       case 'FINAL_DELTA':
         if (isRecoverableAgentRunState(assistantMsg.runState)) break
         assistantMsg._finalReasoningFilter ??= createInternalReasoningBlockStreamFilter()

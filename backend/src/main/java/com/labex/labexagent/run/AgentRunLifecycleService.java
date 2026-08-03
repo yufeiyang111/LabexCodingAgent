@@ -257,10 +257,18 @@ public class AgentRunLifecycleService {
     @Transactional(rollbackFor = Exception.class)
     public boolean scheduleModelRetry(Long taskId, int retryAttempt, LocalDateTime nextRetryAt,
                                       Object payload, String currentStep, String summary, String idempotencyKey) {
+        return scheduleModelRetryResult(taskId, retryAttempt, nextRetryAt, payload,
+                currentStep, summary, idempotencyKey) != null;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public TransitionResult scheduleModelRetryResult(Long taskId, int retryAttempt, LocalDateTime nextRetryAt,
+                                                     Object payload, String currentStep, String summary,
+                                                     String idempotencyKey) {
         require(nextRetryAt, "nextRetryAt");
         return transitionInternal(taskId, AgentRunState.RUNNING, AgentRunState.RETRYING,
                 "RUN_MODEL_RETRY_SCHEDULED", payload, currentStep, summary, idempotencyKey,
-                Map.of("retry_attempts", retryAttempt, "next_retry_at", nextRetryAt)) != null;
+                Map.of("retry_attempts", retryAttempt, "next_retry_at", nextRetryAt));
     }
 
     @Transactional(rollbackFor = Exception.class)

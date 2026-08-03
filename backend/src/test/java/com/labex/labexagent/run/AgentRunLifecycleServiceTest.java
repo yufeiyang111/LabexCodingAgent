@@ -227,11 +227,13 @@ class AgentRunLifecycleServiceTest {
         }).when(eventMapper).insert(any(AgentRunEvent.class));
         AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
 
-        boolean scheduled = service.scheduleModelRetry(
+        AgentRunLifecycleService.TransitionResult scheduled = service.scheduleModelRetryResult(
                 71L, 1, retryAt, Map.of("delayMs", 1_000), "Retrying model request",
                 "Scheduled model retry 1", "model-retry-71-1");
 
-        assertTrue(scheduled);
+        assertTrue(scheduled.stateChanged());
+        assertEquals(904L, scheduled.event().getEventId());
+        assertEquals("RUN_MODEL_RETRY_SCHEDULED", scheduled.event().getEventType());
         assertEquals("retrying", task.getStatus());
         assertEquals(1, task.getRetryAttempts());
         assertEquals(retryAt, task.getNextRetryAt());

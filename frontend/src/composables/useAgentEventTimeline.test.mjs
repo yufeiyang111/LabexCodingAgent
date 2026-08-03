@@ -109,6 +109,32 @@ test('routes question, permission, command approval, and pause events', () => {
   assert.equal(assistant.taskId, 7)
 })
 
+test('hands a scheduled model retry from the POST stream to the durable task subscription', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({ type: 'RUN_MODEL_RETRY_SCHEDULED', eventId: '9', data: {
+    taskId: 17, state: 'retrying', attempt: 1, delayMs: 2000
+  } }, assistant)
+
+  assert.equal(assistant.taskId, 17)
+  assert.equal(assistant.runState, 'retrying')
+  assert.equal(assistant.isStreaming, false)
+  assert.equal(assistant.resumeTaskEventsAfterStream, true)
+  assert.equal(state.agentLoading.value, false)
+  assert.equal(state.calls.filter(call => call[0] === 'stopTimer').length, 1)
+  assert.equal(state.calls.filter(call => call[0] === 'render').length, 1)
+
+  state.handleAgentEvent({ type: 'RUN_MODEL_RETRY_STARTED', eventId: '10', data: {
+    taskId: 17, state: 'recovering', attempt: 1
+  } }, assistant)
+
+  assert.equal(assistant.runState, 'recovering')
+  assert.equal(assistant.isStreaming, true)
+  assert.equal(state.agentLoading.value, true)
+  assert.equal(state.calls.filter(call => call[0] === 'render').length, 2)
+})
+
 test('schedules a render after a live user question event', () => {
   const state = harness()
   const assistant = message()
@@ -159,6 +185,22 @@ test('routes compaction/context status and accumulates token usage', () => {
   assert.deepEqual(state.tokenUsage.value, { ...createTokenUsageState(), promptTokens: 10, completionTokens: 5, totalTokens: 15, callCount: 1, conversationTotal: 20, cachedTokens: 4, cacheWriteTokens: 6, cacheStatus: 'hit', cacheTelemetryReported: true, cacheTelemetryCallCount: 1, cacheReportedPromptTokens: 10, cacheHitRate: 40 })
   assert.equal(state.sessionHistory.value[0].conversationId, 'c1')
   assert.equal(state.calls.filter(call => call[0] === 'tokenUsageProjected').length, 1)
+})
+
+test('authoritative failed transition keeps a provider error visible through terminal DONE', () => {
+  const state = harness()
+  const assistant = message()
+  assistant.runState = 'running'
+
+  state.handleAgentEvent({ type: 'ERROR', data: { taskId: 81, message: 'provider failed after bounded retries' } }, assistant)
+  state.handleAgentEvent({ type: 'FINAL', data: { taskId: 81, content: 'fallback text' } }, assistant)
+  state.handleAgentEvent({ type: 'RUN_STATE_FAILED', data: { taskId: 81, state: 'failed' } }, assistant)
+  state.handleAgentEvent({ type: 'DONE', data: { taskId: 81 } }, assistant)
+
+  assert.equal(assistant.runState, 'failed')
+  assert.equal(assistant.error, 'provider failed after bounded retries')
+  assert.equal(assistant.content, '错误：provider failed after bounded retries')
+  assert.equal(assistant.isStreaming, false)
 })
 
 test('preserves provider error over a later final and handles blockers', () => {

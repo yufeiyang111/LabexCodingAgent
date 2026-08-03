@@ -149,7 +149,11 @@ class AgentTaskServiceLifecycleTest {
         when(taskMapper.selectById(72L)).thenReturn(task);
         when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
-        when(lifecycle.scheduleModelRetry(eq(72L), eq(1), any(), any(), any(), any(), any())).thenReturn(true);
+        AgentRunEvent retryEvent = new AgentRunEvent();
+        retryEvent.setEventType("RUN_MODEL_RETRY_SCHEDULED");
+        retryEvent.setSequenceNumber(9L);
+        when(lifecycle.scheduleModelRetryResult(eq(72L), eq(1), any(), any(), any(), any(), any()))
+                .thenReturn(new AgentRunLifecycleService.TransitionResult(retryEvent, true));
         AgentTaskService service = newTaskService(
                 taskMapper,
                 mock(AgentChangeSetMapper.class),
@@ -161,9 +165,10 @@ class AgentTaskServiceLifecycleTest {
 
         org.junit.jupiter.api.Assertions.assertNotNull(schedule);
         assertEquals(1, schedule.attempt());
+        assertSame(retryEvent, schedule.event());
         org.junit.jupiter.api.Assertions.assertNull(task.getActiveSegmentStartedAt());
         org.junit.jupiter.api.Assertions.assertTrue(task.getActiveElapsedMs() >= 100L);
-        verify(lifecycle).scheduleModelRetry(eq(72L), eq(1), any(), any(), any(), any(), any());
+        verify(lifecycle).scheduleModelRetryResult(eq(72L), eq(1), any(), any(), any(), any(), any());
     }
 
     @Test

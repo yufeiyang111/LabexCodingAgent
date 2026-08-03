@@ -1387,12 +1387,10 @@ public class AgentLoopEngine {
                                 this.writeAgentCheckpoint(project, request, task, ctx, "retrying",
                                         "Recoverable model connection error; retry " + retry.attempt() + " is scheduled.",
                                         "", errMsg, runLog);
+                                this.sendPersistedEvent(sse, conv, retry.event());
                                 this.sendThought(sse, conv, i,
                                         this.localText(visibleLanguage, "Network retry", "Network retry"), guidance,
                                         task.getTaskId());
-                                this.sendEvent(sse, conv, "RETRY_SCHEDULED", Map.of(
-                                        "attempt", retry.attempt(), "delayMs", retry.delayMs(),
-                                        "nextRetryAt", retry.nextRetryAt().toString(), "iteration", i));
                                 emitter.complete();
                                 return;
                             }

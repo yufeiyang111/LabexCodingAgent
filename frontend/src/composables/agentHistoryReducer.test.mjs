@@ -217,6 +217,34 @@ test('restores context limit blocker evidence from persisted history', () => {
 })
 
 
+test('replays the authoritative model retry lifecycle', () => {
+  const target = message()
+
+  reduceHistoryEvent('RUN_MODEL_RETRY_SCHEDULED', { taskId: 81, state: 'retrying', attempt: 1 }, target)
+  assert.equal(target.taskId, 81)
+  assert.equal(target.runState, 'retrying')
+  assert.equal(target.isStreaming, false)
+
+  reduceHistoryEvent('RUN_MODEL_RETRY_STARTED', { taskId: 81, state: 'recovering', attempt: 1 }, target)
+  assert.equal(target.runState, 'recovering')
+  assert.equal(target.isStreaming, true)
+})
+
+test('replays a bounded retry terminal failure as visible content', () => {
+  const target = message()
+  target.runState = 'running'
+
+  reduceHistoryEvent('ERROR', { taskId: 81, message: 'provider failed after bounded retries' }, target)
+  reduceHistoryEvent('FINAL', { taskId: 81, content: 'fallback text' }, target)
+  reduceHistoryEvent('RUN_STATE_FAILED', { taskId: 81, state: 'failed' }, target)
+  reduceHistoryEvent('DONE', { taskId: 81 }, target)
+
+  assert.equal(target.runState, 'failed')
+  assert.equal(target.error, 'provider failed after bounded retries')
+  assert.equal(target.content, '错误：provider failed after bounded retries')
+  assert.equal(target.isStreaming, false)
+})
+
 test('replays completion evidence card and terminal state', () => {
   const target = message()
   const evidence = { taskId: 91, changedFiles: [], successfulVerifications: [], failedVerifications: [], unresolvedRisks: [], satisfied: true }

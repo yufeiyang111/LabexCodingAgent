@@ -318,10 +318,25 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message.taskId = data.taskId || message.taskId || null
       resolveDurableInteraction(message, data)
       break
-    case 'RUN_STATE_COMPLETED':
+    case 'RUN_MODEL_RETRY_SCHEDULED':
       message.taskId = data.taskId || message.taskId || null
-      message.runState = normalizeAgentRunState(data.state) || 'completed'
+      message.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'retrying'
+      message.isStreaming = false
       break
+    case 'RUN_MODEL_RETRY_STARTED':
+      message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'recovering'
+      message.isStreaming = true
+      break
+    case 'RUN_STATE_COMPLETED':
+    case 'RUN_STATE_FAILED':
+    case 'RUN_STATE_CANCELLED': {
+      const fallbackState = type.substring('RUN_STATE_'.length).toLowerCase()
+      message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.state || data.taskStatus) || fallbackState
+      message.isStreaming = false
+      break
+    }
     case 'TASK_PAUSED':
       message.taskId = data.taskId || message.taskId || null
       message.runState = normalizeAgentRunState(data.taskStatus) || message.runState || ''
@@ -346,7 +361,13 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message.isStreaming = false
       break
     }
-    case 'ERROR': message.error = data.message; break
+    case 'ERROR': {
+      const error = data.message || '模型服务调用失败'
+      message.error = error
+      if (!message.content) message.content = `错误：${error}`
+      message.isStreaming = false
+      break
+    }
     case 'INTERRUPTED': message.content += '\n[\u5df2\u4e2d\u65ad]'; break
     case 'TOKEN_USAGE': callbacks.onTokenUsage?.(data); break
     case 'CONTEXT_STATUS': callbacks.onContextStatus?.(data); break

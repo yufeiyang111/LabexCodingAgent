@@ -82,7 +82,8 @@ class AgentLoopEngineStreamingContractTest {
     void failsFastForModelTimeoutsAndCapsInitialContext() {
         assertTrue(source.contains("if (this.isModelTimeoutError(errMsg))"));
         assertTrue(source.contains("scheduleModelRetry("));
-        assertTrue(source.contains("RETRY_SCHEDULED"));
+        assertTrue(source.contains("sendPersistedEvent(sse, conv, retry.event())"));
+        assertFalse(source.contains("sendEvent(sse, conv, \"RETRY_SCHEDULED\""));
         assertFalse(source.contains("Thread.sleep(delay)"));
         assertTrue(source.contains("message == null || isModelTimeoutError(message)"));
         assertTrue(source.contains("limitForContext(memoryContext, 16000)"));

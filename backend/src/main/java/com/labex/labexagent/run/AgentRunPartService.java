@@ -135,6 +135,10 @@ public class AgentRunPartService {
                     upsertPart(taskId, messageId, "interruption:" + sequence, "interruption",
                             eventType.contains("CANCELLED") ? "cancelled" : "interrupted",
                             null, null, data, GSON.toJson(data), sequence);
+            case "RUN_MODEL_RETRY_SCHEDULED", "RUN_MODEL_RETRY_STARTED" ->
+                    upsertPart(taskId, messageId, "retry:" + sequence, "retry",
+                            eventType.endsWith("SCHEDULED") ? "waiting" : "running",
+                            null, null, data, GSON.toJson(data), sequence);
             case "RUN_RECOVERY_TAKEOVER", "RUN_STATE_RECOVERING" ->
                     upsertPart(taskId, messageId, "recovery:" + sequence, "recovery",
                             "running", null, null, data, GSON.toJson(data), sequence);
@@ -255,7 +259,8 @@ public class AgentRunPartService {
                  "RUN_WORKSPACE_WAITING", "RUN_STATE_WAITING_WORKSPACE",
                  "RUN_CANCELLATION_REQUESTED", "RUN_STATE_CANCELLING",
                  "RUN_CANCELLED", "RUN_STATE_CANCELLED", "INTERRUPTED",
-                 "COMMAND_EXECUTION_INTERRUPTED", "RUN_RECOVERY_TAKEOVER",
+                 "COMMAND_EXECUTION_INTERRUPTED", "RUN_MODEL_RETRY_SCHEDULED",
+                 "RUN_MODEL_RETRY_STARTED", "RUN_RECOVERY_TAKEOVER",
                  "RUN_STATE_RECOVERING", "DONE", "RUN_STATE_COMPLETED",
                  "RUN_STATE_FAILED" -> true;
             default -> false;

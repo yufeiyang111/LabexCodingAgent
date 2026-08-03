@@ -75,6 +75,7 @@ $evidence = [ordered]@{
     singleAuthoritativeTerminalEvent = $false
     authoritativeFailureProjection = $false
     authoritativeCancellationProjection = $false
+    authoritativeModelRetryProjection = $false
     isolatedDatabase = $false
     cleanup = $false
 }
@@ -657,6 +658,41 @@ try {
     } finally {
         Remove-Job -Job $cancelJob -Force -ErrorAction SilentlyContinue
     }
+
+    $retryStreamEvents = Invoke-AgentStream -Message '[acceptance:stream-break]'
+    $directRetryScheduled = $retryStreamEvents | Where-Object { $_.type -eq 'RUN_MODEL_RETRY_SCHEDULED' } | Select-Object -First 1
+    if (-not $directRetryScheduled -or -not $directRetryScheduled.eventId) {
+        throw 'Direct model stream did not project the authoritative persisted RUN_MODEL_RETRY_SCHEDULED event.'
+    }
+    $retryTaskId = [long](($retryStreamEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
+    $retryTerminalTask = Wait-TaskTerminal -TaskId $retryTaskId -Seconds 60
+    if ([string]$retryTerminalTask.status -ne 'failed') {
+        throw "Recoverable stream interruption ended as $($retryTerminalTask.status), expected failed after bounded retries."
+    }
+    $durableRetryEvents = Get-TaskEvents -TaskId $retryTaskId
+    $scheduledRetries = @($durableRetryEvents | Where-Object { $_.type -eq 'RUN_MODEL_RETRY_SCHEDULED' })
+    $startedRetries = @($durableRetryEvents | Where-Object { $_.type -eq 'RUN_MODEL_RETRY_STARTED' })
+    $legacyRetryEvents = @($durableRetryEvents | Where-Object { $_.type -eq 'RETRY_SCHEDULED' })
+    if ($scheduledRetries.Count -ne 2 -or $startedRetries.Count -ne 2) {
+        throw "Bounded retry event count mismatch: scheduled=$($scheduledRetries.Count), started=$($startedRetries.Count)."
+    }
+    if ($legacyRetryEvents.Count -ne 0) {
+        throw "Legacy RETRY_SCHEDULED events remain durable: $($legacyRetryEvents.Count)."
+    }
+    if ([string]$directRetryScheduled.eventId -ne [string]$scheduledRetries[0].eventId) {
+        throw 'Direct and durable model retry events use different sequence IDs.'
+    }
+    $retryTransition = $scheduledRetries[0].data.transition
+    if (-not $retryTransition -or $retryTransition.previousState -ne 'running' -or
+        $retryTransition.nextState -ne 'retrying' -or $retryTransition.actor -ne 'agent_run_lifecycle') {
+        throw "Model retry event is missing canonical transition audit: $($scheduledRetries[0].data | ConvertTo-Json -Compress -Depth 8)"
+    }
+    $retryTaskMatches = @(Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks" |
+        Where-Object { [string]$_.sessionId -eq [string]$retryTerminalTask.sessionId })
+    if ($retryTaskMatches.Count -ne 1 -or [long]$retryTaskMatches[0].taskId -ne $retryTaskId) {
+        throw 'Model retry created a second task instead of resuming the original task/epoch.'
+    }
+    $evidence.authoritativeModelRetryProjection = $true
 
     $seedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed]'
     $seedDone = Get-RequiredEvent -Events $seedEvents -Type 'DONE'

@@ -11,9 +11,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -29,12 +31,20 @@ public class AgentTaskEventSubscriptionService {
     private static final Logger log = LoggerFactory.getLogger(AgentTaskEventSubscriptionService.class);
     private static final String EVENT_TOPIC = "agent.run.event";
     private static final Gson GSON = new Gson();
+    private static final long DEFAULT_TERMINAL_DRAIN_MS = 750L;
 
     private final AgentRunEventReplayService replayService;
+    private final long terminalDrainNanos;
     private final ConcurrentHashMap<Long, CopyOnWriteArraySet<Subscription>> subscriptions = new ConcurrentHashMap<>();
 
+    @Autowired
     public AgentTaskEventSubscriptionService(AgentRunEventReplayService replayService) {
+        this(replayService, DEFAULT_TERMINAL_DRAIN_MS);
+    }
+
+    AgentTaskEventSubscriptionService(AgentRunEventReplayService replayService, long terminalDrainMs) {
         this.replayService = replayService;
+        this.terminalDrainNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, terminalDrainMs));
     }
 
     public SseEmitter subscribe(Integer studentId, Integer projectId, Long taskId, long afterSequence, SseEmitter emitter) {
@@ -158,10 +168,10 @@ public class AgentTaskEventSubscriptionService {
                 || "cancelled".equalsIgnoreCase(state);
     }
 
-    private void remove(Subscription subscription, String reason) {
+    private boolean remove(Subscription subscription, String reason) {
         CopyOnWriteArraySet<Subscription> taskSubscriptions = subscriptions.get(subscription.taskId);
         if (taskSubscriptions == null || !taskSubscriptions.remove(subscription)) {
-            return;
+            return false;
         }
         int remaining = taskSubscriptions.size();
         if (taskSubscriptions.isEmpty()) {
@@ -169,6 +179,7 @@ public class AgentTaskEventSubscriptionService {
         }
         log.info("TASK_EVENT_SUBSCRIBER_REMOVED taskId={} reason={} remainingSubscribers={}",
                 subscription.taskId, reason, remaining);
+        return true;
     }
 
     private final class Subscription {
@@ -178,6 +189,8 @@ public class AgentTaskEventSubscriptionService {
         private final SseEmitter emitter;
         private final AgentSsePublisher publisher;
         private final AtomicLong lastSequence;
+        private long terminalObservedAtNanos;
+        private long terminalSequence;
 
         private Subscription(Integer studentId, Integer projectId, Long taskId,
                              SseEmitter emitter, long afterSequence) {
@@ -203,9 +216,9 @@ public class AgentTaskEventSubscriptionService {
                     break;
                 }
                 delivered++;
-                if (isTerminalState(event.getState())) {
-                    break;
-                }
+            }
+            if (events.isEmpty()) {
+                completeIfTerminalDrained();
             }
             return delivered;
         }
@@ -266,13 +279,26 @@ public class AgentTaskEventSubscriptionService {
                 publisher.sendPersisted(sequence, eventType, eventPayload == null ? Map.of() : eventPayload);
                 lastSequence.set(sequence);
                 if (terminal) {
-                    remove(this, "terminal_state");
-                    emitter.complete();
+                    terminalSequence = sequence;
+                    terminalObservedAtNanos = System.nanoTime();
                 }
                 return true;
             } catch (IOException exception) {
                 remove(this, "durable_send_failed");
                 return false;
+            }
+        }
+
+        /** 终态迁移后仍可能立即追加 FINAL/DONE；游标安静一个排空窗口后才能关闭观察者。 */
+        private void completeIfTerminalDrained() {
+            if (terminalObservedAtNanos == 0L
+                    || System.nanoTime() - terminalObservedAtNanos < terminalDrainNanos) {
+                return;
+            }
+            if (remove(this, "terminal_drained")) {
+                log.info("TASK_EVENT_TERMINAL_DRAIN_COMPLETE taskId={} terminalSequence={} lastSequence={}",
+                        taskId, terminalSequence, lastSequence.get());
+                emitter.complete();
             }
         }
     }

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { CdpClient } from './cdp-client.mjs'
 import { redactEvidence } from './evidence.mjs'
 import { isExpectedRestartTransportError } from './browser-error-policy.mjs'
+import { bodyIncludesAnyExpression } from './browser-text.mjs'
 import { parseSse } from './agent-sse.mjs'
 
 const uiBase = process.env.ACCEPTANCE_UI_BASE || 'http://127.0.0.1:13000'
@@ -377,6 +378,10 @@ async function sendMessage(message) {
 
 async function bodyIncludes(text) {
   return client.evaluate(`document.body.innerText.includes(${JSON.stringify(text)})`)
+}
+
+async function bodyIncludesAny(candidates) {
+  return client.evaluate(bodyIncludesAnyExpression(candidates))
 }
 
 async function markerCount(text) {
@@ -992,6 +997,21 @@ async function runScenario() {
   if (!streamBreakTask || ['completed', 'cancelled'].includes(String(streamBreakTask.status))) {
     throw new Error(`Provider stream interruption was treated as a successful completion: ${JSON.stringify(streamBreakTask)}`)
   }
+  await waitFor(async () => {
+    streamBreakTask = await api(`/student/projects/${projectId}/agent/tasks/${streamBreakTask.taskId}`)
+    return streamBreakTask?.status === 'failed'
+  }, 'bounded model retry terminal failure')
+  const streamBreakEvents = await taskEvents(streamBreakTask.taskId)
+  const streamBreakEventTypes = streamBreakEvents.map(event => event.type)
+  if (streamBreakEventTypes.filter(type => type === 'RUN_MODEL_RETRY_SCHEDULED').length !== 2
+      || streamBreakEventTypes.filter(type => type === 'RUN_MODEL_RETRY_STARTED').length !== 2
+      || streamBreakEventTypes.includes('RETRY_SCHEDULED')) {
+    throw new Error(`Provider retry lifecycle was not projected from one durable event stream: ${JSON.stringify(streamBreakEventTypes)}`)
+  }
+  await waitFor(
+    () => bodyIncludesAny(['模型 API 调用失败', 'Model API failed']),
+    'live bounded retry failure without browser refresh'
+  )
 
   const tinyConfig = await api('/student/model-configs', {
     method: 'POST',
@@ -1186,6 +1206,7 @@ async function runScenario() {
     manualCompactionTaskId: manualCompaction.taskId,
     forkedConversationId: forkedConversation.conversationId,
     providerStreamInterruptionHandled: true,
+    modelRetryLiveProjection: true,
     restartProjectionVerified,
     restartManualForkVerified,
     restartInteractionVerified,

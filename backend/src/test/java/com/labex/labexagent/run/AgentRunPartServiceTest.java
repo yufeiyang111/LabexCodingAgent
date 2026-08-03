@@ -162,6 +162,32 @@ class AgentRunPartServiceTest {
     }
 
     @Test
+    void persistsModelRetryLifecycleAsReplayableRetryParts() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(43L);
+        when(messages.recordEventMessage(anyLong(), anyString(), any(), anyLong())).thenReturn(message);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        AgentRunPart scheduled = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "RUN_MODEL_RETRY_SCHEDULED", Map.of(
+                        "attempt", 1, "state", "retrying"), 19L);
+        AgentRunPart started = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "RUN_MODEL_RETRY_STARTED", Map.of(
+                        "attempt", 1, "state", "recovering"), 20L);
+
+        assertThat(scheduled.getPartType()).isEqualTo("retry");
+        assertThat(scheduled.getStatus()).isEqualTo("waiting");
+        assertThat(scheduled.getPartKey()).isEqualTo("retry:19");
+        assertThat(started.getPartType()).isEqualTo("retry");
+        assertThat(started.getStatus()).isEqualTo("running");
+        assertThat(started.getPartKey()).isEqualTo("retry:20");
+    }
+
+    @Test
     void finalEventPersistsOnlyVisibleContentAtTheDurablePartBoundary() {
         AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
         AgentTaskMapper tasks = mock(AgentTaskMapper.class);

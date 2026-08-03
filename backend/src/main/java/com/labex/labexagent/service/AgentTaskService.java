@@ -349,7 +349,7 @@ public class AgentTaskService {
         payload.put("delayMs", effectiveDelayMs);
         payload.put("nextRetryAt", nextRetryAt.toString());
         payload.put("reason", reason == null ? "Transient model failure" : reason);
-        boolean scheduled = this.lifecycleService.scheduleModelRetry(
+        AgentRunLifecycleService.TransitionResult scheduled = this.lifecycleService.scheduleModelRetryResult(
                 taskId,
                 nextAttempt,
                 nextRetryAt,
@@ -357,10 +357,10 @@ public class AgentTaskService {
                 "Retrying model request",
                 "Scheduled model retry " + nextAttempt,
                 "model-retry-" + taskId + "-" + nextAttempt);
-        if (!scheduled) {
+        if (scheduled == null) {
             throw new IllegalStateException("Agent run changed before its retry could be scheduled");
         }
-        return new ModelRetrySchedule(nextAttempt, nextRetryAt, effectiveDelayMs);
+        return new ModelRetrySchedule(nextAttempt, nextRetryAt, effectiveDelayMs, scheduled.event());
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -609,7 +609,7 @@ public class AgentTaskService {
     public record CancellationFinalization(boolean finalized, AgentRunEvent event) {
     }
 
-    public record ModelRetrySchedule(int attempt, LocalDateTime nextRetryAt, long delayMs) {
+    public record ModelRetrySchedule(int attempt, LocalDateTime nextRetryAt, long delayMs, AgentRunEvent event) {
     }
 
     private String title(String message) {

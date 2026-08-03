@@ -100,6 +100,34 @@ class AgentTaskEventSubscriptionServiceTest {
     }
 
     @Test
+    void drainsDurableEventsAppendedAfterTheTaskFirstBecomesTerminal() throws Exception {
+        AgentRunEventReplayService replay = mock(AgentRunEventReplayService.class);
+        AgentRunEvent failed = event(71L, 1L, "RUN_STATE_FAILED", "{}");
+        failed.setState("failed");
+        AgentRunEvent finalEvent = event(71L, 2L, "FINAL", "{\"content\":\"visible failure\"}");
+        finalEvent.setState("failed");
+        AgentRunEvent done = event(71L, 3L, "DONE", "{}");
+        done.setState("failed");
+        when(replay.eventsAfter(7, 12, 71L, 0L))
+                .thenReturn(List.of())
+                .thenReturn(List.of(failed));
+        when(replay.eventsAfter(7, 12, 71L, 1L)).thenReturn(List.of(finalEvent, done));
+        when(replay.eventsAfter(7, 12, 71L, 3L)).thenReturn(List.of());
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentTaskEventSubscriptionService subscriptions = new AgentTaskEventSubscriptionService(replay, 0L);
+        subscriptions.subscribe(7, 12, 71L, 0L, emitter);
+
+        subscriptions.pollDurableEvents();
+        verify(emitter, never()).complete();
+        subscriptions.pollDurableEvents();
+        verify(emitter, never()).complete();
+        subscriptions.pollDurableEvents();
+
+        verify(emitter, times(3)).send(any(SseEmitter.SseEventBuilder.class));
+        verify(emitter).complete();
+    }
+
+    @Test
     void catchesUpMissingSequencesBeforeDeliveringANewerOutboxNotification() throws Exception {
         AgentRunEventReplayService replay = mock(AgentRunEventReplayService.class);
         AgentRunEvent first = event(71L, 1L, "COMPACTION_STARTED", "{}");
@@ -108,13 +136,16 @@ class AgentTaskEventSubscriptionServiceTest {
         when(replay.eventsAfter(7, 12, 71L, 0L))
                 .thenReturn(List.of())
                 .thenReturn(List.of(first, second, third));
+        when(replay.eventsAfter(7, 12, 71L, 3L)).thenReturn(List.of());
         SseEmitter emitter = mock(SseEmitter.class);
-        AgentTaskEventSubscriptionService subscriptions = new AgentTaskEventSubscriptionService(replay);
+        AgentTaskEventSubscriptionService subscriptions = new AgentTaskEventSubscriptionService(replay, 0L);
         subscriptions.subscribe(7, 12, 71L, 0L, emitter);
 
         subscriptions.onApplicationEvent(new AgentRunOutboxMessage(91L, 803L, 71L, "agent.run.event", """
                 {"taskId":71,"sequence":3,"state":"completed","eventType":"RUN_STATE_COMPLETED","payload":{}}
                 """));
+        verify(emitter, never()).complete();
+        subscriptions.pollDurableEvents();
 
         verify(emitter, times(3)).send(any(SseEmitter.SseEventBuilder.class));
         verify(emitter).complete();
