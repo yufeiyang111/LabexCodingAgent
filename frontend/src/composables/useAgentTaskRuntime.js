@@ -151,7 +151,12 @@ export function useAgentTaskRuntime(options) {
         && (message.taskId || message.completionEvidence || (message.toolCalls || []).length > 0)
     )
     if (!latestTaskMessage) return false
-    return !['completed', 'failed', 'cancelled'].includes(String(latestTaskMessage.runState || '').toLowerCase())
+    const runState = String(latestTaskMessage.runState || '').toLowerCase()
+    if (!['completed', 'failed', 'cancelled'].includes(runState)) return true
+    // 终态与会话 FINAL 分属不同持久化投影；刷新可能先读到 completed，仍必须补齐缺失的最终回答。
+    return runState === 'completed'
+      && !String(latestTaskMessage.content || '').trim()
+      && !latestTaskMessage.error
   }
 
   async function reconcileTerminalConversationHistory(conversationId, generation, status, force = false) {
@@ -167,6 +172,37 @@ export function useAgentTaskRuntime(options) {
       return true
     } catch (error) {
       console.warn('Failed to reconcile terminal Agent conversation history:', error)
+      return false
+    }
+  }
+
+  function latestTaskMessageForConversation() {
+    return [...messages.value].reverse().find(message =>
+      message?.role === 'assistant' && message.taskId
+    ) || null
+  }
+
+  async function hydrateTerminalTaskProjection(conversationId, generation) {
+    if (typeof api.agentTask !== 'function') return false
+    const historicalMessage = latestTaskMessageForConversation()
+    if (!historicalMessage?.taskId) return false
+    try {
+      const response = await api.agentTask(projectId.value, historicalMessage.taskId)
+      if (generation !== recoveryGeneration || !ownsConversation(conversationId)) return false
+      const task = response?.data
+      if (!task?.taskId || task.conversationId !== conversationId || !isTerminalAgentTask(task)) return false
+      const message = assistantMessageForTask(task)
+      reconcileRecoveredToolCalls(message, task)
+      reconcileRecoveredCommandApproval(message, task)
+      message.runState = normalizeAgentRunState(task.status)
+      message.isStreaming = false
+      stopMessageTimer(message)
+      log('TERMINAL_TASK_PROJECTION_HYDRATED', {
+        conversationId, taskId: task.taskId, status: task.status, generation
+      })
+      return true
+    } catch (error) {
+      console.warn('Failed to hydrate terminal Agent task projection:', error)
       return false
     }
   }
@@ -187,6 +223,7 @@ export function useAgentTaskRuntime(options) {
     if (!task?.taskId || isTerminalAgentTask(task) || task.conversationId !== conversationId) {
       if (!task?.conversationId || task.conversationId === conversationId) {
         await reconcileTerminalConversationHistory(conversationId, generation, task?.status || 'none')
+        await hydrateTerminalTaskProjection(conversationId, generation)
       }
       log('ACTIVE_TASK_RECOVERY_NONE', { conversationId, status: task?.status || 'none' })
       return false

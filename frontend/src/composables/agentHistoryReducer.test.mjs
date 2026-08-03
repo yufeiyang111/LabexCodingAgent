@@ -46,9 +46,9 @@ test('keeps a replayed question reply card waiting after its failed tool observa
 
 test('reconstructs one-time command approval and terminal execution state without loop resume', () => {
   const target = message()
-  reduceHistoryEvent('TOOL_CALL', { tool: 'shell', arguments: { command: '<redacted>' }, summary: 'shell' }, target)
+  reduceHistoryEvent('TOOL_CALL', { tool: 'shell', toolCallId: 'command-call-71', arguments: { command: '<redacted>' }, summary: 'shell' }, target)
   reduceHistoryEvent('COMMAND_APPROVAL_REQUIRED', {
-    approvalId: 'approval-71', tool: 'shell', displayCommand: 'npm test --token=<redacted>', resumeAgentLoop: false
+    approvalId: 'approval-71', toolCallId: 'command-call-71', tool: 'shell', displayCommand: 'npm test --token=<redacted>', resumeAgentLoop: false
   }, target)
   reduceHistoryEvent('COMMAND_EXECUTION_STARTED', { approvalId: 'approval-71', resumeAgentLoop: false }, target)
   reduceHistoryEvent('COMMAND_EXECUTION_COMPLETED', { approvalId: 'approval-71', resumeAgentLoop: false }, target)
@@ -263,6 +263,28 @@ test('renders unavailable post-edit diagnostics as a warning instead of success'
   assert.equal(target.toolCalls[0].verificationStatus, 'UNAVAILABLE')
 })
 
+test('replayed command continuation accepts the durable final after returning to running', () => {
+  const target = message()
+  target.runState = 'waiting_approval'
+  target.toolCalls.push({
+    name: 'shell',
+    toolCallId: 'command-call-74',
+    status: 'waiting_approval',
+    commandApproval: { approvalId: 'approval-74', toolCallId: 'command-call-74' }
+  })
+
+  reduceHistoryEvent('RUN_COMMAND_APPROVAL_RESUME_QUEUED', {
+    taskId: 74, approvalId: 'approval-74', toolCallId: 'command-call-74'
+  }, target)
+  reduceHistoryEvent('RUN_STATE_RECOVERING', { taskId: 74 }, target)
+  reduceHistoryEvent('RUN_STATE_RUNNING', { taskId: 74 }, target)
+  reduceHistoryEvent('FINAL', { taskId: 74, content: 'command approval resumed final' }, target)
+  reduceHistoryEvent('RUN_STATE_COMPLETED', { taskId: 74 }, target)
+
+  assert.equal(target.content, 'command approval resumed final')
+  assert.equal(target.runState, 'completed')
+  assert.equal(target.isStreaming, false)
+})
 test('replayed command continuation keeps the original approval card running', () => {
   const target = message()
   target.toolCalls.push({

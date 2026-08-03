@@ -127,12 +127,15 @@ class AcceptanceScriptedProviderTest {
         assertEquals("question", question.toolName());
         assertTrue(question.toolArgs().contains("继续真实验收"));
 
-        LlmProvider.StreamChunk approval = stream("[acceptance:approval] 验证一次性审批").stream()
+        List<LlmProvider.StreamChunk> approvalCalls = stream("[acceptance:approval] 验证一次性审批").stream()
                 .filter(chunk -> "tool_call".equals(chunk.type()))
-                .findFirst()
-                .orElseThrow();
-        assertEquals("shell", approval.toolName());
-        assertTrue(approval.toolArgs().contains("git add ."));
+                .toList();
+        assertEquals(2, approvalCalls.size());
+        assertEquals("shell", approvalCalls.get(0).toolName());
+        assertEquals("acceptance-command-approval-shell", approvalCalls.get(0).toolCallId());
+        assertTrue(approvalCalls.get(0).toolArgs().contains("git add ."));
+        assertEquals("list_files", approvalCalls.get(1).toolName());
+        assertEquals("acceptance-command-approval-list", approvalCalls.get(1).toolCallId());
     }
 
     @Test

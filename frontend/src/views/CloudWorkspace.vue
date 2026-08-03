@@ -818,6 +818,7 @@ import { useAgentExtensions } from '@/composables/useAgentExtensions'
 import { useWorkspaceFiles } from '@/composables/useWorkspaceFiles'
 import { useChangeSetState } from '@/composables/useChangeSetState'
 import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
+import { attachCommandApprovalState as attachCommandApproval, findCommandApprovalToolCall as commandApprovalToolCall, updateCommandApprovalState as updateCommandApprovalLifecycle } from '@/composables/agentCommandApprovalState'
 import { attachDurableInteraction } from '@/composables/agentInteractionProjection'
 import { normalizeSpecialMarkdownBlocks, stripInternalReasoningBlocks, stripInternalReasoningTags } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
@@ -1328,70 +1329,11 @@ function stopMessageTimer(message) {
   if (message?.timing) message.timing.isRunning = false
 }
 
-function commandApprovalToolCall(message, approvalId) {
-  if (!message || !approvalId) return null
-  return message.toolCalls?.find(call => call?.commandApproval?.approvalId === approvalId) || null
-}
-
 function executionResultText(data, fallback) {
   const duration = Number(data?.durationMs)
   const durationText = Number.isFinite(duration) && duration >= 0 ? ` · ${duration} ms` : ''
   const exitCode = data?.exitCode === '' || data?.exitCode == null ? '' : ` · exit code ${data.exitCode}`
   return `${fallback}${durationText}${exitCode}`
-}
-
-function updateCommandApprovalLifecycle(message, type, data = {}) {
-  const call = commandApprovalToolCall(message, data.approvalId)
-  if (!call) return
-  const decision = String(data.decision || '').toLowerCase()
-  if (type === 'COMMAND_APPROVAL_DECIDED') {
-    if (decision === 'rejected' || decision === 'expired') {
-      call.status = 'error'
-      call.result = decision === 'expired' ? '批准请求已过期，命令未执行' : '已拒绝命令，命令未执行'
-    } else {
-      call.status = 'running'
-      call.result = '批准已记录，准备执行命令'
-    }
-    return
-  }
-  if (type === 'COMMAND_APPROVAL_REJECTED' || type === 'COMMAND_APPROVAL_EXPIRED') {
-    call.status = 'error'
-    call.result = type === 'COMMAND_APPROVAL_EXPIRED' ? '批准请求已过期，命令未执行' : '已拒绝命令，命令未执行'
-    return
-  }
-  if (type === 'COMMAND_EXECUTION_STARTED') {
-    call.status = 'running'
-    call.result = '命令正在执行...'
-    return
-  }
-  if (type === 'COMMAND_EXECUTION_COMPLETED') {
-    call.status = 'completed'
-    call.result = executionResultText(data, '命令执行完成')
-    return
-  }
-  if (type === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED') {
-    call.status = 'running'
-    call.durableStatus = 'resuming'
-    call.interactionStatus = 'resuming'
-    call.result = '命令结果已保存，正在恢复 Agent 任务'
-    return
-  }
-  if (type === 'COMMAND_APPROVAL_RESUME_DEFERRED') {
-    call.status = 'running'
-    call.durableStatus = 'waiting_resume'
-    call.interactionStatus = 'resuming'
-    call.result = '等待旧执行器释放后自动恢复'
-    return
-  }
-  if (type === 'COMMAND_EXECUTION_FAILED') {
-    call.status = 'error'
-    call.result = executionResultText(data, '命令执行失败')
-    return
-  }
-  if (type === 'COMMAND_EXECUTION_INTERRUPTED') {
-    call.status = 'error'
-    call.result = '命令执行已中断'
-  }
 }
 
 function reconcileRecoveredCommandApproval(message, task) {
@@ -1438,36 +1380,6 @@ function reconcileRecoveredCommandApproval(message, task) {
     call.status = 'running'
     call.result = '命令已批准，正在恢复执行'
   }
-}
-
-function attachCommandApproval(msg, data) {
-  if (!msg || !data?.approvalId) return null
-  msg.toolCalls = msg.toolCalls || []
-  const existing = commandApprovalToolCall(msg, data.approvalId)
-  if (existing) {
-    existing.commandApproval = { ...existing.commandApproval, ...data }
-    existing.summary = data.displayCommand || existing.summary
-    return existing
-  }
-  const last = msg.toolCalls[msg.toolCalls.length - 1]
-  const summary = data.displayCommand || '命令需要一次性批准'
-  if (last && last.status === 'running' && last.name === data.tool) {
-    last.status = 'waiting_approval'
-    last.commandApproval = data
-    last.summary = summary
-    return last
-  }
-  const call = {
-    name: data.tool || 'bash',
-    args: { command: '<redacted; approval required>' },
-    summary,
-    result: null,
-    status: 'waiting_approval',
-    commandApproval: data,
-    _order: (msg._nextOrder = (msg._nextOrder || 0) + 1)
-  }
-  msg.toolCalls.push(call)
-  return call
 }
 
 function attachUserQuestion(msg, data) {

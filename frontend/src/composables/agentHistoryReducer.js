@@ -1,5 +1,6 @@
 import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 import { upsertDurableToolCallState } from './agentToolCallState.js'
+import { attachCommandApprovalState, updateCommandApprovalState } from './agentCommandApprovalState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 
@@ -236,51 +237,21 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       if (data.pendingChangeId) callbacks.onPendingChange?.()
       break
     }
-    case 'COMMAND_APPROVAL_REQUIRED': {
-      const toolCall = message.toolCalls?.at(-1)
-      if (toolCall?.status === 'running' && toolCall.name === data.tool) {
-        toolCall.status = 'waiting_approval'
-        toolCall.commandApproval = data
-        toolCall.summary = data.displayCommand || toolCall.summary
-        break
-      }
-      message.toolCalls = message.toolCalls || []
-      message.toolCalls.push({ name: data.tool || 'bash', args: { command: '<redacted; approval required>' }, summary: data.displayCommand || '命令需要一次性批准', result: null, status: 'waiting_approval', commandApproval: data, _order: nextOrder(message) })
+    case 'COMMAND_APPROVAL_REQUIRED':
+      attachCommandApprovalState(message, data)
       break
-    }
     case 'COMMAND_APPROVAL_DECIDED':
     case 'COMMAND_APPROVAL_REJECTED':
+    case 'COMMAND_APPROVAL_EXPIRED':
     case 'COMMAND_EXECUTION_STARTED':
     case 'COMMAND_EXECUTION_COMPLETED':
     case 'COMMAND_EXECUTION_FAILED':
     case 'COMMAND_EXECUTION_INTERRUPTED':
     case 'RUN_COMMAND_APPROVAL_RESUME_QUEUED':
-    case 'COMMAND_APPROVAL_RESUME_DEFERRED': {
-      const toolCall = message.toolCalls?.find(call => call.commandApproval?.approvalId === data.approvalId)
+    case 'COMMAND_APPROVAL_RESUME_DEFERRED':
       if (data.taskId != null) message.taskId = data.taskId
-      if (!toolCall) break
-      if (type === 'COMMAND_EXECUTION_STARTED') {
-        toolCall.status = 'running'
-        toolCall.result = '正在执行已保存的单次命令...'
-      } else if (type === 'COMMAND_EXECUTION_COMPLETED') {
-        toolCall.status = 'completed'
-        toolCall.result = '命令已执行'
-      } else if (type === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED') {
-        toolCall.status = 'running'
-        toolCall.durableStatus = 'resuming'
-        toolCall.interactionStatus = 'resuming'
-        toolCall.result = '命令结果已保存，正在恢复 Agent 任务'
-      } else if (type === 'COMMAND_APPROVAL_RESUME_DEFERRED') {
-        toolCall.status = 'running'
-        toolCall.durableStatus = 'waiting_resume'
-        toolCall.interactionStatus = 'resuming'
-        toolCall.result = '等待旧执行器释放后自动恢复'
-      } else if (type !== 'COMMAND_APPROVAL_DECIDED') {
-        toolCall.status = 'error'
-        toolCall.result = '命令未执行或执行失败'
-      }
+      updateCommandApprovalState(message, type, data)
       break
-    }
     case 'NETWORK_ACCESS_ASK':
       attachDurableInteraction(message, 'network', data)
       break
@@ -328,6 +299,17 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'recovering'
       message.isStreaming = true
       break
+    case 'RUN_STATE_QUEUED':
+    case 'RUN_STATE_PREPARING':
+    case 'RUN_STATE_RUNNING':
+    case 'RUN_STATE_RECOVERING':
+    case 'RUN_STATE_RETRYING': {
+      const fallbackState = type.substring('RUN_STATE_'.length).toLowerCase()
+      message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.state || data.taskStatus) || fallbackState
+      message.isStreaming = true
+      break
+    }
     case 'RUN_STATE_COMPLETED':
     case 'RUN_STATE_FAILED':
     case 'RUN_STATE_CANCELLED': {

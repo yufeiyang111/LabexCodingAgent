@@ -40,7 +40,7 @@ function harness(overrides = {}) {
     }),
     disconnectSubscription: () => events.push('disconnect'),
     handleAgentEvent: event => events.push(event.type),
-    reconcileRecoveredCommandApproval: () => {},
+    reconcileRecoveredCommandApproval: overrides.reconcileRecoveredCommandApproval || (() => {}),
     createMessageTiming: () => ({ taskId: null, startedAt: 1, activeElapsedMs: null, isRunning: true }),
     stopMessageTimer: message => { if (message?.timing) message.timing.isRunning = false },
     scrollDown: () => {},
@@ -96,6 +96,75 @@ test('terminal recovery reconciles conversation history after the initial snapsh
   assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), false)
   assert.deepEqual(reconciliations, ['conversation-a'])
   assert.equal(state.messages.value[0].content, 'Durable final reply')
+})
+
+test('completed history snapshot without final content still reconciles the durable projection', async () => {
+  const reconciliations = []
+  let state
+  state = harness({
+    api: {
+      agentActiveTask: async () => ({ data: null }),
+      agentTasks: async () => ({ data: [] })
+    },
+    reloadConversationHistory: async conversationId => {
+      reconciliations.push(conversationId)
+      state.messages.value = [{ role: 'assistant', taskId: 72, runState: 'completed', content: 'Durable final reply' }]
+      return true
+    }
+  })
+  state.messages.value = [{
+    role: 'assistant',
+    taskId: 72,
+    runState: 'completed',
+    content: '',
+    completionEvidence: { satisfied: true }
+  }]
+
+  assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), false)
+  assert.deepEqual(reconciliations, ['conversation-a'])
+  assert.equal(state.messages.value[0].content, 'Durable final reply')
+})
+
+test('terminal recovery hydrates the authoritative task transcript after legacy history stays incomplete', async () => {
+  const terminalLookups = []
+  const approvalReconciliations = []
+  let state
+  state = harness({
+    api: {
+      agentActiveTask: async () => ({ data: null }),
+      agentTask: async (_projectId, taskId) => {
+        terminalLookups.push(taskId)
+        return { data: {
+          taskId: 72,
+          conversationId: 'conversation-a',
+          sessionId: 'session-a',
+          status: 'completed',
+          runMessages: [
+            { messageId: 9, messageKey: 'assistant:final', sequence: 9, content: 'Authoritative terminal reply', status: 'completed' }
+          ],
+          parts: [],
+          commandApproval: { approvalId: 'approval-72', toolCallId: 'call-72', status: 'rejected' }
+        } }
+      },
+      agentTasks: async () => ({ data: [] })
+    },
+    reloadConversationHistory: async () => {
+      state.messages.value = [{
+        role: 'assistant', taskId: 72, runState: 'completed', content: '', completionEvidence: { satisfied: true }
+      }]
+      return true
+    },
+    reconcileRecoveredCommandApproval: (_message, task) => approvalReconciliations.push(task.commandApproval?.status)
+  })
+  state.messages.value = [{
+    role: 'assistant', taskId: 72, runState: 'completed', content: '', completionEvidence: { satisfied: true }
+  }]
+
+  assert.equal(await state.runtime.recoverActiveTaskForConversation('conversation-a'), false)
+  assert.deepEqual(terminalLookups, [72])
+  assert.equal(state.messages.value[0].content, 'Authoritative terminal reply')
+  assert.equal(state.messages.value[0].runState, 'completed')
+  assert.deepEqual(approvalReconciliations, ['rejected'])
 })
 
 test('terminal subscription without a final event reloads the durable conversation projection', async () => {

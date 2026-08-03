@@ -1,5 +1,5 @@
 <template>
-  <div class="tc-card" :class="'tc-' + call.status">
+  <div class="tc-card" :class="'tc-' + call.status" :data-tool-call-id="call.toolCallId || ''">
     <div class="tc-header" @click="expanded = !expanded">
       <div class="tc-icon-wrap">
         <svg v-if="call.status === 'running'" class="tc-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>

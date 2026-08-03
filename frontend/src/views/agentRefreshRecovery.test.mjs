@@ -7,6 +7,7 @@ const apiSource = await readFile(new URL('../api/index.js', import.meta.url), 'u
 const streamSource = await readFile(new URL('../composables/useAgentStream.js', import.meta.url), 'utf8')
 const runtimeSource = await readFile(new URL('../composables/useAgentTaskRuntime.js', import.meta.url), 'utf8')
 const timelineSource = await readFile(new URL('../composables/useAgentEventTimeline.js', import.meta.url), 'utf8')
+const approvalSource = await readFile(new URL('../composables/agentCommandApprovalState.js', import.meta.url), 'utf8')
 
 test('workspace delegates active-task recovery to a conversation-scoped runtime', () => {
   assert.match(apiSource, /agentActiveTask\(projectId, conversationId\)/)
@@ -25,8 +26,10 @@ test('workspace delegates active-task recovery to a conversation-scoped runtime'
   assert.match(timelineSource, /case 'COMMAND_EXECUTION_STARTED':/)
   assert.match(timelineSource, /case 'RUN_COMMAND_APPROVAL_RESUME_QUEUED':/)
   assert.match(timelineSource, /case 'COMMAND_APPROVAL_RESUME_DEFERRED':/)
-  assert.match(source, /type === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED'/)
-  assert.match(source, /type === 'COMMAND_APPROVAL_RESUME_DEFERRED'/)
+  assert.match(source, /agentCommandApprovalState/)
+  assert.match(approvalSource, /type === 'RUN_COMMAND_APPROVAL_RESUME_QUEUED'/)
+  assert.match(approvalSource, /type === 'COMMAND_APPROVAL_RESUME_DEFERRED'/)
+  assert.doesNotMatch(source, /function updateCommandApprovalLifecycle/)
   assert.match(source, /environmentBlocker\.retryable !== false/)
 
 })

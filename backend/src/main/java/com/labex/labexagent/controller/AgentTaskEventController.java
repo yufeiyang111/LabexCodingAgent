@@ -181,6 +181,7 @@ public class AgentTaskEventController {
     private Map<String, Object> publicApproval(CommandApproval approval) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("approvalId", approval.getApprovalId());
+        response.put("toolCallId", approval.getToolCallId());
         response.put("status", approval.getStatus());
         response.put("displayCommand", approval.getDisplayCommand());
         response.put("classification", approval.getClassification());

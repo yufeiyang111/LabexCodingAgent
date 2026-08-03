@@ -928,6 +928,90 @@ async function runScenario() {
   }
 
   await createNewConversation()
+  const tasksBeforeCommandApproval = await api(`/student/projects/${projectId}/agent/tasks`)
+  const commandApprovalPriorTaskIds = new Set(tasksBeforeCommandApproval.map(task => Number(task.taskId)))
+  await sendMessage('[acceptance:approval]')
+  const commandApprovalToolCallId = 'acceptance-command-approval-shell'
+  const commandApprovalSkippedToolCallId = 'acceptance-command-approval-list'
+  const commandApprovalCardSelector = `.tc-card[data-tool-call-id="${commandApprovalToolCallId}"] .tc-approval`
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector(${JSON.stringify(commandApprovalCardSelector)}))`),
+    'stable command approval card identity'
+  )
+  if (await client.evaluate(`Boolean(document.querySelector('.tc-card[data-tool-call-id="${commandApprovalSkippedToolCallId}"] .tc-approval'))`)) {
+    throw new Error('Command approval was attached to the skipped companion tool call')
+  }
+  let commandApprovalTask = null
+  await waitFor(async () => {
+    const tasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    commandApprovalTask = [...tasks]
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))
+      .find(task => task.status === 'waiting_approval' && !commandApprovalPriorTaskIds.has(Number(task.taskId)))
+    return Boolean(commandApprovalTask?.taskId)
+  }, 'durable command approval task')
+  const commandApprovalProjection = await api(`/student/projects/${projectId}/agent/tasks/${commandApprovalTask.taskId}`)
+  const commandApprovalStatuses = Object.fromEntries((commandApprovalProjection?.toolCalls || [])
+    .filter(call => [commandApprovalToolCallId, commandApprovalSkippedToolCallId].includes(call.toolCallId))
+    .map(call => [call.toolCallId, call.status]))
+  if (commandApprovalProjection?.commandApproval?.toolCallId !== commandApprovalToolCallId
+      || commandApprovalStatuses[commandApprovalToolCallId] !== 'waiting_approval'
+      || commandApprovalStatuses[commandApprovalSkippedToolCallId] !== 'skipped') {
+    throw new Error(`Command approval durable identity mismatch: ${JSON.stringify(commandApprovalProjection)}`)
+  }
+  const skippedProviderResult = (commandApprovalProjection?.parts || []).find(part =>
+    part.partType === 'tool_result' && part.toolCallId === commandApprovalSkippedToolCallId)
+  if (!skippedProviderResult) {
+    throw new Error(`Skipped command-approval companion has no Provider tool result: ${JSON.stringify(commandApprovalProjection?.parts || [])}`)
+  }
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector(${JSON.stringify(commandApprovalCardSelector)}))`),
+    'stable command approval card after refresh'
+  )
+  await clickElement(`${commandApprovalCardSelector} .tc-approval-btn.danger`, {
+    containsText: '拒绝', label: 'reject command approval', native: true
+  })
+  await waitFor(async () => {
+    const task = await api(`/student/projects/${projectId}/agent/tasks/${commandApprovalTask.taskId}`)
+    return task && task.status !== 'waiting_approval'
+  }, 'command approval rejection persisted')
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  let commandApprovalHistoryProjection = null
+  try {
+    await waitFor(async () => {
+      commandApprovalHistoryProjection = await api(`/student/projects/${projectId}/agent/conversations/${commandApprovalTask.conversationId}/messages?limit=20`)
+      return bodyIncludes('one-time command approval decision was rejected')
+    }, 'command approval same-task resume')
+  } catch (error) {
+    const projectedEvents = (commandApprovalHistoryProjection?.events || []).map(event => {
+      let data = {}
+      try { data = JSON.parse(event.eventData || '{}') } catch {}
+      return {
+        messageId: event.messageId,
+        eventType: event.eventType,
+        state: data.state || data.status || data.taskStatus || '',
+        contentChars: String(data.content || '').length,
+        expectedFinal: event.eventType === 'FINAL'
+          && String(data.content || '').includes('one-time command approval decision was rejected')
+      }
+    })
+    throw new Error(`${error.message}; durableHistory=${JSON.stringify(projectedEvents)}`)
+  }
+  await waitFor(
+    () => client.evaluate(`!document.querySelector(${JSON.stringify(`${commandApprovalCardSelector} .tc-approval-btn`)})`),
+    'completed command approval card is non-actionable'
+  )
+  const commandApprovalTasksAfter = await api(`/student/projects/${projectId}/agent/tasks`)
+  const createdCommandApprovalTasks = commandApprovalTasksAfter
+    .filter(task => !commandApprovalPriorTaskIds.has(Number(task.taskId)))
+  if (createdCommandApprovalTasks.length !== 1
+      || Number(createdCommandApprovalTasks[0].taskId) !== Number(commandApprovalTask.taskId)) {
+    throw new Error(`Command approval resume created another task: ${JSON.stringify(createdCommandApprovalTasks)}`)
+  }
+
+  await createNewConversation()
   await sendMessage(`[acceptance:isolation:COMPACTION-WARMUP] ${'warmup '.repeat(850)}`)
   await waitFor(() => bodyIncludes('COMPACTION-WARMUP'), 'compaction warmup turn')
   await waitForAgentIdle('compaction warmup terminal state')
@@ -1402,6 +1486,7 @@ async function runScenario() {
     questionReplyComponent: true,
     permissionApprovalRefreshRecovery: true,
     multiToolPermissionBatchProtocolComplete: true,
+    commandApprovalStableToolIdentity: true,
     durableProviderMessages: providerMessages.length,
     durableProviderParts: providerParts.length,
     cursorKeys: cursorKeys.length,

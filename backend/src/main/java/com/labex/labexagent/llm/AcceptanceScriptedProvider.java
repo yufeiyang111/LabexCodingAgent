@@ -241,8 +241,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return;
         }
         if (prompt.contains("[acceptance:approval]") && !hasResumedInteraction(prompt, "waiting_approval")) {
-            emitTool(onChunk, "shell", "{\"command\":\"git add .\",\"timeout_seconds\":10}",
-                    "acceptance-command-approval");
+            emitToolBatch(onChunk, List.of(
+                    new ScriptedToolCall("shell", "{\"command\":\"git add .\",\"timeout_seconds\":10}",
+                            "acceptance-command-approval-shell"),
+                    new ScriptedToolCall("list_files", "{\"path\":\"\"}",
+                            "acceptance-command-approval-list")));
             return;
         }
 

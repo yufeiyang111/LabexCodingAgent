@@ -1086,9 +1086,12 @@ public class AgentLoopEngine {
                                             }
                                             if (res.isApprovalRequired()) {
                                                 this.journalToolWaitingApproval(task.getTaskId(), toolCallId, tn, publicArgs, i, res.getApprovalId());
+                                                String skippedMessage = "Skipped because an earlier tool call in the same model turn is waiting for approval.";
                                                 this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i,
-                                                        "Skipped because an earlier tool call in the same model turn is waiting for approval.");
-                                                this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, tn, res, visibleLanguage, emitter);
+                                                        skippedMessage);
+                                                this.appendRemainingBatchToolResults(task.getTaskId(), transcriptEpoch,
+                                                        nativeAdmissions, batchIndex + 1, skippedMessage);
+                                                this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, toolCallId, tn, res, visibleLanguage, emitter);
                                                 return;
                                             }
                                             if (res.isInteractionRequired()) {
@@ -1309,7 +1312,7 @@ public class AgentLoopEngine {
                                      }
                                     if (res.isApprovalRequired()) {
                                         this.journalToolWaitingApproval(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, res.getApprovalId());
-                                        this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, invTool, res, visibleLanguage, emitter);
+                                        this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, recoveredToolCallId, invTool, res, visibleLanguage, emitter);
                                         return;
                                     }
                                     this.journalToolResult(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, res);
@@ -2570,9 +2573,28 @@ public class AgentLoopEngine {
         return "";
     }
 
+    static LinkedHashMap<String, Object> commandApprovalRequiredEvent(Long taskId, String sessionId,
+                                                                      String toolCallId, String toolName,
+                                                                      ToolResult result, String publicDisplay) {
+        if (toolCallId == null || toolCallId.isBlank()) {
+            throw new IllegalArgumentException("Command approval requires a stable toolCallId");
+        }
+        LinkedHashMap<String, Object> event = new LinkedHashMap<>();
+        event.put("approvalId", result.getApprovalId());
+        event.put("taskId", taskId);
+        event.put("sessionId", sessionId);
+        event.put("toolCallId", toolCallId);
+        event.put("tool", toolName);
+        event.put("displayCommand", publicDisplay);
+        event.put("riskLevel", result.getApprovalRiskLevel());
+        event.put("reasonCode", result.getApprovalReasonCode());
+        event.put("expiresTime", result.getApprovalExpiresTime());
+        event.put("resumeAgentLoop", true);
+        return event;
+    }
     private void stopForCommandApproval(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
                                         StudentProject project, AgentStreamRequest request, AgentContext ctx,
-                                        Path runLog, int iteration, String toolName, ToolResult result,
+                                        Path runLog, int iteration, String toolCallId, String toolName, ToolResult result,
                                         String visibleLanguage, SseEmitter emitter) throws Exception {
         String displayCommand = result.getApprovalDisplayCommand() == null ? "<redacted>"
                 : result.getApprovalDisplayCommand();
@@ -2587,16 +2609,8 @@ public class AgentLoopEngine {
         this.appendRunLog(runLog, "\n## Command approval state\n\n- Task status: `waiting_approval`\n- Approval ID: `"
                 + this.safeLogText(result.getApprovalId()) + "`\n- Display: `"
                 + this.safeLogText(publicDisplay) + "`\n- Original SSE: `completed while task remains durable`\n- Continuation: `approval decision -> one-time execution -> same task resume`\n");
-        LinkedHashMap<String, Object> event = new LinkedHashMap<>();
-        event.put("approvalId", result.getApprovalId());
-        event.put("taskId", task.getTaskId());
-        event.put("sessionId", ctx.getSessionId());
-        event.put("tool", toolName);
-        event.put("displayCommand", publicDisplay);
-        event.put("riskLevel", result.getApprovalRiskLevel());
-        event.put("reasonCode", result.getApprovalReasonCode());
-        event.put("expiresTime", result.getApprovalExpiresTime());
-        event.put("resumeAgentLoop", true);
+        LinkedHashMap<String, Object> event = commandApprovalRequiredEvent(
+                task.getTaskId(), ctx.getSessionId(), toolCallId, toolName, result, publicDisplay);
         this.sendEvent(sse, conv, "COMMAND_APPROVAL_REQUIRED", event);
         this.sendEvent(sse, conv, "TASK_PAUSED", Map.of(
                 "taskId", task.getTaskId(),

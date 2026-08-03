@@ -41,6 +41,7 @@ class AgentTaskEventControllerTest {
         CommandApprovalService approvals = mock(CommandApprovalService.class);
         CommandApproval approval = new CommandApproval();
         approval.setApprovalId("approval-71");
+        approval.setToolCallId("call-1");
         approval.setStatus("consumed");
         approval.setDisplayCommand("mvn test");
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
@@ -77,6 +78,7 @@ class AgentTaskEventControllerTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> approvalData = (Map<String, Object>) result.getData().get("commandApproval");
         assertThat(approvalData.get("approvalId")).isEqualTo("approval-71");
+        assertThat(approvalData.get("toolCallId")).isEqualTo("call-1");
         assertThat(approvalData.get("status")).isEqualTo("consumed");
         assertThat(approvalData.get("executionStatus")).isEqualTo("failed");
         assertThat(approvalData.get("exitCode")).isEqualTo(1);
