@@ -80,6 +80,9 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                                               List<Map<String, Object>> tools, LlmConfig config) {
         String prompt = flatten(messages);
         if (isCompactionRequest(sysPrompt)) {
+            if (prompt.contains("[acceptance:compaction-cancel]")) {
+                holdCompactionRequest();
+            }
             String marker = prompt.contains("[acceptance:compaction]") ? " [acceptance:compaction]" : "";
             String summary = "Acceptance compaction preserved the active task, verified state, and next runtime action." + marker;
             String content = "{\"summary\":\"" + summary + "\","
@@ -286,6 +289,22 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
 
     private Map<String, Object> usageFor(String prompt) {
         return prompt != null && prompt.contains("[acceptance:cache-telemetry]") ? CACHE_HIT_USAGE : USAGE;
+    }
+
+    /** acceptance profile 内暂挂没有 token 的 compaction Provider 调用，供真实 interrupt 竞态验收。 */
+    private void holdCompactionRequest() {
+        long configured = Long.getLong("labex.acceptance.compaction.hold.ms", 4000L);
+        long remaining = Math.max(0L, Math.min(15000L, configured));
+        while (remaining > 0L) {
+            long slice = Math.min(100L, remaining);
+            try {
+                Thread.sleep(slice);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            remaining -= slice;
+        }
     }
 
     private void holdCheckoutLease(CancellationToken token) {

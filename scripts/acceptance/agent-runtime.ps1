@@ -69,6 +69,7 @@ $evidence = [ordered]@{
     toolPartAuthority = $false
     manualCompaction = $false
     compactionEpochRecovery = $false
+    compactionCancellationTerminal = $false
     staticContextBlocked = $false
     contextWindowUnconfigured = $false
     completionEvidence = $false
@@ -174,6 +175,7 @@ function Start-AcceptanceBackend {
     $arguments = @(
         '-Dfile.encoding=UTF-8',
         '-Dlabex.acceptance.hold.ms=12000',
+        '-Dlabex.acceptance.compaction.hold.ms=12000',
         '-jar', $JarPath,
         "--server.port=$BackendPort",
         "--spring.profiles.active=$Profile",
@@ -346,6 +348,26 @@ function Wait-TaskPendingInteraction {
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "Task $TaskId did not expose a new waiting_user interaction within $Seconds seconds."
+}
+
+function Wait-TaskCompactionState {
+    param([long]$TaskId, [string]$Status, [int]$Seconds = 60)
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    do {
+        $task = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$TaskId"
+        $compactionsProperty = $task.PSObject.Properties['compactions']
+        $compactions = if ($compactionsProperty) { @($compactionsProperty.Value) } else { @() }
+        $matching = @($compactions | Where-Object { [string]$_.status -eq $Status } |
+            Sort-Object { [long]$_.compactionEpoch })
+        if ($matching.Count -gt 0) {
+            return [pscustomobject]@{ task = $task; compaction = $matching[-1] }
+        }
+        if ($task.status -in @('completed','failed','cancelled','timeout')) {
+            throw "Task $TaskId reached terminal state $($task.status) before compaction became $Status."
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Task $TaskId did not expose a $Status compaction within $Seconds seconds."
 }
 
 function Get-TaskEvents {
@@ -883,6 +905,40 @@ WHERE event_id = (
     }
     $compactionConfigId = [int]$compactionConfig.configId
     $configId = $compactionConfigId
+    $compactionCancelEvents = Invoke-AgentStream -Message '[acceptance:compaction] [acceptance:compaction-cancel] cancel active compaction'
+    $compactionCancelQuestion = Get-RequiredEvent -Events $compactionCancelEvents -Type 'USER_QUESTION'
+    $compactionCancelTaskId = [long]$compactionCancelQuestion.data.taskId
+    $compactionCancelRequestId = [string]$compactionCancelQuestion.data.requestId
+    Invoke-ApiData -Path "/student/projects/$projectId/agent/question/reply" -Method POST -Body @{
+        requestId = $compactionCancelRequestId; action = 'answer'; answer = 'continue then cancel compaction'
+    } | Out-Null
+    $runningCompaction = Wait-TaskCompactionState -TaskId $compactionCancelTaskId -Status 'running' -Seconds 60
+    if ([string]$runningCompaction.task.status -notin @('running', 'preparing')) {
+        throw "Compaction cancellation task was not active while its compaction was running: $($runningCompaction.task.status)"
+    }
+    Invoke-ApiData -Path "/student/projects/$projectId/agent/interrupt" -Method POST -Body @{
+        sessionId = [string]$runningCompaction.task.sessionId; taskId = [string]$compactionCancelTaskId
+    } | Out-Null
+    $compactionCancelledTask = Wait-TaskTerminal -TaskId $compactionCancelTaskId -Seconds 60
+    if ([string]$compactionCancelledTask.status -ne 'cancelled') {
+        throw "Compaction cancellation task ended as $($compactionCancelledTask.status), expected cancelled."
+    }
+    $cancelledCompactions = @($compactionCancelledTask.compactions | Where-Object {
+        [string]$_.status -eq 'failed' -and [string]$_.failureReason -eq 'Compaction cancelled'
+    })
+    $runningAfterCancel = @($compactionCancelledTask.compactions | Where-Object { [string]$_.status -eq 'running' })
+    $completedAfterCancel = @($compactionCancelledTask.compactions | Where-Object { [string]$_.status -eq 'completed' })
+    if ($cancelledCompactions.Count -ne 1 -or $runningAfterCancel.Count -ne 0 -or $completedAfterCancel.Count -ne 0) {
+        throw "Compaction cancellation terminal mismatch: $($compactionCancelledTask.compactions | ConvertTo-Json -Compress -Depth 8)"
+    }
+    $compactionCancelDurableEvents = Get-TaskEvents -TaskId $compactionCancelTaskId
+    if (@($compactionCancelDurableEvents | Where-Object { $_.type -eq 'COMPACTION_FAILED' }).Count -ne 1 -or
+        @($compactionCancelDurableEvents | Where-Object { $_.type -eq 'COMPACTION_COMPLETED' }).Count -ne 0 -or
+        @($compactionCancelDurableEvents | Where-Object { $_.type -eq 'RUN_CANCELLED' }).Count -ne 1) {
+        throw 'Compaction cancellation did not persist one failed projection, zero completed projections, and one task cancellation.'
+    }
+    $evidence.compactionCancellationTerminal = $true
+
     $compactionRestartEvents = Invoke-AgentStream -Message '[acceptance:compaction] [acceptance:compaction-restart] durable epoch restart recovery'
     $firstCompactionQuestion = Get-RequiredEvent -Events $compactionRestartEvents -Type 'USER_QUESTION'
     $compactionTaskId = [long]$firstCompactionQuestion.data.taskId

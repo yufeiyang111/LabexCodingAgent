@@ -3078,57 +3078,118 @@ public class AgentLoopEngine {
                         ? 0 : activeModelConfig.getContextWindowTokens(),
                 activeModelConfig == null || activeModelConfig.getMaxTokens() == null
                         ? 0 : activeModelConfig.getMaxTokens()));
-        Map<String, Object> startDetails = new LinkedHashMap<>();
-        startDetails.put("keepRecentTurns", Math.max(1, keepRecentTurns));
-        startDetails.put("retainedTurns", selection.retainedTurns());
-        startDetails.put("tailStartIndex", selection.tailStartIndex());
-        startDetails.put("sourceMaxSequence", sourceMaxSequence);
-        if (compactionRecord != null) startDetails.put("compactionEpoch", compactionRecord.getCompactionEpoch());
-        this.sendEvent(sse, conversation, "COMPACTION_STARTED",
-                contextEvent(trigger, tokensBefore, tokensBefore, startDetails));
+        boolean compactionTerminalized = false;
+        try {
+            Map<String, Object> startDetails = new LinkedHashMap<>();
+            startDetails.put("keepRecentTurns", Math.max(1, keepRecentTurns));
+            startDetails.put("retainedTurns", selection.retainedTurns());
+            startDetails.put("tailStartIndex", selection.tailStartIndex());
+            startDetails.put("sourceMaxSequence", sourceMaxSequence);
+            startDetails.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+            this.sendEvent(sse, conversation, "COMPACTION_STARTED",
+                    contextEvent(trigger, tokensBefore, tokensBefore, startDetails));
 
-        CompactionAgent.Result modelResult = this.compactionAgent.compact(studentId, activeModelConfig, headForSummary,
-                userRequest, context, cancellationToken);
-        if (modelResult.success()) {
-            List<Map<String, Object>> projected = selection.projectedWithSummary(modelResult.checkpoint());
-            int afterTokens = this.estimateProviderRequestTokens(sysPrompt, tools, projected, activeModelConfig);
-            if (afterTokens < tokensBefore) {
-                compactionService.complete(compactionRecord, modelResult.checkpoint(), afterTokens);
-                Map<String, Object> details = compactionModelDetails(modelResult);
-                details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
-                this.sendCompactionSummary(sse, conversation, modelResult.checkpoint(),
-                        contextEvent("model", tokensBefore, afterTokens, details));
-                this.sendEvent(sse, conversation, "COMPACTION_COMPLETED",
-                        contextEvent("model", tokensBefore, afterTokens, details));
-                return new ContextManagementResult(true, "MODEL_CHECKPOINT");
+            CompactionAgent.Result modelResult = this.compactionAgent.compact(studentId, activeModelConfig,
+                    headForSummary, userRequest, context, cancellationToken);
+            if (this.isCompactionCancelled(modelResult, cancellationToken)) {
+                compactionService.fail(compactionRecord, "Compaction cancelled");
+                compactionTerminalized = true;
+                InterruptedException cancellation = new InterruptedException("Compaction cancelled");
+                Map<String, Object> cancellationDetails = new LinkedHashMap<>();
+                cancellationDetails.put("reason", "Compaction cancelled");
+                cancellationDetails.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+                try {
+                    this.sendEvent(sse, conversation, "COMPACTION_FAILED",
+                            contextEvent("cancelled", tokensBefore, tokensBefore, cancellationDetails));
+                } catch (Exception projectionFailure) {
+                    cancellation.addSuppressed(projectionFailure);
+                }
+                throw cancellation;
             }
-            modelResult = CompactionAgent.Result.failure("Model checkpoint did not reduce historical context");
-        }
-        Map<String, Object> modelFailure = new LinkedHashMap<>();
-        modelFailure.put("reason", modelResult.reason());
-        modelFailure.put("compactionEpoch", compactionRecord.getCompactionEpoch());
-        this.sendEvent(sse, conversation, "COMPACTION_FAILED",
-                contextEvent("model", tokensBefore, tokensBefore, modelFailure));
+            if (modelResult.success()) {
+                List<Map<String, Object>> projected = selection.projectedWithSummary(modelResult.checkpoint());
+                int afterTokens = this.estimateProviderRequestTokens(sysPrompt, tools, projected, activeModelConfig);
+                if (afterTokens < tokensBefore) {
+                    compactionService.complete(compactionRecord, modelResult.checkpoint(), afterTokens);
+                    compactionTerminalized = true;
+                    Map<String, Object> details = compactionModelDetails(modelResult);
+                    details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+                    this.sendCompactionSummary(sse, conversation, modelResult.checkpoint(),
+                            contextEvent("model", tokensBefore, afterTokens, details));
+                    this.sendEvent(sse, conversation, "COMPACTION_COMPLETED",
+                            contextEvent("model", tokensBefore, afterTokens, details));
+                    return new ContextManagementResult(true, "MODEL_CHECKPOINT");
+                }
+                modelResult = CompactionAgent.Result.failure("Model checkpoint did not reduce historical context");
+            }
+            Map<String, Object> modelFailure = new LinkedHashMap<>();
+            modelFailure.put("reason", modelResult.reason());
+            modelFailure.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+            this.sendEvent(sse, conversation, "COMPACTION_FAILED",
+                    contextEvent("model", tokensBefore, tokensBefore, modelFailure));
 
-        String deterministicCheckpoint = new ConversationCheckpointCompactor()
-                .checkpointForHistory(headForSummary, userRequest, context);
-        if (!deterministicCheckpoint.isBlank()) {
-            List<Map<String, Object>> projected = selection.projectedWithSummary(deterministicCheckpoint);
-            int afterTokens = this.estimateProviderRequestTokens(sysPrompt, tools, projected, activeModelConfig);
-            if (afterTokens < tokensBefore) {
-                compactionService.complete(compactionRecord, deterministicCheckpoint, afterTokens);
-                Map<String, Object> details = new LinkedHashMap<>();
-                details.put("reason", modelResult.reason());
-                details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
-                this.sendCompactionSummary(sse, conversation, deterministicCheckpoint,
-                        contextEvent("deterministic_fallback", tokensBefore, afterTokens, details));
-                this.sendEvent(sse, conversation, "COMPACTION_COMPLETED",
-                        contextEvent("deterministic_fallback", tokensBefore, afterTokens, details));
-                return new ContextManagementResult(true, "DETERMINISTIC_CHECKPOINT");
+            String deterministicCheckpoint = new ConversationCheckpointCompactor()
+                    .checkpointForHistory(headForSummary, userRequest, context);
+            if (!deterministicCheckpoint.isBlank()) {
+                List<Map<String, Object>> projected = selection.projectedWithSummary(deterministicCheckpoint);
+                int afterTokens = this.estimateProviderRequestTokens(sysPrompt, tools, projected, activeModelConfig);
+                if (afterTokens < tokensBefore) {
+                    compactionService.complete(compactionRecord, deterministicCheckpoint, afterTokens);
+                    compactionTerminalized = true;
+                    Map<String, Object> details = new LinkedHashMap<>();
+                    details.put("reason", modelResult.reason());
+                    details.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+                    this.sendCompactionSummary(sse, conversation, deterministicCheckpoint,
+                            contextEvent("deterministic_fallback", tokensBefore, afterTokens, details));
+                    this.sendEvent(sse, conversation, "COMPACTION_COMPLETED",
+                            contextEvent("deterministic_fallback", tokensBefore, afterTokens, details));
+                    return new ContextManagementResult(true, "DETERMINISTIC_CHECKPOINT");
+                }
             }
+            compactionService.fail(compactionRecord, modelResult.reason());
+            compactionTerminalized = true;
+            return ContextManagementResult.none();
+        } catch (Exception failure) {
+            if (!compactionTerminalized && this.isRunningCompaction(compactionRecord)) {
+                String failureReason = this.compactionExecutionFailureReason(failure);
+                try {
+                    compactionService.fail(compactionRecord, failureReason);
+                    compactionTerminalized = true;
+                    Map<String, Object> failureDetails = new LinkedHashMap<>();
+                    failureDetails.put("reason", failureReason);
+                    failureDetails.put("compactionEpoch", compactionRecord.getCompactionEpoch());
+                    try {
+                        this.sendEvent(sse, conversation, "COMPACTION_FAILED",
+                                contextEvent("execution_error", tokensBefore, tokensBefore, failureDetails));
+                    } catch (Exception projectionFailure) {
+                        failure.addSuppressed(projectionFailure);
+                    }
+                } catch (Exception finalizationFailure) {
+                    failure.addSuppressed(finalizationFailure);
+                }
+            }
+            throw failure;
         }
-        compactionService.fail(compactionRecord, modelResult.reason());
-        return ContextManagementResult.none();
+    }
+
+    private boolean isCompactionCancelled(CompactionAgent.Result result,
+                                          CancellationToken cancellationToken) {
+        return (cancellationToken != null && cancellationToken.isCancellationRequested())
+                || (result != null && "Compaction cancelled".equalsIgnoreCase(result.reason()));
+    }
+
+    private boolean isRunningCompaction(AgentCompactionRecord record) {
+        return record != null && "running".equalsIgnoreCase(record.getStatus());
+    }
+
+    private String compactionExecutionFailureReason(Exception failure) {
+        String type = failure == null ? "Exception" : failure.getClass().getSimpleName();
+        String message = failure == null ? "" : CommandRedactor.redact(failure.getMessage());
+        message = message == null ? "" : message.replace('\r', ' ').replace('\n', ' ').trim();
+        if (message.length() > 240) {
+            message = message.substring(0, 240);
+        }
+        return "Compaction execution failed: " + type + (message.isBlank() ? "" : ": " + message);
     }
 
     CompactionSelection selectDurableCompaction(Long taskId, int keepRecentTurns,
