@@ -509,8 +509,10 @@ public class AgentRunLifecycleService {
         if (partService == null) return;
         try {
             partService.recordEventPart(taskId, eventType, payload, sequence);
-        } catch (RuntimeException ignored) {
-            // Part 投影失败不能回滚已经持久化的生命周期事件。
+        } catch (RuntimeException error) {
+            // 即时投影只是低延迟优化；持久化 outbox 会在广播前重试并修复 transcript。
+            log.warn("Agent run transcript inline projection failed; outbox will retry taskId={}, eventType={}, sequence={}",
+                    taskId, eventType, sequence, error);
         }
     }
 

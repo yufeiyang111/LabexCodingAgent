@@ -2,10 +2,16 @@ package com.labex.labexagent.run;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.google.gson.Gson;
+import com.google.gson.JsonParseException;
+import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunOutbox;
+import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentRunOutboxMapper;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -14,13 +20,22 @@ import org.springframework.stereotype.Service;
 @Service
 public class AgentRunOutboxPublisher {
     private static final Logger log = LoggerFactory.getLogger(AgentRunOutboxPublisher.class);
+    private static final Gson GSON = new Gson();
     private static final int BATCH_SIZE = 100;
+    private static final int CLAIM_TIMEOUT_SECONDS = 30;
 
     private final AgentRunOutboxMapper outboxMapper;
+    private final AgentRunEventMapper eventMapper;
+    private final AgentRunPartService partService;
     private final AgentRunOutboxSink sink;
 
-    public AgentRunOutboxPublisher(AgentRunOutboxMapper outboxMapper, AgentRunOutboxSink sink) {
+    public AgentRunOutboxPublisher(AgentRunOutboxMapper outboxMapper,
+                                   AgentRunEventMapper eventMapper,
+                                   AgentRunPartService partService,
+                                   AgentRunOutboxSink sink) {
         this.outboxMapper = outboxMapper;
+        this.eventMapper = eventMapper;
+        this.partService = partService;
         this.sink = sink;
     }
 
@@ -31,6 +46,7 @@ public class AgentRunOutboxPublisher {
 
     public int publishAvailable() {
         LocalDateTime now = LocalDateTime.now();
+        recoverAbandonedClaims(now);
         List<AgentRunOutbox> messages = outboxMapper.selectList(new QueryWrapper<AgentRunOutbox>()
                 .eq("status", "pending")
                 .le("available_time", now)
@@ -46,6 +62,7 @@ public class AgentRunOutboxPublisher {
                 continue;
             }
             try {
+                projectAuthoritativeEvent(outbox);
                 sink.publish(outbox);
                 markPublished(outbox);
                 published++;
@@ -56,19 +73,73 @@ public class AgentRunOutboxPublisher {
         return published;
     }
 
+    /**
+     * outbox 是 Event 到 transcript 的持久化修复屏障。只有 Message/Part 已可重建，事件才允许对外广播。
+     */
+    private void projectAuthoritativeEvent(AgentRunOutbox outbox) {
+        if (outbox.getEventId() == null) {
+            throw new IllegalStateException("Agent run outbox message has no authoritative eventId");
+        }
+        AgentRunEvent event = eventMapper.selectById(outbox.getEventId());
+        if (event == null) {
+            throw new IllegalStateException("Authoritative agent run event does not exist: " + outbox.getEventId());
+        }
+        if (!Objects.equals(outbox.getTaskId(), event.getTaskId())) {
+            throw new IllegalStateException("Agent run outbox task identity does not match its authoritative event");
+        }
+        if (event.getTaskId() == null || event.getSequenceNumber() == null
+                || event.getEventType() == null || event.getEventType().isBlank()) {
+            throw new IllegalStateException("Authoritative agent run event is incomplete: " + outbox.getEventId());
+        }
+        partService.recordEventPart(
+                event.getTaskId(),
+                event.getEventType(),
+                decodePayload(event),
+                event.getSequenceNumber());
+    }
+
+    private Object decodePayload(AgentRunEvent event) {
+        String payload = event.getPayload();
+        if (payload == null || payload.isBlank()) {
+            return Map.of();
+        }
+        try {
+            Object decoded = GSON.fromJson(payload, Object.class);
+            return decoded == null ? Map.of() : decoded;
+        } catch (JsonParseException error) {
+            throw new IllegalStateException(
+                    "Authoritative agent run event payload is not valid JSON: " + event.getEventId(), error);
+        }
+    }
+
+    /** 进程在 claim 后崩溃时，租约到期的 publishing 记录必须重新进入现有重试队列。 */
+    private void recoverAbandonedClaims(LocalDateTime now) {
+        int recovered = outboxMapper.update(null, new UpdateWrapper<AgentRunOutbox>()
+                .eq("status", "publishing")
+                .le("available_time", now)
+                .set("status", "pending")
+                .set("available_time", now));
+        if (recovered > 0) {
+            log.warn("Recovered {} abandoned agent run outbox claim(s)", recovered);
+        }
+    }
+
     private boolean claim(AgentRunOutbox outbox, LocalDateTime now) {
         int attempts = valueOrZero(outbox.getAttempts()) + 1;
+        LocalDateTime claimExpiresAt = now.plusSeconds(CLAIM_TIMEOUT_SECONDS);
         int updated = outboxMapper.update(null, new UpdateWrapper<AgentRunOutbox>()
                 .eq("outbox_id", outbox.getOutboxId())
                 .eq("status", "pending")
                 .le("available_time", now)
                 .set("status", "publishing")
-                .set("attempts", attempts));
+                .set("attempts", attempts)
+                .set("available_time", claimExpiresAt));
         if (updated != 1) {
             return false;
         }
         outbox.setStatus("publishing");
         outbox.setAttempts(attempts);
+        outbox.setAvailableTime(claimExpiresAt);
         return true;
     }
 

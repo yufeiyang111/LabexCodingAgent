@@ -32,6 +32,7 @@ $h2PortProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $h2PortProbe.Start()
 $h2ServerPort = ([Net.IPEndPoint]$h2PortProbe.LocalEndpoint).Port
 $h2PortProbe.Stop()
+$h2JdbcUrl = "jdbc:h2:tcp://127.0.0.1:$h2ServerPort/./labex-agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_ON_EXIT=FALSE"
 New-Item -ItemType Directory -Force -Path $databaseRoot | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $backendArchive = [IO.Compression.ZipFile]::OpenRead($JarPath)
@@ -76,6 +77,7 @@ $evidence = [ordered]@{
     authoritativeFailureProjection = $false
     authoritativeCancellationProjection = $false
     authoritativeModelRetryProjection = $false
+    outboxTranscriptRepair = $false
     strictTextToolFallback = $false
     nativeToolInputGate = $false
     isolatedDatabase = $false
@@ -122,6 +124,23 @@ function Start-AcceptanceDatabase {
     throw "Isolated H2 server did not listen on port $h2ServerPort within 20 seconds."
 }
 
+function Invoke-AcceptanceSql {
+    param([Parameter(Mandatory)][string]$Sql)
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5 会把 Java 的普通 stderr 提示包装成 ErrorRecord；真实成败只看进程退出码。
+        $ErrorActionPreference = 'Continue'
+        $output = @(& java -cp $h2JarPath org.h2.tools.Shell -url $h2JdbcUrl -user sa -sql $Sql 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($exitCode -ne 0) {
+        throw "Acceptance SQL failed with exitCode=$exitCode`n$($output -join "`n")"
+    }
+    return $output
+}
+
 function Stop-AcceptanceDatabase {
     $server = $script:h2ServerProcess
     $script:h2ServerProcess = $null
@@ -159,7 +178,7 @@ function Start-AcceptanceBackend {
         "--labex-agent.project-base-path=$workspaceRoot",
         "--labex-agent.instance-id=acceptance-$runId-$Profile",
         '--spring.datasource.driver-class-name=org.h2.Driver',
-        "--spring.datasource.url=jdbc:h2:tcp://127.0.0.1:$h2ServerPort/./labex-agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_ON_EXIT=FALSE",
+        "--spring.datasource.url=$h2JdbcUrl",
         '--spring.datasource.username=sa',
         '--spring.datasource.password=',
         "--spring.sql.init.schema-locations=file:$($h2SchemaPath.Replace('\', '/'))"
@@ -534,6 +553,45 @@ try {
     $persistedEvidence = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$completionTaskId/completion-evidence"
     if (-not [bool]$persistedEvidence.satisfied) { throw 'Completion evidence API did not return satisfied evidence.' }
     $evidence.completionEvidence = $true
+
+    # 人为删除一个已发布生命周期事件的 transcript 投影，再复用原 outbox 验证真实调度器能够幂等修复。
+    $repairSequence = [long]$completedState.eventId
+    $repairMessageKey = "event:run_state_completed:$repairSequence"
+    $repairPartKey = "lifecycle:$repairSequence"
+    $beforeRepair = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$completionTaskId"
+    $beforeMessages = @($beforeRepair.runMessages | Where-Object { [string]$_.messageKey -eq $repairMessageKey })
+    $beforeParts = @($beforeRepair.parts | Where-Object { [string]$_.partKey -eq $repairPartKey })
+    if ($beforeMessages.Count -ne 1 -or $beforeParts.Count -ne 1) {
+        throw "Transcript repair fixture was not unique before fault injection: messages=$($beforeMessages.Count), parts=$($beforeParts.Count)."
+    }
+    $repairSql = @"
+DELETE FROM t_agent_run_part WHERE task_id = $completionTaskId AND part_key = '$repairPartKey';
+DELETE FROM t_agent_run_message WHERE task_id = $completionTaskId AND message_key = '$repairMessageKey';
+UPDATE t_agent_run_outbox
+SET status = 'pending', attempts = 0, available_time = CURRENT_TIMESTAMP, published_time = NULL
+WHERE event_id = (
+    SELECT event_id FROM t_agent_run_event
+    WHERE task_id = $completionTaskId AND sequence_number = $repairSequence AND event_type = 'RUN_STATE_COMPLETED'
+);
+"@
+    Invoke-AcceptanceSql -Sql $repairSql | Out-Null
+    $repairDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    $repairedProjection = $null
+    while ([DateTime]::UtcNow -lt $repairDeadline) {
+        $candidateProjection = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$completionTaskId"
+        $candidateMessages = @($candidateProjection.runMessages | Where-Object { [string]$_.messageKey -eq $repairMessageKey })
+        $candidateParts = @($candidateProjection.parts | Where-Object { [string]$_.partKey -eq $repairPartKey })
+        if ($candidateMessages.Count -eq 1 -and $candidateParts.Count -eq 1 -and
+            [string]$candidateParts[0].messageId -eq [string]$candidateMessages[0].messageId) {
+            $repairedProjection = $candidateProjection
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $repairedProjection) {
+        throw "Outbox did not rebuild the deleted RunMessage/RunPart projection for task $completionTaskId."
+    }
+    $evidence.outboxTranscriptRepair = $true
 
     $unverifiedEvents = Invoke-AgentStream -Message '[acceptance:unverified] reject false completion'
     if ($unverifiedEvents | Where-Object { $_.type -eq 'RUN_STATE_COMPLETED' }) { throw 'Unverified edit incorrectly entered completed state.' }
