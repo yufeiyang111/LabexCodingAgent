@@ -9,7 +9,7 @@ import com.labex.labexagent.tool.ToolDefinition;
 import java.math.BigDecimal;
 import java.util.Map;
 
-/** 对恢复出的文本工具参数执行本轮工具 schema 的确定性最小校验。 */
+/** 对进入执行边界的工具参数执行本轮工具 schema 的确定性最小校验。 */
 final class ToolArgumentSchemaValidator {
     private static final Gson GSON = new Gson();
 

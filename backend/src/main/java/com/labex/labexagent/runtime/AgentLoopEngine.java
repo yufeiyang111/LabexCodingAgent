@@ -131,6 +131,7 @@ public class AgentLoopEngine {
             new ThreadPoolExecutor.AbortPolicy());
     private static final long PROVIDER_FIRST_EVENT_TIMEOUT_MS = 45_000L;
     private static final int MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES = 2;
+    private static final int MAX_NATIVE_TOOL_INPUT_FAILURE_ROUNDS = 2;
     private final StudentProjectService studentProjectService;
     private final ToolRegistry toolRegistry;
     private AgentToolTurnExecutor toolTurnExecutor;
@@ -762,6 +763,7 @@ public class AgentLoopEngine {
             AgentLoopGuard loopGuard = new AgentLoopGuard(loopProperties);
             ContextOverflowRecoveryPolicy overflowRecoveryPolicy = new ContextOverflowRecoveryPolicy();
             int textToolCallRecoveryFailures = 0;
+            int nativeToolInputFailureRounds = 0;
             while (true) {
                 block19: {
                     boolean executed;
@@ -944,37 +946,88 @@ public class AgentLoopEngine {
                                             }
                                         }
 
+                                        List<NativeToolAdmission> nativeAdmissions = new ArrayList<>();
+                                        for (AgentModelTurnExecutor.NativeToolCall call : nativeToolCalls) {
+                                            AgentToolTurnExecutor.ToolInputResolution input =
+                                                    this.toolTurnExecutor.resolveNative(ctx, call, visibleLanguage);
+                                            JsonObject publicArguments = this.publicToolArguments(
+                                                    call.toolName(), input.arguments());
+                                            nativeAdmissions.add(new NativeToolAdmission(call, input, publicArguments));
+                                        }
+                                        boolean nativeInputRejected = nativeAdmissions.stream()
+                                                .anyMatch(nativeAdmission -> !nativeAdmission.allowed());
+                                        if (nativeInputRejected) {
+                                            nativeToolInputFailureRounds++;
+                                        } else {
+                                            nativeToolInputFailureRounds = 0;
+                                        }
+
                                         String modelContent = lr.get("content") == null ? "" : lr.get("content").toString();
                                         String modelThinkingRaw = lr.get("thinking") != null ? lr.get("thinking").toString() : "";
                                         String modelThinking = this.cleanModelOutput(modelThinkingRaw);
                                         this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.assistantMessage(modelContent, nativeToolCalls));
 
-                                        // 先持久化同一 assistant turn 的全部 Tool Part，再按顺序执行。
-                                        // 如果后续进入审批或环境等待，未执行的 Part 仍可由恢复器明确收口，不会静默丢失。
-                                        for (AgentModelTurnExecutor.NativeToolCall call : nativeToolCalls) {
-                                            JsonObject pendingArgs = this.parseArgs(call.toolArguments());
-                                            JsonObject pendingPublicArgs = this.publicToolArguments(call.toolName(), pendingArgs);
+                                        // 先对整批调用做 admission，再一次性持久为 pending 或 error Part。
+                                        // Provider 原始 tool_calls 是 transcript 事实；可执行参数则必须先通过类型和 schema 门禁。
+                                        for (NativeToolAdmission nativeAdmission : nativeAdmissions) {
+                                            AgentModelTurnExecutor.NativeToolCall call = nativeAdmission.call();
+                                            JsonObject publicArguments = nativeAdmission.publicArguments();
+                                            String eventSummary = nativeAdmission.allowed()
+                                                    ? this.toolNarrator.visibleActionSummary(call.toolName(), publicArguments, visibleLanguage)
+                                                    : this.localText(visibleLanguage, "工具调用已拒绝", "Tool call rejected");
+                                            String eventContent = nativeAdmission.allowed()
+                                                    ? this.toolNarrator.visibleActionDetail(call.toolName(), publicArguments, visibleLanguage)
+                                                    : nativeAdmission.rejection().getContent();
                                             this.sendEvent(sse, conv, "TOOL_CALL", Map.of(
                                                     "iteration", i,
                                                     "tool", call.toolName(),
-                                                    "arguments", pendingPublicArgs,
-                                                    "summary", this.toolNarrator.visibleActionSummary(call.toolName(), pendingPublicArgs, visibleLanguage),
-                                                    "content", this.toolNarrator.visibleActionDetail(call.toolName(), pendingPublicArgs, visibleLanguage),
+                                                    "arguments", publicArguments,
+                                                    "summary", eventSummary,
+                                                    "content", eventContent,
                                                     "taskId", task.getTaskId(),
                                                     "toolCallId", call.toolCallId(),
                                                     "toolCallIndex", call.toolCallIndex()));
-                                            this.journalToolPending(task.getTaskId(), call.toolCallId(), call.toolName(), pendingPublicArgs, i);
+                                            if (nativeAdmission.allowed()) {
+                                                this.journalToolPending(task.getTaskId(), call.toolCallId(), call.toolName(),
+                                                        publicArguments, i);
+                                            } else {
+                                                this.journalToolFinished(task.getTaskId(), call.toolCallId(), call.toolName(),
+                                                        publicArguments, i, nativeAdmission.rejection());
+                                            }
                                         }
 
-                                        for (int batchIndex = 0; batchIndex < nativeToolCalls.size(); batchIndex++) {
-                                            AgentModelTurnExecutor.NativeToolCall call = nativeToolCalls.get(batchIndex);
+                                        for (int batchIndex = 0; batchIndex < nativeAdmissions.size(); batchIndex++) {
+                                            NativeToolAdmission nativeAdmission = nativeAdmissions.get(batchIndex);
+                                            AgentModelTurnExecutor.NativeToolCall call = nativeAdmission.call();
                                             String tn = call.toolName();
-                                            JsonObject ta = this.parseArgs(call.toolArguments());
-                                            JsonObject publicArgs = this.publicToolArguments(tn, ta);
+                                            JsonObject ta = nativeAdmission.arguments();
+                                            JsonObject publicArgs = nativeAdmission.publicArguments();
                                             String toolCallId = call.toolCallId();
-                                            this.appendRunLog(runLog, "\n### Tool call " + (batchIndex + 1) + "/" + nativeToolCalls.size()
+                                            this.appendRunLog(runLog, "\n### Tool call " + (batchIndex + 1) + "/" + nativeAdmissions.size()
                                                     + "\n\n- Tool: `" + this.safeLogText(tn) + "`\n- Args:\n\n```json\n"
-                                                    + GSON.toJson((JsonElement)publicArgs) + "\n```\n");
+                                                    + GSON.toJson((JsonElement) publicArgs) + "\n```\n");
+                                            if (!nativeAdmission.allowed()) {
+                                                ToolResult rejected = nativeAdmission.rejection();
+                                                String rejectionDetail = rejected.getContent() == null ? "" : rejected.getContent();
+                                                this.appendRunLog(runLog, "\n- Native input rejected: `"
+                                                        + this.safeLogText(nativeAdmission.reasonCode()) + "`\n");
+                                                log.warn("Iteration {}: rejected native tool input tool={} toolCallId={} reasonCode={} round={}/{}",
+                                                        i, tn, toolCallId, nativeAdmission.reasonCode(),
+                                                        nativeToolInputFailureRounds, MAX_NATIVE_TOOL_INPUT_FAILURE_ROUNDS);
+                                                this.sendThought(sse, conv, i,
+                                                        this.localText(visibleLanguage, "拒绝非法原生工具调用",
+                                                                "Rejected invalid native tool call"),
+                                                        rejectionDetail, task.getTaskId());
+                                                this.appendToolResult(runLog, rejected);
+                                                this.writeAgentCheckpoint(project, request, task, ctx,
+                                                        "native_tool_input_rejected", rejectionDetail, tn, "", runLog);
+                                                this.sendObserve(sse, conv, i, tn, rejected, task.getTaskId());
+                                                this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                                        this.toolCallBatchProtocol.toolResultMessage(call,
+                                                                "[Tool " + tn + " result]\n"
+                                                                        + this.compactToolResultForModel(tn, rejected)));
+                                                continue;
+                                            }
                                             if (modelThinking.isBlank()) {
                                                 this.sendThought(sse, conv, i,
                                                         this.toolNarrator.visibleActionSummary(tn, publicArgs, visibleLanguage),
@@ -990,12 +1043,9 @@ public class AgentLoopEngine {
                                                 this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(call,
                                                         "[Tool " + tn + " result]\n" + loopMessage));
                                                 String skippedMessage = "Skipped because an earlier tool call in the same model turn was blocked by the loop guard.";
-                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i, skippedMessage);
-                                                for (int skippedIndex = batchIndex + 1; skippedIndex < nativeToolCalls.size(); skippedIndex++) {
-                                                    AgentModelTurnExecutor.NativeToolCall skipped = nativeToolCalls.get(skippedIndex);
-                                                    this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(skipped,
-                                                            "[Tool " + skipped.toolName() + " result]\n" + skippedMessage));
-                                                }
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i, skippedMessage);
+                                                this.appendRemainingBatchToolResults(msgs, task.getTaskId(), transcriptEpoch,
+                                                        nativeAdmissions, batchIndex + 1, skippedMessage);
                                                 String visibleSignature = tn + ":" + this.toolNarrator.toolTarget(this.safeTool(tn), publicArgs);
                                                 this.appendRunLog(runLog, "\n- " + loopMessage + "\n");
                                                 this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u6d4b\u5230\u91cd\u590d\u64cd\u4f5c", "Loop detected"), loopMessage, task.getTaskId());
@@ -1034,21 +1084,17 @@ public class AgentLoopEngine {
                                                         this.toolCallBatchProtocol.toolResultMessage(call, blockedResultForModel));
                                                 this.appendToolResult(runLog, res);
                                                 String skippedMessage = "Skipped because an earlier tool call in the same model turn is blocked by the environment.";
-                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i,
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i,
                                                         skippedMessage);
-                                                for (int skippedIndex = batchIndex + 1; skippedIndex < nativeToolCalls.size(); skippedIndex++) {
-                                                    AgentModelTurnExecutor.NativeToolCall skipped = nativeToolCalls.get(skippedIndex);
-                                                    this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
-                                                            this.toolCallBatchProtocol.toolResultMessage(skipped,
-                                                                    "[Tool " + skipped.toolName() + " result]\n" + skippedMessage));
-                                                }
+                                                this.appendRemainingBatchToolResults(msgs, task.getTaskId(), transcriptEpoch,
+                                                        nativeAdmissions, batchIndex + 1, skippedMessage);
                                                 this.stopForEnvironmentBlocker(sse, conv, task, project, request, ctx, runLog, i, tn,
                                                         res, environmentBlocker.get(), visibleLanguage, emitter);
                                                 return;
                                             }
                                             if (res.isApprovalRequired()) {
                                                 this.journalToolWaitingApproval(task.getTaskId(), toolCallId, tn, publicArgs, i, res.getApprovalId());
-                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i,
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i,
                                                         "Skipped because an earlier tool call in the same model turn is waiting for approval.");
                                                 this.stopForCommandApproval(sse, conv, task, project, request, ctx, runLog, i, tn, res, visibleLanguage, emitter);
                                                 return;
@@ -1072,7 +1118,7 @@ public class AgentLoopEngine {
                                             this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u67e5\u7ed3\u679c", "Check result"),
                                                     this.toolNarrator.buildResultThought(tn, ta, res, visibleLanguage), task.getTaskId());
                                             if (res.isInteractionRequired()) {
-                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i,
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i,
                                                         "Skipped because an earlier tool call in the same model turn is waiting for user input.");
                                                 AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
                                                         task.getTaskId(), res, visibleLanguage);
@@ -1097,17 +1143,49 @@ public class AgentLoopEngine {
                                             this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(call, resultForModel));
                                             if (isMissingPlanCompletion(tn, ta, res)) {
                                                 String skippedMessage = "Skipped because completing a plan requires an existing plan.";
-                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeToolCalls, batchIndex + 1, i, skippedMessage);
-                                                for (int skippedIndex = batchIndex + 1; skippedIndex < nativeToolCalls.size(); skippedIndex++) {
-                                                    AgentModelTurnExecutor.NativeToolCall skipped = nativeToolCalls.get(skippedIndex);
-                                                    this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(skipped,
-                                                            "[Tool " + skipped.toolName() + " result]\n" + skippedMessage));
-                                                }
+                                                this.journalRemainingBatchSkipped(task.getTaskId(), nativeAdmissions, batchIndex + 1, i, skippedMessage);
+                                                this.appendRemainingBatchToolResults(msgs, task.getTaskId(), transcriptEpoch,
+                                                        nativeAdmissions, batchIndex + 1, skippedMessage);
                                                 this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content",
                                                         "No execution plan exists. Create a plan before completing plan items; do not submit more complete actions in the same turn."));
                                                 executed = true;
                                                 break block19;
                                             }
+                                        }
+                                        if (nativeInputRejected) {
+                                            boolean anyExecutableInput = nativeAdmissions.stream()
+                                                    .anyMatch(NativeToolAdmission::allowed);
+                                            if (!anyExecutableInput) {
+                                                loopGuard.recordModelNoProgress();
+                                            }
+                                            if (nativeToolInputFailureRounds >= MAX_NATIVE_TOOL_INPUT_FAILURE_ROUNDS) {
+                                                String failureTitle = this.localText(visibleLanguage,
+                                                        "原生工具调用参数连续无效",
+                                                        "Native tool-call arguments repeatedly invalid");
+                                                String failureReason = this.localText(visibleLanguage,
+                                                        "模型连续返回无法安全解析或不符合 schema 的原生工具参数，运行已停止，避免误执行或无限重试。",
+                                                        "The model repeatedly returned native tool arguments that could not be parsed or did not match the exposed schema. The run stopped to prevent unsafe execution or an infinite retry.");
+                                                this.sendEvent(sse, conv, "ERROR", Map.of(
+                                                        "message", failureTitle,
+                                                        "iteration", i,
+                                                        "reasonCode", "native_tool_input_recovery_exhausted"));
+                                                this.streamFinal(sse, conv,
+                                                        this.buildStopFinal(failureTitle, failureReason, project, runLog, visibleLanguage),
+                                                        visibleLanguage);
+                                                this.failTaskAndProject(sse, conv, task, failureTitle, failureReason);
+                                                this.writeAgentCheckpoint(project, request, task, ctx,
+                                                        "failed_native_tool_input_recovery", failureReason, "", "", runLog);
+                                                this.sendEvent(sse, conv, "DONE", Map.of(
+                                                        "message", failureTitle,
+                                                        "iterations", i,
+                                                        "reasonCode", "native_tool_input_recovery_exhausted"));
+                                                emitter.complete();
+                                                return;
+                                            }
+                                            this.appendProviderMessage(msgs, task.getTaskId(), transcriptEpoch,
+                                                    Map.of("role", "user", "content",
+                                                            "One or more native tool calls were rejected before execution because their arguments were missing, malformed, not a JSON object, unavailable in this turn, or incompatible with the exposed schema. "
+                                                                    + "Retry with complete JSON object arguments that exactly match the selected tool schema. Do not repeat rejected arguments."));
                                         }
                                         executed = true;
                                         break block19;
@@ -1690,18 +1768,6 @@ public class AgentLoopEngine {
                 runLog,
                 visibleLanguage), visibleLanguage);
         emitter.complete();
-    }
-
-    private JsonObject parseArgs(String s) {
-        if (s == null || s.isEmpty()) {
-            return new JsonObject();
-        }
-        try {
-            return JsonParser.parseString((String)s).getAsJsonObject();
-        }
-        catch (Exception e) {
-            return new JsonObject();
-        }
     }
 
     private ToolResult execTool(String name, JsonObject args, AgentContext ctx, AgentSsePublisher sse,
@@ -3167,6 +3233,26 @@ public class AgentLoopEngine {
         }
     }
 
+    private record NativeToolAdmission(AgentModelTurnExecutor.NativeToolCall call,
+                                       AgentToolTurnExecutor.ToolInputResolution input,
+                                       JsonObject publicArguments) {
+        boolean allowed() {
+            return input != null && input.allowed();
+        }
+
+        JsonObject arguments() {
+            return input == null ? new JsonObject() : input.arguments();
+        }
+
+        ToolResult rejection() {
+            return input == null ? ToolResult.failed("Tool input was rejected.") : input.rejection();
+        }
+
+        String reasonCode() {
+            return input == null ? "unknown" : input.reasonCode();
+        }
+    }
+
     private record ContextManagementResult(boolean changed, String strategy) {
         private static ContextManagementResult none() {
             return new ContextManagementResult(false, "NONE");
@@ -3378,16 +3464,36 @@ public class AgentLoopEngine {
         }).collect(Collectors.toList());
     }
 
+    private void appendRemainingBatchToolResults(List<Map<String, Object>> messages, Long taskId,
+                                                 long transcriptEpoch,
+                                                 List<NativeToolAdmission> admissions,
+                                                 int startIndex, String skippedReason) {
+        if (admissions == null || startIndex >= admissions.size()) return;
+        for (int index = Math.max(0, startIndex); index < admissions.size(); index++) {
+            NativeToolAdmission nativeAdmission = admissions.get(index);
+            AgentModelTurnExecutor.NativeToolCall call = nativeAdmission.call();
+            String content = nativeAdmission.allowed()
+                    ? skippedReason
+                    : this.compactToolResultForModel(call.toolName(), nativeAdmission.rejection());
+            this.appendProviderMessage(messages, taskId, transcriptEpoch,
+                    this.toolCallBatchProtocol.toolResultMessage(call,
+                            "[Tool " + call.toolName() + " result]\n" + content));
+        }
+    }
+
     private void journalRemainingBatchSkipped(Long taskId,
-                                              List<AgentModelTurnExecutor.NativeToolCall> calls,
+                                              List<NativeToolAdmission> admissions,
                                               int startIndex, int iteration, String reason) {
-        if (calls == null || startIndex >= calls.size()) return;
-        for (int index = Math.max(0, startIndex); index < calls.size(); index++) {
-            AgentModelTurnExecutor.NativeToolCall call = calls.get(index);
-            JsonObject arguments = this.parseArgs(call.toolArguments());
-            JsonObject publicArguments = this.publicToolArguments(call.toolName(), arguments);
+        if (admissions == null || startIndex >= admissions.size()) return;
+        for (int index = Math.max(0, startIndex); index < admissions.size(); index++) {
+            NativeToolAdmission nativeAdmission = admissions.get(index);
+            if (!nativeAdmission.allowed()) {
+                // admission 阶段已经持久化 error Part，不能用 skipped 覆盖真实失败。
+                continue;
+            }
+            AgentModelTurnExecutor.NativeToolCall call = nativeAdmission.call();
             this.toolCallJournalService.skipped(taskId, call.toolCallId(), call.toolName(),
-                    publicArguments, iteration, reason);
+                    nativeAdmission.publicArguments(), iteration, reason);
         }
     }
 

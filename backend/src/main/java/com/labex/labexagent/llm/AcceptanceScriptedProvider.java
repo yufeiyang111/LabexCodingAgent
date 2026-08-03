@@ -25,7 +25,7 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
     private static final Logger log = LoggerFactory.getLogger(AcceptanceScriptedProvider.class);
     private static final String PROVIDER_ID = "acceptance_scripted";
     private static final Pattern ISOLATION_MARKER = Pattern.compile("\\[acceptance:isolation:([^]\\r\\n]+)]");
-    private static final String COMPACTION_PADDING = "x".repeat(30_000);
+    private static final String COMPACTION_ROOT_PATH = "./".repeat(15_000);
     private static final String ENVIRONMENT_TEST_SCRIPT = """
             const fs = require('node:fs');
             const marker = '.acceptance-environment-recovered';
@@ -145,6 +145,14 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                     null, null, null));
             return;
         }
+        if (prompt.contains("[acceptance:native-tool-input]") && !prompt.contains("invalid_json")) {
+            emitToolBatch(onChunk, List.of(
+                    new ScriptedToolCall("list_files", "{\"path\":",
+                            "acceptance-native-invalid"),
+                    new ScriptedToolCall("list_files", "{\"path\":\"\"}",
+                            "acceptance-native-valid")));
+            return;
+        }
         if (prompt.contains("[acceptance:tool]") && !prompt.contains("[Tool list_files result]")) {
             emitTool(onChunk, "list_files", "{\"path\":\"\"}", "acceptance-tool-list");
             return;
@@ -160,7 +168,7 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         if (isCompactionScenario(prompt)
                 && !prompt.contains("[Tool list_files result]")) {
             emitTool(onChunk, "list_files",
-                    "{\"path\":\"\",\"padding\":\"" + COMPACTION_PADDING + "\"}",
+                    "{\"path\":\"" + COMPACTION_ROOT_PATH + "\"}",
                     "acceptance-compaction-large-tool-call");
             return;
         }

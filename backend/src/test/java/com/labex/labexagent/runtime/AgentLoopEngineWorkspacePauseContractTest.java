@@ -28,9 +28,30 @@ class AgentLoopEngineWorkspacePauseContractTest {
         assertThat(branch).contains("journalToolBlocked(");
         assertThat(branch).contains("appendProviderMessage(");
         assertThat(branch).contains("toolResultMessage(call");
-        assertThat(branch).contains("toolResultMessage(skipped");
+        assertThat(branch).contains("appendRemainingBatchToolResults(");
+        String helper = method("private void appendRemainingBatchToolResults(",
+                "private void journalRemainingBatchSkipped(");
+        assertThat(helper).contains("toolResultMessage(call");
+        assertThat(helper).contains("nativeAdmission.allowed()");
+        assertThat(helper).contains("nativeAdmission.rejection()");
         assertThat(branch.indexOf("appendProviderMessage("))
                 .isLessThan(branch.indexOf("stopForEnvironmentBlocker("));
+    }
+
+    @Test
+    void nativeToolInputAdmissionPrecedesPendingPersistenceAndExecution() {
+        String branch = method("List<NativeToolAdmission> nativeAdmissions",
+                "if (!\"text\".equals(type)) break block21;");
+
+        assertThat(branch).contains("resolveNative(ctx, call, visibleLanguage)");
+        assertThat(branch).contains("journalToolFinished(");
+        assertThat(branch).doesNotContain("parseArgs(call.toolArguments())");
+        assertThat(branch.indexOf("resolveNative(ctx, call, visibleLanguage)"))
+                .isLessThan(branch.indexOf("journalToolPending("));
+        assertThat(branch.indexOf("if (!nativeAdmission.allowed())"))
+                .isLessThan(branch.indexOf("loopGuard.beforeToolCall("));
+        assertThat(branch.indexOf("loopGuard.beforeToolCall("))
+                .isLessThan(branch.indexOf("execTool("));
     }
 
     @Test

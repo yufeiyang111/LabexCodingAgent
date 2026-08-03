@@ -77,6 +77,7 @@ $evidence = [ordered]@{
     authoritativeCancellationProjection = $false
     authoritativeModelRetryProjection = $false
     strictTextToolFallback = $false
+    nativeToolInputGate = $false
     isolatedDatabase = $false
     cleanup = $false
 }
@@ -423,6 +424,63 @@ try {
         throw 'Strict text fallback has no completed durable Tool Part with the recovered identity.'
     }
     $evidence.strictTextToolFallback = $true
+
+    $nativeInputEvents = Invoke-AgentStream -Message '[acceptance:native-tool-input] reject malformed native arguments'
+    $nativeCalls = @($nativeInputEvents | Where-Object { $_.type -eq 'TOOL_CALL' } |
+        Sort-Object { [int]$_.data.toolCallIndex })
+    if ($nativeCalls.Count -ne 2) {
+        throw "Native input gate scenario expected 2 tool calls, got $($nativeCalls.Count)."
+    }
+    if ([string]$nativeCalls[0].data.toolCallId -ne 'acceptance-native-invalid' -or
+        [string]$nativeCalls[1].data.toolCallId -ne 'acceptance-native-valid') {
+        throw 'Native input gate did not preserve original batch identities and order.'
+    }
+    if ($nativeInputEvents | Where-Object { $_.type -in @('COMMAND_APPROVAL_REQUIRED', 'PERMISSION_ASK') }) {
+        throw 'Rejected read-only native input unexpectedly requested approval.'
+    }
+    $invalidExecution = $nativeInputEvents | Where-Object {
+        $_.type -eq 'TOOL_EXECUTION_STARTED' -and
+        [string]$_.data.toolCallId -eq 'acceptance-native-invalid'
+    } | Select-Object -First 1
+    if ($invalidExecution) {
+        throw 'Malformed native arguments crossed the admission boundary and started tool execution.'
+    }
+    $validExecution = $nativeInputEvents | Where-Object {
+        $_.type -eq 'TOOL_EXECUTION_STARTED' -and
+        [string]$_.data.toolCallId -eq 'acceptance-native-valid'
+    } | Select-Object -First 1
+    if (-not $validExecution) {
+        throw 'The valid call after a malformed native call did not execute.'
+    }
+    $nativeTaskId = [long]$nativeCalls[0].data.taskId
+    $nativeTask = Wait-TaskTerminal -TaskId $nativeTaskId
+    if ($nativeTask.status -ne 'completed') {
+        throw "Native input gate task ended as $($nativeTask.status)."
+    }
+    $nativeSnapshot = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$nativeTaskId"
+    $invalidPart = @($nativeSnapshot.parts) | Where-Object {
+        [string]$_.partType -eq 'tool' -and
+        [string]$_.toolCallId -eq 'acceptance-native-invalid'
+    } | Select-Object -First 1
+    $validPart = @($nativeSnapshot.parts) | Where-Object {
+        [string]$_.partType -eq 'tool' -and
+        [string]$_.toolCallId -eq 'acceptance-native-valid'
+    } | Select-Object -First 1
+    if (-not $invalidPart -or [string]$invalidPart.status -ne 'error') {
+        throw 'Malformed native arguments did not produce an error Tool Part.'
+    }
+    if (-not $validPart -or [string]$validPart.status -ne 'completed') {
+        throw 'Valid native call did not produce a completed Tool Part.'
+    }
+    $invalidPartJson = $invalidPart | ConvertTo-Json -Depth 8 -Compress
+    if ($invalidPartJson -like '*{\"path\":*') {
+        throw 'Malformed raw native arguments leaked into the durable public Tool Part.'
+    }
+    if ([long]$invalidPart.partId -ge [long]$validPart.partId) {
+        throw 'Native tool batch durable insertion order no longer matches the provider toolCallIndex order.'
+    }
+    $evidence.nativeToolInputGate = $true
+
     $completionStreamEvents = Invoke-AgentStream -Message '[acceptance:evidence] persist completion evidence'
     $completionTaskId = [long](($completionStreamEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
     $completionApproval = $completionStreamEvents | Where-Object { $_.type -eq 'COMMAND_APPROVAL_REQUIRED' } | Select-Object -First 1

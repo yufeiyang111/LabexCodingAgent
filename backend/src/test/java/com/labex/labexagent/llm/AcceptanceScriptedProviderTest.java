@@ -76,6 +76,28 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void emitsMalformedAndValidNativeCallsInOneDeterministicBatch() {
+        List<LlmProvider.StreamChunk> first = stream("[acceptance:native-tool-input]");
+        List<LlmProvider.StreamChunk> calls = first.stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .toList();
+
+        assertEquals(2, calls.size());
+        assertEquals("acceptance-native-invalid", calls.get(0).toolCallId());
+        assertEquals("{\"path\":", calls.get(0).toolArgs());
+        assertEquals(0, calls.get(0).toolCallIndex());
+        assertEquals("acceptance-native-valid", calls.get(1).toolCallId());
+        assertEquals("{\"path\":\"\"}", calls.get(1).toolArgs());
+        assertEquals(1, calls.get(1).toolCallIndex());
+
+        String completed = text(stream(
+                "[acceptance:native-tool-input]",
+                "[Tool list_files result]\nNative arguments rejected (invalid_json)",
+                "[Tool list_files result]\nREADME.md"));
+        assertTrue(completed.contains("## Summary"));
+    }
+
+    @Test
     void emitsAStableNativeToolCallThenACompleteFinalReply() {
         List<LlmProvider.StreamChunk> first = stream("[acceptance:tool] 请检查项目根目录");
 
@@ -312,6 +334,12 @@ class AcceptanceScriptedProviderTest {
                 .findFirst().orElseThrow();
         assertEquals("list_files", largeCall.toolName());
         assertTrue(largeCall.toolArgs().length() > 20_000);
+        var largeArguments = com.google.gson.JsonParser.parseString(largeCall.toolArgs()).getAsJsonObject();
+        assertEquals(1, largeArguments.size());
+        assertTrue(largeArguments.has("path"));
+        assertTrue(largeArguments.get("path").getAsString().length() > 20_000);
+        assertEquals("", com.labex.labexagent.tool.ToolSupport.normalizeRelativePath(
+                largeArguments.get("path").getAsString()));
 
         String completed = text(stream(
                 "<conversation-checkpoint>[acceptance:compaction] durable summary</conversation-checkpoint>",

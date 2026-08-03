@@ -42,24 +42,49 @@ public final class AgentToolTurnExecutor {
                 : ToolResolution.allowed(tool);
     }
 
-    /** 文本兼容恢复必须在写入 Tool Part 或执行前通过本轮 schema 门禁。 */
+    /** 原生 structured tool call 必须先解析 arguments，再通过与文本恢复相同的本轮门禁。 */
+    public ToolInputResolution resolveNative(AgentContext context,
+                                             AgentModelTurnExecutor.NativeToolCall call,
+                                             String language) {
+        String toolName = call == null ? "" : call.toolName();
+        ToolCallArgumentsParser.ParseResult parsed = ToolCallArgumentsParser.parse(
+                call == null ? null : call.toolArguments());
+        if (!parsed.valid()) {
+            String detail = local(language,
+                    "工具 `" + toolName + "` 的原生 arguments 不是完整 JSON object（"
+                            + parsed.reasonCode() + "），已拒绝执行。",
+                    "Native arguments for tool '" + toolName + "' are not a complete JSON object ("
+                            + parsed.reasonCode() + ") and were rejected.");
+            return ToolInputResolution.rejected(parsed.arguments(), ToolResult.failed(detail), parsed.reasonCode());
+        }
+        return resolveInput(context, toolName, parsed.arguments(), language);
+    }
+
+    /** 文本兼容恢复保留既有调用接口，但复用统一参数门禁。 */
     public ToolResolution resolveRecovered(AgentContext context, String toolName, JsonObject arguments, String language) {
+        return resolveInput(context, toolName, arguments, language).resolution();
+    }
+
+    private ToolInputResolution resolveInput(AgentContext context, String toolName,
+                                             JsonObject arguments, String language) {
+        JsonObject normalizedArguments = arguments == null ? new JsonObject() : arguments.deepCopy();
         ToolResolution resolution = resolve(context, toolName, language);
         if (!resolution.allowed()) {
-            return resolution;
+            return ToolInputResolution.rejected(normalizedArguments, resolution.rejection(), "tool_not_available");
         }
         ToolArgumentSchemaValidator.Validation validation = argumentSchemaValidator.validate(
-                resolution.tool().definition(), arguments == null ? new JsonObject() : arguments);
+                resolution.tool().definition(), normalizedArguments);
         if (validation.valid()) {
-            return resolution;
+            return ToolInputResolution.allowed(normalizedArguments, resolution.tool());
         }
-        String detail = "zh".equalsIgnoreCase(language)
-                ? "工具 `" + toolName + "` 的恢复参数不符合本轮 schema（" + validation.code()
-                        + "，位置 " + validation.path() + "），已拒绝执行。"
-                : "Recovered arguments for tool '" + toolName + "' do not match this turn's schema ("
-                        + validation.code() + " at " + validation.path() + ").";
-        return ToolResolution.rejected(ToolResult.failed(detail));
+        String detail = local(language,
+                "工具 `" + toolName + "` 的参数不符合本轮 schema（" + validation.code()
+                        + "，位置 " + validation.path() + "），已拒绝执行。",
+                "Arguments for tool '" + toolName + "' do not match this turn's schema ("
+                        + validation.code() + " at " + validation.path() + ").");
+        return ToolInputResolution.rejected(normalizedArguments, ToolResult.failed(detail), validation.code());
     }
+
     public ToolResult execute(AgentTool tool, AgentContext context, JsonObject arguments, String toolName) throws Exception {
         long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments);
         Future<ToolResult> future = EXECUTOR.submit(() -> tool.execute(context, arguments));
@@ -85,6 +110,33 @@ public final class AgentToolTurnExecutor {
         public static ToolResolution allowed(AgentTool tool) { return new ToolResolution(tool, null); }
         public static ToolResolution rejected(ToolResult result) { return new ToolResolution(null, result); }
         public boolean allowed() { return tool != null; }
+    }
+
+    public record ToolInputResolution(JsonObject arguments, ToolResolution resolution, String reasonCode) {
+        public ToolInputResolution {
+            arguments = arguments == null ? new JsonObject() : arguments.deepCopy();
+            reasonCode = reasonCode == null || reasonCode.isBlank() ? "unknown" : reasonCode;
+        }
+
+        public static ToolInputResolution allowed(JsonObject arguments, AgentTool tool) {
+            return new ToolInputResolution(arguments, ToolResolution.allowed(tool), "ok");
+        }
+
+        public static ToolInputResolution rejected(JsonObject arguments, ToolResult rejection, String reasonCode) {
+            return new ToolInputResolution(arguments, ToolResolution.rejected(rejection), reasonCode);
+        }
+
+        public boolean allowed() {
+            return resolution != null && resolution.allowed();
+        }
+
+        public AgentTool tool() {
+            return resolution == null ? null : resolution.tool();
+        }
+
+        public ToolResult rejection() {
+            return resolution == null ? ToolResult.failed("Tool input was rejected.") : resolution.rejection();
+        }
     }
 
     public static final class ToolTimedOutException extends Exception {

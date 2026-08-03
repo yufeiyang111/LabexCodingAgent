@@ -804,9 +804,16 @@ async function runScenario() {
   if (!compactionTask?.taskId) {
     throw new Error(`No durable compaction task was found: ${JSON.stringify(tasksAfterCompaction)}`)
   }
-  const compactionTaskProjection = await api(
-    `/student/projects/${projectId}/agent/tasks/${compactionTask.taskId}`
-  )
+  let compactionTaskProjection = null
+  await waitFor(async () => {
+    compactionTaskProjection = await api(
+      `/student/projects/${projectId}/agent/tasks/${compactionTask.taskId}`
+    )
+    return ['completed', 'failed', 'cancelled'].includes(String(compactionTaskProjection?.status))
+  }, 'durable compaction task terminal state')
+  if (compactionTaskProjection?.status !== 'completed') {
+    throw new Error(`Durable compaction task did not complete: ${JSON.stringify(compactionTaskProjection)}`)
+  }
   const completedCompaction = (compactionTaskProjection?.compactions || [])
     .find(item => item.status === 'completed')
   if (!completedCompaction

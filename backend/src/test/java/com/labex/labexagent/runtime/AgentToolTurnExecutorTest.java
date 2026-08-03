@@ -29,6 +29,23 @@ class AgentToolTurnExecutorTest {
     }
 
     @Test
+    void rejectsNativeToolThatWasNotExposedEvenWhenArgumentsAreValid() {
+        AtomicInteger calls = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry(List.of(tool("write_file", calls)));
+        AgentContext context = context();
+        context.setSelectedToolNames(List.of("read_file"));
+        AgentToolTurnExecutor executor = new AgentToolTurnExecutor(registry);
+
+        var admission = executor.resolveNative(context,
+                new AgentModelTurnExecutor.NativeToolCall("write_file", "{}", "call-write", 0),
+                "zh");
+
+        assertFalse(admission.allowed());
+        assertEquals("tool_not_available", admission.reasonCode());
+        assertEquals(0, calls.get());
+    }
+
+    @Test
     void executesResolvedSelectedToolExactlyOnce() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         ToolRegistry registry = new ToolRegistry(List.of(tool("read_file", calls)));
@@ -42,6 +59,48 @@ class AgentToolTurnExecutorTest {
         assertEquals(1, calls.get());
     }
 
+
+    @Test
+    void rejectsMalformedAndSchemaInvalidNativeArgumentsBeforeExecution() {
+        AtomicInteger calls = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry(List.of(requiredStringTool("read_file", "file_path", calls)));
+        AgentContext context = context();
+        context.setSelectedToolNames(List.of("read_file"));
+        AgentToolTurnExecutor executor = new AgentToolTurnExecutor(registry);
+
+        var malformed = executor.resolveNative(context,
+                new AgentModelTurnExecutor.NativeToolCall("read_file", "{\"file_path\":", "call-malformed", 0),
+                "zh");
+        var missing = executor.resolveNative(context,
+                new AgentModelTurnExecutor.NativeToolCall("read_file", "{}", "call-missing", 1),
+                "zh");
+
+        assertFalse(malformed.allowed());
+        assertEquals("invalid_json", malformed.reasonCode());
+        assertTrue(malformed.arguments().isEmpty());
+        assertFalse(missing.allowed());
+        assertEquals("missing_required", missing.reasonCode());
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void admitsValidNativeArgumentsWithTheOriginalStructuredObject() {
+        AtomicInteger calls = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry(List.of(requiredStringTool("read_file", "file_path", calls)));
+        AgentContext context = context();
+        context.setSelectedToolNames(List.of("read_file"));
+        AgentToolTurnExecutor executor = new AgentToolTurnExecutor(registry);
+
+        var admission = executor.resolveNative(context,
+                new AgentModelTurnExecutor.NativeToolCall(
+                        "read_file", "{\"file_path\":\"README.md\"}", "call-read", 0),
+                "zh");
+
+        assertTrue(admission.allowed());
+        assertEquals("ok", admission.reasonCode());
+        assertEquals("README.md", admission.arguments().get("file_path").getAsString());
+        assertEquals(0, calls.get());
+    }
 
     @Test
     void rejectsRecoveredTextCallBeforeExecutionWhenArgumentsDoNotMatchExposedSchema() {
