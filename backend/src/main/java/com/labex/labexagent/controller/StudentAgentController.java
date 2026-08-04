@@ -533,7 +533,7 @@ public class StudentAgentController {
                 Map<String, Object> response = new LinkedHashMap<>();
                 response.put("approvalId", execution.approval().getApprovalId());
                 response.put("status", execution.status());
-                response.put("executionStatus", execution.result().succeeded() ? "completed" : "failed");
+                response.put("executionStatus", commandExecutionStatus(execution.result()));
                 response.put("exitCode", execution.result().exitCode() == null ? "" : execution.result().exitCode());
                 response.put("durationMs", execution.result().durationMs());
                 response.put("output", CommandRedactor.redact(execution.result().output()));
@@ -569,6 +569,17 @@ public class StudentAgentController {
         } catch (Exception ignored) {
             return commandApprovalUnavailable();
         }
+    }
+
+    private String commandExecutionStatus(ProcessExecutionResult result) {
+        if (result == null || result.status() == null) return "infrastructure_error";
+        return switch (result.status()) {
+            case SUCCEEDED -> result.succeeded() ? "completed" : "failed";
+            case CANCELLED -> "cancelled";
+            case TIMED_OUT -> "timed_out";
+            case INFRASTRUCTURE_ERROR -> "infrastructure_error";
+            case FAILED -> "failed";
+        };
     }
 
     private boolean consumeCommandApproval(CommandApproval approval) {

@@ -64,6 +64,8 @@ $evidence = [ordered]@{
     permissionRestart = $false
     commandApproveRestart = $false
     commandRejectRestart = $false
+    approvedCommandCancellation = $false
+    approvedCommandCancellationElapsedMs = $null
     checkoutContention = $false
     runMessagePartProjection = $false
     toolPartAuthority = $false
@@ -744,6 +746,90 @@ WHERE event_id = (
         if ($action -eq 'approve') { $evidence.commandApproveRestart = $true } else { $evidence.commandRejectRestart = $true }
     }
     $evidence.toolPartAuthority = $true
+
+    $approvedCancelEvents = Invoke-AgentStream -Message '[acceptance:approval-cancel] interrupt approved command'
+    $approvedCancelApproval = Get-RequiredEvent -Events $approvedCancelEvents -Type 'COMMAND_APPROVAL_REQUIRED'
+    $approvedCancelTaskId = [long]$approvedCancelApproval.data.taskId
+    $approvedCancelApprovalId = [string]$approvedCancelApproval.data.approvalId
+    $approvedCancelSessionId = [string]$approvedCancelApproval.data.sessionId
+    $approvedCancelToolCallId = [string]$approvedCancelApproval.data.toolCallId
+    Invoke-ApiData -Path "/student/projects/$projectId/agent/command-approvals/$approvedCancelApprovalId/decision" -Method POST -Body @{
+        action = 'approve'; decisionIdempotencyKey = [Guid]::NewGuid().ToString()
+    } | Out-Null
+    $approvedCancelExecuteUri = "$baseUrl/student/projects/$projectId/agent/command-approvals/$approvedCancelApprovalId/execute"
+    $approvedCancelJob = Start-Job -ScriptBlock {
+        param($Uri, $Headers, $Timeout)
+        Invoke-RestMethod -Uri $Uri -Method Post -Headers $Headers -TimeoutSec $Timeout
+    } -ArgumentList $approvedCancelExecuteUri, (Get-Headers), $TimeoutSeconds
+    try {
+        $executionStarted = $null
+        $executionDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            $approvedCancelDurableEvents = Get-TaskEvents -TaskId $approvedCancelTaskId
+            $executionStarted = $approvedCancelDurableEvents | Where-Object { $_.type -eq 'COMMAND_EXECUTION_STARTED' } | Select-Object -First 1
+            if ($executionStarted) { break }
+            if ($approvedCancelJob.State -in @('Completed','Failed','Stopped')) {
+                throw "Approved cancellation command ended before interrupt registration; jobState=$($approvedCancelJob.State)."
+            }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $executionDeadline)
+        if (-not $executionStarted) { throw 'Approved command did not publish COMMAND_EXECUTION_STARTED in time.' }
+
+        $approvedCancelTimer = [Diagnostics.Stopwatch]::StartNew()
+        Invoke-ApiData -Path "/student/projects/$projectId/agent/interrupt" -Method POST -Body @{
+            sessionId = $approvedCancelSessionId; taskId = [string]$approvedCancelTaskId
+        } | Out-Null
+        Wait-Job -Job $approvedCancelJob -Timeout 10 | Out-Null
+        if ($approvedCancelJob.State -ne 'Completed') {
+            throw "Approved command execute request did not finish after interrupt; jobState=$($approvedCancelJob.State)."
+        }
+        $approvedCancelResponse = Receive-Job -Job $approvedCancelJob -ErrorAction Stop
+        $approvedCancelTimer.Stop()
+        $approvedCancelElapsedMs = [int]$approvedCancelTimer.ElapsedMilliseconds
+        if ($approvedCancelElapsedMs -ge 5000) {
+            throw "Approved command cancellation took ${approvedCancelElapsedMs}ms."
+        }
+        if (-not $approvedCancelResponse -or [int]$approvedCancelResponse.code -ne 0 -or
+            [string]$approvedCancelResponse.data.executionStatus -ne 'cancelled' -or
+            [string]$approvedCancelResponse.data.status -ne 'cancelled') {
+            throw "Approved command execute response did not report cancelled: $($approvedCancelResponse | ConvertTo-Json -Compress -Depth 8)"
+        }
+
+        $approvedCancelledTask = Wait-TaskTerminal -TaskId $approvedCancelTaskId -Seconds 15
+        if ([string]$approvedCancelledTask.status -ne 'cancelled') {
+            throw "Approved command task ended as $($approvedCancelledTask.status), not cancelled."
+        }
+        $approvedCancelToolParts = @($approvedCancelledTask.parts | Where-Object {
+            [string]$_.toolCallId -eq $approvedCancelToolCallId -and [string]$_.partType -eq 'tool'
+        })
+        if ($approvedCancelToolParts.Count -ne 1 -or [string]$approvedCancelToolParts[0].status -ne 'interrupted') {
+            throw 'Approved command compatibility Tool Part was not terminalized as interrupted.'
+        }
+        $approvedCancelProviderCalls = @($approvedCancelledTask.parts | Where-Object {
+            [string]$_.toolCallId -eq $approvedCancelToolCallId -and [string]$_.partType -eq 'tool_call'
+        })
+        if ($approvedCancelProviderCalls.Count -eq 0 -or
+            @($approvedCancelProviderCalls | Where-Object { [string]$_.status -ne 'interrupted' }).Count -gt 0) {
+            throw 'Approved command Provider tool_call Part was not terminalized as interrupted.'
+        }
+        $approvedCancelToolResults = @($approvedCancelledTask.parts | Where-Object {
+            [string]$_.toolCallId -eq $approvedCancelToolCallId -and [string]$_.partType -eq 'tool_result'
+        })
+        if ($approvedCancelToolResults.Count -ne 1 -or
+            [string]$approvedCancelToolResults[0].output -notmatch 'status=interrupted') {
+            throw 'Approved command cancellation did not persist a protocol-safe interrupted tool result.'
+        }
+        $approvedCancelDurableEvents = Get-TaskEvents -TaskId $approvedCancelTaskId
+        if (@($approvedCancelDurableEvents | Where-Object { $_.type -eq 'COMMAND_EXECUTION_CANCELLED' }).Count -ne 1 -or
+            @($approvedCancelDurableEvents | Where-Object { $_.type -eq 'RUN_CANCELLATION_REQUESTED' }).Count -ne 1 -or
+            @($approvedCancelDurableEvents | Where-Object { $_.type -eq 'RUN_CANCELLED' }).Count -ne 1) {
+            throw 'Approved command cancellation did not persist one command, request, and terminal cancellation event.'
+        }
+        $evidence.approvedCommandCancellation = $true
+        $evidence.approvedCommandCancellationElapsedMs = $approvedCancelElapsedMs
+    } finally {
+        Remove-Job -Job $approvedCancelJob -Force -ErrorAction SilentlyContinue
+    }
 
     $holderSessionId = [Guid]::NewGuid().ToString()
     $jobPayload = @{

@@ -77,10 +77,19 @@ public class AgentRunPartService {
     @Transactional(rollbackFor = Exception.class)
     public AgentRunPart resolveExistingToolCall(Long taskId, String toolCallId, String status, String detail) {
         if (taskId == null || taskId <= 0 || toolCallId == null || toolCallId.isBlank()) return null;
+        syncProviderToolCallState(taskId, toolCallId, status, detail);
         AgentRunPart part = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
                 .eq(AgentRunPart::getTaskId, taskId)
                 .eq(AgentRunPart::getToolCallId, toolCallId)
+                .eq(AgentRunPart::getPartType, "tool")
                 .last("LIMIT 1"));
+        if (part == null) {
+            part = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
+                    .eq(AgentRunPart::getTaskId, taskId)
+                    .eq(AgentRunPart::getToolCallId, toolCallId)
+                    .eq(AgentRunPart::getPartType, "tool_call")
+                    .last("LIMIT 1"));
+        }
         if (part == null) return null;
         part.setStatus(status == null || status.isBlank() ? "error" : status);
         part.setOutputText(limit(detail));

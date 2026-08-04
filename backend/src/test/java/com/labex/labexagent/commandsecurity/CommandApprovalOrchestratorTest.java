@@ -3,7 +3,9 @@ package com.labex.labexagent.commandsecurity;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -15,6 +17,9 @@ import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.AgentRunState;
+import com.labex.labexagent.runtime.AgentCancellationRegistry;
+import com.labex.labexagent.runtime.CancellationToken;
+import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.service.StudentProjectService;
@@ -40,7 +45,8 @@ class CommandApprovalOrchestratorTest {
         when(resumeScheduler.resumeIfWaiting(rejected)).thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit,
                 mock(AgentApprovedCommandExecutor.class), mock(StudentProjectService.class), lifecycle,
-                mock(AgentProjectMetadataRefreshScheduler.class), resumeScheduler, null, toolCalls, transcript);
+                mock(AgentProjectMetadataRefreshScheduler.class), resumeScheduler, null, toolCalls, transcript,
+                mock(AgentCancellationRegistry.class), mock(AgentTaskService.class));
 
         CommandApprovalOrchestrator.DecisionResult result = orchestrator.decide(
                 7, 12, "approval-71", false, "decision-71");
@@ -68,15 +74,25 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
         when(approvals.consume(any())).thenReturn(true);
-        when(executor.execute(approval, project)).thenReturn(new ProcessExecutionResult(
-                ExecutionStatus.SUCCEEDED, 0, 12L, "tests passed", false));
+        AgentCancellationRegistry cancellations = spy(new AgentCancellationRegistry());
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class)))
+                .thenAnswer(invocation -> {
+                    CancellationToken token = invocation.getArgument(2);
+                    AgentCancellationRegistry.CancellationTarget target = cancellations.findCancellationTarget(
+                            "session-71", 7, 12);
+                    org.assertj.core.api.Assertions.assertThat(target.activeRun()).isSameAs(token);
+                    return new ProcessExecutionResult(
+                            ExecutionStatus.SUCCEEDED, 0, 12L, "tests passed", false);
+                });
         AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
         AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
         AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
         CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
         when(resumeScheduler.resumeIfWaiting(approval)).thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
-                projects, lifecycle, metadataRefresh, resumeScheduler, null, toolCalls, transcript);
+                projects, lifecycle, metadataRefresh, resumeScheduler, null, toolCalls, transcript,
+                cancellations, tasks);
 
         CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
 
@@ -91,6 +107,98 @@ class CommandApprovalOrchestratorTest {
                 org.mockito.ArgumentMatchers.contains("tests passed"));
         verify(toolCalls).completedExisting(eq(71L), eq("tool-71"),
                 org.mockito.ArgumentMatchers.contains("tests passed"));
+        org.assertj.core.api.Assertions.assertThat(cancellations.findCancellationTarget("session-71", 7, 12).status())
+                .isEqualTo(AgentCancellationRegistry.CancellationStatus.NOT_FOUND);
+    }
+
+    @Test
+    void cancelledApprovedCommandFinalizesTheTaskAndInterruptsTheOriginalToolPart() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        StudentProjectService projects = mock(StudentProjectService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentCancellationRegistry cancellations = spy(new AgentCancellationRegistry());
+        CommandApproval approval = approval("approved");
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        when(projects.getOwnedProject(7, 12)).thenReturn(project);
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
+        when(approvals.consume(any())).thenReturn(true);
+        when(tasks.finalizeCancellation(eq(71L), any(), any())).thenReturn(true);
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class)))
+                .thenAnswer(invocation -> {
+                    CancellationToken token = invocation.getArgument(2);
+                    org.assertj.core.api.Assertions.assertThat(cancellations.findCancellationTarget(
+                            "session-71", 7, 12).activeRun()).isSameAs(token);
+                    return new ProcessExecutionResult(ExecutionStatus.CANCELLED, null, 48L, "", false);
+                });
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
+                projects, lifecycle, metadataRefresh, resumeScheduler, null, toolCalls, transcript,
+                cancellations, tasks);
+
+        CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
+
+        org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("cancelled");
+        verify(audit).recordExecutionInterrupted(approval, "user_cancellation");
+        verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_CANCELLED"), any(), any());
+        verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
+                org.mockito.ArgumentMatchers.contains("status=interrupted"));
+        verify(toolCalls).interruptedExisting(eq(71L), eq("tool-71"),
+                org.mockito.ArgumentMatchers.contains("status=interrupted"));
+        verify(tasks).finalizeCancellation(eq(71L), eq("Cancelled"), any());
+        verify(resumeScheduler, never()).resumeIfWaiting(any());
+        verify(metadataRefresh).schedule(7, 12, "command_approval_cancelled");
+        org.assertj.core.api.Assertions.assertThat(cancellations.findCancellationTarget("session-71", 7, 12).status())
+                .isEqualTo(AgentCancellationRegistry.CancellationStatus.NOT_FOUND);
+    }
+
+    @Test
+    void cancelledApprovedCommandStillFinalizesWhenTranscriptProjectionFails() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        StudentProjectService projects = mock(StudentProjectService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentCancellationRegistry cancellations = spy(new AgentCancellationRegistry());
+        CommandApproval approval = approval("approved");
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        when(projects.getOwnedProject(7, 12)).thenReturn(project);
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
+        when(approvals.consume(any())).thenReturn(true);
+        when(tasks.finalizeCancellation(eq(71L), any(), any())).thenReturn(true);
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class)))
+                .thenReturn(new ProcessExecutionResult(ExecutionStatus.CANCELLED, null, 48L, "", false));
+        org.mockito.Mockito.doThrow(new IllegalStateException("transcript unavailable"))
+                .when(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""), any());
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
+                projects, lifecycle, metadataRefresh, resumeScheduler, null, toolCalls, transcript,
+                cancellations, tasks);
+
+        CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
+
+        org.assertj.core.api.Assertions.assertThat(result.available()).isTrue();
+        org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("cancelled");
+        verify(toolCalls).interruptedExisting(eq(71L), eq("tool-71"),
+                org.mockito.ArgumentMatchers.contains("status=interrupted"));
+        verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_CANCELLED"), any(), any());
+        verify(tasks).finalizeCancellation(eq(71L), eq("Cancelled"), any());
+        verify(lifecycle, never()).transition(eq(71L), eq(AgentRunState.FAILED), any(), any(), any(), any(), any());
+        verify(resumeScheduler, never()).resumeIfWaiting(any());
+        verify(metadataRefresh).schedule(7, 12, "command_approval_cancelled");
     }
 
     @Test
@@ -111,7 +219,8 @@ class CommandApprovalOrchestratorTest {
                 mock(CommandAuditService.class), executor, projects, lifecycle,
                 mock(AgentProjectMetadataRefreshScheduler.class), mock(CommandApprovalResumeScheduler.class), null,
                 mock(AgentToolCallJournalService.class),
-                mock(AgentRunTranscriptService.class));
+                mock(AgentRunTranscriptService.class), mock(AgentCancellationRegistry.class),
+                mock(AgentTaskService.class));
 
         CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
 
@@ -138,7 +247,8 @@ class CommandApprovalOrchestratorTest {
                 mock(CommandAuditService.class), mock(AgentApprovedCommandExecutor.class), mock(StudentProjectService.class),
                 lifecycle, mock(AgentProjectMetadataRefreshScheduler.class),
                 mock(CommandApprovalResumeScheduler.class), null, mock(AgentToolCallJournalService.class),
-                mock(AgentRunTranscriptService.class));
+                mock(AgentRunTranscriptService.class), mock(AgentCancellationRegistry.class),
+                mock(AgentTaskService.class));
 
         CommandApprovalOrchestrator.DecisionResult result = orchestrator.decide(7, 12, "approval-71", false, "decision-71");
 

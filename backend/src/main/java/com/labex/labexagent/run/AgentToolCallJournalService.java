@@ -88,6 +88,10 @@ public class AgentToolCallJournalService {
         recordExisting(taskId, toolCallId, "error", result);
     }
 
+    public void interruptedExisting(Long taskId, String toolCallId, String result) {
+        recordExisting(taskId, toolCallId, "interrupted", result);
+    }
+
     private void recordExisting(Long taskId, String toolCallId, String status, String detail) {
         AgentRunPart part = partService.resolveExistingToolCall(taskId, toolCallId, status, detail);
         if (part == null) return;

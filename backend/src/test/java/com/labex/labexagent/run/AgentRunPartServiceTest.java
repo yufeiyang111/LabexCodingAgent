@@ -15,6 +15,7 @@ import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -106,6 +107,41 @@ class AgentRunPartServiceTest {
         assertThat(providerCall.getInputJson()).contains("call-1");
         assertThat(providerCall.getOutputText()).isEqualTo("Waiting for user approval.");
         verify(parts).updateById(providerCall);
+    }
+
+    @Test
+    void resolvesTheCompatibilityToolPartWithoutMutatingTheToolResult() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunPart providerCall = new AgentRunPart();
+        providerCall.setPartId(90L);
+        providerCall.setPartType("tool_call");
+        providerCall.setToolCallId("call-1");
+        AgentRunPart toolResult = new AgentRunPart();
+        toolResult.setPartId(91L);
+        toolResult.setPartType("tool_result");
+        toolResult.setToolCallId("call-1");
+        toolResult.setStatus("completed");
+        AgentRunPart compatibilityTool = new AgentRunPart();
+        compatibilityTool.setPartId(92L);
+        compatibilityTool.setPartType("tool");
+        compatibilityTool.setToolCallId("call-1");
+        compatibilityTool.setSequenceNumber(3L);
+        AtomicBoolean providerStateSynchronized = new AtomicBoolean();
+        when(parts.selectList(any())).thenAnswer(invocation -> {
+            providerStateSynchronized.set(true);
+            return List.of(providerCall);
+        });
+        when(parts.selectOne(any())).thenAnswer(invocation ->
+                providerStateSynchronized.get() ? compatibilityTool : toolResult);
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messageService())
+                .resolveExistingToolCall(7L, "call-1", "interrupted", "status=interrupted");
+
+        assertThat(result).isSameAs(compatibilityTool);
+        assertThat(compatibilityTool.getStatus()).isEqualTo("interrupted");
+        assertThat(providerCall.getStatus()).isEqualTo("interrupted");
+        assertThat(toolResult.getStatus()).isEqualTo("completed");
     }
 
     @Test

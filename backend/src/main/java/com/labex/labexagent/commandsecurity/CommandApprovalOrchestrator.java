@@ -2,6 +2,7 @@ package com.labex.labexagent.commandsecurity;
 
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
@@ -11,6 +12,8 @@ import com.labex.labexagent.run.EnvironmentBlockerClassifier;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.network.NetworkAccessService;
+import com.labex.labexagent.runtime.AgentCancellationRegistry;
+import com.labex.labexagent.service.AgentTaskService;
 import com.labex.service.StudentProjectService;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -35,6 +38,8 @@ public class CommandApprovalOrchestrator {
     private final CommandApprovalResumeScheduler commandResumeScheduler;
     private final AgentToolCallJournalService toolCallJournalService;
     private final AgentRunTranscriptService transcriptService;
+    private final AgentCancellationRegistry cancellationRegistry;
+    private final AgentTaskService taskService;
     private CommandFailureGuard commandFailureGuard = new CommandFailureGuard(1, 2);
     private final NetworkAccessService networkAccessService;
 
@@ -46,7 +51,9 @@ public class CommandApprovalOrchestrator {
                                        CommandApprovalResumeScheduler commandResumeScheduler,
                                        NetworkAccessService networkAccessService,
                                        AgentToolCallJournalService toolCallJournalService,
-                                       AgentRunTranscriptService transcriptService) {
+                                       AgentRunTranscriptService transcriptService,
+                                       AgentCancellationRegistry cancellationRegistry,
+                                       AgentTaskService taskService) {
         this.approvalService = approvalService;
         this.auditService = auditService;
         this.executor = executor;
@@ -60,6 +67,10 @@ public class CommandApprovalOrchestrator {
                 "toolCallJournalService is required for durable command approval continuation");
         this.transcriptService = Objects.requireNonNull(transcriptService,
                 "transcriptService is required for durable command approval continuation");
+        this.cancellationRegistry = Objects.requireNonNull(cancellationRegistry,
+                "cancellationRegistry is required for approved command cancellation");
+        this.taskService = Objects.requireNonNull(taskService,
+                "taskService is required for approved command cancellation finalization");
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -109,16 +120,22 @@ public class CommandApprovalOrchestrator {
         log.info("COMMAND_APPROVAL_EXECUTION_REQUEST_ACCEPTED taskId={} projectId={} approvalId={} workingDirectory={} requestElapsedMs={}",
                 approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory(), elapsedMs(requestStartedNanos));
         approval.setStatus("consumed");
+        AgentCancellationRegistry.ActiveRun activeRun = null;
         try {
+            activeRun = cancellationRegistry.register(approval.getSessionId(), studentId, projectId, approval.getTaskId());
             lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_EXECUTION_STARTED",
                     publicPayload(approval, Map.of("resumeAgentLoop", false)),
                     lifecycleKey(approval, "execution-started"));
             log.info("COMMAND_APPROVAL_PROCESS_STARTED taskId={} projectId={} approvalId={} workingDirectory={}",
                     approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory());
             long processStartedNanos = System.nanoTime();
-            ProcessExecutionResult result = executor.execute(approval, project);
+            ProcessExecutionResult result = executor.execute(approval, project, activeRun);
             long orchestrationDurationMs = elapsedMs(processStartedNanos);
             long processDurationMs = result.durationMs();
+            if (result.status() == ExecutionStatus.CANCELLED) {
+                return completeCancelledExecution(approval, result, studentId, projectId,
+                        processDurationMs, orchestrationDurationMs, requestStartedNanos);
+            }
             auditService.recordExecutionOutcome(approval, result, processDurationMs);
             boolean succeeded = result.succeeded();
             if (!succeeded && shouldRequestNetworkRetry(approval, result)) {
@@ -176,7 +193,6 @@ public class CommandApprovalOrchestrator {
                     elapsedMs(requestStartedNanos));
             return ExecutionResult.available(approval, result, resumeAgentLoop ? "resuming" : executionStatus);
         } catch (Exception exception) {
-
             try {
                 auditService.recordExecutionInterrupted(approval, "orchestration_failure");
                 failApprovedToolCall(approval, "Approved command orchestration was interrupted");
@@ -189,7 +205,82 @@ public class CommandApprovalOrchestrator {
                 // The consumed capability must remain non-replayable even if finalization is unavailable.
             }
             return ExecutionResult.unavailable();
+        } finally {
+            cancellationRegistry.complete(activeRun);
         }
+    }
+
+    private ExecutionResult completeCancelledExecution(CommandApproval approval, ProcessExecutionResult result,
+                                                       Integer studentId, Integer projectId,
+                                                       long processDurationMs, long orchestrationDurationMs,
+                                                       long requestStartedNanos) {
+        String output = result.output() == null ? "" : CommandRedactor.redact(result.output());
+        String detail = "status=interrupted\nexecution_status=cancelled\nexit="
+                + (result.exitCode() == null ? "none" : result.exitCode())
+                + (output.isBlank() ? "" : "\n" + output);
+        Exception projectionFailure = null;
+        projectionFailure = runCancellationProjection(approval, projectId, "audit", projectionFailure,
+                () -> auditService.recordExecutionInterrupted(approval, "user_cancellation"));
+        projectionFailure = runCancellationProjection(approval, projectId, "transcript", projectionFailure,
+                () -> transcriptService.appendDeferredToolResult(
+                        approval.getTaskId(), approval.getToolCallId(), "", detail));
+        projectionFailure = runCancellationProjection(approval, projectId, "tool_part", projectionFailure,
+                () -> toolCallJournalService.interruptedExisting(
+                        approval.getTaskId(), approval.getToolCallId(), detail));
+        projectionFailure = runCancellationProjection(approval, projectId, "event", projectionFailure,
+                () -> lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_EXECUTION_CANCELLED",
+                        publicPayload(approval, Map.of(
+                                "executionStatus", "cancelled",
+                                "durationMs", processDurationMs,
+                                "resumeAgentLoop", false)),
+                        lifecycleKey(approval, "execution-outcome:cancelled")));
+
+        boolean finalized = false;
+        try {
+            finalized = taskService.finalizeCancellation(approval.getTaskId(), "Cancelled",
+                    "User cancelled the approved command execution");
+        } catch (Exception exception) {
+            projectionFailure = mergeCancellationFailure(approval, projectId, "task_finalization",
+                    projectionFailure, exception);
+        }
+        String status = finalized ? "cancelled" : "cancelling";
+        if (!finalized) {
+            log.error("COMMAND_APPROVAL_CANCELLATION_FINALIZATION_DEFERRED taskId={} projectId={} approvalId={}",
+                    approval.getTaskId(), projectId, approval.getApprovalId());
+        }
+        projectionFailure = runCancellationProjection(approval, projectId, "metadata_refresh", projectionFailure,
+                () -> metadataRefreshScheduler.schedule(studentId, projectId, "command_approval_cancelled"));
+        if (projectionFailure != null) {
+            log.error("COMMAND_APPROVAL_CANCELLATION_PROJECTION_DEGRADED taskId={} projectId={} approvalId={} executionStatus={}",
+                    approval.getTaskId(), projectId, approval.getApprovalId(), status, projectionFailure);
+        }
+        log.info("COMMAND_APPROVAL_PROCESS_FINISHED taskId={} projectId={} approvalId={} executionStatus={} exitCode={} processDurationMs={} orchestrationDurationMs={}",
+                approval.getTaskId(), projectId, approval.getApprovalId(), status,
+                result.exitCode(), processDurationMs, orchestrationDurationMs);
+        log.info("COMMAND_APPROVAL_EXECUTION_HTTP_RETURNED taskId={} projectId={} approvalId={} executionStatus={} resumeAgentLoop=false totalElapsedMs={}",
+                approval.getTaskId(), projectId, approval.getApprovalId(), status, elapsedMs(requestStartedNanos));
+        return ExecutionResult.available(approval, result, status);
+    }
+
+    private Exception runCancellationProjection(CommandApproval approval, Integer projectId, String step,
+                                                Exception currentFailure, Runnable action) {
+        try {
+            action.run();
+            return currentFailure;
+        } catch (Exception exception) {
+            return mergeCancellationFailure(approval, projectId, step, currentFailure, exception);
+        }
+    }
+
+    private Exception mergeCancellationFailure(CommandApproval approval, Integer projectId, String step,
+                                               Exception currentFailure, Exception exception) {
+        log.error("COMMAND_APPROVAL_CANCELLATION_STEP_FAILED taskId={} projectId={} approvalId={} step={}",
+                approval.getTaskId(), projectId, approval.getApprovalId(), step, exception);
+        if (currentFailure == null) {
+            return exception;
+        }
+        currentFailure.addSuppressed(exception);
+        return currentFailure;
     }
 
     private String approvalToolName(String command) {

@@ -62,6 +62,31 @@ class StudentAgentControllerCommandApprovalTest {
     }
 
     @Test
+    void projectsCancelledApprovedCommandWithoutCallingItFailed() {
+        CommandApprovalOrchestrator orchestrator = mock(CommandApprovalOrchestrator.class);
+        CommandApproval approval = agentApproval("consumed");
+        ProcessExecutionResult cancelled = new ProcessExecutionResult(
+                ExecutionStatus.CANCELLED, null, 48L, "", false);
+        when(orchestrator.execute(7, 12, "approval-71")).thenReturn(
+                new CommandApprovalOrchestrator.ExecutionResult(true, approval, cancelled, "cancelled"));
+        StudentAgentController controller = new StudentAgentController(
+                mock(AgentLoopEngine.class), mock(AgentCancellationRegistry.class), mock(DiffService.class),
+                mock(AgentCommandService.class), mock(AgentConversationService.class), mock(AgentTaskService.class),
+                mock(TokenTracker.class), mock(PermissionService.class), mock(AgentInteractionService.class),
+                null, null, mock(CommandApprovalService.class), mock(AgentApprovedCommandExecutor.class),
+                mock(StudentProjectService.class), orchestrator);
+
+        Result<Map<String, Object>> response = controller.executeCommandApproval(
+                12, "approval-71", authentication(7));
+
+        assertThat(response.isSuccess()).isTrue();
+        assertThat(response.getData())
+                .containsEntry("status", "cancelled")
+                .containsEntry("executionStatus", "cancelled")
+                .containsEntry("resumeAgentLoop", false);
+    }
+
+    @Test
     void rejectsForeignOrUnconsumableApprovalWithoutExecutingWorker() {
         CommandApprovalService approvals = mock(CommandApprovalService.class);
         AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);

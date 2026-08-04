@@ -33,6 +33,11 @@ public class AgentApprovedCommandExecutor {
     }
 
     public ProcessExecutionResult execute(CommandApproval approval, StudentProject project) {
+        return execute(approval, project, CancellationToken.none());
+    }
+
+    public ProcessExecutionResult execute(CommandApproval approval, StudentProject project,
+                                          CancellationToken cancellationToken) {
         if (approval == null || project == null || approval.getTaskId() == null) {
             throw new IllegalArgumentException("approved command and project are required");
         }
@@ -50,7 +55,8 @@ public class AgentApprovedCommandExecutor {
         WorkerRunSpec run = WorkerRunSpec.forWorkspace("task-" + approval.getTaskId(), workspaceRoot, networkEnabled);
         ProcessExecutionRequest request = new ProcessExecutionRequest(
                 command, workingDirectory, Duration.ofSeconds(timeoutSeconds), MAX_OUTPUT_CHARS);
-        return sandboxWorker.execute(run, request, CancellationToken.none());
+        CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
+        return sandboxWorker.execute(run, request, token);
     }
 
     private boolean networkEnabled(String options) {
