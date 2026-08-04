@@ -154,6 +154,34 @@ class AgentRunOutboxPublisherTest {
     }
 
     @Test
+    void defersLaterSequenceWhileAnEarlierOutboxIsUnpublished() throws Exception {
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunPartService partService = mock(AgentRunPartService.class);
+        AgentRunOutboxSink sink = mock(AgentRunOutboxSink.class);
+        AgentRunOutbox laterOutbox = pendingOutbox();
+        laterOutbox.setOutboxId(82L);
+        laterOutbox.setEventId(902L);
+        AgentRunEvent laterEvent = authoritativeEvent();
+        laterEvent.setEventId(902L);
+        laterEvent.setSequenceNumber(10L);
+        when(outboxMapper.selectList(any())).thenReturn(List.of(laterOutbox));
+        when(outboxMapper.countUnpublishedBeforeSequence(71L, 10L)).thenReturn(1L);
+        when(outboxMapper.update(any(), any())).thenReturn(0, 1);
+        when(outboxMapper.updateById(any(AgentRunOutbox.class))).thenReturn(1);
+        when(eventMapper.selectById(902L)).thenReturn(laterEvent);
+        AgentRunOutboxPublisher publisher = new AgentRunOutboxPublisher(
+                outboxMapper, eventMapper, partService, sink);
+
+        assertEquals(0, publisher.publishAvailable());
+
+        assertEquals("pending", laterOutbox.getStatus());
+        assertEquals(0, laterOutbox.getAttempts());
+        verify(partService, never()).recordEventPart(any(), any(), any(), anyLong());
+        verify(sink, never()).publish(any(AgentRunOutbox.class));
+    }
+
+    @Test
     void recoversExpiredPublishingClaimsBeforeReadingPendingMessages() throws Exception {
         AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
         AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);

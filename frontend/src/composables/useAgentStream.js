@@ -41,7 +41,7 @@ export function useAgentStream() {
       }
 
       await consumeAgentSse(response.body, event => {
-        recordEvent(event)
+        if (!recordEvent(event)) return
         try {
           options.onEvent?.(event)
         } catch (error) {
@@ -76,7 +76,7 @@ export function useAgentStream() {
     }
 
     await consumeAgentSse(response.body, event => {
-      recordEvent(event, taskId)
+      if (!recordEvent(event, taskId)) return
       try {
         options.onEvent?.(event)
       } catch (error) {
@@ -112,7 +112,7 @@ export function useAgentStream() {
         throw new Error('Agent subscription response has no body')
       }
       await consumeAgentSse(response.body, event => {
-        recordEvent(event, taskId)
+        if (!recordEvent(event, taskId)) return
         try {
           options.onEvent?.(event)
         } catch (error) {
@@ -169,10 +169,13 @@ export function useAgentStream() {
 
   function recordEvent(event, fallbackTaskId = null) {
     const taskId = event?.data?.taskId ?? fallbackTaskId
-    streamState.value = reduceAgentStreamState(streamState.value, {
+    const before = streamState.value
+    const after = reduceAgentStreamState(before, {
       type: 'EVENT_RECEIVED',
       taskId,
       eventId: event?.eventId ?? null
     })
+    streamState.value = after
+    return event?.eventId == null || after !== before
   }
 }

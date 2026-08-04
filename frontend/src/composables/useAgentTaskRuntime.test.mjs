@@ -68,6 +68,48 @@ test('task event cursors are isolated by project and task', () => {
 })
 
 
+test('task event cursor only advances and rejects duplicate or older sequences', () => {
+  const storage = memoryStorage()
+  const cursors = createTaskEventCursorStore({ value: 7 }, storage)
+
+  assert.equal(cursors.save(71, 10), true)
+  assert.equal(cursors.save(71, 9), false)
+  assert.equal(cursors.save(71, 10), false)
+  assert.equal(cursors.save(71, 11), true)
+  assert.equal(cursors.read(71), '11')
+})
+
+test('task subscription does not project duplicate or out-of-order durable events', async () => {
+  const storage = memoryStorage()
+  const hold = deferred()
+  let onEvent
+  const state = harness({
+    storage,
+    subscribeAgent: async (_projectId, _taskId, options) => {
+      onEvent = options.onEvent
+      await hold.promise
+    }
+  })
+  const subscription = state.runtime.subscribeToTaskEvents({
+    taskId: 71,
+    conversationId: 'conversation-a',
+    sessionId: 'session-a',
+    status: 'running',
+    lastEventSequence: 0
+  }, { role: 'assistant', taskId: 71, isStreaming: true })
+  await Promise.resolve()
+
+  onEvent({ type: 'THINK', eventId: 10, data: { taskId: 71 } })
+  onEvent({ type: 'THINK', eventId: 9, data: { taskId: 71 } })
+  onEvent({ type: 'THINK', eventId: 10, data: { taskId: 71 } })
+  onEvent({ type: 'OBSERVE', eventId: 11, data: { taskId: 71 } })
+
+  assert.deepEqual(state.events, ['THINK', 'OBSERVE'])
+  assert.equal(storage.getItem('labex-agent:task-event-cursor:42:71'), '11')
+  hold.resolve()
+  await subscription
+})
+
 test('direct stream events persist their durable task cursor through the runtime boundary', () => {
   const storage = memoryStorage()
   const state = harness({ storage })

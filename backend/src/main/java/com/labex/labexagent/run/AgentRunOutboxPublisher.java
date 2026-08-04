@@ -58,11 +58,18 @@ public class AgentRunOutboxPublisher {
 
         int published = 0;
         for (AgentRunOutbox outbox : messages) {
+            int attemptsBeforeClaim = valueOrZero(outbox.getAttempts());
+            LocalDateTime availableBeforeClaim = outbox.getAvailableTime();
             if (!claim(outbox, now)) {
                 continue;
             }
             try {
-                projectAuthoritativeEvent(outbox);
+                AgentRunEvent event = authoritativeEvent(outbox);
+                if (hasUnpublishedPredecessor(event)) {
+                    deferForPredecessor(outbox, attemptsBeforeClaim, availableBeforeClaim, now);
+                    continue;
+                }
+                projectAuthoritativeEvent(event);
                 sink.publish(outbox);
                 markPublished(outbox);
                 published++;
@@ -73,10 +80,7 @@ public class AgentRunOutboxPublisher {
         return published;
     }
 
-    /**
-     * outbox 是 Event 到 transcript 的持久化修复屏障。只有 Message/Part 已可重建，事件才允许对外广播。
-     */
-    private void projectAuthoritativeEvent(AgentRunOutbox outbox) {
+    private AgentRunEvent authoritativeEvent(AgentRunOutbox outbox) {
         if (outbox.getEventId() == null) {
             throw new IllegalStateException("Agent run outbox message has no authoritative eventId");
         }
@@ -91,6 +95,31 @@ public class AgentRunOutboxPublisher {
                 || event.getEventType() == null || event.getEventType().isBlank()) {
             throw new IllegalStateException("Authoritative agent run event is incomplete: " + outbox.getEventId());
         }
+        return event;
+    }
+
+    /** 同一 task 的前驱事件尚未发布时，后续事件不能越过它进入 transcript 或实时投影。 */
+    private boolean hasUnpublishedPredecessor(AgentRunEvent event) {
+        return outboxMapper.countUnpublishedBeforeSequence(
+                event.getTaskId(), event.getSequenceNumber()) > 0L;
+    }
+
+    private void deferForPredecessor(AgentRunOutbox outbox, int attemptsBeforeClaim,
+                                     LocalDateTime availableBeforeClaim, LocalDateTime now) {
+        outbox.setStatus("pending");
+        outbox.setAttempts(attemptsBeforeClaim);
+        outbox.setAvailableTime(availableBeforeClaim == null ? now : availableBeforeClaim);
+        if (outboxMapper.updateById(outbox) != 1) {
+            throw new IllegalStateException("Unable to release sequence-blocked agent run outbox message");
+        }
+        log.debug("Deferred agent run outbox message behind unpublished predecessor taskId={} eventId={}",
+                outbox.getTaskId(), outbox.getEventId());
+    }
+
+    /**
+     * outbox 是 Event 到 transcript 的持久化修复屏障。只有 Message/Part 已可重建，事件才允许对外广播。
+     */
+    private void projectAuthoritativeEvent(AgentRunEvent event) {
         partService.recordEventPart(
                 event.getTaskId(),
                 event.getEventType(),

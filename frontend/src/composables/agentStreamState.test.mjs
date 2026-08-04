@@ -35,6 +35,18 @@ test('retains the latest task and event cursor after a stream ends', () => {
   assert.equal(ended.lastEventId, '42')
 })
 
+test('durable event cursor never moves backward on duplicate or out-of-order delivery', () => {
+  const started = reduceAgentStreamState(initialAgentStreamState(), { type: 'START', sessionId: 'session-1' })
+  const sequence10 = reduceAgentStreamState(started, { type: 'EVENT_RECEIVED', taskId: 71, eventId: '10' })
+  const stale9 = reduceAgentStreamState(sequence10, { type: 'EVENT_RECEIVED', taskId: 71, eventId: '9' })
+  const duplicate10 = reduceAgentStreamState(stale9, { type: 'EVENT_RECEIVED', taskId: 71, eventId: '10' })
+  const sequence11 = reduceAgentStreamState(duplicate10, { type: 'EVENT_RECEIVED', taskId: 71, eventId: '11' })
+
+  assert.equal(stale9.lastEventId, '10')
+  assert.equal(duplicate10.lastEventId, '10')
+  assert.equal(sequence11.lastEventId, '11')
+})
+
 test('formats a stream error as visible assistant content', () => {
   assert.equal(formatAgentStreamError('模型 API 调用失败'), '错误: 模型 API 调用失败')
   assert.equal(formatAgentStreamError(), '错误: Agent 请求失败，请稍后重试')

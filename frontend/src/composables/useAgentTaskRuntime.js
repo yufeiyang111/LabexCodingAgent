@@ -7,6 +7,11 @@ export function isTerminalAgentTask(task) {
   return isTerminalAgentRunState(task?.status)
 }
 
+function durableEventSequence(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
 export function createTaskEventCursorStore(projectId, storage = globalThis.sessionStorage) {
   const key = taskId => `labex-agent:task-event-cursor:${projectId.value}:${taskId}`
   return {
@@ -15,8 +20,13 @@ export function createTaskEventCursorStore(projectId, storage = globalThis.sessi
       return storage.getItem(key(taskId))
     },
     save(taskId, eventId) {
-      if (!taskId || eventId == null || !storage) return
+      if (!taskId || eventId == null || !storage) return false
+      const next = durableEventSequence(eventId)
+      if (next == null) return false
+      const current = durableEventSequence(storage.getItem(key(taskId)))
+      if (current != null && next <= current) return false
       storage.setItem(key(taskId), String(eventId))
+      return true
     },
     clear(taskId) {
       if (!taskId || !storage) return
@@ -54,8 +64,7 @@ export function useAgentTaskRuntime(options) {
   }
 
   function sequenceNumber(value) {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+    return durableEventSequence(value) ?? 0
   }
 
   function ownsConversation(conversationId) {
@@ -270,7 +279,14 @@ export function useAgentTaskRuntime(options) {
             lastEventId: String(cursor),
             onEvent: event => {
               if (generation !== subscriptionGeneration || !ownsTaskIdentity(task)) return
-              cursors.save(task.taskId, event.eventId)
+              if (event?.eventId != null && !cursors.save(task.taskId, event.eventId)) {
+                log('TASK_EVENT_STALE_SEQUENCE_IGNORED', {
+                  taskId: task.taskId,
+                  eventId: event.eventId,
+                  storedCursor: cursors.read(task.taskId)
+                })
+                return
+              }
               handleAgentEvent(event, assistantMsg)
               if (event?.type === 'FINAL' && event?.data?.content) receivedFinalEvent = true
             }

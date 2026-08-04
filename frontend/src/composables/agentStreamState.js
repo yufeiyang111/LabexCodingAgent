@@ -17,6 +17,11 @@ export function needsAgentResponseFallback(message) {
     && (!Array.isArray(message?.toolCalls) || message.toolCalls.length === 0)
 }
 
+function durableSequence(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
 export function initialAgentStreamState() {
   return {
     status: 'idle',
@@ -37,12 +42,21 @@ export function reduceAgentStreamState(state, event) {
         taskId: null,
         lastEventId: null
       }
-    case 'EVENT_RECEIVED':
+    case 'EVENT_RECEIVED': {
+      const nextTaskId = event.taskId ?? current.taskId
+      const sameTask = current.taskId == null || nextTaskId == null
+        || String(current.taskId) === String(nextTaskId)
+      const currentSequence = durableSequence(current.lastEventId)
+      const nextSequence = durableSequence(event.eventId)
+      if (sameTask && currentSequence != null && nextSequence != null && nextSequence <= currentSequence) {
+        return current
+      }
       return {
         ...current,
-        taskId: event.taskId ?? current.taskId,
+        taskId: nextTaskId,
         lastEventId: event.eventId ?? current.lastEventId
       }
+    }
     case 'STOP_REQUESTED':
       if (current.status !== 'streaming') return current
       return {

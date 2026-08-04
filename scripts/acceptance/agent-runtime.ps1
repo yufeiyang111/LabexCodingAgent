@@ -86,6 +86,7 @@ $evidence = [ordered]@{
     authoritativeCancellationProjection = $false
     authoritativeModelRetryProjection = $false
     outboxTranscriptRepair = $false
+    outboxSequenceFence = $false
     strictTextToolFallback = $false
     nativeToolInputGate = $false
     isolatedDatabase = $false
@@ -147,6 +148,17 @@ function Invoke-AcceptanceSql {
         throw "Acceptance SQL failed with exitCode=$exitCode`n$($output -join "`n")"
     }
     return $output
+}
+
+function Get-AcceptanceSqlScalar {
+    param([Parameter(Mandatory)][string]$Sql)
+    $values = @(Invoke-AcceptanceSql -Sql $Sql |
+        ForEach-Object { ([string]$_).Trim() } |
+        Where-Object { $_ -match '^-?\d+$' })
+    if ($values.Count -eq 0) {
+        throw "Acceptance SQL returned no integer scalar for query: $Sql"
+    }
+    return [long]$values[0]
 }
 
 function Stop-AcceptanceDatabase {
@@ -652,6 +664,67 @@ WHERE event_id = (
         throw "Outbox did not rebuild the deleted RunMessage/RunPart projection for task $completionTaskId."
     }
     $evidence.outboxTranscriptRepair = $true
+
+    # 让同一 task 的后续终态事件先到 available_time，验证真实 outbox 调度器仍按 sequence 发布。
+    $terminalEventsConsecutive = Get-AcceptanceSqlScalar -Sql @"
+SELECT CASE WHEN
+    (SELECT MAX(sequence_number) FROM t_agent_run_event
+     WHERE task_id = $completionTaskId AND event_type = 'RUN_STATE_COMPLETED') =
+    (SELECT MAX(sequence_number) FROM t_agent_run_event
+     WHERE task_id = $completionTaskId AND event_type = 'FINAL') + 1
+THEN 1 ELSE 0 END;
+"@
+    if ($terminalEventsConsecutive -ne 1) {
+        throw "Outbox ordering fixture requires FINAL immediately before RUN_STATE_COMPLETED for task $completionTaskId."
+    }
+    $outboxSequenceFaultSql = @"
+UPDATE t_agent_run_outbox
+SET status = 'pending', attempts = 0,
+    available_time = DATEADD('SECOND', 3, CURRENT_TIMESTAMP), published_time = NULL
+WHERE event_id = (
+    SELECT MAX(event_id) FROM t_agent_run_event
+    WHERE task_id = $completionTaskId AND event_type = 'FINAL'
+);
+UPDATE t_agent_run_outbox
+SET status = 'pending', attempts = 0,
+    available_time = CURRENT_TIMESTAMP, published_time = NULL
+WHERE event_id = (
+    SELECT MAX(event_id) FROM t_agent_run_event
+    WHERE task_id = $completionTaskId AND event_type = 'RUN_STATE_COMPLETED'
+);
+"@
+    Invoke-AcceptanceSql -Sql $outboxSequenceFaultSql | Out-Null
+    $outboxOrderDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    $publishedTerminalOutboxes = 0L
+    while ([DateTime]::UtcNow -lt $outboxOrderDeadline) {
+        $publishedTerminalOutboxes = Get-AcceptanceSqlScalar -Sql @"
+SELECT COUNT(*)
+FROM t_agent_run_outbox outbox
+INNER JOIN t_agent_run_event run_event ON run_event.event_id = outbox.event_id
+WHERE run_event.task_id = $completionTaskId
+  AND run_event.event_type IN ('FINAL', 'RUN_STATE_COMPLETED')
+  AND outbox.status = 'published';
+"@
+        if ($publishedTerminalOutboxes -eq 2L) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($publishedTerminalOutboxes -ne 2L) {
+        throw "Outbox sequence fault injection did not republish both terminal events for task $completionTaskId."
+    }
+    $outboxSequenceOrdered = Get-AcceptanceSqlScalar -Sql @"
+SELECT CASE WHEN
+    MAX(CASE WHEN run_event.event_type = 'FINAL' THEN outbox.published_time END) <=
+    MAX(CASE WHEN run_event.event_type = 'RUN_STATE_COMPLETED' THEN outbox.published_time END)
+THEN 1 ELSE 0 END
+FROM t_agent_run_outbox outbox
+INNER JOIN t_agent_run_event run_event ON run_event.event_id = outbox.event_id
+WHERE run_event.task_id = $completionTaskId
+  AND run_event.event_type IN ('FINAL', 'RUN_STATE_COMPLETED');
+"@
+    if ($outboxSequenceOrdered -ne 1L) {
+        throw "Later terminal outbox was published before its FINAL predecessor for task $completionTaskId."
+    }
+    $evidence.outboxSequenceFence = $true
 
     $unverifiedEvents = Invoke-AgentStream -Message '[acceptance:unverified] reject false completion'
     if ($unverifiedEvents | Where-Object { $_.type -eq 'RUN_STATE_COMPLETED' }) { throw 'Unverified edit incorrectly entered completed state.' }
