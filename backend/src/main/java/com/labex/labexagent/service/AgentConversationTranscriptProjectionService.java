@@ -51,7 +51,7 @@ public class AgentConversationTranscriptProjectionService {
     public Snapshot snapshot(Integer studentId, Integer projectId, String conversationId,
                              long afterTaskIdExclusive, Long beforeTaskIdExclusive) {
         if (studentId == null || projectId == null || conversationId == null || conversationId.isBlank()) {
-            return new Snapshot(List.of(), Math.max(0L, afterTaskIdExclusive), 0);
+            return new Snapshot(List.of(), Math.max(0L, afterTaskIdExclusive), 0, false);
         }
         long after = Math.max(0L, afterTaskIdExclusive);
         LambdaQueryWrapper<AgentTask> query = new LambdaQueryWrapper<AgentTask>()
@@ -62,31 +62,37 @@ public class AgentConversationTranscriptProjectionService {
                 .lt(beforeTaskIdExclusive != null && beforeTaskIdExclusive > 0,
                         AgentTask::getTaskId, beforeTaskIdExclusive)
                 .orderByAsc(AgentTask::getTaskId)
-                .last("LIMIT " + TASK_BATCH_LIMIT);
+                .last("LIMIT " + (TASK_BATCH_LIMIT + 1));
         List<AgentTask> selected = taskMapper.selectList(query);
         if (selected == null || selected.isEmpty()) {
-            return new Snapshot(List.of(), after, 0);
+            return new Snapshot(List.of(), after, 0, false);
         }
 
-        List<AgentTask> tasks = selected.stream()
+        List<AgentTask> ordered = selected.stream()
                 .filter(task -> task != null && task.getTaskId() != null)
                 .filter(task -> task.getTaskId() > after)
                 .filter(task -> beforeTaskIdExclusive == null || beforeTaskIdExclusive <= 0
                         || task.getTaskId() < beforeTaskIdExclusive)
                 .sorted(Comparator.comparing(AgentTask::getTaskId))
                 .toList();
-        if (tasks.isEmpty()) {
-            return new Snapshot(List.of(), after, 0);
+        if (ordered.isEmpty()) {
+            return new Snapshot(List.of(), after, 0, false);
         }
+        boolean queryHasMore = ordered.size() > TASK_BATCH_LIMIT;
+        List<AgentTask> tasks = queryHasMore ? ordered.subList(0, TASK_BATCH_LIMIT) : ordered;
 
         Map<Long, AgentRunMessage> finalsByTask = loadFinalMessages(tasks);
         List<Map<String, Object>> messages = new ArrayList<>();
         long sourceMaxTaskId = after;
         int userTurns = 0;
+        int stableTasks = 0;
+        boolean unstableBarrier = false;
         for (AgentTask task : tasks) {
             if (!isTerminal(task.getStatus())) {
+                unstableBarrier = true;
                 break;
             }
+            stableTasks++;
             sourceMaxTaskId = task.getTaskId();
             if ("compact".equalsIgnoreCase(task.getMode())) {
                 continue;
@@ -105,7 +111,8 @@ public class AgentConversationTranscriptProjectionService {
                 }
             }
         }
-        return new Snapshot(messages, sourceMaxTaskId, userTurns);
+        boolean hasMore = !unstableBarrier && queryHasMore && stableTasks == TASK_BATCH_LIMIT;
+        return new Snapshot(messages, sourceMaxTaskId, userTurns, hasMore);
     }
 
     private Map<Long, AgentRunMessage> loadFinalMessages(List<AgentTask> tasks) {
@@ -172,7 +179,12 @@ public class AgentConversationTranscriptProjectionService {
         return redacted.substring(0, CONTENT_LIMIT) + "\n...truncated...";
     }
 
-    public record Snapshot(List<Map<String, Object>> messages, long sourceMaxTaskId, int userTurns) {
+    public record Snapshot(List<Map<String, Object>> messages, long sourceMaxTaskId,
+                           int userTurns, boolean hasMore) {
+        public Snapshot(List<Map<String, Object>> messages, long sourceMaxTaskId, int userTurns) {
+            this(messages, sourceMaxTaskId, userTurns, false);
+        }
+
         public Snapshot {
             messages = List.copyOf(messages == null ? List.of() : messages);
             sourceMaxTaskId = Math.max(0L, sourceMaxTaskId);

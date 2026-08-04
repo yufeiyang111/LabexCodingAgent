@@ -10,35 +10,34 @@ import com.labex.entity.AgentModelConfig;
 import com.labex.entity.StudentProject;
 import com.labex.mapper.AgentConversationMapper;
 import com.labex.mapper.AgentMessageMapper;
+import com.labex.mapper.AgentTaskMapper;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
-import com.labex.labexagent.runtime.CancellationToken;
-import com.labex.labexagent.runtime.CompactionAgent;
 import com.labex.rag.config.RagConfig;
-import com.labex.service.AgentModelConfigService;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AgentConversationService {
+    private static final Logger log = LoggerFactory.getLogger(AgentConversationService.class);
     private static final Gson GSON = new Gson();
-    private static final int DETERMINISTIC_SUMMARY_LIMIT = 9000;
     private static final int MEMORY_CONTEXT_LIMIT = 12000;
     private static final int RECENT_EVENT_LIMIT = 24;
-    private static final int COMPACT_SOURCE_EVENTS = 120;
-    private static final int DETERMINISTIC_TAIL_EVENTS = 18;
     private static final Set<String> MEMORY_SKIP_TYPES = Set.of("SESSION", "THINK", "TOOL_CALL",
             "COMPACTION_STARTED", "COMPACTION_COMPLETED", "COMPACTION_FAILED", "CONTEXT_PRUNED");
-    private static final Set<String> COMPACTION_RETAINED_TYPES = Set.of("USER", "FINAL", "OBSERVE", "ERROR", "INTERRUPTED",
-            "COMMAND_APPROVAL_REQUIRED", "USER_QUESTION", "COMPACTION_SUMMARY");
     private static final Pattern API_KEY = Pattern.compile("(?i)\\bsk-[a-z0-9_-]{10,}\\b");
     private static final Pattern BEARER = Pattern.compile("(?i)\\bbearer\\s+[a-z0-9._~-]{10,}");
     private static final Pattern NAMED_SECRET = Pattern.compile(
@@ -46,22 +45,46 @@ public class AgentConversationService {
     private final AgentConversationMapper conversationMapper;
     private final AgentMessageMapper messageMapper;
     private final RagConfig ragConfig;
-    private final CompactionAgent compactionAgent;
-    private final AgentModelConfigService modelConfigService;
+    private final AgentConversationForkBoundaryService forkBoundaries;
+    private final AgentConversationMemoryProjectionService durableMemoryProjection;
+    private final String memoryProjectionMode;
 
-    public AgentConversationService(AgentConversationMapper conversationMapper, AgentMessageMapper messageMapper, RagConfig ragConfig) {
-        this(conversationMapper, messageMapper, ragConfig, null, null);
+    public AgentConversationService(AgentConversationMapper conversationMapper,
+                                    AgentMessageMapper messageMapper,
+                                    RagConfig ragConfig) {
+        this(conversationMapper, messageMapper, ragConfig,
+                (AgentConversationForkBoundaryService) null, null, "legacy");
     }
 
-    @Autowired
-    public AgentConversationService(AgentConversationMapper conversationMapper, AgentMessageMapper messageMapper,
-                                    RagConfig ragConfig, CompactionAgent compactionAgent,
-                                    AgentModelConfigService modelConfigService) {
+    /** 测试与迁移验证使用；生产由 Spring 注入唯一的 boundary service。 */
+    public AgentConversationService(AgentConversationMapper conversationMapper,
+                                    AgentMessageMapper messageMapper,
+                                    RagConfig ragConfig,
+                                    AgentTaskMapper taskMapper,
+                                    AgentConversationMemoryProjectionService durableMemoryProjection,
+                                    String memoryProjectionMode) {
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
         this.ragConfig = ragConfig;
-        this.compactionAgent = compactionAgent;
-        this.modelConfigService = modelConfigService;
+        this.forkBoundaries = taskMapper == null ? null
+                : new AgentConversationForkBoundaryService(conversationMapper, messageMapper, taskMapper);
+        this.durableMemoryProjection = durableMemoryProjection;
+        this.memoryProjectionMode = normalizeMemoryProjectionMode(memoryProjectionMode);
+    }
+
+    @Autowired
+    public AgentConversationService(AgentConversationMapper conversationMapper,
+                                    AgentMessageMapper messageMapper,
+                                    RagConfig ragConfig,
+                                    AgentConversationForkBoundaryService forkBoundaries,
+                                    AgentConversationMemoryProjectionService durableMemoryProjection,
+                                    @Value("${labex-agent.memory.projection-mode:durable}") String memoryProjectionMode) {
+        this.conversationMapper = conversationMapper;
+        this.messageMapper = messageMapper;
+        this.ragConfig = ragConfig;
+        this.forkBoundaries = forkBoundaries;
+        this.durableMemoryProjection = durableMemoryProjection;
+        this.memoryProjectionMode = normalizeMemoryProjectionMode(memoryProjectionMode);
     }
 
     public AgentConversation ensureConversation(Integer studentId, StudentProject project, String conversationId, String mode, String firstMessage) {
@@ -206,6 +229,31 @@ public class AgentConversationService {
         if (conversationId == null || conversationId.isBlank()) {
             return "";
         }
+        if ("durable".equals(memoryProjectionMode)) {
+            return buildDurableMemoryContext(studentId, projectId, conversationId);
+        }
+        String legacy = buildLegacyMemoryContext(studentId, projectId, conversationId);
+        if (!"shadow".equals(memoryProjectionMode) || durableMemoryProjection == null) {
+            return legacy;
+        }
+        try {
+            String durable = buildDurableMemoryContext(studentId, projectId, conversationId);
+            logMemoryShadowComparison(conversationId, legacy, durable);
+        } catch (RuntimeException failure) {
+            log.warn("Conversation memory shadow projection failed for {}: {}",
+                    conversationId, failure.getClass().getSimpleName());
+        }
+        return legacy;
+    }
+
+    private String buildDurableMemoryContext(Integer studentId, Integer projectId, String conversationId) {
+        if (durableMemoryProjection == null) {
+            throw new IllegalStateException("Durable conversation memory projection is unavailable");
+        }
+        return durableMemoryProjection.buildContext(studentId, projectId, conversationId);
+    }
+
+    private String buildLegacyMemoryContext(Integer studentId, Integer projectId, String conversationId) {
         AgentConversation conversation = this.getOwnedConversation(studentId, projectId, conversationId);
         if (conversation == null) {
             return "";
@@ -220,12 +268,45 @@ public class AgentConversationService {
         builder.append("\u6700\u8fd1\u5173\u952e\u4e8b\u4ef6:\n");
         for (int i = recent.size() - 1; i >= 0; --i) {
             AgentMessage message = recent.get(i);
-            if (MEMORY_SKIP_TYPES.contains(message.getEventType())) continue;
+            if (MEMORY_SKIP_TYPES.contains(message.getEventType())) {
+                continue;
+            }
             builder.append('[').append(message.getEventType()).append("] ")
                     .append(this.limit(message.getContent(), this.memoryItemLimit(message.getEventType())))
                     .append('\n');
         }
         return this.limit(builder.toString(), MEMORY_CONTEXT_LIMIT);
+    }
+
+    private void logMemoryShadowComparison(String conversationId, String legacy, String durable) {
+        String legacyNormalized = normalizeMemoryText(legacy);
+        String durableNormalized = normalizeMemoryText(durable);
+        boolean exact = legacyNormalized.equals(durableNormalized);
+        log.info("Conversation memory shadow comparison conversation={} exact={} legacyChars={} durableChars={} legacyHash={} durableHash={}",
+                conversationId, exact, legacyNormalized.length(), durableNormalized.length(),
+                fingerprint(legacyNormalized), fingerprint(durableNormalized));
+    }
+
+    private static String normalizeMemoryProjectionMode(String mode) {
+        String normalized = mode == null ? "durable" : mode.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("legacy", "shadow", "durable").contains(normalized)) {
+            throw new IllegalArgumentException("Unsupported conversation memory projection mode: " + mode);
+        }
+        return normalized;
+    }
+
+    private String normalizeMemoryText(String value) {
+        return (value == null ? "" : value).replaceAll("\\s+", " ").trim();
+    }
+
+    private String fingerprint(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest, 0, 8);
+        } catch (Exception impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     private AgentMessage latestCompactionSummary(Integer studentId, Integer projectId, String conversationId) {
@@ -252,116 +333,29 @@ public class AgentConversationService {
                 .last("LIMIT " + RECENT_EVENT_LIMIT));
     }
 
-    public String compactConversation(Integer studentId, Integer projectId, String conversationId) {
-        return compactConversation(studentId, projectId, conversationId, null).summary();
-    }
-
-    public ManualCompactionResult compactConversation(Integer studentId, Integer projectId, String conversationId,
-                                                       Integer modelConfigId) {
-        return compactConversation(studentId, projectId, conversationId, modelConfigId, CancellationToken.none());
-    }
-
-    public ManualCompactionResult compactConversation(Integer studentId, Integer projectId, String conversationId,
-                                                       Integer modelConfigId, CancellationToken cancellationToken) {
-        CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
-        if (token.isCancellationRequested()) {
-            throw new java.util.concurrent.CancellationException("Manual compaction cancelled");
-        }
-        AgentConversation conversation = this.getOwnedConversation(studentId, projectId, conversationId);
-        if (conversation == null) {
-            throw new IllegalArgumentException("Conversation not found");
-        }
-        List<AgentMessage> recent = this.messageMapper.selectList(new LambdaQueryWrapper<AgentMessage>()
-                .eq(AgentMessage::getConversationId, conversationId)
-                .eq(AgentMessage::getStudentId, studentId)
-                .eq(AgentMessage::getProjectId, projectId)
-                .orderByDesc(AgentMessage::getMessageId)
-                .last("LIMIT " + COMPACT_SOURCE_EVENTS));
-        AgentModelConfig activeConfig = modelConfigService == null ? null
-                : modelConfigService.resolveForStudent(studentId, modelConfigId);
-        if (modelConfigId != null && modelConfigId > 0 && (activeConfig == null
-                || !modelConfigId.equals(activeConfig.getConfigId())
-                || !Integer.valueOf(1).equals(activeConfig.getStatus()))) {
-            throw new IllegalArgumentException("Compaction model config not found or disabled");
-        }
-        this.saveEvent(conversation, "COMPACTION_STARTED", Map.of("strategy", "manual", "modelConfigId",
-                modelConfigId == null ? 0 : modelConfigId));
-        CompactionAgent.Result modelResult = compactionAgent == null
-                ? CompactionAgent.Result.failure("Compaction agent is unavailable")
-                : compactionAgent.compact(studentId, activeConfig, runtimeMessagesForCompaction(recent),
-                        latestUserRequest(recent), null, token);
-        if (token.isCancellationRequested() || "Compaction cancelled".equals(modelResult.reason())) {
-            throw new java.util.concurrent.CancellationException("Manual compaction cancelled");
-        }
-        if (modelResult.success()) {
-            this.saveCompactionSummary(conversation, modelResult.checkpoint(), Map.of(
-                    "strategy", "manual_model",
-                    "modelConfigId", modelResult.modelConfigId() == null ? 0 : modelResult.modelConfigId(),
-                    "dedicatedModel", modelResult.dedicatedModelSelected()));
-            this.saveEvent(conversation, "COMPACTION_COMPLETED", Map.of("strategy", "manual_model"));
-            return new ManualCompactionResult(modelResult.checkpoint(), "manual_model", false);
-        }
-        this.saveEvent(conversation, "COMPACTION_FAILED", Map.of("strategy", "manual_model",
-                "reason", modelResult.reason()));
-        String fallback = buildDeterministicManualSummary(conversation, recent);
-        String checkpoint = "<conversation-checkpoint version=\"3\" source=\"manual-deterministic\">\n"
-                + fallback + "\n</conversation-checkpoint>";
-        this.saveCompactionSummary(conversation, checkpoint, Map.of("strategy", "manual_deterministic_fallback",
-                "reason", modelResult.reason()));
-        this.saveEvent(conversation, "COMPACTION_COMPLETED", Map.of("strategy", "manual_deterministic_fallback"));
-        return new ManualCompactionResult(checkpoint, "manual_deterministic_fallback", true);
-    }
-
-    private String buildDeterministicManualSummary(AgentConversation conversation, List<AgentMessage> recent) {
-        return redactSecrets(this.buildDeterministicCompactionSummary(
-                conversation, recent, "Manual compacted context"));
-    }
-
-    private List<Map<String, Object>> runtimeMessagesForCompaction(List<AgentMessage> newestFirst) {
-        if (newestFirst == null || newestFirst.isEmpty()) {
-            return List.of();
-        }
-        List<AgentMessage> chronological = new ArrayList<>(newestFirst);
-        Collections.reverse(chronological);
-        List<Map<String, Object>> messages = new ArrayList<>();
-        for (AgentMessage message : chronological) {
-            if (message == null || MEMORY_SKIP_TYPES.contains(message.getEventType())) {
-                continue;
-            }
-            String content = message.getContent() == null ? "" : message.getContent();
-            if (content.isBlank()) {
-                continue;
-            }
-            String role = "FINAL".equals(message.getEventType()) ? "assistant" : "user";
-            String projected = "USER".equals(message.getEventType()) || "FINAL".equals(message.getEventType())
-                    ? content : "[" + message.getEventType() + "] " + content;
-            messages.add(Map.of("role", role, "content", redactSecrets(this.limit(projected, 6_000))));
-        }
-        return messages;
-    }
-
-    private String latestUserRequest(List<AgentMessage> newestFirst) {
-        if (newestFirst != null) {
-            for (AgentMessage message : newestFirst) {
-                if ("USER".equals(message.getEventType()) && message.getContent() != null && !message.getContent().isBlank()) {
-                    return redactSecrets(message.getContent());
-                }
-            }
-        }
-        return "Manually compact this conversation while retaining durable facts and pending work.";
-    }
-
     public record MessagePage(List<AgentMessage> events, boolean hasMore, Long nextBeforeMessageId) {
     }
 
-    public record ManualCompactionResult(String summary, String strategy, boolean deterministicFallback) {
+
+    public AgentConversation forkConversation(Integer studentId, Integer projectId,
+                                                String conversationId, Long messageId) {
+        return forkConversation(studentId, projectId, conversationId, messageId, null);
     }
 
-    public AgentConversation forkConversation(Integer studentId, Integer projectId, String conversationId, Long messageId) {
-        AgentConversation source = this.getOwnedConversation(studentId, projectId, conversationId);
+    @Transactional(rollbackFor = Exception.class)
+    public AgentConversation forkConversation(Integer studentId, Integer projectId,
+                                                String conversationId, Long messageId,
+                                                Long requestedTaskId) {
+        AgentConversation source = this.conversationMapper.selectOwnedForUpdate(
+                studentId, projectId, conversationId);
         if (source == null) {
             throw new IllegalArgumentException("Conversation not found");
         }
+        Long forkedFromTaskId = forkBoundaries == null ? null
+                : forkBoundaries.resolveNewFork(
+                        studentId, projectId, conversationId, messageId, requestedTaskId);
+        LocalDateTime copyCutoff = forkBoundaries == null ? null
+                : forkBoundaries.copyCutoff(studentId, projectId, conversationId, forkedFromTaskId);
 
         AgentConversation child = new AgentConversation();
         child.setConversationId(UUID.randomUUID().toString());
@@ -373,21 +367,30 @@ public class AgentConversationService {
         child.setModel(source.getModel());
         child.setParentConversationId(source.getConversationId());
         child.setForkedFromMessageId(messageId);
+        child.setForkedFromTaskId(forkedFromTaskId);
         child.setStatus(1);
         child.setCreateTime(LocalDateTime.now());
         child.setUpdateTime(LocalDateTime.now());
-        this.conversationMapper.insert(child);
-
-        LambdaQueryWrapper<AgentMessage> query = new LambdaQueryWrapper<AgentMessage>()
-                .eq(AgentMessage::getConversationId, conversationId)
-                .eq(AgentMessage::getStudentId, studentId)
-                .eq(AgentMessage::getProjectId, projectId);
-        if (messageId != null && messageId > 0) {
-            query.le(AgentMessage::getMessageId, messageId);
+        if (this.conversationMapper.insert(child) != 1) {
+            throw new IllegalStateException("Unable to persist forked conversation");
         }
-        query.orderByAsc(AgentMessage::getMessageId);
 
-        List<AgentMessage> sourceMessages = this.messageMapper.selectList(query);
+        List<AgentMessage> sourceMessages = List.of();
+        if (forkBoundaries == null || forkedFromTaskId != null) {
+            LambdaQueryWrapper<AgentMessage> query = new LambdaQueryWrapper<AgentMessage>()
+                    .eq(AgentMessage::getConversationId, conversationId)
+                    .eq(AgentMessage::getStudentId, studentId)
+                    .eq(AgentMessage::getProjectId, projectId);
+            if (messageId != null && messageId > 0) {
+                query.le(AgentMessage::getMessageId, messageId);
+            }
+            if (copyCutoff != null) {
+                query.le(AgentMessage::getCreateTime, copyCutoff);
+            }
+            query.orderByAsc(AgentMessage::getMessageId);
+            List<AgentMessage> selected = this.messageMapper.selectList(query);
+            sourceMessages = selected == null ? List.of() : selected;
+        }
         for (AgentMessage sourceMessage : sourceMessages) {
             AgentMessage copy = new AgentMessage();
             copy.setConversationId(child.getConversationId());
@@ -397,11 +400,17 @@ public class AgentConversationService {
             copy.setRole(sourceMessage.getRole());
             copy.setContent(sourceMessage.getContent());
             copy.setEventData(sourceMessage.getEventData());
-            copy.setCreateTime(sourceMessage.getCreateTime() == null ? LocalDateTime.now() : sourceMessage.getCreateTime());
+            copy.setCreateTime(sourceMessage.getCreateTime() == null
+                    ? LocalDateTime.now() : sourceMessage.getCreateTime());
             this.messageMapper.insert(copy);
         }
-        this.saveMessage(child, "SYSTEM", "event", "Conversation forked from " + source.getConversationId(),
-                Map.of("sourceConversationId", source.getConversationId(), "forkedFromMessageId", messageId == null ? "" : messageId));
+        LinkedHashMap<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("sourceConversationId", source.getConversationId());
+        metadata.put("forkedFromMessageId", messageId == null ? "" : messageId);
+        metadata.put("forkedFromTaskId", forkedFromTaskId == null ? "" : forkedFromTaskId);
+        metadata.put("projectionOnly", true);
+        this.saveMessage(child, "SYSTEM", "event",
+                "Conversation forked from " + source.getConversationId(), metadata);
         return child;
     }
 
@@ -457,33 +466,6 @@ public class AgentConversationService {
         this.conversationMapper.update(null, (new LambdaUpdateWrapper<AgentConversation>().eq(AgentConversation::getConversationId, conversation.getConversationId())).set(AgentConversation::getUpdateTime, LocalDateTime.now()));
     }
 
-    private String buildDeterministicCompactionSummary(AgentConversation conversation, List<AgentMessage> newestFirst, String title) {
-        ArrayList<AgentMessage> chronological = newestFirst == null ? new ArrayList<AgentMessage>() : new ArrayList<AgentMessage>(newestFirst);
-        Collections.reverse(chronological);
-        List<AgentMessage> important = chronological.stream().filter(message -> !MEMORY_SKIP_TYPES.contains(message.getEventType())).filter(message -> COMPACTION_RETAINED_TYPES.contains(message.getEventType())).toList();
-        int tailStart = Math.max(0, important.size() - DETERMINISTIC_TAIL_EVENTS);
-        StringBuilder compact = new StringBuilder(title).append(":\n");
-        compact.append("- strategy: keep durable decisions, changed files, failures, final outcomes, and the latest tail events.\n");
-        compact.append("- conversation: ").append(conversation.getConversationId()).append("\n\n");
-        if (tailStart > 0) {
-            compact.append("Earlier durable facts:\n");
-            for (AgentMessage message2 : important.subList(0, tailStart)) {
-                this.appendDeterministicSummaryLine(compact, message2, this.earlierCompactionItemLimit(message2.getEventType()));
-            }
-            compact.append("\nRecent tail events kept verbatim-like:\n");
-        } else {
-            compact.append("Recent tail events:\n");
-        }
-        for (AgentMessage message2 : important.subList(tailStart, important.size())) {
-            this.appendDeterministicSummaryLine(compact, message2, this.memoryItemLimit(message2.getEventType()));
-        }
-        return this.limit(compact.toString(), DETERMINISTIC_SUMMARY_LIMIT);
-    }
-
-    private void appendDeterministicSummaryLine(StringBuilder builder, AgentMessage message, int maxChars) {
-        builder.append('[').append(message.getEventType()).append("] ").append(this.limit(this.normalizeForMemory(message.getContent()), maxChars)).append('\n');
-    }
-
     private boolean isAutoCompacted(String summary) {
         return summary != null && (summary.startsWith("Auto compacted context:")
                 || summary.startsWith("Manual compacted context:")
@@ -527,28 +509,11 @@ public class AgentConversationService {
         };
     }
 
-    private int earlierCompactionItemLimit(String type) {
-        return switch (type == null ? "" : type) {
-            case "USER" -> 220;
-            case "FINAL" -> 340;
-            case "OBSERVE" -> 260;
-            case "ERROR", "INTERRUPTED", "COMMAND_APPROVAL_REQUIRED" -> 420;
-            default -> 180;
-        };
-    }
-
     private static String redactSecrets(String text) {
         String safe = text == null ? "" : text;
         safe = API_KEY.matcher(safe).replaceAll("[REDACTED]");
         safe = BEARER.matcher(safe).replaceAll("Bearer [REDACTED]");
         return NAMED_SECRET.matcher(safe).replaceAll("$1=[REDACTED]");
-    }
-
-    private String normalizeForMemory(String text) {
-        if (text == null) {
-            return "";
-        }
-        return text.replaceAll("(?s)```.*?```", "[code/output block omitted]").replaceAll("\\s+", " ").trim();
     }
 
     private String limit(String text, int max) {

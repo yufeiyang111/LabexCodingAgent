@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS t_agent_conversation (
     summary TEXT DEFAULT NULL,
     parent_conversation_id VARCHAR(64) DEFAULT NULL,
     forked_from_message_id BIGINT DEFAULT NULL,
+    forked_from_task_id BIGINT DEFAULT NULL,
     compacted_at DATETIME DEFAULT NULL,
     status INT DEFAULT 1,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS t_agent_conversation (
     INDEX idx_conv_student (student_id),
     INDEX idx_conv_project (project_id),
     INDEX idx_agent_conversation_parent (parent_conversation_id),
+    INDEX idx_agent_conversation_fork_task (forked_from_task_id),
     INDEX idx_conv_project_updated (student_id, project_id, status, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

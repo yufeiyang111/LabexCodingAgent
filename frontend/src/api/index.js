@@ -39,8 +39,11 @@ export const projectApi = {
   agentDeleteConversation(projectId, conversationId) {
     return request.delete('/student/projects/' + projectId + '/agent/conversations/' + conversationId)
   },
-  agentForkConversation(projectId, conversationId, messageId) {
-    return request.post('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/fork', { messageId: messageId || null })
+  agentForkConversation(projectId, conversationId, messageId, taskId) {
+    return request.post('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/fork', {
+      messageId: messageId || null,
+      taskId: taskId || null
+    })
   },
   agentCompactConversation(projectId, conversationId, payload = {}) {
     return request.post('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/compact', payload)

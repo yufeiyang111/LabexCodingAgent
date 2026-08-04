@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [int]$BackendPort = 18080,
     [string]$JarPath = '',
@@ -93,6 +93,11 @@ $evidence = [ordered]@{
     strictTextToolFallback = $false
     nativeToolInputGate = $false
     isolatedDatabase = $false
+    durableForkBoundary = $false
+    durableForkRestart = $false
+    durableForkCompaction = $false
+    durableForkParentTaskId = $null
+    durableForkChildSourceMaxTaskId = $null
     cleanup = $false
 }
 
@@ -318,6 +323,27 @@ function Invoke-AgentStream {
     return ConvertFrom-AgentSse -Text $response.Content
 }
 
+function Get-NextContextPreviewSectionContent {
+    param(
+        [Parameter(Mandatory)][string]$ConversationId,
+        [string]$Key = 'compactedContext'
+    )
+    $preview = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$ConversationId/context-preview" -Method POST -Body @{
+        modelConfigId = $script:configId
+        activePath = ''
+        agentMode = 'build'
+        draftMessage = ''
+    }
+    $section = @($preview.previewSections | Where-Object { [string]$_.key -eq $Key }) | Select-Object -First 1
+    if (-not $section) {
+        throw "Context preview for conversation $ConversationId did not expose section $Key."
+    }
+    if ([bool]$section.truncated) {
+        throw "Context preview section $Key for conversation $ConversationId was truncated; isolation evidence would be incomplete."
+    }
+    return [string]$section.content
+}
+
 function Get-RequiredEvent {
     param([object[]]$Events, [string]$Type)
     $event = $Events | Where-Object { $_.type -eq $Type } | Select-Object -First 1
@@ -435,6 +461,14 @@ try {
 
     $project = Invoke-ApiData -Path '/student/projects/empty' -Method POST -Body @{ projectName = "acceptance-$($runId.Substring(0, 8))" }
     $projectId = [int]$project.projectId
+    Invoke-ApiData -Path "/student/projects/$projectId/files/item" -Method POST -Body @{
+        parentPath = ''
+        name = '.labex-acceptance-command-hold.cjs'
+        type = 'file'
+    } | Out-Null
+    Invoke-ApiData -Path "/student/projects/$projectId/files?path=.labex-acceptance-command-hold.cjs" -Method PUT -Body @{
+        content = "setTimeout(() => {}, 40000)`n"
+    } | Out-Null
     $config = Invoke-ApiData -Path '/student/model-configs' -Method POST -Body @{
         configName = 'Acceptance Scripted'; provider = 'acceptance_scripted'; modelName = 'acceptance-only'
         apiKey = 'acceptance-placeholder-not-a-secret'; baseUrl = 'acceptance://scripted'; maxTokens = 4096; contextWindowTokens = 32768
@@ -1304,6 +1338,34 @@ WHERE compaction_id = (
     $thirdSeedDone = Get-RequiredEvent -Events $thirdSeedEvents -Type 'DONE'
     $thirdSeedTaskId = [long](($thirdSeedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
     $thirdSeedTask = Wait-TaskTerminal -TaskId $thirdSeedTaskId
+
+    $forkConversation = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$conversationId/fork" -Method POST -Body @{
+        taskId = $thirdSeedTaskId
+    }
+    $forkConversationId = [string]$forkConversation.conversationId
+    if ([string]::IsNullOrWhiteSpace($forkConversationId) -or
+        [long]$forkConversation.forkedFromTaskId -ne $thirdSeedTaskId -or
+        [string]$forkConversation.parentConversationId -ne $conversationId) {
+        throw "Fork response did not persist the requested durable boundary: $($forkConversation | ConvertTo-Json -Compress -Depth 6)"
+    }
+    $forkBoundaryRowCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_conversation WHERE conversation_id = '$forkConversationId' " +
+        "AND parent_conversation_id = '$conversationId' AND forked_from_task_id = $thirdSeedTaskId")
+    if ($forkBoundaryRowCount -ne 1) {
+        throw 'Fork conversation row did not persist exactly one immutable parent task boundary.'
+    }
+
+    # 删除兼容 UI 投影，后续预览若仍能恢复父历史，就能证明 Provider memory 不依赖 AgentMessage 副本。
+    $copiedForkEventCount = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$forkConversationId'"
+    if ($copiedForkEventCount -lt 1) {
+        throw 'Fork did not create the expected legacy UI compatibility projection before the authority check.'
+    }
+    Invoke-AcceptanceSql -Sql "DELETE FROM t_agent_message WHERE conversation_id = '$forkConversationId'" | Out-Null
+    $remainingForkEventCount = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$forkConversationId'"
+    if ($remainingForkEventCount -ne 0) {
+        throw 'Acceptance setup could not remove the child legacy projection before durable-memory verification.'
+    }
+
     $fourthSeedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed-4]' -ConversationId $conversationId
     $fourthSeedDone = Get-RequiredEvent -Events $fourthSeedEvents -Type 'DONE'
     $fourthSeedTaskId = [long](($fourthSeedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
@@ -1312,6 +1374,81 @@ WHERE compaction_id = (
     $fifthSeedDone = Get-RequiredEvent -Events $fifthSeedEvents -Type 'DONE'
     $fifthSeedTaskId = [long](($fifthSeedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
     $fifthSeedTask = Wait-TaskTerminal -TaskId $fifthSeedTaskId
+
+    $forkInheritedPreview = Get-NextContextPreviewSectionContent -ConversationId $forkConversationId
+    foreach ($expectedMarker in @('compaction-seed-1', 'compaction-seed-2', 'compaction-seed-3')) {
+        if (-not $forkInheritedPreview.Contains($expectedMarker)) {
+            throw "Fork durable preview did not inherit boundary marker $expectedMarker after legacy projection deletion."
+        }
+    }
+    foreach ($forbiddenMarker in @('compaction-seed-4', 'compaction-seed-5')) {
+        if ($forkInheritedPreview.Contains($forbiddenMarker)) {
+            throw "Fork durable preview leaked post-boundary parent marker $forbiddenMarker."
+        }
+    }
+    $evidence.durableForkBoundary = $true
+    $evidence.durableForkParentTaskId = $thirdSeedTaskId
+
+    $firstForkChildEvents = Invoke-AgentStream -Message '[acceptance:isolation:fork-child-1]' -ConversationId $forkConversationId
+    Get-RequiredEvent -Events $firstForkChildEvents -Type 'DONE' | Out-Null
+    $firstForkChildTaskId = [long](($firstForkChildEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
+    $firstForkChildTask = Wait-TaskTerminal -TaskId $firstForkChildTaskId
+    $secondForkChildEvents = Invoke-AgentStream -Message '[acceptance:isolation:fork-child-2]' -ConversationId $forkConversationId
+    Get-RequiredEvent -Events $secondForkChildEvents -Type 'DONE' | Out-Null
+    $secondForkChildTaskId = [long](($secondForkChildEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
+    $secondForkChildTask = Wait-TaskTerminal -TaskId $secondForkChildTaskId
+
+    $forkCombinedPreview = Get-NextContextPreviewSectionContent -ConversationId $forkConversationId
+    foreach ($expectedMarker in @('compaction-seed-1', 'compaction-seed-2', 'compaction-seed-3', 'fork-child-1', 'fork-child-2')) {
+        if (-not $forkCombinedPreview.Contains($expectedMarker)) {
+            throw "Fork durable preview did not contain expected inherited/child marker $expectedMarker."
+        }
+    }
+    foreach ($forbiddenMarker in @('compaction-seed-4', 'compaction-seed-5')) {
+        if ($forkCombinedPreview.Contains($forbiddenMarker)) {
+            throw "Fork durable preview leaked post-boundary parent marker $forbiddenMarker after child execution."
+        }
+    }
+
+    $forkCompaction = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$forkConversationId/compact" -Method POST -Body @{ modelConfigId = $configId }
+    $forkCompactionTaskId = [long]$forkCompaction.taskId
+    $forkCompactionTask = Wait-TaskTerminal -TaskId $forkCompactionTaskId
+    if ([string]$forkCompactionTask.status -ne 'completed') {
+        throw "Fork compaction task status was $($forkCompactionTask.status): $($forkCompactionTask | ConvertTo-Json -Depth 10 -Compress)"
+    }
+    $forkCompactionAuthorityCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_compaction_record WHERE task_id = $forkCompactionTaskId " +
+        "AND conversation_id = '$forkConversationId' AND scope = 'conversation' AND status = 'completed' " +
+        "AND source_max_task_id = $secondForkChildTaskId " +
+        "AND compacted_head LIKE '%compaction-seed-1%' AND compacted_head LIKE '%compaction-seed-3%' " +
+        "AND retained_tail LIKE '%fork-child-1%' AND retained_tail LIKE '%fork-child-2%'")
+    if ($forkCompactionAuthorityCount -ne 1) {
+        throw 'Fork compaction did not persist inherited parent history in its head and child history in its retained tail.'
+    }
+    $evidence.durableForkCompaction = $true
+    $evidence.durableForkChildSourceMaxTaskId = $secondForkChildTaskId
+
+    Restart-AcceptanceBackend
+    $forkRestartPreview = Get-NextContextPreviewSectionContent -ConversationId $forkConversationId
+    if (-not $forkRestartPreview.Contains('<conversation-checkpoint') -or
+        -not $forkRestartPreview.Contains('fork-child-1') -or
+        -not $forkRestartPreview.Contains('fork-child-2')) {
+        throw 'Fork context preview did not recover its completed compaction checkpoint and retained child tail after JVM restart.'
+    }
+    foreach ($forbiddenMarker in @('compaction-seed-4', 'compaction-seed-5')) {
+        if ($forkRestartPreview.Contains($forbiddenMarker)) {
+            throw "Fork context preview leaked post-boundary parent marker $forbiddenMarker after JVM restart."
+        }
+    }
+    $forkCompactionAfterRestartCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_compaction_record WHERE task_id = $forkCompactionTaskId " +
+        "AND conversation_id = '$forkConversationId' AND scope = 'conversation' AND status = 'completed' " +
+        "AND source_max_task_id = $secondForkChildTaskId")
+    if ($forkCompactionAfterRestartCount -ne 1) {
+        throw 'Fork completed compaction authority was not durable across JVM restart.'
+    }
+    $evidence.durableForkRestart = $true
+
     $compaction = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$conversationId/compact" -Method POST -Body @{ modelConfigId = $configId }
     $compactionTaskId = [long]$compaction.taskId
     $compactionTask = Wait-TaskTerminal -TaskId $compactionTaskId

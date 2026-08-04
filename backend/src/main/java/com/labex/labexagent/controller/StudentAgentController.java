@@ -131,14 +131,10 @@ public class StudentAgentController {
     @PostMapping(value={"/conversations/{conversationId}/fork"})
     public Result<?> forkConversation(@PathVariable Integer projectId, @PathVariable String conversationId, @RequestBody(required = false) Map<String, Object> request, Authentication auth) {
         try {
-            Long messageId = null;
-            Object rawMessageId = request == null ? null : request.get("messageId");
-            if (rawMessageId instanceof Number number) {
-                messageId = number.longValue();
-            } else if (rawMessageId instanceof String text && !text.isBlank()) {
-                messageId = Long.parseLong(text);
-            }
-            return Result.success(this.conversationService.forkConversation(this.getStudentId(auth), projectId, conversationId, messageId));
+            Long messageId = optionalLong(request == null ? null : request.get("messageId"));
+            Long taskId = optionalLong(request == null ? null : request.get("taskId"));
+            return Result.success(this.conversationService.forkConversation(
+                    this.getStudentId(auth), projectId, conversationId, messageId, taskId));
         } catch (Exception e) {
             return Result.error(e.getMessage());
         }
@@ -610,6 +606,16 @@ public class StudentAgentController {
     private String requestString(Map<String, Object> request, String key) {
         Object value = request == null ? null : request.get(key);
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private Long optionalLong(Object raw) {
+        if (raw instanceof Number number) {
+            return number.longValue();
+        }
+        if (raw instanceof String text && !text.isBlank()) {
+            return Long.valueOf(text);
+        }
+        return null;
     }
 
     private Integer getStudentId(Authentication auth) {

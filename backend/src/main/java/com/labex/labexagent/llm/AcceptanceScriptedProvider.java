@@ -271,7 +271,7 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         if (prompt.contains("[acceptance:approval-cancel]")
                 && !hasResumedInteraction(prompt, "waiting_approval")) {
             emitTool(onChunk, "shell",
-                    "{\"command\":\"python3 -m http.server 0\",\"timeout_seconds\":40}",
+                    "{\"command\":\"node .labex-acceptance-command-hold.cjs\",\"timeout_seconds\":40}",
                     "acceptance-approved-command-cancel-shell");
             return;
         }

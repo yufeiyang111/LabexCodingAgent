@@ -57,6 +57,7 @@ public class AdditiveSchemaMigrator {
             new ColumnDefinition("t_agent_task", "finished_at", "DATETIME(3) DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "elapsed_ms", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "active_elapsed_ms", "BIGINT NOT NULL DEFAULT 0"),
+            new ColumnDefinition("t_agent_conversation", "forked_from_task_id", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_agent_compaction_record", "scope", "VARCHAR(24) NOT NULL DEFAULT 'task'"),
             new ColumnDefinition("t_agent_compaction_record", "source_max_task_id", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_command_audit_event", "process_host_id", "VARCHAR(64) DEFAULT NULL"),
@@ -91,6 +92,7 @@ public class AdditiveSchemaMigrator {
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_retry_due", "status, next_retry_at");
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_execution_lease", "execution_lease_expires_at");
             addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_conv_project_updated", "student_id, project_id, status, update_time");
+            addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_agent_conversation_fork_task", "forked_from_task_id");
             addIndexIfMissing(metadata, catalog, "t_agent_message", "idx_msg_conversation_history", "conversation_id, student_id, project_id, message_id");
             addIndexIfMissing(metadata, catalog, "t_agent_compaction_record",
                     "idx_agent_compaction_conversation_scope",

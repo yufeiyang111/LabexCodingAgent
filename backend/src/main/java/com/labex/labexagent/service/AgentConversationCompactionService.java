@@ -32,19 +32,19 @@ public class AgentConversationCompactionService {
     private static final int SUMMARY_ITEM_COUNT = 8;
 
     private final AgentConversationService conversations;
-    private final AgentConversationTranscriptProjectionService transcriptProjection;
+    private final AgentConversationMemoryProjectionService memoryProjection;
     private final AgentCompactionService compactions;
     private final CompactionAgent compactionAgent;
     private final AgentModelConfigService modelConfigs;
     private final AgentRequestTokenEstimator tokenEstimator = new AgentRequestTokenEstimator();
 
     public AgentConversationCompactionService(AgentConversationService conversations,
-                                              AgentConversationTranscriptProjectionService transcriptProjection,
+                                              AgentConversationMemoryProjectionService memoryProjection,
                                               AgentCompactionService compactions,
                                               CompactionAgent compactionAgent,
                                               AgentModelConfigService modelConfigs) {
         this.conversations = conversations;
-        this.transcriptProjection = transcriptProjection;
+        this.memoryProjection = memoryProjection;
         this.compactions = compactions;
         this.compactionAgent = compactionAgent;
         this.modelConfigs = modelConfigs;
@@ -70,13 +70,10 @@ public class AgentConversationCompactionService {
 
         Optional<AgentCompactionRecord> previous = compactions.latestCompletedConversation(
                 studentId, projectId, conversationId);
-        long previousBoundary = previous.map(AgentCompactionRecord::getSourceMaxTaskId).orElse(0L);
-        AgentConversationTranscriptProjectionService.Snapshot appended = transcriptProjection.snapshot(
-                studentId, projectId, conversationId, previousBoundary, compactionTask.getTaskId());
-        List<Map<String, Object>> source = previous
-                .map(record -> compactions.projectConversation(record, appended.messages()).messages())
-                .orElseGet(appended::messages);
-        long sourceMaxTaskId = Math.max(previousBoundary, appended.sourceMaxTaskId());
+        AgentConversationMemoryProjectionService.Projection durable = memoryProjection.project(
+                studentId, projectId, conversationId, compactionTask.getTaskId());
+        List<Map<String, Object>> source = durable.messages();
+        long sourceMaxTaskId = durable.sourceMaxTaskId();
         CompactionSelection selection = CompactionSelection.select(source,
                 tailTurns(activeConfig), tailTokenBudget(activeConfig), tokenEstimator);
         if (!selection.changed()) {

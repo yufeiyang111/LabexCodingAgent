@@ -278,10 +278,20 @@ public class AgentCompactionService {
 
     public Optional<AgentCompactionRecord> latestCompletedConversation(Integer studentId, Integer projectId,
                                                                         String conversationId) {
+        return latestCompletedConversationAtOrBeforeTaskId(studentId, projectId, conversationId, null);
+    }
+
+    /**
+     * 返回 sourceMaxTaskId 不晚于给定边界的最新会话压缩。
+     * fork 读取父会话时必须使用该边界，防止分叉后的新压缩泄漏到子会话。
+     */
+    public Optional<AgentCompactionRecord> latestCompletedConversationAtOrBeforeTaskId(
+            Integer studentId, Integer projectId, String conversationId, Long maxSourceTaskIdInclusive) {
         if (studentId == null || projectId == null || conversationId == null || conversationId.isBlank()) {
             return Optional.empty();
         }
-        return Optional.ofNullable(latestConversation(studentId, projectId, conversationId, "completed"));
+        return Optional.ofNullable(latestConversation(
+                studentId, projectId, conversationId, "completed", maxSourceTaskIdInclusive));
     }
 
     public String previousConversationSummary(Integer studentId, Integer projectId, String conversationId) {
@@ -378,11 +388,19 @@ public class AgentCompactionService {
 
     private AgentCompactionRecord latestConversation(Integer studentId, Integer projectId,
                                                        String conversationId, String status) {
+        return latestConversation(studentId, projectId, conversationId, status, null);
+    }
+
+    private AgentCompactionRecord latestConversation(Integer studentId, Integer projectId,
+                                                       String conversationId, String status,
+                                                       Long maxSourceTaskIdInclusive) {
         LambdaQueryWrapper<AgentCompactionRecord> query = new LambdaQueryWrapper<AgentCompactionRecord>()
                 .eq(AgentCompactionRecord::getStudentId, studentId)
                 .eq(AgentCompactionRecord::getProjectId, projectId)
                 .eq(AgentCompactionRecord::getConversationId, conversationId)
-                .eq(AgentCompactionRecord::getScope, SCOPE_CONVERSATION);
+                .eq(AgentCompactionRecord::getScope, SCOPE_CONVERSATION)
+                .le(maxSourceTaskIdInclusive != null,
+                        AgentCompactionRecord::getSourceMaxTaskId, maxSourceTaskIdInclusive);
         if (status != null) {
             query.eq(AgentCompactionRecord::getStatus, status);
         }

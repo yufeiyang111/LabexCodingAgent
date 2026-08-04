@@ -11,6 +11,7 @@ import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunMessageMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.List;
+import java.util.stream.LongStream;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +44,27 @@ class AgentConversationTranscriptProjectionServiceTest {
         assertThat(snapshot.messages().toString())
                 .doesNotContain("supersecretvalue", "private reasoning", "in-flight", "unstable gap")
                 .contains("[REDACTED]", "old request", "old answer", "recent request", "recent answer");
+    }
+
+    @Test
+    void exposesAContinuationBoundaryInsteadOfSilentlyDroppingTasksAfterTheBatchLimit() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunMessageMapper messageMapper = mock(AgentRunMessageMapper.class);
+        List<AgentTask> tasks = LongStream.rangeClosed(1, 501)
+                .mapToObj(id -> task(id, "build", "completed", "request-" + id))
+                .toList();
+        when(taskMapper.selectList(any())).thenReturn(tasks);
+        when(messageMapper.selectList(any())).thenReturn(List.of());
+        AgentConversationTranscriptProjectionService service =
+                new AgentConversationTranscriptProjectionService(taskMapper, messageMapper);
+
+        AgentConversationTranscriptProjectionService.Snapshot snapshot =
+                service.snapshot(7, 3, "conversation", 0L, null);
+
+        assertThat(snapshot.sourceMaxTaskId()).isEqualTo(500L);
+        assertThat(snapshot.userTurns()).isEqualTo(500);
+        assertThat(snapshot.messages()).hasSize(500);
+        assertThat(snapshot.hasMore()).isTrue();
     }
 
     @Test

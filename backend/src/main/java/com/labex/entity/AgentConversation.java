@@ -29,6 +29,8 @@ public class AgentConversation {
     private String parentConversationId;
     @TableField(value="forked_from_message_id")
     private Long forkedFromMessageId;
+    @TableField(value="forked_from_task_id")
+    private Long forkedFromTaskId;
     @TableField(value="compacted_at")
     private LocalDateTime compactedAt;
     @TableField(value="status")
@@ -81,6 +83,10 @@ public class AgentConversation {
 
     public Long getForkedFromMessageId() {
         return this.forkedFromMessageId;
+    }
+
+    public Long getForkedFromTaskId() {
+        return this.forkedFromTaskId;
     }
 
     public LocalDateTime getCompactedAt() {
@@ -141,6 +147,10 @@ public class AgentConversation {
 
     public void setForkedFromMessageId(Long forkedFromMessageId) {
         this.forkedFromMessageId = forkedFromMessageId;
+    }
+
+    public void setForkedFromTaskId(Long forkedFromTaskId) {
+        this.forkedFromTaskId = forkedFromTaskId;
     }
 
     public void setCompactedAt(LocalDateTime compactedAt) {

@@ -289,4 +289,32 @@ node --test src/composables/agentHistoryReducer.test.mjs src/composables/useAgen
 - 新旧 conversation memory 尚未完成 shadow compare 与读路径切换；
 - 旧 `AgentConversationService.compactConversation(...)` 尚未删除。
 
-下一轮的停止边界是：先补 fork 的 durable checkpoint 语义和 shadow compare，证明旧会话/新会话/fork/重复压缩一致后，再切 Provider memory 读取；不得绕过该顺序直接删除旧表读取。
+上述停止边界已于第 72 轮完成，证据如下。
+
+### 第 72 轮进度：durable fork graph 与 Provider memory read 已完成
+
+已完成：
+
+- `t_agent_conversation.forked_from_task_id` 已成为不可变 fork task 边界；
+- `AgentConversationForkBoundaryService` 已统一新 fork、显式 task、旧 messageId 映射和 lazy backfill；
+- `AgentConversationMemoryProjectionService` 已递归投影 parent graph、当前会话 task/run-message 和 completed conversation compaction；
+- Provider conversation memory 默认读模式已切到 `durable`，`legacy` / `shadow` 仅保留为回滚与迁移诊断；
+- child compaction 已从同一个 durable projector 取完整 parent + child 输入；
+- 旧 `AgentConversationService.compactConversation(...)` 已删除；
+- fork API 已支持稳定 `taskId`，旧 `messageId` 继续兼容；
+- transcript projector 已支持有界分页，不再在 500 个 task 后静默丢失；
+- 后端 1006 项测试、前端生产构建和隔离 H2/Spring JVM/HTTP/SSE/命令进程/restart 验收已通过；
+- 真实验收在删除 child 的旧 `AgentMessage` 副本后仍恢复 parent 边界内历史，并证明 parent 边界后 task 不泄漏；
+- 验收长驻进程 fixture 已从不稳定的 Windows `python3` alias 改为受正式审批的项目内 Node 脚本。
+
+证据文档：`docs/iterations/2026-08-04-iteration-72-durable-fork-memory-read.md`。
+
+尚未完成，因此本计划仍不能标记为全部完成：
+
+- 前端 history/reducer 的历史加载仍以 `AgentMessage` 兼容事件为主；
+- `AgentConversationService.getMemoryStats(...)` 仍从旧消息表统计；
+- fork 仍复制旧 UI 事件，尚未停止旧路径写入；
+- `legacy` / `shadow` 回滚模式尚未达到删除条件；
+- 需要在 durable history API/reducer 切换后补浏览器刷新、旧会话迁移和可视化回放验收。
+
+下一轮停止边界：前端历史、统计和刷新恢复全部改读 durable Message/Part/Event projection；在真实浏览器回放通过后，停止 fork 的旧事件复制并删除 legacy/shadow memory 代码。不得在这一步完成前宣称整个 Agent 架构收敛完成。

@@ -10,17 +10,30 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.labex.entity.AgentConversation;
 import com.labex.mapper.AgentCompactionRecordMapper;
 import com.labex.mapper.AgentConversationMapper;
 import java.util.List;
 import java.util.Map;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
 class AgentCompactionConversationScopeTest {
     private final AgentRequestTokenEstimator estimator = new AgentRequestTokenEstimator();
+
+    @BeforeAll
+    static void initializeEntityMetadata() {
+        if (TableInfoHelper.getTableInfo(AgentCompactionRecord.class) == null) {
+            TableInfoHelper.initTableInfo(
+                    new MapperBuilderAssistant(new MybatisConfiguration(), ""), AgentCompactionRecord.class);
+        }
+    }
 
     @Test
     void persistsConversationScopeAndStableSourceTaskBoundary() {
@@ -60,6 +73,26 @@ class AgentCompactionConversationScopeTest {
         assertThat(record.getCompactionEpoch()).isEqualTo(5L);
         assertThat(record.getSourceMaxTaskId()).isEqualTo(38L);
         assertThat(record.getSourceMaxSequence()).isEqualTo(-1L);
+    }
+
+    @Test
+    void forkProjectionSelectsOnlyACompletedCheckpointAtOrBeforeItsTaskBoundary() {
+        AgentCompactionRecordMapper mapper = mock(AgentCompactionRecordMapper.class);
+        AgentCompactionRecord record = new AgentCompactionRecord();
+        record.setStatus("completed");
+        record.setScope("conversation");
+        record.setSourceMaxTaskId(11L);
+        when(mapper.selectOne(any())).thenReturn(record);
+        AgentCompactionService service = new AgentCompactionService(mapper);
+
+        assertThat(service.latestCompletedConversationAtOrBeforeTaskId(
+                7, 3, "conversation", 11L)).contains(record);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<AgentCompactionRecord>> query = ArgumentCaptor.forClass(Wrapper.class);
+        verify(mapper).selectOne(query.capture());
+        assertThat(query.getValue().getSqlSegment().toLowerCase())
+                .contains("source_max_task_id", "<=", "status");
     }
 
     @Test

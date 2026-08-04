@@ -63,6 +63,7 @@ class CommandSecurityTest {
         assertRequiresApproval("mv first second");
         assertRequiresApproval("git commit -m change");
         assertRequiresApproval("python -V");
+        assertRequiresApproval("node .labex-acceptance-command-hold.cjs");
     }
 
     @Test

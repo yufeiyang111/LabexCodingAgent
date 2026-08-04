@@ -41,6 +41,8 @@ class AgentRunSchemaTest {
         assertTrue(schema.contains("background_worktree VARCHAR(2048) DEFAULT NULL"));
         assertTrue(schema.contains("background_base_ref VARCHAR(128) DEFAULT NULL"));
         assertTrue(schema.contains("background_cleanup_status VARCHAR(32) DEFAULT NULL"));
+        assertTrue(schema.contains("forked_from_task_id BIGINT DEFAULT NULL"));
+        assertTrue(schema.contains("idx_agent_conversation_fork_task"));
     }
 
     @Test

@@ -48,7 +48,7 @@ class AdditiveSchemaMigratorTimingTest {
         new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, org.mockito.Mockito.times(11)).execute(sql.capture());
+        verify(jdbcTemplate, org.mockito.Mockito.times(12)).execute(sql.capture());
         assertTrue(sql.getAllValues().containsAll(List.of(
                 "ALTER TABLE t_agent_task ADD COLUMN submitted_at DATETIME(3) DEFAULT NULL",
                 "ALTER TABLE t_agent_task ADD COLUMN started_at DATETIME(3) DEFAULT NULL",
@@ -59,6 +59,7 @@ class AdditiveSchemaMigratorTimingTest {
                 "ALTER TABLE t_agent_task ADD INDEX idx_task_retry_due (status, next_retry_at)",
                 "ALTER TABLE t_agent_task ADD INDEX idx_task_execution_lease (execution_lease_expires_at)",
                 "ALTER TABLE t_agent_conversation ADD INDEX idx_conv_project_updated (student_id, project_id, status, update_time)",
+                "ALTER TABLE t_agent_conversation ADD INDEX idx_agent_conversation_fork_task (forked_from_task_id)",
                 "ALTER TABLE t_agent_message ADD INDEX idx_msg_conversation_history (conversation_id, student_id, project_id, message_id)",
                 "ALTER TABLE t_agent_compaction_record ADD INDEX idx_agent_compaction_conversation_scope "
                         + "(conversation_id, student_id, project_id, scope, status, compaction_epoch)")));
@@ -88,11 +89,12 @@ class AdditiveSchemaMigratorTimingTest {
                     .contains(column.toLowerCase());
             return missingProcessColumn ? missing : present;
         });
-        when(existingIndexes.next()).thenReturn(true, true, true, true, true, false);
+        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, false);
         when(existingIndexes.getString("INDEX_NAME")).thenReturn(
                 "idx_task_retry_due",
                 "idx_task_execution_lease",
                 "idx_conv_project_updated",
+                "idx_agent_conversation_fork_task",
                 "idx_msg_conversation_history",
                 "idx_agent_compaction_conversation_scope");
         when(metadata.getIndexInfo(eq("labex"), isNull(), anyString(), eq(false), eq(false)))
@@ -131,7 +133,7 @@ class AdditiveSchemaMigratorTimingTest {
         new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, org.mockito.Mockito.times(7)).execute(sql.capture());
+        verify(jdbcTemplate, org.mockito.Mockito.times(8)).execute(sql.capture());
         assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("CREATE TABLE t_command_audit_event")));
         assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("uk_command_audit_approval_idempotency")));
         assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("CREATE TABLE t_agent_project_checkout_lease")));
@@ -151,11 +153,12 @@ class AdditiveSchemaMigratorTimingTest {
         when(present.next()).thenReturn(true);
         when(metadata.getColumns(any(), isNull(), anyString(), anyString())).thenReturn(present);
         when(metadata.getTables(any(), isNull(), anyString(), any())).thenReturn(present);
-        when(existingIndexes.next()).thenReturn(true, true, true, true, true, false);
+        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, false);
         when(existingIndexes.getString("INDEX_NAME")).thenReturn(
                 "idx_task_retry_due",
                 "idx_task_execution_lease",
                 "idx_conv_project_updated",
+                "idx_agent_conversation_fork_task",
                 "idx_msg_conversation_history",
                 "idx_agent_compaction_conversation_scope");
         when(metadata.getIndexInfo(eq("labex"), isNull(), anyString(), eq(false), eq(false)))
@@ -199,6 +202,37 @@ class AdditiveSchemaMigratorTimingTest {
         assertTrue(sql.getAllValues().contains(
                 "ALTER TABLE t_agent_compaction_record ADD INDEX idx_agent_compaction_conversation_scope "
                         + "(conversation_id, student_id, project_id, scope, status, compaction_epoch)"));
+    }
+
+    @Test
+    void addsDurableForkTaskBoundaryAndLookupIndex() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+        ResultSet present = mock(ResultSet.class);
+        ResultSet missing = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.getMetaData()).thenReturn(metadata);
+        when(connection.getCatalog()).thenReturn("labex");
+        when(present.next()).thenReturn(true);
+        when(missing.next()).thenReturn(false);
+        when(metadata.getTables(any(), isNull(), anyString(), any())).thenReturn(present);
+        when(metadata.getColumns(any(), isNull(), anyString(), anyString())).thenAnswer(invocation -> {
+            String table = invocation.getArgument(2, String.class);
+            String column = invocation.getArgument(3, String.class);
+            return "t_agent_conversation".equalsIgnoreCase(table)
+                    && "forked_from_task_id".equalsIgnoreCase(column) ? missing : present;
+        });
+
+        new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate, org.mockito.Mockito.atLeast(2)).execute(sql.capture());
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_conversation ADD COLUMN forked_from_task_id BIGINT DEFAULT NULL"));
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_conversation ADD INDEX idx_agent_conversation_fork_task (forked_from_task_id)"));
     }
 
 }

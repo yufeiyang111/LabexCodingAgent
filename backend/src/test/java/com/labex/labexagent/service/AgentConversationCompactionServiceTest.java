@@ -31,7 +31,7 @@ class AgentConversationCompactionServiceTest {
     @Test
     void completesTheDurableConversationRecordBeforeWritingTheLegacyProjection() {
         AgentConversationService conversations = mock(AgentConversationService.class);
-        AgentConversationTranscriptProjectionService transcript = mock(AgentConversationTranscriptProjectionService.class);
+        AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
         AgentCompactionService compactions = mock(AgentCompactionService.class);
         CompactionAgent compactionAgent = mock(CompactionAgent.class);
         AgentModelConfigService modelConfigs = mock(AgentModelConfigService.class);
@@ -40,14 +40,14 @@ class AgentConversationCompactionServiceTest {
         AgentCompactionRecord running = runningRecord(91L, 44L);
         when(conversations.getOwnedConversation(7, 3, "conversation")).thenReturn(conversation);
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
-        when(transcript.snapshot(7, 3, "conversation", 0L, 44L)).thenReturn(snapshot());
+        when(memory.project(7, 3, "conversation", 44L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
         when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.success(
                         "<conversation-checkpoint version=\"3\">durable model summary</conversation-checkpoint>",
                         17, "summary-model", false));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
-                conversations, transcript, compactions, compactionAgent, modelConfigs);
+                conversations, memory, compactions, compactionAgent, modelConfigs);
 
         AgentConversationCompactionService.Result result = service.compact(
                 7, 3, "conversation", null, task, CancellationToken.none());
@@ -73,19 +73,19 @@ class AgentConversationCompactionServiceTest {
     @Test
     void modelFailureCompletesTheSameDurableRecordWithADeterministicFallback() {
         AgentConversationService conversations = mock(AgentConversationService.class);
-        AgentConversationTranscriptProjectionService transcript = mock(AgentConversationTranscriptProjectionService.class);
+        AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
         AgentCompactionService compactions = mock(AgentCompactionService.class);
         CompactionAgent compactionAgent = mock(CompactionAgent.class);
         AgentModelConfigService modelConfigs = mock(AgentModelConfigService.class);
         AgentCompactionRecord running = runningRecord(92L, 45L);
         when(conversations.getOwnedConversation(7, 3, "conversation")).thenReturn(conversation());
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
-        when(transcript.snapshot(7, 3, "conversation", 0L, 45L)).thenReturn(snapshot());
+        when(memory.project(7, 3, "conversation", 45L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
         when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.failure("scripted provider failure"));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
-                conversations, transcript, compactions, compactionAgent, modelConfigs);
+                conversations, memory, compactions, compactionAgent, modelConfigs);
 
         AgentConversationCompactionService.Result result = service.compact(
                 7, 3, "conversation", null, compactionTask(45L), CancellationToken.none());
@@ -102,7 +102,7 @@ class AgentConversationCompactionServiceTest {
     @Test
     void exposesLegacyProjectionFailureWithoutRollingBackTheCompletedAuthorityRecord() {
         AgentConversationService conversations = mock(AgentConversationService.class);
-        AgentConversationTranscriptProjectionService transcript = mock(AgentConversationTranscriptProjectionService.class);
+        AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
         AgentCompactionService compactions = mock(AgentCompactionService.class);
         CompactionAgent compactionAgent = mock(CompactionAgent.class);
         AgentModelConfigService modelConfigs = mock(AgentModelConfigService.class);
@@ -110,7 +110,7 @@ class AgentConversationCompactionServiceTest {
         AgentCompactionRecord running = runningRecord(93L, 46L);
         when(conversations.getOwnedConversation(7, 3, "conversation")).thenReturn(conversation);
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
-        when(transcript.snapshot(7, 3, "conversation", 0L, 46L)).thenReturn(snapshot());
+        when(memory.project(7, 3, "conversation", 46L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
         when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.success(
@@ -119,7 +119,7 @@ class AgentConversationCompactionServiceTest {
         doThrow(new IllegalStateException("legacy database unavailable"))
                 .when(conversations).saveCompactionSummary(eq(conversation), any(), any());
         AgentConversationCompactionService service = new AgentConversationCompactionService(
-                conversations, transcript, compactions, compactionAgent, modelConfigs);
+                conversations, memory, compactions, compactionAgent, modelConfigs);
 
         assertThatThrownBy(() -> service.compact(
                 7, 3, "conversation", null, compactionTask(46L), CancellationToken.none()))
@@ -133,21 +133,21 @@ class AgentConversationCompactionServiceTest {
     @Test
     void replacesANonReducingModelCheckpointWithTheDeterministicFallback() {
         AgentConversationService conversations = mock(AgentConversationService.class);
-        AgentConversationTranscriptProjectionService transcript = mock(AgentConversationTranscriptProjectionService.class);
+        AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
         AgentCompactionService compactions = mock(AgentCompactionService.class);
         CompactionAgent compactionAgent = mock(CompactionAgent.class);
         AgentModelConfigService modelConfigs = mock(AgentModelConfigService.class);
         AgentCompactionRecord running = runningRecord(94L, 47L);
         when(conversations.getOwnedConversation(7, 3, "conversation")).thenReturn(conversation());
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
-        when(transcript.snapshot(7, 3, "conversation", 0L, 47L)).thenReturn(snapshot());
+        when(memory.project(7, 3, "conversation", 47L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
         when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.success(
                         "<conversation-checkpoint>" + "z".repeat(5_000) + "</conversation-checkpoint>",
                         17, "summary-model", false));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
-                conversations, transcript, compactions, compactionAgent, modelConfigs);
+                conversations, memory, compactions, compactionAgent, modelConfigs);
 
         AgentConversationCompactionService.Result result = service.compact(
                 7, 3, "conversation", null, compactionTask(47L), CancellationToken.none());
@@ -161,7 +161,7 @@ class AgentConversationCompactionServiceTest {
     @Test
     void failsTheRunningAuthorityWhenNeitherModelNorFallbackCanReduceTheSelectedHistory() {
         AgentConversationService conversations = mock(AgentConversationService.class);
-        AgentConversationTranscriptProjectionService transcript = mock(AgentConversationTranscriptProjectionService.class);
+        AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
         AgentCompactionService compactions = mock(AgentCompactionService.class);
         CompactionAgent compactionAgent = mock(CompactionAgent.class);
         AgentModelConfigService modelConfigs = mock(AgentModelConfigService.class);
@@ -176,8 +176,8 @@ class AgentConversationCompactionServiceTest {
         when(conversations.getOwnedConversation(7, 3, "conversation")).thenReturn(conversation());
         when(modelConfigs.resolveForStudent(7, 17)).thenReturn(config);
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
-        when(transcript.snapshot(7, 3, "conversation", 0L, 48L)).thenReturn(
-                new AgentConversationTranscriptProjectionService.Snapshot(List.of(
+        when(memory.project(7, 3, "conversation", 48L)).thenReturn(
+                new AgentConversationMemoryProjectionService.Projection(List.of(
                         Map.of("role", "user", "content", "seed one"),
                         Map.of("role", "assistant", "content", "a".repeat(300)),
                         Map.of("role", "user", "content", "seed two"),
@@ -190,7 +190,7 @@ class AgentConversationCompactionServiceTest {
                         "<conversation-checkpoint>" + "z".repeat(5_000) + "</conversation-checkpoint>",
                         17, "summary-model", false));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
-                conversations, transcript, compactions, compactionAgent, modelConfigs);
+                conversations, memory, compactions, compactionAgent, modelConfigs);
 
         assertThatThrownBy(() -> service.compact(
                 7, 3, "conversation", 17, compactionTask(48L), CancellationToken.none()))
@@ -201,8 +201,8 @@ class AgentConversationCompactionServiceTest {
         verify(conversations, never()).saveCompactionSummary(any(), any(), any());
     }
 
-    private AgentConversationTranscriptProjectionService.Snapshot snapshot() {
-        return new AgentConversationTranscriptProjectionService.Snapshot(List.of(
+    private AgentConversationMemoryProjectionService.Projection projection() {
+        return new AgentConversationMemoryProjectionService.Projection(List.of(
                 Map.of("role", "user", "content", "old request " + "x".repeat(600)),
                 Map.of("role", "assistant", "content", "old answer " + "y".repeat(600)),
                 Map.of("role", "user", "content", "recent request"),
