@@ -2,6 +2,8 @@ package com.labex.labexagent.run;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.labex.entity.AgentTask;
+import com.labex.entity.CommandApproval;
+import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.context.AgentCompactionRecord;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.mapper.AgentTaskMapper;
@@ -33,6 +35,18 @@ public class AgentRunRecoveryService {
     private final AgentRunPartService partService;
     private final AgentRunMessageService messageService;
     private final AgentCompactionService compactionService;
+    private final CommandApprovalService commandApprovalService;
+    private final AgentRunTranscriptService transcriptService;
+
+    public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
+                                   AgentRunExecutionLeaseService executionLeaseService,
+                                   AgentRunTakeoverScheduler takeoverScheduler,
+                                   AgentRunPartService partService,
+                                   AgentRunMessageService messageService,
+                                   AgentCompactionService compactionService) {
+        this(taskMapper, lifecycleService, executionLeaseService, takeoverScheduler, partService,
+                messageService, compactionService, null, null);
+    }
 
     @Autowired
     public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
@@ -40,7 +54,9 @@ public class AgentRunRecoveryService {
                                    AgentRunTakeoverScheduler takeoverScheduler,
                                    AgentRunPartService partService,
                                    AgentRunMessageService messageService,
-                                   AgentCompactionService compactionService) {
+                                   AgentCompactionService compactionService,
+                                   CommandApprovalService commandApprovalService,
+                                   AgentRunTranscriptService transcriptService) {
         this.taskMapper = taskMapper;
         this.lifecycleService = lifecycleService;
         this.executionLeaseService = executionLeaseService;
@@ -48,6 +64,8 @@ public class AgentRunRecoveryService {
         this.partService = partService;
         this.messageService = messageService;
         this.compactionService = compactionService;
+        this.commandApprovalService = commandApprovalService;
+        this.transcriptService = transcriptService;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -155,6 +173,10 @@ public class AgentRunRecoveryService {
                 "reason", "Agent service restarted before the run could resume",
                 "recoveryAttempt", attempts);
 
+        if (state == AgentRunState.WAITING_APPROVAL) {
+            recordUncertainCommandExecution(task);
+        }
+
         if (state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER
                 || state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT) {
             lifecycleService.appendEventIfCurrent(
@@ -199,6 +221,41 @@ public class AgentRunRecoveryService {
                 "Recovery required",
                 "Agent service restarted before the run could resume",
                 "recovery-" + task.getTaskId() + "-failed");
+    }
+
+    /**
+     * JVM 重启后只要 approval 已消费但 tool result 尚未落库，就标记为执行结果不确定。
+     * 这里严禁自动重放命令；命令副作用可能已经发生，后续只能由明确的人工/治理流程处理。
+     */
+    private void recordUncertainCommandExecution(AgentTask task) {
+        if (commandApprovalService == null || transcriptService == null || task == null
+                || task.getTaskId() == null || task.getStudentId() == null || task.getProjectId() == null) {
+            return;
+        }
+        try {
+            CommandApproval approval = commandApprovalService.findLatestForTask(
+                    task.getStudentId(), task.getProjectId(), task.getTaskId());
+            if (approval == null || !"agent_shell".equals(approval.getSource())
+                    || !"consumed".equals(approval.getStatus())
+                    || approval.getApprovalId() == null || approval.getToolCallId() == null
+                    || approval.getToolCallId().isBlank()
+                    || transcriptService.hasPersistedToolResult(task.getTaskId(), approval.getToolCallId())) {
+                return;
+            }
+            lifecycleService.appendEventIfCurrent(
+                    task.getTaskId(),
+                    AgentRunState.WAITING_APPROVAL,
+                    "COMMAND_EXECUTION_RECOVERY_UNCERTAIN",
+                    Map.of(
+                            "approvalId", approval.getApprovalId(),
+                            "toolCallId", approval.getToolCallId(),
+                            "automaticReplay", false,
+                            "reason", "The approval was consumed before the command outcome became durable"),
+                    "recovery-" + task.getTaskId() + "-command-execution-uncertain-" + approval.getApprovalId());
+        } catch (RuntimeException failure) {
+            log.warn("Unable to classify consumed command approval after restart taskId={}",
+                    task.getTaskId(), failure);
+        }
     }
 
     private void sealInterruptedParts(AgentTask task, AgentRunState state) {

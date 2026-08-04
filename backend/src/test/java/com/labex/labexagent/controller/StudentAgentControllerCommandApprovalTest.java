@@ -10,10 +10,7 @@ import static org.mockito.Mockito.when;
 
 import com.labex.common.Result;
 import com.labex.entity.CommandApproval;
-import com.labex.entity.StudentProject;
-import com.labex.labexagent.commandsecurity.AgentApprovedCommandExecutor;
 import com.labex.labexagent.commandsecurity.CommandApprovalOrchestrator;
-import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.diff.DiffService;
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionResult;
@@ -25,7 +22,6 @@ import com.labex.labexagent.service.AgentConversationService;
 import com.labex.labexagent.service.AgentInteractionService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.TokenTracker;
-import com.labex.service.StudentProjectService;
 import java.time.LocalDateTime;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -34,31 +30,23 @@ import org.springframework.security.core.Authentication;
 class StudentAgentControllerCommandApprovalTest {
 
     @Test
-    void executesOnlyTheStoredConsumedAgentApproval() {
-        CommandApprovalService approvals = mock(CommandApprovalService.class);
-        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
-        StudentProjectService projects = mock(StudentProjectService.class);
-        AgentTaskService tasks = mock(AgentTaskService.class);
-        CommandApproval approval = agentApproval("approved");
-        StudentProject project = new StudentProject();
-        project.setProjectId(12);
-        project.setStudentId(7);
-        when(projects.getOwnedProject(7, 12)).thenReturn(project);
-        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
-        when(approvals.consume(any())).thenReturn(true);
-        when(executor.execute(approval, project)).thenReturn(new ProcessExecutionResult(
-                ExecutionStatus.SUCCEEDED, 0, 12, "--token=secret result", false));
-        StudentAgentController controller = controller(approvals, executor, projects, tasks);
+    void delegatesApprovedCommandExecutionToTheOrchestrator() {
+        CommandApprovalOrchestrator orchestrator = mock(CommandApprovalOrchestrator.class);
+        CommandApproval approval = agentApproval("consumed");
+        ProcessExecutionResult completed = new ProcessExecutionResult(
+                ExecutionStatus.SUCCEEDED, 0, 12, "--token=secret result", false);
+        when(orchestrator.execute(7, 12, "approval-71")).thenReturn(
+                new CommandApprovalOrchestrator.ExecutionResult(true, approval, completed, "completed"));
+        StudentAgentController controller = controller(orchestrator);
 
-        Result<Map<String, Object>> response = controller.executeCommandApproval(12, "approval-71", authentication(7));
+        Result<Map<String, Object>> response = controller.executeCommandApproval(
+                12, "approval-71", authentication(7));
 
         assertThat(response.isSuccess()).isTrue();
         assertThat(response.getData()).containsEntry("status", "completed");
+        assertThat(response.getData()).containsEntry("executionStatus", "completed");
         assertThat(String.valueOf(response.getData().get("output"))).doesNotContain("secret");
-        verify(approvals).consume(any(CommandApprovalService.ConsumeRequest.class));
-        verify(executor).execute(approval, project);
-        verify(projects).refreshProjectMetadata(7, 12);
-        verify(tasks).updateTask(eq(71L), eq("completed"), any(), any());
+        verify(orchestrator).execute(7, 12, "approval-71");
     }
 
     @Test
@@ -69,12 +57,7 @@ class StudentAgentControllerCommandApprovalTest {
                 ExecutionStatus.CANCELLED, null, 48L, "", false);
         when(orchestrator.execute(7, 12, "approval-71")).thenReturn(
                 new CommandApprovalOrchestrator.ExecutionResult(true, approval, cancelled, "cancelled"));
-        StudentAgentController controller = new StudentAgentController(
-                mock(AgentLoopEngine.class), mock(AgentCancellationRegistry.class), mock(DiffService.class),
-                mock(AgentCommandService.class), mock(AgentConversationService.class), mock(AgentTaskService.class),
-                mock(TokenTracker.class), mock(PermissionService.class), mock(AgentInteractionService.class),
-                null, null, mock(CommandApprovalService.class), mock(AgentApprovedCommandExecutor.class),
-                mock(StudentProjectService.class), orchestrator);
+        StudentAgentController controller = controller(orchestrator);
 
         Result<Map<String, Object>> response = controller.executeCommandApproval(
                 12, "approval-71", authentication(7));
@@ -87,42 +70,46 @@ class StudentAgentControllerCommandApprovalTest {
     }
 
     @Test
-    void rejectsForeignOrUnconsumableApprovalWithoutExecutingWorker() {
-        CommandApprovalService approvals = mock(CommandApprovalService.class);
-        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
-        StudentProjectService projects = mock(StudentProjectService.class);
-        AgentTaskService tasks = mock(AgentTaskService.class);
-        StudentProject project = new StudentProject();
-        project.setProjectId(12);
-        project.setStudentId(7);
-        when(projects.getOwnedProject(7, 12)).thenReturn(project);
-        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(null);
-        StudentAgentController controller = controller(approvals, executor, projects, tasks);
+    void returnsUnavailableWhenTheOrchestratorCannotFindTheApproval() {
+        CommandApprovalOrchestrator orchestrator = mock(CommandApprovalOrchestrator.class);
+        when(orchestrator.execute(7, 12, "approval-71"))
+                .thenReturn(new CommandApprovalOrchestrator.ExecutionResult(false, null, null, ""));
+        StudentAgentController controller = controller(orchestrator);
 
-        Result<Map<String, Object>> response = controller.executeCommandApproval(12, "approval-71", authentication(7));
+        Result<Map<String, Object>> response = controller.executeCommandApproval(
+                12, "approval-71", authentication(7));
 
         assertThat(response.isSuccess()).isTrue();
         assertThat(response.getData()).containsEntry("approvalUnavailable", true);
-        verify(approvals, never()).consume(any());
-        verify(executor, never()).execute(any(), any());
-        verify(tasks, never()).updateTask(any(), any(), any(), any());
+        verify(orchestrator).execute(7, 12, "approval-71");
     }
 
     @Test
-    void decisionRequestExposesOnlyPersistedPublicMetadata() {
-        CommandApprovalService approvals = mock(CommandApprovalService.class);
-        CommandApproval approval = agentApproval("pending");
+    void refusesToUseAControllerApprovalExecutionFallbackWhenOrchestratorIsMissing() {
+        StudentAgentController controller = controller(null);
+
+        Result<Map<String, Object>> response = controller.executeCommandApproval(
+                12, "approval-71", authentication(7));
+
+        assertThat(response.isSuccess()).isTrue();
+        assertThat(response.getData()).containsEntry("approvalUnavailable", true);
+    }
+
+    @Test
+    void decisionRequestExposesOnlyPersistedPublicMetadataFromTheOrchestrator() {
+        CommandApprovalOrchestrator orchestrator = mock(CommandApprovalOrchestrator.class);
+        CommandApproval approval = agentApproval("approved");
         approval.setDisplayCommand("npm test --token=<redacted>");
-        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
-        when(approvals.decide(7, 12, "approval-71", true, "decision-71")).thenReturn(approval);
-        StudentAgentController controller = controller(approvals, mock(AgentApprovedCommandExecutor.class),
-                mock(StudentProjectService.class), mock(AgentTaskService.class));
+        when(orchestrator.decide(7, 12, "approval-71", true, "decision-71"))
+                .thenReturn(new CommandApprovalOrchestrator.DecisionResult(true, approval, false));
+        StudentAgentController controller = controller(orchestrator);
         StudentAgentController.CommandApprovalDecisionRequest request =
                 new StudentAgentController.CommandApprovalDecisionRequest();
         request.setAction("approve");
         request.setDecisionIdempotencyKey("decision-71");
 
-        Result<Map<String, Object>> response = controller.decideCommandApproval(12, "approval-71", request, authentication(7));
+        Result<Map<String, Object>> response = controller.decideCommandApproval(
+                12, "approval-71", request, authentication(7));
 
         assertThat(response.isSuccess()).isTrue();
         assertThat(response.getData())
@@ -130,17 +117,15 @@ class StudentAgentControllerCommandApprovalTest {
                 .containsEntry("displayCommand", "npm test --token=<redacted>")
                 .doesNotContainKey("canonicalCommand")
                 .doesNotContainKey("commandDigest");
+        verify(orchestrator).decide(7, 12, "approval-71", true, "decision-71");
     }
 
-    private StudentAgentController controller(CommandApprovalService approvals,
-                                              AgentApprovedCommandExecutor executor,
-                                              StudentProjectService projects,
-                                              AgentTaskService tasks) {
+    private StudentAgentController controller(CommandApprovalOrchestrator orchestrator) {
         return new StudentAgentController(
                 mock(AgentLoopEngine.class), mock(AgentCancellationRegistry.class), mock(DiffService.class),
-                mock(AgentCommandService.class), mock(AgentConversationService.class), tasks,
+                mock(AgentCommandService.class), mock(AgentConversationService.class), mock(AgentTaskService.class),
                 mock(TokenTracker.class), mock(PermissionService.class), mock(AgentInteractionService.class),
-                null, null, approvals, executor, projects, null);
+                null, null, orchestrator);
     }
 
     private CommandApproval agentApproval(String status) {

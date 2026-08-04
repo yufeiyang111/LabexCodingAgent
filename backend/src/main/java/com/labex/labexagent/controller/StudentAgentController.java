@@ -2,13 +2,10 @@ package com.labex.labexagent.controller;
 
 import com.google.gson.Gson;
 import com.labex.common.Result;
-import com.labex.labexagent.commandsecurity.AgentApprovedCommandExecutor;
 import com.labex.labexagent.commandsecurity.CommandApprovalOrchestrator;
-import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.commandsecurity.CommandRedactor;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.entity.CommandApproval;
-import com.labex.entity.StudentProject;
 import com.labex.entity.AgentRunEvent;
 import com.labex.labexagent.diff.DiffService;
 import com.labex.labexagent.diff.PendingChange;
@@ -30,7 +27,6 @@ import com.labex.labexagent.service.AgentInteractionService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.ManualCompactionTaskRunner;
 import com.labex.labexagent.service.TokenTracker;
-import com.labex.service.StudentProjectService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,9 +63,6 @@ public class StudentAgentController {
     private final AgentInteractionService interactionService;
     private final AgentRunEventReplayService eventReplayService;
     private final AgentSubagentService subagentService;
-    private final CommandApprovalService commandApprovalService;
-    private final AgentApprovedCommandExecutor approvedCommandExecutor;
-    private final StudentProjectService studentProjectService;
     private final CommandApprovalOrchestrator commandApprovalOrchestrator;
 
     @Autowired(required = false)
@@ -80,26 +73,21 @@ public class StudentAgentController {
 
     public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService) {
         this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService,
-                tokenTracker, permissionService, interactionService, null, null);
+                tokenTracker, permissionService, interactionService, null, null, null);
     }
 
     public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService, AgentRunEventReplayService eventReplayService) {
-        this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService, tokenTracker, permissionService, interactionService, eventReplayService, null);
+        this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService,
+                tokenTracker, permissionService, interactionService, eventReplayService, null, null);
     }
 
     public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService, AgentRunEventReplayService eventReplayService, AgentSubagentService subagentService) {
         this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService,
-                tokenTracker, permissionService, interactionService, eventReplayService, subagentService, null, null, null, null);
-    }
-
-    public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService, AgentRunEventReplayService eventReplayService, AgentSubagentService subagentService, CommandApprovalService commandApprovalService, AgentApprovedCommandExecutor approvedCommandExecutor, StudentProjectService studentProjectService) {
-        this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService,
-                tokenTracker, permissionService, interactionService, eventReplayService, subagentService,
-                commandApprovalService, approvedCommandExecutor, studentProjectService, null);
+                tokenTracker, permissionService, interactionService, eventReplayService, subagentService, null);
     }
 
     @Autowired
-    public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService, AgentRunEventReplayService eventReplayService, AgentSubagentService subagentService, CommandApprovalService commandApprovalService, AgentApprovedCommandExecutor approvedCommandExecutor, StudentProjectService studentProjectService, CommandApprovalOrchestrator commandApprovalOrchestrator) {
+    public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService, AgentRunEventReplayService eventReplayService, AgentSubagentService subagentService, CommandApprovalOrchestrator commandApprovalOrchestrator) {
         this.agentLoopEngine = agentLoopEngine;
         this.cancellationRegistry = cancellationRegistry;
         this.diffService = diffService;
@@ -111,9 +99,6 @@ public class StudentAgentController {
         this.interactionService = interactionService;
         this.eventReplayService = eventReplayService;
         this.subagentService = subagentService;
-        this.commandApprovalService = commandApprovalService;
-        this.approvedCommandExecutor = approvedCommandExecutor;
-        this.studentProjectService = studentProjectService;
         this.commandApprovalOrchestrator = commandApprovalOrchestrator;
     }
 
@@ -488,7 +473,7 @@ public class StudentAgentController {
                                                                @RequestBody CommandApprovalDecisionRequest request,
                                                                Authentication auth) {
         try {
-            if (commandApprovalService == null || request == null || request.getAction() == null
+            if (commandApprovalOrchestrator == null || request == null || request.getAction() == null
                     || request.getDecisionIdempotencyKey() == null || request.getDecisionIdempotencyKey().isBlank()) {
                 return commandApprovalUnavailable();
             }
@@ -500,20 +485,9 @@ public class StudentAgentController {
             } else {
                 return commandApprovalUnavailable();
             }
-            if (commandApprovalOrchestrator != null) {
-                CommandApprovalOrchestrator.DecisionResult result = commandApprovalOrchestrator.decide(
-                        getStudentId(auth), projectId, approvalId, approve, request.getDecisionIdempotencyKey());
-                return result.available() ? Result.success(commandApprovalView(result.approval(), result.resumeAgentLoop())) : commandApprovalUnavailable();
-            }
-            Integer studentId = getStudentId(auth);
-            CommandApproval approval = commandApprovalService.findOwned(studentId, projectId, approvalId);
-            if (approval == null || !"agent_shell".equals(approval.getSource())) {
-                return commandApprovalUnavailable();
-            }
-            CommandApproval decided = commandApprovalService.decide(studentId, projectId, approvalId, approve,
-                    request.getDecisionIdempotencyKey());
-            return Result.success(commandApprovalView(decided,
-                    "rejected".equals(decided.getStatus()) || "expired".equals(decided.getStatus())));
+            CommandApprovalOrchestrator.DecisionResult result = commandApprovalOrchestrator.decide(
+                    getStudentId(auth), projectId, approvalId, approve, request.getDecisionIdempotencyKey());
+            return result.available() ? Result.success(commandApprovalView(result.approval(), result.resumeAgentLoop())) : commandApprovalUnavailable();
         } catch (Exception ignored) {
             return commandApprovalUnavailable();
         }
@@ -524,47 +498,22 @@ public class StudentAgentController {
                                                                @PathVariable String approvalId,
                                                                Authentication auth) {
         try {
-            if (commandApprovalOrchestrator != null) {
-                CommandApprovalOrchestrator.ExecutionResult execution = commandApprovalOrchestrator.execute(
-                        getStudentId(auth), projectId, approvalId);
-                if (!execution.available()) {
-                    return commandApprovalUnavailable();
-                }
-                Map<String, Object> response = new LinkedHashMap<>();
-                response.put("approvalId", execution.approval().getApprovalId());
-                response.put("status", execution.status());
-                response.put("executionStatus", commandExecutionStatus(execution.result()));
-                response.put("exitCode", execution.result().exitCode() == null ? "" : execution.result().exitCode());
-                response.put("durationMs", execution.result().durationMs());
-                response.put("output", CommandRedactor.redact(execution.result().output()));
-                response.put("resumeAgentLoop", "resuming".equals(execution.status()));
-                return Result.success(response);
-            }
-            if (commandApprovalService == null || approvedCommandExecutor == null || studentProjectService == null) {
+            if (commandApprovalOrchestrator == null) {
                 return commandApprovalUnavailable();
             }
-            Integer studentId = getStudentId(auth);
-            StudentProject project = studentProjectService.getOwnedProject(studentId, projectId);
-            CommandApproval approval = commandApprovalService.findOwned(studentId, projectId, approvalId);
-            if (project == null || approval == null || !"agent_shell".equals(approval.getSource())) {
+            CommandApprovalOrchestrator.ExecutionResult execution = commandApprovalOrchestrator.execute(
+                    getStudentId(auth), projectId, approvalId);
+            if (!execution.available()) {
                 return commandApprovalUnavailable();
             }
-            if (!consumeCommandApproval(approval)) {
-                return commandApprovalUnavailable();
-            }
-            approval.setStatus("consumed");
-            ProcessExecutionResult result = approvedCommandExecutor.execute(approval, project);
-            studentProjectService.refreshProjectMetadata(studentId, projectId);
-            String status = result.succeeded() ? "completed" : "failed";
-            taskService.updateTask(approval.getTaskId(), status,
-                    result.succeeded() ? "Approved command completed" : "Approved command failed",
-                    "A one-time approved command was executed; start a new agent run to continue.");
             Map<String, Object> response = new LinkedHashMap<>();
-            response.put("approvalId", approval.getApprovalId());
-            response.put("status", status);
-            response.put("exitCode", result.exitCode() == null ? "" : result.exitCode());
-            response.put("output", CommandRedactor.redact(result.output()));
-            response.put("resumeAgentLoop", false);
+            response.put("approvalId", execution.approval().getApprovalId());
+            response.put("status", execution.status());
+            response.put("executionStatus", commandExecutionStatus(execution.result()));
+            response.put("exitCode", execution.result().exitCode() == null ? "" : execution.result().exitCode());
+            response.put("durationMs", execution.result().durationMs());
+            response.put("output", CommandRedactor.redact(execution.result().output()));
+            response.put("resumeAgentLoop", "resuming".equals(execution.status()));
             return Result.success(response);
         } catch (Exception ignored) {
             return commandApprovalUnavailable();
@@ -580,15 +529,6 @@ public class StudentAgentController {
             case INFRASTRUCTURE_ERROR -> "infrastructure_error";
             case FAILED -> "failed";
         };
-    }
-
-    private boolean consumeCommandApproval(CommandApproval approval) {
-        return commandApprovalService.consume(new CommandApprovalService.ConsumeRequest(
-                approval.getApprovalId(), approval.getStudentId(), approval.getProjectId(), approval.getTaskId(),
-                approval.getConversationId(), approval.getSessionId(), approval.getSource(), approval.getInvocationId(),
-                approval.getToolCallId(), approval.getCommandDigest(), approval.getCanonicalCommand(),
-                approval.getWorkingDirectory(), approval.getShell(), approval.getCommandOptions(),
-                approval.getClassification(), approval.getPolicyVersion(), approval.getExpiresTime()));
     }
 
     private Result<Map<String, Object>> commandApprovalUnavailable() {

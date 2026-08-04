@@ -11,6 +11,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentTask;
+import com.labex.entity.CommandApproval;
+import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.context.AgentCompactionRecord;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.mapper.AgentTaskMapper;
@@ -123,6 +125,43 @@ class AgentRunRecoveryServiceTest {
                 eq(72L),
                 eq(AgentRunState.CANCELLING),
                 any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void marksConsumedApprovalWithoutDurableOutcomeAsUncertainWithoutReplay() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTask task = task(72L, AgentRunState.WAITING_APPROVAL);
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        CommandApproval approval = new CommandApproval();
+        approval.setApprovalId("approval-72");
+        approval.setTaskId(72L);
+        approval.setStudentId(7);
+        approval.setProjectId(12);
+        approval.setToolCallId("tool-72");
+        approval.setSource("agent_shell");
+        approval.setStatus("consumed");
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+        when(lifecycle.recordRecoveryAttemptIfCurrent(72L, AgentRunState.WAITING_APPROVAL)).thenReturn(1);
+        when(approvals.findLatestForTask(7, 12, 72L)).thenReturn(approval);
+        when(transcript.hasPersistedToolResult(72L, "tool-72")).thenReturn(false);
+        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle,
+                mock(AgentRunExecutionLeaseService.class), mock(AgentRunTakeoverScheduler.class),
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class),
+                mock(AgentCompactionService.class), approvals, transcript);
+
+        int recovered = service.recoverInterruptedRuns();
+
+        assertEquals(1, recovered);
+        verify(lifecycle).appendEventIfCurrent(
+                eq(72L), eq(AgentRunState.WAITING_APPROVAL),
+                eq("COMMAND_EXECUTION_RECOVERY_UNCERTAIN"), any(),
+                eq("recovery-72-command-execution-uncertain-approval-72"));
+        verify(lifecycle).appendEventIfCurrent(
+                eq(72L), eq(AgentRunState.WAITING_APPROVAL),
+                eq("RUN_RECOVERY_WAITING"), any(), eq("recovery-72-waiting"));
+        verify(lifecycle, never()).transition(eq(72L), any(), any(), any(), any(), any(), any());
     }
 
     @Test
