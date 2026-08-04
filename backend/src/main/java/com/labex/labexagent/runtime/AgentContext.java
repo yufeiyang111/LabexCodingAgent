@@ -15,10 +15,17 @@ public class AgentContext {
     private StudentProject project;
     private String conversationId;
     private Long taskId;
+    /** 当前 worker 从 AgentTask lease 获得的 execution epoch。 */
+    private long executionEpoch;
     private Integer modelConfigId;
     private Path workspaceRoot;
     private List<PlanItem> plan;
     private int currentPlanIndex;
+    /** 数据库计划快照的修订号；仅为本轮派生缓存。 */
+    private long planRevision;
+    /** 最近一次计划变更对应的已持久化事件序号；发送后即清空。 */
+    private Long planEventSequence;
+    private String planEventSource = "agent_plan";
     private String mode = "agent";
     private String stage = "intake";
     private boolean environmentRecovery;
@@ -105,6 +112,28 @@ public class AgentContext {
         return this.taskId;
     }
 
+    public long getExecutionEpoch() {
+        return this.executionEpoch;
+    }
+
+    public void setExecutionEpoch(long executionEpoch) {
+        this.executionEpoch = Math.max(0L, executionEpoch);
+    }
+
+    public long getPlanRevision() {
+        return this.planRevision;
+    }
+
+    public Long consumePlanEventSequence() {
+        Long sequence = this.planEventSequence;
+        this.planEventSequence = null;
+        return sequence;
+    }
+
+    public String getPlanEventSource() {
+        return this.planEventSource;
+    }
+
     public Integer getModelConfigId() {
         return this.modelConfigId;
     }
@@ -149,12 +178,43 @@ public class AgentContext {
         this.workspaceRoot = workspaceRoot;
     }
 
-    public void setPlan(List<PlanItem> plan) {
-        this.plan = plan;
+
+    /** 使用数据库计划快照刷新内存投影；此方法不创建新的计划事实。 */
+    public void applyPlanProjection(List<PlanItem> plan, int currentPlanIndex, long revision,
+                                    Long eventSequence, String eventSource) {
+        this.plan = plan == null ? new ArrayList<>() : new ArrayList<>(plan);
+        this.currentPlanIndex = this.plan.isEmpty() ? -1
+                : Math.max(-1, Math.min(currentPlanIndex, this.plan.size() - 1));
+        this.planRevision = Math.max(0L, revision);
+        this.planEventSequence = eventSequence != null && eventSequence > 0L ? eventSequence : null;
+        this.planEventSource = eventSource == null || eventSource.isBlank() ? "agent_plan" : eventSource;
     }
 
-    public void setCurrentPlanIndex(int currentPlanIndex) {
-        this.currentPlanIndex = currentPlanIndex;
+    /** 当前已持久化计划事件的前端协议投影。 */
+    public java.util.Map<String, Object> getPlanEventPayload() {
+        java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
+        List<PlanItem> currentPlan = this.plan == null ? List.of() : this.plan;
+        for (int index = 0; index < currentPlan.size(); index++) {
+            PlanItem item = currentPlan.get(index);
+            java.util.LinkedHashMap<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("index", index + 1);
+            row.put("title", item.getTitle() == null ? "" : item.getTitle());
+            row.put("description", item.getDescription() == null ? "" : item.getDescription());
+            row.put("status", item.isCompleted() ? "completed"
+                    : (index == this.currentPlanIndex ? "in_progress" : "pending"));
+            row.put("completed", item.isCompleted());
+            row.put("current", index == this.currentPlanIndex);
+            items.add(java.util.Map.copyOf(row));
+        }
+        java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("taskId", this.taskId);
+        payload.put("executionEpoch", this.executionEpoch);
+        payload.put("planRevision", this.planRevision);
+        payload.put("source", this.planEventSource);
+        payload.put("plan", java.util.List.copyOf(items));
+        payload.put("summary", this.getPlanSummary());
+        payload.put("planJson", this.getPlanJson());
+        return java.util.Map.copyOf(payload);
     }
 
     public String getMode() { return mode; }
@@ -223,12 +283,13 @@ public class AgentContext {
         }
     }
 
-    public void restoreExecutionState(String stage, List<PlanItem> plan, int currentPlanIndex,
-                                      int writeCount, int verificationCount, boolean unverifiedChanges,
-                                      Set<String> trustedVerificationSources, Set<String> unverifiedChangeTargets) {
+    /** 文件 checkpoint 只恢复辅助执行信息，计划必须随后从数据库 projector 读取。 */
+    public void restoreCheckpointExecutionState(String stage,
+                                                int writeCount, int verificationCount,
+                                                boolean unverifiedChanges,
+                                                Set<String> trustedVerificationSources,
+                                                Set<String> unverifiedChangeTargets) {
         this.setStage(stage);
-        this.plan = plan == null ? new ArrayList<>() : new ArrayList<>(plan);
-        this.currentPlanIndex = Math.max(0, Math.min(currentPlanIndex, Math.max(0, this.plan.size() - 1)));
         this.writeCount = Math.max(0, writeCount);
         this.verificationCount = Math.max(0, verificationCount);
         this.trustedVerificationSources = trustedVerificationSources == null

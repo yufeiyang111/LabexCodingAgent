@@ -318,3 +318,41 @@ node --test src/composables/agentHistoryReducer.test.mjs src/composables/useAgen
 - 需要在 durable history API/reducer 切换后补浏览器刷新、旧会话迁移和可视化回放验收。
 
 下一轮停止边界：前端历史、统计和刷新恢复全部改读 durable Message/Part/Event projection；在真实浏览器回放通过后，停止 fork 的旧事件复制并删除 legacy/shadow memory 代码。不得在这一步完成前宣称整个 Agent 架构收敛完成。
+### 第 73 轮进度：durable UI history 与旧会话迁移已完成
+
+已完成：
+
+- `AgentConversationHistoryProjectionService` 已以 `AgentTask + AgentRunEvent + AgentRunMessage + AgentRunPart` 投影版本化 task-turn 页面，并使用稳定 task cursor 分页；
+- 前端历史加载与实时 SSE 已复用同一 reducer/Part projector，刷新不再回读旧 `AgentMessage` 作为事实源；
+- slash command 同时持久化 Provider 输入和用户可见 `displayMessage`，刷新后不再暴露内部展开模板；
+- fork/compaction 停止复制旧 UI 事件，memory stats 已切读 durable graph；
+- `AgentLegacyConversationHistoryMigrationService` 将旧会话一次性迁移为 terminal task + durable events，后续不再双写；
+- 后端 `1011` 项测试、前端生产构建、隔离 H2/JVM/HTTP/SSE/浏览器刷新与 legacy migration 重启验收全部通过；
+- 本轮已形成本地提交 `09325dc feat: project durable conversation history`。
+
+证据文档：`docs/iterations/2026-08-04-iteration-73-durable-ui-history-projection.md`。
+
+保留边界：旧 `t_agent_message` 仅作为只读 migration source 保留，不能恢复为运行时回退或双写路径；整体 Agent Runtime 仍需继续审计其他 checkpoint/派生状态。
+
+### 第 74 轮进度：durable task plan authority 已完成
+
+已完成：
+
+- 新增 `t_agent_run_plan_item` 与 `AgentRunPlanService`，按 task 行锁、execution epoch、position 和单调 revision 保存完整有序计划；
+- `create_plan` / `todo_write` 已统一写入该事实源，`AgentContext` 只保存可重建投影；
+- 计划行与 `PLAN_UPDATE` 在同一事务提交，使用稳定幂等键，主循环只发送已持久化 sequence；
+- checkpoint v2 已删除 plan/currentPlanIndex 权威，v1 仅可在数据库为空时提供一次性迁移 seed；
+- 启动、恢复和最终完成门禁均重新读取数据库计划；过期 execution epoch 写入被拒绝；
+- 修复 `preparing` 先于取消令牌注册的中断竞态，以及计划事件 sequence 晚于工具生命周期事件投影而被前端游标丢弃的竞态；
+- 后端 `1022` 项测试（`0` failure、`0` error、`8` skipped）、前端 `213/213` 测试和生产构建全部通过；
+- 最终 `run-all` 四段门禁全部通过：后端 runId `49e79c33267840c69788d688271a5cda`，浏览器 runId `27df320213c745af86e434e8d70f98f6`，实时计划与刷新回放 revision `3`，控制台/网络错误为 `0`。
+
+证据文档：`docs/iterations/2026-08-04-iteration-74-durable-task-plan-projection.md`。
+
+尚未完成，因此本计划仍不能标记为全部完成：
+
+- checkpoint 中的 `writeCount`、`verificationCount`、trusted/unverified verification state、stage、last tool/result 和 run-log pointer 尚未完成所有权审计与数据库迁移；
+- 仍需审计所有“工具事务内先提交领域事件、外围再发送其他 durable event”的通用顺序，避免计划之外出现同类游标倒序；
+- 需要基于本计划第 12 节逐项做最终架构收敛审计，确认所有旧兼容路径均已删除或明确降级为只读迁移源后，才能关闭总目标。
+
+下一轮停止边界：只审计并迁移 checkpoint 的剩余执行辅助状态与通用 durable-event 投影顺序；不得顺带重写整个 `AgentLoopEngine` 或进行无关前端视觉改版。

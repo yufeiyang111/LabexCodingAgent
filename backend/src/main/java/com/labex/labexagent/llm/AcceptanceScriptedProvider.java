@@ -174,6 +174,39 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             emitTool(onChunk, "list_files", "{\"path\":\"\"}", "acceptance-tool-list");
             return;
         }
+        boolean durablePlanScenario = prompt.contains("[acceptance:durable-plan]");
+        boolean browserPlanScenario = prompt.contains("[acceptance:browser-plan]");
+        if (durablePlanScenario || browserPlanScenario) {
+            int planResults = countOccurrences(prompt, "[Tool create_plan result]");
+            if (planResults == 0) {
+                emitTool(onChunk, "create_plan",
+                        "{\"action\":\"create\",\"tasks\":["
+                                + "{\"title\":\"Inspect durable plan storage\","
+                                + "\"description\":\"Confirm the ordered database snapshot\"},"
+                                + "{\"title\":\"Finish durable plan recovery\","
+                                + "\"description\":\"Complete after replay or restart\"}]}",
+                        durablePlanScenario ? "acceptance-durable-plan-create" : "acceptance-browser-plan-create");
+                return;
+            }
+            if (durablePlanScenario && planResults == 1 && !hasResumedInteraction(prompt, "waiting_user")) {
+                emitTool(onChunk, "question",
+                        "{\"question\":\"Continue the durable plan after JVM restart?\","
+                                + "\"summary\":\"durable-plan-restart-wait\","
+                                + "\"options\":[\"Continue durable plan\",\"Stop\"]}",
+                        "acceptance-durable-plan-question");
+                return;
+            }
+            if (planResults == 1) {
+                emitTool(onChunk, "create_plan", "{\"action\":\"complete\",\"task_index\":1}",
+                        durablePlanScenario ? "acceptance-durable-plan-complete-1" : "acceptance-browser-plan-complete-1");
+                return;
+            }
+            if (planResults == 2) {
+                emitTool(onChunk, "create_plan", "{\"action\":\"complete\",\"task_index\":2}",
+                        durablePlanScenario ? "acceptance-durable-plan-complete-2" : "acceptance-browser-plan-complete-2");
+                return;
+            }
+        }
         if (isCompactionScenario(prompt)
                 && !hasResumedInteraction(prompt, "waiting_user")) {
             emitTool(onChunk, "question",
@@ -432,6 +465,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return "## Summary\n**Completed**\n- The production Agent loop executed `list_files` and returned its result.\n"
                     + "**Verification**\n- Native tool-call identity, tool observation, token usage, and final SSE completion were preserved.\n"
                     + "**Risk**\n- This response is generated only by the non-production acceptance profile.";
+        }
+        if (prompt.contains("[acceptance:durable-plan]") || prompt.contains("[acceptance:browser-plan]")) {
+            return "## Summary\n**Completed**\n- The durable task plan survived its persistence boundary and all items completed.\n"
+                    + "**Verification**\n- Ordered revisions and PLAN_UPDATE events remained replayable after restart or browser refresh.\n"
+                    + "**Risk**\n- This deterministic plan flow runs only under the acceptance profile.";
         }
         if (prompt.contains("[acceptance:question]")) {
             return "## Summary\n**Completed**\n- The durable user-question interaction resumed the same task after a reply.\n"

@@ -28,6 +28,7 @@ import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.AgentRunPlanService;
 import com.labex.labexagent.run.AgentRunTransitionKey;
 import com.labex.labexagent.run.AgentRunArtifactService;
 import com.labex.labexagent.run.AgentRunInteractionService;
@@ -187,6 +188,7 @@ public class AgentLoopEngine {
     private AgentToolCallJournalService toolCallJournalService;
     private AgentRunTranscriptService transcriptService;
     private AgentRunInteractionService runInteractionService;
+    private AgentRunPlanService runPlanService;
     private AgentTranscriptProjectionService transcriptProjectionService;
     private AgentCompactionService compactionService;
     private AgentRequestTokenEstimator requestTokenEstimator;
@@ -294,6 +296,11 @@ public class AgentLoopEngine {
     @Autowired
     void setRunInteractionService(AgentRunInteractionService runInteractionService) {
         this.runInteractionService = requireRuntimeDependency(runInteractionService, "runInteractionService");
+    }
+
+    @Autowired
+    void setRunPlanService(AgentRunPlanService runPlanService) {
+        this.runPlanService = requireRuntimeDependency(runPlanService, "runPlanService");
     }
 
     @Autowired
@@ -621,6 +628,10 @@ public class AgentLoopEngine {
                 throw new IllegalStateException("Preclaimed agent dispatch requires execution lease service");
             }
             sse.bindRun(this.runLifecycleService, task.getTaskId());
+            // 取得执行租约后立即注册取消令牌，不能先暴露 preparing/SESSION 再留下不可取消窗口。
+            activeCancellation = this.cancellationRegistry.register(
+                    request.getSessionId(), studentId, projectId, task.getTaskId());
+            cancellationToken = activeCancellation;
             if (this.projectCheckoutLeaseService != null) {
                 Path checkoutWorkspace = this.checkoutWorkspace(project, task);
                 ProjectCheckoutLeaseService.AcquireResult admission = this.projectCheckoutLeaseService.acquire(
@@ -664,9 +675,6 @@ public class AgentLoopEngine {
                         this.localText(visibleLanguage, "准备工作区", "Preparing workspace"),
                         this.localText(visibleLanguage, "运行已创建，正在准备上下文。", "Run created and preparing context."));
             }
-            activeCancellation = this.cancellationRegistry.register(
-                    request.getSessionId(), studentId, projectId, task.getTaskId());
-            cancellationToken = activeCancellation;
             if (executionLease != null && this.leaseHeartbeatService != null) {
                 this.leaseHeartbeatService.track(executionLease, request.getSessionId());
             }
@@ -680,6 +688,11 @@ public class AgentLoopEngine {
             ctx.setModelConfigId(modelConfig.getConfigId());
             ctx.setMode(mode);
             ctx.setEnvironmentRecovery(this.isEnvironmentRecoveryRequest(request.getMessage()));
+            long activeExecutionEpoch = executionLease == null
+                    ? (task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch())
+                    : executionLease.epoch();
+            task.setExecutionEpoch(activeExecutionEpoch);
+            ctx.setExecutionEpoch(activeExecutionEpoch);
             if (resumedRun) {
                 resumedCheckpoint = this.checkpointStore.load(project, conv.getConversationId(), task.getTaskId());
                 if (resumedCheckpoint.isPresent()) {
@@ -687,6 +700,19 @@ public class AgentLoopEngine {
                 }
             } else {
                 ctx.setStage("intake");
+            }
+            List<AgentRunPlanService.PlanDraft> legacyPlan = resumedCheckpoint
+                    .flatMap(AgentCheckpointStore.Snapshot::legacyPlanSeed)
+                    .map(seed -> seed.items().stream()
+                            .map(item -> new AgentRunPlanService.PlanDraft(
+                                    item.getTitle(), item.getDescription(), item.isCompleted()))
+                            .toList())
+                    .orElse(List.of());
+            AgentRunPlanService.Projection restoredPlan = this.requireRunPlanService()
+                    .restoreOrMigrate(task.getTaskId(), activeExecutionEpoch, legacyPlan);
+            restoredPlan.applyTo(ctx);
+            if (restoredPlan.eventSequence() > 0L) {
+                this.projectPersistedPlanUpdate(sse, ctx);
             }
             this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Iteration policy: `" + this.iterationPolicyDescription() + "`\n");
             long contextBuildStartedAt = System.nanoTime();
@@ -768,9 +794,7 @@ public class AgentLoopEngine {
                             String content;
                             block23: {
                                 block22: {
-                                    String planJson2;
                                     block20: {
-                                        String planJson;
                                         this.appendRunLog(runLog, "\n## Iteration " + i + "\n");
                                         if (cancellationToken.isCancellationRequested()) {
                                             this.completeCancelledRun(sse, conv, task, project, runLog, i, visibleLanguage, emitter);
@@ -1104,12 +1128,8 @@ public class AgentLoopEngine {
                                                     res.isInteractionRequired() ? this.interactionWaitingState(res) : (res.isSuccess() ? "tool_success" : "tool_failed"),
                                                     "Tool `" + this.safeLogText(tn) + "` returned.", tn,
                                                     this.compactToolResultForCheckpoint(tn, res), runLog);
+
                                             this.sendObserve(sse, conv, i, tn, res, task.getTaskId());
-                                            if (("create_plan".equals(tn) || "plan".equals(tn) || "todo_write".equals(tn) || "todowrite".equals(tn))
-                                                    && (planJson = ctx.getPlanJson()) != null && !planJson.isBlank()) {
-                                                this.sendEvent(sse, conv, "PLAN_UPDATE", Map.of(
-                                                        "plan", ctx.getPlan(), "summary", ctx.getPlanSummary(), "planJson", planJson));
-                                            }
                                             this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u67e5\u7ed3\u679c", "Check result"),
                                                     this.toolNarrator.buildResultThought(tn, ta, res, visibleLanguage), task.getTaskId());
                                             if (res.isInteractionRequired()) {
@@ -1319,9 +1339,7 @@ public class AgentLoopEngine {
                                     this.appendToolResult(runLog, res);
                                     this.writeAgentCheckpoint(project, request, task, ctx, res.isInteractionRequired() ? this.interactionWaitingState(res) : (res.isSuccess() ? "tool_success" : "tool_failed"), "Recovered and executed tool `" + this.safeLogText(invTool) + "`.", invTool, this.compactToolResultForCheckpoint(invTool, res), runLog);
                                     this.sendObserve(sse, conv, i, invTool, res, task.getTaskId());
-                                    if (("create_plan".equals(invTool) || "plan".equals(invTool) || "todo_write".equals(invTool) || "todowrite".equals(invTool)) && (planJson2 = ctx.getPlanJson()) != null && !planJson2.isBlank()) {
-                                        this.sendEvent(sse, conv, "PLAN_UPDATE", Map.of("plan", ctx.getPlan(), "summary", ctx.getPlanSummary(), "planJson", planJson2));
-                                    }
+
                                     this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u67e5\u7ed3\u679c", "Check result"), this.toolNarrator.buildResultThought(invTool, parsedArgs, res, visibleLanguage), task.getTaskId());
                                     if (res.isInteractionRequired()) {
                                         AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
@@ -1910,6 +1928,10 @@ public class AgentLoopEngine {
             phase = "tool_delegate";
             long delegateStartedNanos = System.nanoTime();
             ToolResult result = this.toolTurnExecutor.execute(t, ctx, args, name);
+            if (result.isSuccess() && this.isPlanTool(name)) {
+                // 计划事件在工具事务中已取得 sequence，必须先于后续工具生命周期事件投影。
+                this.projectPersistedPlanUpdate(sse, ctx);
+            }
             result = this.annotateCommandRecovery(name, result);
             result = this.maybeRequestNetworkAfterFailure(ctx, name, args, toolCallId, result);
             delegateElapsedMs = elapsedMs(delegateStartedNanos);
@@ -2772,6 +2794,10 @@ public class AgentLoopEngine {
     }
 
     private boolean hasOpenPlan(AgentContext ctx) {
+        if (ctx == null || ctx.getTaskId() == null) {
+            return false;
+        }
+        this.requireRunPlanService().load(ctx.getTaskId()).applyTo(ctx);
         if (ctx.getPlan() == null || ctx.getPlan().isEmpty()) {
             return false;
         }
@@ -2862,6 +2888,10 @@ public class AgentLoopEngine {
             throw new IllegalStateException("Durable compaction service is unavailable");
         }
         return this.compactionService;
+    }
+
+    private AgentRunPlanService requireRunPlanService() {
+        return requireRuntimeDependency(this.runPlanService, "runPlanService");
     }
 
     private AgentRunTranscriptService requireTranscriptService() {
@@ -3648,6 +3678,24 @@ public class AgentLoopEngine {
 
     private void sendEvent(AgentSsePublisher sse, AgentConversation conv, String type, Object data) throws Exception {
         sse.send(type, data);
+    }
+
+    /** 计划服务已经提交事件；当前连接只能发送对应 sequence，不能再次追加事件。 */
+    private void projectPersistedPlanUpdate(AgentSsePublisher sse, AgentContext context) {
+        Long sequence = context == null ? null : context.consumePlanEventSequence();
+        if (sequence == null || sequence <= 0L) {
+            return;
+        }
+        try {
+            sse.sendPersisted(sequence, "PLAN_UPDATE", context.getPlanEventPayload());
+        } catch (IOException ignored) {
+            // SSE 断开不影响已经在同一事务中提交的计划与事件。
+        }
+    }
+
+    private boolean isPlanTool(String toolName) {
+        return "create_plan".equals(toolName) || "plan".equals(toolName)
+                || "todo_write".equals(toolName) || "todowrite".equals(toolName);
     }
 
     /** 将生命周期已持久化的事件投影到当前连接，不能再次追加同名运行事件。 */

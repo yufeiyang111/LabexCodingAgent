@@ -17,15 +17,15 @@ class AgentCheckpointStoreTest {
     Path workspace;
 
     @Test
-    void isolatesCheckpointByConversationAndTaskAndRestoresExecutionState() {
+    void v2CheckpointRestoresOnlyNonPlanExecutionState() throws Exception {
         StudentProject project = project(workspace);
         AgentContext source = AgentContext.create("session-1", 7, project, "conversation-a", 41L);
         source.setMode("build");
         source.setStage("verify");
-        source.setPlan(List.of(
+        source.applyPlanProjection(List.of(
                 new AgentContext.PlanItem("Inspect", "Read the current implementation", true),
-                new AgentContext.PlanItem("Fix", "Apply the scoped correction", false)));
-        source.setCurrentPlanIndex(1);
+                new AgentContext.PlanItem("Fix", "Apply the scoped correction", false)),
+                1, 1L, null, "checkpoint_test");
         source.incrementWriteCount();
         source.incrementWriteCount();
         source.incrementVerificationCount();
@@ -56,12 +56,55 @@ class AgentCheckpointStoreTest {
         assertTrue(restored.hasUnverifiedChanges());
         assertEquals(java.util.Set.of("src/Main.java"), restored.getUnverifiedChangeTargets());
         assertEquals(java.util.Set.of("run_tests"), restored.getTrustedVerificationSources());
-        assertEquals(2, restored.getPlan().size());
-        assertTrue(restored.getPlan().get(0).isCompleted());
-        assertFalse(restored.getPlan().get(1).isCompleted());
-        assertEquals(1, restored.getCurrentPlanIndex());
+        assertTrue(restored.getPlan().isEmpty());
+        assertTrue(snapshot.legacyPlanSeed().isEmpty());
+        Path checkpoint = store.checkpointPath(project, "conversation-a", 41L);
+        String persisted = Files.readString(checkpoint);
+        assertFalse(persisted.contains("\"plan\""));
+        assertFalse(persisted.contains("Inspect"));
         assertTrue(store.renderForPrompt(snapshot).contains("conversation-a"));
         assertTrue(store.renderForPrompt(snapshot).contains("Need confirmation"));
+        assertFalse(store.renderForPrompt(snapshot).contains("plan:"));
+    }
+
+    @Test
+    void readsAV1PlanOnlyAsAnExplicitOneTimeMigrationSeed() throws Exception {
+        StudentProject project = project(workspace);
+        AgentCheckpointStore store = new AgentCheckpointStore();
+        Path checkpoint = store.checkpointPath(project, "conversation-a", 41L);
+        Files.createDirectories(checkpoint.getParent());
+        Files.writeString(checkpoint, """
+                {
+                  "version": 1,
+                  "conversationId": "conversation-a",
+                  "taskId": 41,
+                  "status": "waiting_user",
+                  "stage": "verify",
+                  "writeCount": 1,
+                  "verificationCount": 0,
+                  "unverifiedChanges": false,
+                  "trustedVerificationSources": [],
+                  "unverifiedChangeTargets": [],
+                  "plan": [
+                    {"title":"Inspect","description":"Read state","completed":true},
+                    {"title":"Resume","description":"Continue task","completed":false}
+                  ],
+                  "currentPlanIndex": 1
+                }
+                """);
+
+        AgentCheckpointStore.Snapshot snapshot = store.load(project, "conversation-a", 41L).orElseThrow();
+        AgentCheckpointStore.LegacyPlanSeed seed = snapshot.legacyPlanSeed().orElseThrow();
+
+        assertEquals(1, snapshot.version());
+        assertEquals(1, seed.currentPlanIndex());
+        assertEquals(2, seed.items().size());
+        assertTrue(seed.items().get(0).isCompleted());
+        assertFalse(seed.items().get(1).isCompleted());
+
+        AgentContext restored = AgentContext.create("session-1", 7, project, "conversation-a", 41L);
+        snapshot.restoreInto(restored);
+        assertTrue(restored.getPlan().isEmpty());
     }
 
     @Test

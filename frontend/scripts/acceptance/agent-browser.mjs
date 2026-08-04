@@ -790,6 +790,70 @@ async function runScenario() {
   await clickElement('.ai-tab', { containsText: '对话', label: 'chat tab after cache telemetry' })
 
   await createNewConversation()
+  const tasksBeforeBrowserPlan = await api(`/student/projects/${projectId}/agent/tasks`)
+  const browserPlanPriorTaskIds = new Set(tasksBeforeBrowserPlan.map(task => Number(task.taskId)))
+  await sendMessage('[acceptance:browser-plan]')
+  await waitFor(() => bodyIncludes('durable task plan survived'), 'durable browser plan final reply')
+  await waitForAgentIdle('durable browser plan terminal state')
+  await waitFor(() => client.evaluate(`Boolean(document.querySelector('.plan-display'))`), 'live durable plan display')
+  const livePlanDisplay = await client.evaluate(`(() => {
+    const cards = [...document.querySelectorAll('.plan-display')]
+    const card = cards.at(-1)
+    return card ? {
+      count: cards.length,
+      text: card.innerText,
+      completed: card.querySelectorAll('.plan-item.completed').length,
+      items: card.querySelectorAll('.plan-item').length
+    } : null
+  })()`)
+  if (!livePlanDisplay || livePlanDisplay.count !== 1 || livePlanDisplay.items !== 2
+      || livePlanDisplay.completed !== 2
+      || !livePlanDisplay.text.includes('Inspect durable plan storage')
+      || !livePlanDisplay.text.includes('Finish durable plan recovery')) {
+    throw new Error(`Live durable plan projection mismatch: ${JSON.stringify(livePlanDisplay)}`)
+  }
+  const tasksAfterBrowserPlan = await api(`/student/projects/${projectId}/agent/tasks`)
+  const browserPlanTask = [...tasksAfterBrowserPlan]
+    .sort((left, right) => Number(right.taskId) - Number(left.taskId))
+    .find(task => !browserPlanPriorTaskIds.has(Number(task.taskId)))
+  if (!browserPlanTask?.taskId || browserPlanTask.status !== 'completed' || !browserPlanTask.conversationId) {
+    throw new Error(`Durable browser plan task did not complete: ${JSON.stringify(browserPlanTask)}`)
+  }
+  const browserPlanHistory = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(browserPlanTask.conversationId)}/messages?limit=50`
+  )
+  const browserPlanTurn = durableHistoryTurns(browserPlanHistory, 'browser plan history')
+    .find(turn => Number(turn.taskId) === Number(browserPlanTask.taskId))
+  const browserPlanEvents = (browserPlanTurn?.events || []).filter(event => event.eventType === 'PLAN_UPDATE')
+  const browserPlanFinalEvent = browserPlanEvents.at(-1)
+  if (browserPlanEvents.length !== 3 || Number(browserPlanFinalEvent?.data?.planRevision) !== 3
+      || (browserPlanFinalEvent?.data?.plan || []).some(item => !item.completed)) {
+    throw new Error(`Durable browser plan history mismatch: ${JSON.stringify(browserPlanEvents)}`)
+  }
+
+  await client.send('Page.reload', { ignoreCache: true })
+  await waitForWorkspace()
+  await waitForAgentIdle('durable browser plan after refresh')
+  await waitFor(() => client.evaluate(`Boolean(document.querySelector('.plan-display'))`), 'durable plan replay after refresh')
+  const replayedPlanDisplay = await client.evaluate(`(() => {
+    const cards = [...document.querySelectorAll('.plan-display')]
+    const card = cards.at(-1)
+    return card ? {
+      count: cards.length,
+      text: card.innerText,
+      completed: card.querySelectorAll('.plan-item.completed').length,
+      items: card.querySelectorAll('.plan-item').length
+    } : null
+  })()`)
+  if (!replayedPlanDisplay || replayedPlanDisplay.count !== 1 || replayedPlanDisplay.items !== 2
+      || replayedPlanDisplay.completed !== 2
+      || !replayedPlanDisplay.text.includes('Inspect durable plan storage')
+      || !replayedPlanDisplay.text.includes('Finish durable plan recovery')) {
+    throw new Error(`Refreshed durable plan projection mismatch: ${JSON.stringify(replayedPlanDisplay)}`)
+  }
+  const durablePlanRefreshReplay = true
+
+  await createNewConversation()
   await sendMessage('[acceptance:question]')
   await waitFor(
     () => client.evaluate(`Boolean(document.querySelector('.tc-question'))`),
@@ -1525,6 +1589,9 @@ async function runScenario() {
       && durableReasoningLeaks.length === 0,
     reasoningBoundaryTaskId: reasoningBoundaryTask.taskId,
     durableCacheTelemetryProjection: true,
+    durablePlanRefreshReplay,
+    durablePlanTaskId: browserPlanTask.taskId,
+    durablePlanRevision: Number(browserPlanFinalEvent.data.planRevision),
     questionReplyComponent: true,
     permissionApprovalRefreshRecovery: true,
     multiToolPermissionBatchProtocolComplete: true,

@@ -101,6 +101,10 @@ $evidence = [ordered]@{
     legacyHistoryMigration = $false
     legacyHistoryMigrationRestart = $false
     legacyHistoryMigrationTaskId = $null
+    durablePlanRestart = $false
+    durablePlanCheckpointIndependent = $false
+    durablePlanTaskId = $null
+    durablePlanRevision = $null
     cleanup = $false
 }
 
@@ -814,6 +818,90 @@ WHERE run_event.task_id = $completionTaskId
     Assert-SameTaskContinuation -TaskId $questionTaskId -RequiredType 'USER_QUESTION'
     $evidence.questionRestart = $true
 
+    $durablePlanEvents = Invoke-AgentStream -Message '[acceptance:durable-plan] restart recovery'
+    $durablePlanQuestion = Get-RequiredEvent -Events $durablePlanEvents -Type 'USER_QUESTION'
+    $durablePlanTaskId = [long]$durablePlanQuestion.data.taskId
+    $durablePlanTaskBeforeRestart = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$durablePlanTaskId"
+    if ([string]$durablePlanTaskBeforeRestart.status -ne 'waiting_user') {
+        throw "Durable plan task $durablePlanTaskId was $($durablePlanTaskBeforeRestart.status) before restart."
+    }
+    $durablePlanEpochBefore = Get-AcceptanceSqlScalar -Sql "SELECT execution_epoch FROM t_agent_task WHERE task_id = $durablePlanTaskId"
+    $durablePlanRowsBefore = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_plan_item WHERE task_id = $durablePlanTaskId " +
+        "AND plan_revision = 1 AND execution_epoch = $durablePlanEpochBefore")
+    $durablePlanEventsBefore = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $durablePlanTaskId AND event_type = 'PLAN_UPDATE' " +
+        "AND idempotency_key = 'plan-update:${durablePlanTaskId}:1'")
+    if ($durablePlanRowsBefore -ne 2 -or $durablePlanEventsBefore -ne 1) {
+        throw "Durable plan did not commit two revision-1 rows and one PLAN_UPDATE before restart: rows=$durablePlanRowsBefore events=$durablePlanEventsBefore"
+    }
+
+    $durablePlanConversationId = [string]$durablePlanTaskBeforeRestart.conversationId
+    $checkpointCandidates = @(Get-ChildItem -LiteralPath $workspaceRoot -Recurse -File -Filter "$durablePlanTaskId.json" |
+        Where-Object { $_.FullName -like '*\.labex\agent-checkpoints\*' })
+    if ($checkpointCandidates.Count -ne 1) {
+        throw "Expected exactly one durable-plan checkpoint for task $durablePlanTaskId, found $($checkpointCandidates.Count)."
+    }
+    $durablePlanCheckpoint = $checkpointCandidates[0]
+    $workspaceFull = [IO.Path]::GetFullPath($workspaceRoot)
+    $checkpointFull = [IO.Path]::GetFullPath($durablePlanCheckpoint.FullName)
+    if (-not $checkpointFull.StartsWith($workspaceFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to inspect/delete checkpoint outside acceptance workspace: $checkpointFull"
+    }
+    $checkpointJson = [IO.File]::ReadAllText($checkpointFull, [Text.Encoding]::UTF8)
+    if (-not $checkpointJson.Contains('"version": 2') -or $checkpointJson.Contains('"plan"') -or
+        $checkpointJson.Contains('Inspect durable plan storage')) {
+        throw "Checkpoint v2 still contains authoritative plan state: $checkpointFull"
+    }
+    [IO.File]::Delete($checkpointFull)
+    if ([IO.File]::Exists($checkpointFull)) {
+        throw "Unable to delete disposable durable-plan checkpoint: $checkpointFull"
+    }
+
+    Restart-AcceptanceBackend
+    Invoke-ApiData -Path "/student/projects/$projectId/agent/question/reply" -Method POST -Body @{
+        requestId = [string]$durablePlanQuestion.data.requestId; action = 'answer'; answer = 'Continue durable plan'
+    } | Out-Null
+    Assert-SameTaskContinuation -TaskId $durablePlanTaskId -RequiredType 'USER_QUESTION'
+
+    $durablePlanEpochAfter = Get-AcceptanceSqlScalar -Sql "SELECT execution_epoch FROM t_agent_task WHERE task_id = $durablePlanTaskId"
+    $durablePlanRowsAfter = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_plan_item WHERE task_id = $durablePlanTaskId " +
+        "AND plan_revision = 3 AND execution_epoch = $durablePlanEpochAfter AND status = 'completed'")
+    $durablePlanPositions = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(DISTINCT position) FROM t_agent_run_plan_item WHERE task_id = $durablePlanTaskId")
+    $durablePlanEventCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $durablePlanTaskId AND event_type = 'PLAN_UPDATE'")
+    if ($durablePlanEpochAfter -le $durablePlanEpochBefore -or $durablePlanRowsAfter -ne 2 -or
+        $durablePlanPositions -ne 2 -or $durablePlanEventCount -ne 3) {
+        throw "Durable plan did not recover under a new epoch and finish revision 3: beforeEpoch=$durablePlanEpochBefore afterEpoch=$durablePlanEpochAfter rows=$durablePlanRowsAfter positions=$durablePlanPositions events=$durablePlanEventCount"
+    }
+    foreach ($revision in 1..3) {
+        $revisionEvents = Get-AcceptanceSqlScalar -Sql (
+            "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $durablePlanTaskId " +
+            "AND event_type = 'PLAN_UPDATE' AND idempotency_key = 'plan-update:${durablePlanTaskId}:$revision'")
+        if ($revisionEvents -ne 1) {
+            throw "Durable plan revision $revision did not have exactly one stable PLAN_UPDATE event."
+        }
+    }
+
+    $durablePlanHistory = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$durablePlanConversationId/messages?limit=50"
+    $durablePlanTurn = @($durablePlanHistory.turns | Where-Object { [long]$_.taskId -eq $durablePlanTaskId })
+    $durablePlanHistoryEvents = @($durablePlanTurn.events | Where-Object { [string]$_.eventType -eq 'PLAN_UPDATE' })
+    if ($durablePlanTurn.Count -ne 1 -or $durablePlanHistoryEvents.Count -ne 3) {
+        throw "Durable history did not replay all three plan revisions for task $durablePlanTaskId."
+    }
+    $durablePlanFinalEvent = $durablePlanHistoryEvents | Sort-Object sequence | Select-Object -Last 1
+    $durablePlanFinalItems = @($durablePlanFinalEvent.data.plan)
+    if ([long]$durablePlanFinalEvent.data.planRevision -ne 3 -or $durablePlanFinalItems.Count -ne 2 -or
+        @($durablePlanFinalItems | Where-Object { -not [bool]$_.completed }).Count -ne 0) {
+        throw "Durable history final plan projection was not revision 3 with two completed items."
+    }
+    $evidence.durablePlanRestart = $true
+    $evidence.durablePlanCheckpointIndependent = $true
+    $evidence.durablePlanTaskId = $durablePlanTaskId
+    $evidence.durablePlanRevision = 3
+
     $permissionEvents = Invoke-AgentStream -Message '[acceptance:permission] restart recovery'
     $permission = Get-RequiredEvent -Events $permissionEvents -Type 'PERMISSION_ASK'
     $permissionTaskId = [long]$permission.data.taskId
@@ -1003,15 +1091,42 @@ WHERE run_event.task_id = $completionTaskId
             throw "Approved restart process $approvedRestartProcessId did not survive the forced backend crash; orphan recovery was not exercised."
         }
 
-        # Restart before the prior lease expires. Startup must preserve the process, then the durable poller must reap it after expiry.
+        # 用数据库时钟固定租约仍有效，避免把 JVM 启动速度误当成恢复语义。
+        Invoke-AcceptanceSql -Sql (
+            "UPDATE t_agent_task SET execution_lease_expires_at = DATEADD('SECOND', 120, CURRENT_TIMESTAMP), " +
+            "execution_heartbeat_at = CURRENT_TIMESTAMP WHERE task_id = $approvedRestartTaskId") | Out-Null
+        $futureLeaseRows = Get-AcceptanceSqlScalar -Sql (
+            "SELECT COUNT(*) FROM t_agent_task WHERE task_id = $approvedRestartTaskId " +
+            "AND execution_lease_expires_at > CURRENT_TIMESTAMP")
+        if ($futureLeaseRows -ne 1) {
+            throw "Unable to establish a deterministic active execution lease for task $approvedRestartTaskId."
+        }
+
         Start-AcceptanceBackend -Profile 'acceptance,local'
         $approvedRestartBackendStopped = $false
-        if (-not (Test-ProcessAlive -ProcessId $approvedRestartProcessId)) {
-            throw "Startup recovery ignored the still-active execution lease for process $approvedRestartProcessId."
-        }
-        $activeLeaseEvents = Get-TaskEvents -TaskId $approvedRestartTaskId
+        $activeLeaseDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        $activeLeaseEvents = @()
+        do {
+            if (-not (Test-ProcessAlive -ProcessId $approvedRestartProcessId)) {
+                throw "Startup recovery ignored the explicitly active execution lease for process $approvedRestartProcessId."
+            }
+            $activeLeaseEvents = Get-TaskEvents -TaskId $approvedRestartTaskId
+            if (@($activeLeaseEvents | Where-Object { $_.type -eq 'RUN_RECOVERY_ACTIVE_LEASE' }).Count -eq 1) { break }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $activeLeaseDeadline)
         if (@($activeLeaseEvents | Where-Object { $_.type -eq 'RUN_RECOVERY_ACTIVE_LEASE' }).Count -ne 1) {
             throw 'Immediate restart did not persist the active-lease recovery fence.'
+        }
+
+        # 再显式过期同一租约，验证 durable poller 回收孤儿进程，而不是依赖等待 15 秒。
+        Invoke-AcceptanceSql -Sql (
+            "UPDATE t_agent_task SET execution_lease_expires_at = DATEADD('SECOND', -1, CURRENT_TIMESTAMP) " +
+            "WHERE task_id = $approvedRestartTaskId") | Out-Null
+        $expiredLeaseRows = Get-AcceptanceSqlScalar -Sql (
+            "SELECT COUNT(*) FROM t_agent_task WHERE task_id = $approvedRestartTaskId " +
+            "AND execution_lease_expires_at <= CURRENT_TIMESTAMP")
+        if ($expiredLeaseRows -ne 1) {
+            throw "Unable to deterministically expire execution lease for task $approvedRestartTaskId."
         }
 
         $processExitDeadline = [DateTime]::UtcNow.AddSeconds(25)

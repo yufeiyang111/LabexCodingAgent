@@ -386,6 +386,49 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void drivesTheDurablePlanThroughQuestionRestartAndTwoCompletions() {
+        LlmProvider.StreamChunk create = stream("[acceptance:durable-plan] restart plan").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("create_plan", create.toolName());
+        assertTrue(create.toolArgs().contains("Inspect durable plan storage"));
+
+        LlmProvider.StreamChunk question = stream(
+                "[acceptance:durable-plan] restart plan",
+                "[Tool create_plan result]\ncreated").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("question", question.toolName());
+
+        LlmProvider.StreamChunk firstComplete = stream(
+                "[acceptance:durable-plan] restart plan",
+                "[Tool create_plan result]\ncreated",
+                "Resolution status: answered").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("create_plan", firstComplete.toolName());
+        assertTrue(firstComplete.toolArgs().contains("\"task_index\":1"));
+
+        LlmProvider.StreamChunk secondComplete = stream(
+                "[acceptance:durable-plan] restart plan",
+                "Resolution status: answered",
+                "[Tool create_plan result]\ncreated",
+                "[Tool create_plan result]\ncompleted one").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("create_plan", secondComplete.toolName());
+        assertTrue(secondComplete.toolArgs().contains("\"task_index\":2"));
+
+        String finalText = text(stream(
+                "[acceptance:durable-plan] restart plan",
+                "Resolution status: answered",
+                "[Tool create_plan result]\ncreated",
+                "[Tool create_plan result]\ncompleted one",
+                "[Tool create_plan result]\ncompleted two"));
+        assertTrue(finalText.contains("durable task plan survived"));
+    }
+
+    @Test
     void drivesAQuestionThenLargeNativeToolCallForDurableCompactionAcceptance() {
         LlmProvider.StreamChunk question = stream("[acceptance:compaction] long context scenario").stream()
                 .filter(chunk -> "tool_call".equals(chunk.type()))

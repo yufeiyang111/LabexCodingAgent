@@ -101,6 +101,18 @@ class AgentLoopEngineStreamingContractTest {
         assertTrue(source.contains("limitForContext(sessionContext, 60000)"));
     }
 
+    @Test
+    void projectsTransactionallyPersistedPlanEventBeforeLaterToolLifecycleEvents() {
+        int delegate = source.indexOf("ToolResult result = this.toolTurnExecutor.execute(t, ctx, args, name);");
+        int projection = source.indexOf("this.projectPersistedPlanUpdate(sse, ctx);", delegate);
+        int laterToolPhase = source.indexOf("phase = \"post_edit_hook\";", delegate);
+
+        assertTrue(delegate >= 0);
+        assertTrue(projection > delegate);
+        assertTrue(projection < laterToolPhase);
+        assertTrue(source.indexOf("this.projectPersistedPlanUpdate(sse, ctx);", projection + 1) < 0);
+    }
+
     private String readSource(String fileName) {
         try {
             return Files.readString(Path.of("src/main/java/com/labex/labexagent/runtime/" + fileName))

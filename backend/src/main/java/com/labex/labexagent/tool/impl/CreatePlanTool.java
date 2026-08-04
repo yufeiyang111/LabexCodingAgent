@@ -3,127 +3,158 @@ package com.labex.labexagent.tool.impl;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.labex.labexagent.run.AgentRunPlanService;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
 @Component
-public class CreatePlanTool
-implements AgentTool {
-    public ToolDefinition definition() {
-        Map<String, Object> taskItem = Map.of("type", "object", "properties", Map.of("title", Map.of("type", "string", "description", "\u4efb\u52a1\u6807\u9898"), "description", Map.of("type", "string", "description", "\u4efb\u52a1\u63cf\u8ff0")), "required", List.of("title"));
-        return ToolDefinition.builder().name("create_plan").description("\u521b\u5efa/\u7ba1\u7406\u4efb\u52a1\u8ba1\u5212\u3002\u521b\u5efa\u8ba1\u5212\u540e\u6309\u987a\u5e8f\u6267\u884c\uff0c\u6bcf\u5b8c\u6210\u4e00\u6b65\u6807\u8bb0\u5b8c\u6210\u3002").stringProperty("action", "\u64cd\u4f5c\u7c7b\u578b: create\uff08\u521b\u5efa\uff09, complete\uff08\u6807\u8bb0\u5b8c\u6210\uff09, update\uff08\u66f4\u65b0\uff09", false).arrayProperty("tasks", "\u4efb\u52a1\u5217\u8868\uff08create\u65f6\u5fc5\u586b\uff09", taskItem, false).intProperty("task_index", "\u4efb\u52a1\u5e8f\u53f7\uff08complete\u65f6\u5fc5\u586b\uff0c\u4ece1\u5f00\u59cb\uff09", false).build();
+public class CreatePlanTool implements AgentTool {
+    private final AgentRunPlanService planService;
+
+    public CreatePlanTool(AgentRunPlanService planService) {
+        this.planService = planService;
     }
 
-    public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
-        String action;
-        String string = action = args.has("action") ? args.get("action").getAsString() : "create";
+    @Override
+    public ToolDefinition definition() {
+        Map<String, Object> taskItem = Map.of(
+                "type", "object",
+                "properties", Map.of(
+                        "title", Map.of("type", "string", "description", "任务标题"),
+                        "description", Map.of("type", "string", "description", "任务描述")),
+                "required", List.of("title"));
+        return ToolDefinition.builder()
+                .name("create_plan")
+                .description("创建或管理当前 Agent task 的持久化执行计划。完成一步后应立即标记完成。")
+                .stringProperty("action", "操作类型: create, complete, update", false)
+                .arrayProperty("tasks", "任务列表（create 时必填）", taskItem, false)
+                .intProperty("task_index", "任务序号（complete/update 时使用，从 1 开始）", false)
+                .stringProperty("title", "更新后的任务标题（update 时使用）", false)
+                .stringProperty("description", "更新后的任务描述（update 时使用）", false)
+                .build();
+    }
+
+    @Override
+    public ToolResult execute(AgentContext context, JsonObject args) {
+        String action = args.has("action") ? args.get("action").getAsString() : "create";
         if ("complete".equalsIgnoreCase(action)) {
-            return this.completeTask(context, args);
+            return completeTask(context, args);
         }
         if ("update".equalsIgnoreCase(action)) {
-            return this.updatePlan(context, args);
+            return updatePlan(context, args);
         }
-        return this.createPlan(context, args);
+        return createPlan(context, args);
     }
 
     private ToolResult createPlan(AgentContext context, JsonObject args) {
         if (!args.has("tasks") || !args.get("tasks").isJsonArray()) {
-            return ToolResult.failed("tasks \u53c2\u6570\u5fc5\u987b\u662f\u6570\u7ec4");
+            return ToolResult.failed("tasks 参数必须是数组");
         }
         JsonArray tasksArray = args.getAsJsonArray("tasks");
-        if (tasksArray.size() == 0) {
-            return ToolResult.failed("\u8ba1\u5212\u81f3\u5c11\u9700\u8981\u4e00\u4e2a\u4efb\u52a1");
+        if (tasksArray.isEmpty()) {
+            return ToolResult.failed("计划至少需要一个任务");
         }
         if (tasksArray.size() > 30) {
-            return ToolResult.failed("\u8ba1\u5212\u6700\u591a30\u4e2a\u4efb\u52a1");
+            return ToolResult.failed("计划最多 30 个任务");
         }
-        ArrayList<AgentContext.PlanItem> planItems = new ArrayList<AgentContext.PlanItem>();
-        StringBuilder summary = new StringBuilder("\u5df2\u521b\u5efa\u6267\u884c\u8ba1\u5212:\n");
-        for (int i = 0; i < tasksArray.size(); ++i) {
-            JsonElement el = tasksArray.get(i);
-            if (!el.isJsonObject()) continue;
-            JsonObject task = el.getAsJsonObject();
-            Object title = task.has("title") ? task.get("title").getAsString() : "\u4efb\u52a1 " + (i + 1);
-            String desc = task.has("description") ? task.get("description").getAsString() : "";
-            planItems.add(new AgentContext.PlanItem((String)title, desc, false));
-            summary.append(i + 1).append(". ").append((String)title);
-            if (!desc.isBlank()) {
-                summary.append(" - ").append(desc);
+        List<AgentRunPlanService.PlanDraft> drafts = new ArrayList<>();
+        for (int index = 0; index < tasksArray.size(); index++) {
+            JsonElement element = tasksArray.get(index);
+            if (!element.isJsonObject()) {
+                return ToolResult.failed("任务 " + (index + 1) + " 必须是对象");
             }
-            summary.append("\n");
+            JsonObject task = element.getAsJsonObject();
+            String title = task.has("title") ? task.get("title").getAsString().strip() : "";
+            if (title.isBlank()) {
+                return ToolResult.failed("任务 " + (index + 1) + " 的 title 必填");
+            }
+            String description = task.has("description") ? task.get("description").getAsString() : "";
+            drafts.add(new AgentRunPlanService.PlanDraft(title, description, false));
         }
-        context.setPlan(planItems);
-        context.setCurrentPlanIndex(0);
-        summary.append("\n\u8bf7\u6309\u987a\u5e8f\u6267\u884c\u6bcf\u4e2a\u4efb\u52a1\u3002\u5b8c\u6210\u4e00\u4e2a\u4efb\u52a1\u540e\u8c03\u7528 create_plan(action=\"complete\", task_index=N) \u6807\u8bb0\u5b8c\u6210\u3002");
-        return ToolResult.ok((String)summary.toString());
+        AgentRunPlanService.Projection projection = planService.replace(
+                context.getTaskId(), context.getExecutionEpoch(), drafts, "create_plan");
+        projection.applyTo(context);
+
+        StringBuilder summary = new StringBuilder("已创建持久化执行计划:\n");
+        for (int index = 0; index < drafts.size(); index++) {
+            AgentRunPlanService.PlanDraft draft = drafts.get(index);
+            summary.append(index + 1).append(". ").append(draft.title());
+            if (!draft.description().isBlank()) summary.append(" - ").append(draft.description());
+            summary.append('\n');
+        }
+        summary.append("\n请按顺序执行。完成后调用 create_plan(action=\"complete\", task_index=N)。");
+        return ToolResult.ok(summary.toString());
     }
 
     private ToolResult completeTask(AgentContext context, JsonObject args) {
         if (!args.has("task_index")) {
-            return ToolResult.failed("task_index \u53c2\u6570\u5fc5\u586b");
+            return ToolResult.failed("task_index 参数必填");
         }
         int index = args.get("task_index").getAsInt() - 1;
-        List<AgentContext.PlanItem> plan = context.getPlan();
-        if (plan == null || plan.isEmpty()) {
-            return ToolResult.failed("\u5f53\u524d\u6ca1\u6709\u6267\u884c\u8ba1\u5212\uff0c\u8bf7\u5148\u521b\u5efa\u8ba1\u5212");
+        AgentRunPlanService.Projection current = planService.load(context.getTaskId());
+        current.applyTo(context);
+        if (current.items().isEmpty()) {
+            return ToolResult.failed("当前没有持久化执行计划，请先创建计划");
         }
-        if (index < 0 || index >= plan.size()) {
-            return ToolResult.failed((String)("task_index \u8d85\u51fa\u8303\u56f4\uff0c\u6709\u6548\u8303\u56f4: 1-" + plan.size()));
+        if (index < 0 || index >= current.items().size()) {
+            return ToolResult.failed("task_index 超出范围，有效范围: 1-" + current.items().size());
         }
-        AgentContext.PlanItem item = plan.get(index);
+        AgentRunPlanService.PlanItem item = current.items().get(index);
         if (requiresVerification(item) && !context.hasTrustedVerification()) {
             return ToolResult.failed("Verification task cannot be completed before a successful test, build, or manual file verification.");
         }
-        item.setCompleted(true);
-        int nextIndex = this.findNextTask(plan);
-        context.setCurrentPlanIndex(nextIndex);
+        AgentRunPlanService.Projection updated = planService.complete(
+                context.getTaskId(), context.getExecutionEpoch(), index, "create_plan");
+        updated.applyTo(context);
+
         StringBuilder summary = new StringBuilder();
-        summary.append("\u2705 \u4efb\u52a1 ").append(index + 1).append(" \u5df2\u5b8c\u6210: ").append(((AgentContext.PlanItem)plan.get(index)).getTitle()).append("\n\n");
+        summary.append("✅ 任务 ").append(index + 1).append(" 已完成: ").append(item.title()).append("\n\n");
         summary.append(context.getPlanSummary());
-        if (nextIndex >= 0) {
-            summary.append("\n\u4e0b\u4e00\u6b65\u8bf7\u6267\u884c\u4efb\u52a1 ").append(nextIndex + 1).append(": ").append(((AgentContext.PlanItem)plan.get(nextIndex)).getTitle());
+        if (updated.currentIndex() >= 0) {
+            summary.append("\n下一步请执行任务 ").append(updated.currentIndex() + 1).append(": ")
+                    .append(updated.items().get(updated.currentIndex()).title());
         } else {
-            summary.append("\n\ud83c\udf89 \u6240\u6709\u4efb\u52a1\u5df2\u5b8c\u6210\uff01\u8bf7\u7ed9\u51fa\u6700\u7ec8\u603b\u7ed3\u56de\u590d\u3002");
+            summary.append("\n🎉 所有任务已完成，请给出最终总结回复。");
         }
-        return ToolResult.ok((String)summary.toString());
+        return ToolResult.ok(summary.toString());
     }
 
     private ToolResult updatePlan(AgentContext context, JsonObject args) {
-        int index;
-        List<AgentContext.PlanItem> plan = context.getPlan();
-        if (plan == null || plan.isEmpty()) {
-            return ToolResult.failed("\u5f53\u524d\u6ca1\u6709\u6267\u884c\u8ba1\u5212\uff0c\u8bf7\u5148\u521b\u5efa\u8ba1\u5212");
+        AgentRunPlanService.Projection current = planService.load(context.getTaskId());
+        current.applyTo(context);
+        if (current.items().isEmpty()) {
+            return ToolResult.failed("当前没有持久化执行计划，请先创建计划");
         }
-        if (args.has("task_index") && args.has("title") && (index = args.get("task_index").getAsInt() - 1) >= 0 && index < plan.size()) {
-            ((AgentContext.PlanItem)plan.get(index)).setTitle(args.get("title").getAsString());
-            if (args.has("description")) {
-                ((AgentContext.PlanItem)plan.get(index)).setDescription(args.get("description").getAsString());
-            }
-            return ToolResult.ok((String)("\u5df2\u66f4\u65b0\u4efb\u52a1 " + (index + 1) + "\n\n" + context.getPlanSummary()));
+        if (!args.has("task_index") || !args.has("title")) {
+            return ToolResult.ok("当前计划:\n" + context.getPlanSummary());
         }
-        return ToolResult.ok((String)("\u5f53\u524d\u8ba1\u5212:\n" + context.getPlanSummary()));
+        int index = args.get("task_index").getAsInt() - 1;
+        if (index < 0 || index >= current.items().size()) {
+            return ToolResult.failed("task_index 超出范围，有效范围: 1-" + current.items().size());
+        }
+        String title = args.get("title").getAsString().strip();
+        if (title.isBlank()) {
+            return ToolResult.failed("title 不能为空");
+        }
+        String description = args.has("description") ? args.get("description").getAsString() : null;
+        AgentRunPlanService.Projection updated = planService.update(
+                context.getTaskId(), context.getExecutionEpoch(), index, title, description, "create_plan");
+        updated.applyTo(context);
+        return ToolResult.ok("已更新任务 " + (index + 1) + "\n\n" + context.getPlanSummary());
     }
 
-    private boolean requiresVerification(AgentContext.PlanItem item) {
-        String text = ((item.getTitle() == null ? "" : item.getTitle()) + " "
-                + (item.getDescription() == null ? "" : item.getDescription())).toLowerCase(java.util.Locale.ROOT);
+    private boolean requiresVerification(AgentRunPlanService.PlanItem item) {
+        String text = ((item.title() == null ? "" : item.title()) + " "
+                + (item.description() == null ? "" : item.description())).toLowerCase(Locale.ROOT);
         return text.contains("verify") || text.contains("verification") || text.contains("test")
                 || text.contains("build") || text.contains("compile") || text.contains("lint")
-                || text.contains("\u9a8c\u8bc1") || text.contains("\u6d4b\u8bd5") || text.contains("\u6784\u5efa") || text.contains("\u7f16\u8bd1");
-    }
-
-    private int findNextTask(List<AgentContext.PlanItem> plan) {
-        for (int i = 0; i < plan.size(); ++i) {
-            if (plan.get(i).isCompleted()) continue;
-            return i;
-        }
-        return -1;
+                || text.contains("验证") || text.contains("测试") || text.contains("构建") || text.contains("编译");
     }
 }
-

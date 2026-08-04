@@ -195,6 +195,22 @@ CREATE TABLE IF NOT EXISTS t_agent_run_part (
     INDEX idx_agent_run_part_tool_call (task_id, tool_call_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS t_agent_run_plan_item (
+    plan_item_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    execution_epoch BIGINT NOT NULL,
+    plan_revision BIGINT NOT NULL,
+    position INT NOT NULL,
+    title VARCHAR(512) NOT NULL,
+    description LONGTEXT DEFAULT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    create_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    update_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_agent_run_plan_task_position (task_id, position),
+    INDEX idx_agent_run_plan_task_status (task_id, status, position),
+    INDEX idx_agent_run_plan_task_revision (task_id, plan_revision)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS t_agent_compaction_record (
     compaction_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     task_id BIGINT NOT NULL,

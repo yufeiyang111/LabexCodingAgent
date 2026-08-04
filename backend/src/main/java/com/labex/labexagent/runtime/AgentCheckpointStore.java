@@ -25,7 +25,8 @@ import org.springframework.stereotype.Service;
 /** 按会话和任务持久化可恢复的 Agent 执行状态。 */
 @Service
 public final class AgentCheckpointStore {
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
+    private static final int LEGACY_PLAN_VERSION = 1;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final int MAX_REQUEST_CHARS = 2_000;
     private static final int MAX_NOTE_CHARS = 2_000;
@@ -66,7 +67,7 @@ public final class AgentCheckpointStore {
         }
         try {
             Snapshot snapshot = GSON.fromJson(Files.readString(path, StandardCharsets.UTF_8), Snapshot.class);
-            if (snapshot == null || snapshot.version != VERSION
+            if (snapshot == null || (snapshot.version != VERSION && snapshot.version != LEGACY_PLAN_VERSION)
                     || !conversationId.equals(snapshot.conversationId) || !taskId.equals(snapshot.taskId)) {
                 return Optional.empty();
             }
@@ -87,14 +88,13 @@ public final class AgentCheckpointStore {
                 write_count: %d
                 verification_count: %d
                 unverified_changes: %s
-                plan: %s
                 resume_note_json: %s
                 last_tool_json: %s
                 last_result_json: %s
                 </agent_task_checkpoint>
                 """.formatted(snapshot.version, safe(snapshot.conversationId), snapshot.taskId,
                 safe(snapshot.status), safe(snapshot.stage), snapshot.writeCount, snapshot.verificationCount,
-                snapshot.unverifiedChanges, GSON.toJson(snapshot.plan), GSON.toJson(bounded(snapshot.note, MAX_NOTE_CHARS)),
+                snapshot.unverifiedChanges, GSON.toJson(bounded(snapshot.note, MAX_NOTE_CHARS)),
                 GSON.toJson(bounded(snapshot.lastTool, 256)), GSON.toJson(bounded(snapshot.lastResult, MAX_RESULT_CHARS)));
     }
 
@@ -149,8 +149,9 @@ public final class AgentCheckpointStore {
         private boolean unverifiedChanges;
         private List<String> trustedVerificationSources;
         private List<String> unverifiedChangeTargets;
+        /** 仅为读取 v1 checkpoint 的一次性迁移字段；v2 不再写入。 */
         private List<PlanState> plan;
-        private int currentPlanIndex;
+        private Integer currentPlanIndex;
         private String userRequest;
         private String note;
         private String lastTool;
@@ -173,9 +174,6 @@ public final class AgentCheckpointStore {
             snapshot.unverifiedChanges = context != null && context.hasUnverifiedChanges();
             snapshot.trustedVerificationSources = context == null ? List.of() : new ArrayList<>(context.getTrustedVerificationSources());
             snapshot.unverifiedChangeTargets = context == null ? List.of() : new ArrayList<>(context.getUnverifiedChangeTargets());
-            snapshot.plan = context == null || context.getPlan() == null ? List.of()
-                    : context.getPlan().stream().map(PlanState::capture).toList();
-            snapshot.currentPlanIndex = context == null ? 0 : context.getCurrentPlanIndex();
             snapshot.userRequest = bounded(request.getMessage(), MAX_REQUEST_CHARS);
             snapshot.note = bounded(note, MAX_NOTE_CHARS);
             snapshot.lastTool = bounded(lastTool, 256);
@@ -189,7 +187,7 @@ public final class AgentCheckpointStore {
             if (stage == null || stage.isBlank()) stage = "intake";
             if (trustedVerificationSources == null) trustedVerificationSources = List.of();
             if (unverifiedChangeTargets == null) unverifiedChangeTargets = List.of();
-            if (plan == null) plan = List.of();
+            if (version == LEGACY_PLAN_VERSION && plan == null) plan = List.of();
             if (status == null) status = "";
             if (note == null) note = "";
             if (lastTool == null) lastTool = "";
@@ -201,9 +199,29 @@ public final class AgentCheckpointStore {
             if (context == null || !conversationId.equals(context.getConversationId()) || !taskId.equals(context.getTaskId())) {
                 throw new IllegalArgumentException("Checkpoint does not belong to the target Agent context");
             }
-            context.restoreExecutionState(stage, plan.stream().map(PlanState::restore).toList(), currentPlanIndex,
-                    writeCount, verificationCount, unverifiedChanges,
+            context.restoreCheckpointExecutionState(stage, writeCount, verificationCount, unverifiedChanges,
                     new LinkedHashSet<>(trustedVerificationSources), new LinkedHashSet<>(unverifiedChangeTargets));
+        }
+
+        public int version() {
+            return version;
+        }
+
+        /** v1 plan 只能作为数据库为空时的一次性迁移输入，不能直接恢复到 AgentContext。 */
+        public Optional<LegacyPlanSeed> legacyPlanSeed() {
+            if (version != LEGACY_PLAN_VERSION || plan == null || plan.isEmpty()) {
+                return Optional.empty();
+            }
+            List<AgentContext.PlanItem> items = plan.stream().map(PlanState::restore).toList();
+            int index = currentPlanIndex == null ? 0 : currentPlanIndex;
+            int boundedIndex = Math.max(0, Math.min(index, Math.max(0, items.size() - 1)));
+            return Optional.of(new LegacyPlanSeed(items, boundedIndex));
+        }
+    }
+
+    public record LegacyPlanSeed(List<AgentContext.PlanItem> items, int currentPlanIndex) {
+        public LegacyPlanSeed {
+            items = items == null ? List.of() : List.copyOf(items);
         }
     }
 
@@ -212,13 +230,6 @@ public final class AgentCheckpointStore {
         private String description;
         private boolean completed;
 
-        private static PlanState capture(AgentContext.PlanItem item) {
-            PlanState state = new PlanState();
-            state.title = item == null ? "" : safe(item.getTitle());
-            state.description = item == null ? "" : safe(item.getDescription());
-            state.completed = item != null && item.isCompleted();
-            return state;
-        }
 
         private AgentContext.PlanItem restore() {
             return new AgentContext.PlanItem(title, description, completed);

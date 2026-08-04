@@ -25,6 +25,11 @@ class AgentRunSchemaTest {
         assertTrue(schema.contains("idx_agent_run_artifact_task"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS t_agent_run_outbox"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS t_agent_run_interaction"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS t_agent_run_plan_item"));
+        assertTrue(schema.contains("uk_agent_run_plan_task_position"));
+        assertTrue(schema.contains("idx_agent_run_plan_task_status"));
+        assertTrue(schema.contains("execution_epoch BIGINT NOT NULL"));
+        assertTrue(schema.contains("plan_revision BIGINT NOT NULL"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS t_command_approval"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS t_command_audit_event"));
         assertTrue(schema.contains("uk_command_audit_approval_idempotency"));
