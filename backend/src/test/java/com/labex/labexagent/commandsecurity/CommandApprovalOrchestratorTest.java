@@ -98,6 +98,7 @@ class CommandApprovalOrchestratorTest {
 
         org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("resuming");
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_STARTED"), any(), any());
+        verify(audit).recordExecutionStarted(approval);
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_COMPLETED"), any(), any());
         verify(resumeScheduler).resumeIfWaiting(approval);
         verify(metadataRefresh).schedule(eq(7), eq(12), eq("command_approval"));

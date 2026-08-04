@@ -126,6 +126,7 @@ public class CommandApprovalOrchestrator {
             lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_EXECUTION_STARTED",
                     publicPayload(approval, Map.of("resumeAgentLoop", false)),
                     lifecycleKey(approval, "execution-started"));
+            auditService.recordExecutionStarted(approval);
             log.info("COMMAND_APPROVAL_PROCESS_STARTED taskId={} projectId={} approvalId={} workingDirectory={}",
                     approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory());
             long processStartedNanos = System.nanoTime();

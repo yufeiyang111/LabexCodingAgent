@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.labexagent.commandsecurity.CommandApprovalService;
+import com.labex.labexagent.commandsecurity.CommandAuditService;
 import com.labex.labexagent.context.AgentCompactionRecord;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.mapper.AgentTaskMapper;
@@ -37,6 +38,7 @@ public class AgentRunRecoveryService {
     private final AgentCompactionService compactionService;
     private final CommandApprovalService commandApprovalService;
     private final AgentRunTranscriptService transcriptService;
+    private final CommandAuditService commandAuditService;
 
     public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
                                    AgentRunExecutionLeaseService executionLeaseService,
@@ -45,7 +47,7 @@ public class AgentRunRecoveryService {
                                    AgentRunMessageService messageService,
                                    AgentCompactionService compactionService) {
         this(taskMapper, lifecycleService, executionLeaseService, takeoverScheduler, partService,
-                messageService, compactionService, null, null);
+                messageService, compactionService, null, null, null);
     }
 
     @Autowired
@@ -56,7 +58,8 @@ public class AgentRunRecoveryService {
                                    AgentRunMessageService messageService,
                                    AgentCompactionService compactionService,
                                    CommandApprovalService commandApprovalService,
-                                   AgentRunTranscriptService transcriptService) {
+                                   AgentRunTranscriptService transcriptService,
+                                   CommandAuditService commandAuditService) {
         this.taskMapper = taskMapper;
         this.lifecycleService = lifecycleService;
         this.executionLeaseService = executionLeaseService;
@@ -66,6 +69,7 @@ public class AgentRunRecoveryService {
         this.compactionService = compactionService;
         this.commandApprovalService = commandApprovalService;
         this.transcriptService = transcriptService;
+        this.commandAuditService = commandAuditService;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -241,6 +245,14 @@ public class AgentRunRecoveryService {
                     || approval.getToolCallId().isBlank()
                     || transcriptService.hasPersistedToolResult(task.getTaskId(), approval.getToolCallId())) {
                 return;
+            }
+            if (commandAuditService != null) {
+                com.labex.entity.CommandAuditEvent latest =
+                        commandAuditService.findLatestExecutionOutcome(approval.getApprovalId());
+                if (latest != null && !"claimed".equals(latest.getExecutionStatus())
+                        && !"running".equals(latest.getExecutionStatus())) {
+                    return;
+                }
             }
             lifecycleService.appendEventIfCurrent(
                     task.getTaskId(),

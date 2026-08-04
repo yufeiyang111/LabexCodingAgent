@@ -17,6 +17,26 @@ import org.junit.jupiter.api.Test;
 class CommandAuditServiceTest {
 
     @Test
+    void persistsAIdempotentRunningExecutionMarkerBeforeProcessStarts() {
+        CommandAuditEventMapper mapper = mock(CommandAuditEventMapper.class);
+        when(mapper.selectOne(any())).thenReturn(null);
+        when(mapper.insert(any(CommandAuditEvent.class))).thenAnswer(invocation -> {
+            CommandAuditEvent event = invocation.getArgument(0);
+            event.setEventId(2L);
+            return 1;
+        });
+        CommandAuditService service = new CommandAuditService(mapper);
+
+        CommandAuditEvent event = service.recordExecutionStarted(approval());
+
+        assertThat(event.getEventType()).isEqualTo("EXECUTION_STARTED");
+        assertThat(event.getExecutionStatus()).isEqualTo("running");
+        assertThat(event.getIdempotencyKey()).contains("execution-started");
+        assertThat(event.getOutputDigest()).isNull();
+        verify(mapper).insert(event);
+    }
+
+    @Test
     void persistsOnlyDigestAndBoundedExecutionMetadata() {
         CommandAuditEventMapper mapper = mock(CommandAuditEventMapper.class);
         when(mapper.selectOne(any())).thenReturn(null);

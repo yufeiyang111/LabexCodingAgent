@@ -40,6 +40,12 @@ public class CommandAuditService {
                 eventKey(approval, "execution-claimed"));
     }
 
+    /** Records the durable command execution boundary before the worker process is started. */
+    public CommandAuditEvent recordExecutionStarted(CommandApproval approval) {
+        return record(approval, "EXECUTION_STARTED", "", "running", null, null, null,
+                eventKey(approval, "execution-started"));
+    }
+
     public CommandAuditEvent recordExecutionOutcome(CommandApproval approval,
                                                      ProcessExecutionResult result,
                                                      long durationMs) {
