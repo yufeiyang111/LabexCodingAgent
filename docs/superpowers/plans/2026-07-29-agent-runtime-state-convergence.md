@@ -265,3 +265,28 @@ node --test src/composables/agentHistoryReducer.test.mjs src/composables/useAgen
 - 旧并列路径已删除或明确降级为只读兼容投影；
 - 后端测试、前端测试、构建和 live fault-injection 全部有证据；
 - 文档不再把“已有部分落地”写成“已完成 OpenCode 等价对齐”。
+
+## 13. 执行进度（截至 2026-08-04）
+
+### 第 71 轮进度：conversation compaction authority shadow 已完成
+
+已完成：
+
+- conversation transcript 可以只从 `AgentTask.request_payload` 与 `AgentRunMessage(assistant:final)` 投影；
+- `AgentCompactionRecord` 已区分 `scope=task` 与 `scope=conversation`；
+- conversation compaction 已持久化 head、tail、summary、sourceMaxTaskId、epoch 和 execution epoch，并拒绝不降低估算 token 的伪压缩；
+- conversation 行锁、`expectedPreviousCompactionId` 和 running-record 检查已阻止并发旧快照写入；
+- 手动压缩 task 已接入 execution lease 与 heartbeat，并以 lease 获取作为 cancellation token 注册和 durable commit 的终态围栏；
+- 旧 `COMPACTION_SUMMARY` 已降级为带 `authority=agent_compaction_record`、`projectionOnly=true` 的兼容投影；
+- 后端 993 项测试、前端生产构建和隔离 H2/Spring JVM/HTTP/SSE/restart 系统验收已通过。
+
+证据文档：`docs/iterations/2026-08-04-iteration-71-durable-conversation-compaction-shadow.md`。
+
+尚未完成，因此本计划仍不能标记为全部完成：
+
+- fork 仍以 `AgentMessage` 历史为兼容事实；
+- `AgentLoopEngine.buildMemoryContext(...)` 尚未切到 conversation compaction projector；
+- 新旧 conversation memory 尚未完成 shadow compare 与读路径切换；
+- 旧 `AgentConversationService.compactConversation(...)` 尚未删除。
+
+下一轮的停止边界是：先补 fork 的 durable checkpoint 语义和 shadow compare，证明旧会话/新会话/fork/重复压缩一致后，再切 Provider memory 读取；不得绕过该顺序直接删除旧表读取。

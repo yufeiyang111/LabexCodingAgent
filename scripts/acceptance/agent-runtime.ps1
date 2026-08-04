@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [int]$BackendPort = 18080,
     [string]$JarPath = '',
@@ -72,6 +72,9 @@ $evidence = [ordered]@{
     runMessagePartProjection = $false
     toolPartAuthority = $false
     manualCompaction = $false
+    manualCompactionAuthority = $false
+    manualCompactionSourceMaxTaskId = $null
+    manualCompactionExecutionEpoch = $null
     compactionEpochRecovery = $false
     compactionCancellationTerminal = $false
     compactionCancellationElapsedMs = $null
@@ -436,6 +439,7 @@ try {
         configName = 'Acceptance Scripted'; provider = 'acceptance_scripted'; modelName = 'acceptance-only'
         apiKey = 'acceptance-placeholder-not-a-secret'; baseUrl = 'acceptance://scripted'; maxTokens = 4096; contextWindowTokens = 32768
         temperature = 0.0; isDefault = $true; promptCacheKeyEnabled = $false
+        compactionTailTurns = 2; compactionPreserveRecentTokens = 4000
         reasoningEffort = 'medium'; imageInputEnabled = $false
     }
     $configId = [int]$config.configId
@@ -1287,15 +1291,64 @@ WHERE compaction_id = (
     $compactionConfigId = $null
     $configId = $originalConfigId
 
-    $seedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed]'
+    $seedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed-1]'
     $seedDone = Get-RequiredEvent -Events $seedEvents -Type 'DONE'
     $seedTaskId = [long](($seedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
     $seedTask = Wait-TaskTerminal -TaskId $seedTaskId
     $conversationId = [string]$seedTask.conversationId
+    $secondSeedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed-2]' -ConversationId $conversationId
+    $secondSeedDone = Get-RequiredEvent -Events $secondSeedEvents -Type 'DONE'
+    $secondSeedTaskId = [long](($secondSeedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
+    $secondSeedTask = Wait-TaskTerminal -TaskId $secondSeedTaskId
+    $thirdSeedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed-3]' -ConversationId $conversationId
+    $thirdSeedDone = Get-RequiredEvent -Events $thirdSeedEvents -Type 'DONE'
+    $thirdSeedTaskId = [long](($thirdSeedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
+    $thirdSeedTask = Wait-TaskTerminal -TaskId $thirdSeedTaskId
+    $fourthSeedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed-4]' -ConversationId $conversationId
+    $fourthSeedDone = Get-RequiredEvent -Events $fourthSeedEvents -Type 'DONE'
+    $fourthSeedTaskId = [long](($fourthSeedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
+    $fourthSeedTask = Wait-TaskTerminal -TaskId $fourthSeedTaskId
+    $fifthSeedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed-5]' -ConversationId $conversationId
+    $fifthSeedDone = Get-RequiredEvent -Events $fifthSeedEvents -Type 'DONE'
+    $fifthSeedTaskId = [long](($fifthSeedEvents | Where-Object { $_.data.taskId } | Select-Object -First 1).data.taskId)
+    $fifthSeedTask = Wait-TaskTerminal -TaskId $fifthSeedTaskId
     $compaction = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$conversationId/compact" -Method POST -Body @{ modelConfigId = $configId }
-    $compactionTask = Wait-TaskTerminal -TaskId ([long]$compaction.taskId)
-    if ($compactionTask.status -ne 'completed') { throw "压缩任务状态为 $($compactionTask.status)。" }
+    $compactionTaskId = [long]$compaction.taskId
+    $compactionTask = Wait-TaskTerminal -TaskId $compactionTaskId
+    if ($compactionTask.status -ne 'completed') {
+        $compactionFailure = $compactionTask | ConvertTo-Json -Depth 10 -Compress
+        throw "Manual compaction task status was $($compactionTask.status): $compactionFailure"
+    }
+    $conversationCompactionCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_compaction_record WHERE task_id = $compactionTaskId " +
+        "AND scope = 'conversation' AND status = 'completed' AND source_max_task_id = $fifthSeedTaskId " +
+        "AND source_max_sequence = -1 AND estimated_tokens_after < estimated_tokens_before " +
+        "AND LENGTH(summary) > 0 AND LENGTH(compacted_head) > 2 AND LENGTH(retained_tail) > 2")
+    if ($conversationCompactionCount -ne 1) {
+        throw 'Manual compaction did not persist one completed conversation-scope authority record with the stable task boundary.'
+    }
+    $recordExecutionEpoch = Get-AcceptanceSqlScalar -Sql "SELECT execution_epoch FROM t_agent_compaction_record WHERE task_id = $compactionTaskId AND scope = 'conversation'"
+    $taskExecutionEpoch = Get-AcceptanceSqlScalar -Sql "SELECT execution_epoch FROM t_agent_task WHERE task_id = $compactionTaskId"
+    if ($recordExecutionEpoch -le 0 -or $recordExecutionEpoch -ne $taskExecutionEpoch) {
+        throw "Manual compaction record was not fenced by the task execution lease: record=$recordExecutionEpoch task=$taskExecutionEpoch"
+    }
+    $legacyProjectionCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$conversationId' " +
+        "AND event_type = 'COMPACTION_SUMMARY' AND event_data LIKE '%agent_compaction_record%' " +
+        "AND event_data LIKE '%projectionOnly%' AND event_data LIKE '%$compactionTaskId%'")
+    if ($legacyProjectionCount -lt 1) {
+        throw 'Manual compaction did not write the authority-tagged legacy compatibility projection.'
+    }
+    $compactionAudit = @($compactionTask.compactions | Where-Object {
+        [string]$_.scope -eq 'conversation' -and [long]$_.sourceMaxTaskId -eq $fifthSeedTaskId
+    })
+    if ($compactionAudit.Count -ne 1) {
+        throw 'Task detail did not expose the safe conversation-scope compaction audit projection.'
+    }
     $evidence.manualCompaction = $true
+    $evidence.manualCompactionAuthority = $true
+    $evidence.manualCompactionSourceMaxTaskId = $fifthSeedTaskId
+    $evidence.manualCompactionExecutionEpoch = $recordExecutionEpoch
 
     if ($compactionConfigId) { Invoke-ApiData -Path "/student/model-configs/$compactionConfigId" -Method DELETE | Out-Null; $compactionConfigId = $null }
     if ($smallConfigId) { Invoke-ApiData -Path "/student/model-configs/$smallConfigId" -Method DELETE | Out-Null; $smallConfigId = $null }
@@ -1338,13 +1391,3 @@ WHERE compaction_id = (
     try { Stop-AcceptanceDatabase } catch { Write-Warning "Acceptance database shutdown failed: $($_.Exception.Message)" }
     try { Remove-OwnedWorkspace } catch { Write-Warning "Acceptance workspace cleanup failed: $($_.Exception.Message)" }
 }
-
-
-
-
-
-
-
-
-
-

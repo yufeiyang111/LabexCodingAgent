@@ -13,6 +13,8 @@ public class AgentCompactionRecord {
     private Long compactionId;
     @TableField("task_id")
     private Long taskId;
+    @TableField("scope")
+    private String scope;
     @TableField("conversation_id")
     private String conversationId;
     @TableField("student_id")
@@ -41,6 +43,8 @@ public class AgentCompactionRecord {
     private Integer retainedTurns;
     @TableField("source_max_sequence")
     private Long sourceMaxSequence;
+    @TableField("source_max_task_id")
+    private Long sourceMaxTaskId;
     @TableField("estimated_tokens_before")
     private Integer estimatedTokensBefore;
     @TableField("estimated_tokens_after")
@@ -60,6 +64,8 @@ public class AgentCompactionRecord {
     public void setCompactionId(Long value) { compactionId = value; }
     public Long getTaskId() { return taskId; }
     public void setTaskId(Long value) { taskId = value; }
+    public String getScope() { return scope; }
+    public void setScope(String value) { scope = value; }
     public String getConversationId() { return conversationId; }
     public void setConversationId(String value) { conversationId = value; }
     public Integer getStudentId() { return studentId; }
@@ -88,6 +94,8 @@ public class AgentCompactionRecord {
     public void setRetainedTurns(Integer value) { retainedTurns = value; }
     public Long getSourceMaxSequence() { return sourceMaxSequence; }
     public void setSourceMaxSequence(Long value) { sourceMaxSequence = value; }
+    public Long getSourceMaxTaskId() { return sourceMaxTaskId; }
+    public void setSourceMaxTaskId(Long value) { sourceMaxTaskId = value; }
     public Integer getEstimatedTokensBefore() { return estimatedTokensBefore; }
     public void setEstimatedTokensBefore(Integer value) { estimatedTokensBefore = value; }
     public Integer getEstimatedTokensAfter() { return estimatedTokensAfter; }

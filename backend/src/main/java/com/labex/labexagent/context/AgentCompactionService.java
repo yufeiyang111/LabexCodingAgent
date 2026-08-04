@@ -5,7 +5,9 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.labex.labexagent.runtime.AgentProviderMessageProjector;
+import com.labex.entity.AgentConversation;
 import com.labex.mapper.AgentCompactionRecordMapper;
+import com.labex.mapper.AgentConversationMapper;
 import java.lang.reflect.Type;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -15,20 +17,30 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.LongFunction;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /** 持久化 compaction epoch，并从最新完成记录重建 Provider 投影。 */
 @Service
 public class AgentCompactionService {
+    public static final String SCOPE_TASK = "task";
+    public static final String SCOPE_CONVERSATION = "conversation";
     private static final Gson GSON = new Gson();
     private static final Type MESSAGE_LIST = new TypeToken<List<Map<String, Object>>>() { }.getType();
 
     private final AgentCompactionRecordMapper mapper;
+    private final AgentConversationMapper conversationMapper;
     private final AgentProviderMessageProjector projector = new AgentProviderMessageProjector();
 
     public AgentCompactionService(AgentCompactionRecordMapper mapper) {
+        this(mapper, null);
+    }
+
+    @Autowired
+    public AgentCompactionService(AgentCompactionRecordMapper mapper, AgentConversationMapper conversationMapper) {
         this.mapper = mapper;
+        this.conversationMapper = conversationMapper;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -44,6 +56,7 @@ public class AgentCompactionService {
                 ? 1L : latest.getCompactionEpoch() + 1L;
         AgentCompactionRecord record = new AgentCompactionRecord();
         record.setTaskId(request.taskId());
+        record.setScope(SCOPE_TASK);
         record.setConversationId(request.conversationId());
         record.setStudentId(request.studentId());
         record.setProjectId(request.projectId());
@@ -57,11 +70,75 @@ public class AgentCompactionService {
         record.setTailStartIndex(request.selection().tailStartIndex());
         record.setRetainedTurns(request.selection().retainedTurns());
         record.setSourceMaxSequence(Math.max(-1L, request.sourceMaxSequence()));
+        record.setSourceMaxTaskId(null);
         record.setEstimatedTokensBefore(Math.max(0, request.estimatedTokensBefore()));
         record.setModelWindowTokens(Math.max(0, request.modelWindowTokens()));
         record.setReservedOutputTokens(Math.max(0, request.reservedOutputTokens()));
         if (mapper.insert(record) != 1 || record.getCompactionId() == null) {
             throw new IllegalStateException("Unable to persist compaction start record");
+        }
+        return record;
+    }
+
+    /** 为跨任务会话历史创建独立的持久化压缩 epoch。 */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentCompactionRecord startConversation(ConversationStartRequest request) {
+        if (request == null || request.taskId() == null || request.taskId() <= 0) {
+            throw new IllegalArgumentException("Conversation compaction task id is required");
+        }
+        if (request.conversationId() == null || request.conversationId().isBlank()) {
+            throw new IllegalArgumentException("Conversation compaction conversation id is required");
+        }
+        if (request.studentId() == null || request.projectId() == null) {
+            throw new IllegalArgumentException("Conversation compaction ownership is required");
+        }
+        if (request.selection() == null || !request.selection().changed()) {
+            throw new IllegalArgumentException("Compaction requires a non-empty head and retained tail");
+        }
+        if (conversationMapper == null) {
+            throw new IllegalStateException("Conversation compaction lock mapper is unavailable");
+        }
+        AgentConversation locked = conversationMapper.selectOwnedForUpdate(
+                request.studentId(), request.projectId(), request.conversationId());
+        if (locked == null) {
+            throw new IllegalArgumentException("Conversation not found");
+        }
+        AgentCompactionRecord latest = latestConversation(
+                request.studentId(), request.projectId(), request.conversationId(), null);
+        if (latest != null && "running".equalsIgnoreCase(latest.getStatus())) {
+            throw new IllegalStateException("Conversation compaction is already running");
+        }
+        AgentCompactionRecord latestCompleted = latest != null && "completed".equalsIgnoreCase(latest.getStatus())
+                ? latest
+                : latestConversation(request.studentId(), request.projectId(), request.conversationId(), "completed");
+        Long actualPreviousId = latestCompleted == null ? null : latestCompleted.getCompactionId();
+        if (!Objects.equals(request.expectedPreviousCompactionId(), actualPreviousId)) {
+            throw new IllegalStateException("Conversation compaction snapshot is stale");
+        }
+        long nextEpoch = latest == null || latest.getCompactionEpoch() == null
+                ? 1L : latest.getCompactionEpoch() + 1L;
+        AgentCompactionRecord record = new AgentCompactionRecord();
+        record.setTaskId(request.taskId());
+        record.setScope(SCOPE_CONVERSATION);
+        record.setConversationId(request.conversationId());
+        record.setStudentId(request.studentId());
+        record.setProjectId(request.projectId());
+        record.setExecutionEpoch(Math.max(0L, request.executionEpoch()));
+        record.setCompactionEpoch(nextEpoch);
+        record.setTriggerReason(safe(request.triggerReason()));
+        record.setStatus("running");
+        record.setPreviousSummary(safe(request.previousSummary()));
+        record.setCompactedHead(GSON.toJson(request.selection().compactedHead()));
+        record.setRetainedTail(GSON.toJson(request.selection().retainedTail()));
+        record.setTailStartIndex(request.selection().tailStartIndex());
+        record.setRetainedTurns(request.selection().retainedTurns());
+        record.setSourceMaxSequence(-1L);
+        record.setSourceMaxTaskId(Math.max(0L, request.sourceMaxTaskId()));
+        record.setEstimatedTokensBefore(Math.max(0, request.estimatedTokensBefore()));
+        record.setModelWindowTokens(Math.max(0, request.modelWindowTokens()));
+        record.setReservedOutputTokens(Math.max(0, request.reservedOutputTokens()));
+        if (mapper.insert(record) != 1 || record.getCompactionId() == null) {
+            throw new IllegalStateException("Unable to persist conversation compaction start record");
         }
         return record;
     }
@@ -125,11 +202,15 @@ public class AgentCompactionService {
     }
 
     private UpdateWrapper<AgentCompactionRecord> finalizationUpdate(AgentCompactionRecord record) {
-        return new UpdateWrapper<AgentCompactionRecord>()
+        UpdateWrapper<AgentCompactionRecord> update = new UpdateWrapper<AgentCompactionRecord>()
                 .eq("compaction_id", record.getCompactionId())
                 .eq("task_id", record.getTaskId())
                 .eq("compaction_epoch", record.getCompactionEpoch())
                 .eq("status", "running");
+        if (record.getScope() != null && !record.getScope().isBlank()) {
+            update.eq("scope", record.getScope());
+        }
+        return update;
     }
 
     private boolean sameCompletedResult(AgentCompactionRecord persisted, AgentCompactionRecord requested,
@@ -151,7 +232,8 @@ public class AgentCompactionService {
         return persisted != null
                 && Objects.equals(persisted.getCompactionId(), requested.getCompactionId())
                 && Objects.equals(persisted.getTaskId(), requested.getTaskId())
-                && Objects.equals(persisted.getCompactionEpoch(), requested.getCompactionEpoch());
+                && Objects.equals(persisted.getCompactionEpoch(), requested.getCompactionEpoch())
+                && Objects.equals(scopeOf(persisted), scopeOf(requested));
     }
 
     private void applyCompleted(AgentCompactionRecord record, String summary, int estimatedTokensAfter,
@@ -194,6 +276,38 @@ public class AgentCompactionService {
         return latestCompleted(taskId).map(AgentCompactionRecord::getSummary).orElse("");
     }
 
+    public Optional<AgentCompactionRecord> latestCompletedConversation(Integer studentId, Integer projectId,
+                                                                        String conversationId) {
+        if (studentId == null || projectId == null || conversationId == null || conversationId.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(latestConversation(studentId, projectId, conversationId, "completed"));
+    }
+
+    public String previousConversationSummary(Integer studentId, Integer projectId, String conversationId) {
+        return latestCompletedConversation(studentId, projectId, conversationId)
+                .map(AgentCompactionRecord::getSummary).orElse("");
+    }
+
+    /** 从指定的已完成会话压缩记录与边界后的新任务重建 Provider 投影。 */
+    public ConversationProjection projectConversation(AgentCompactionRecord record,
+                                                      List<Map<String, Object>> appendedMessages) {
+        if (record == null || !SCOPE_CONVERSATION.equalsIgnoreCase(scopeOf(record))
+                || !"completed".equalsIgnoreCase(record.getStatus())
+                || record.getSummary() == null || record.getSummary().isBlank()) {
+            throw new IllegalArgumentException("Completed conversation compaction record is required");
+        }
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "user", "content", record.getSummary()));
+        messages.addAll(parseMessages(record.getRetainedTail(), true));
+        if (appendedMessages != null) {
+            messages.addAll(appendedMessages);
+        }
+        return new ConversationProjection(projector.project(messages),
+                record.getCompactionEpoch() == null ? 0L : record.getCompactionEpoch(),
+                record.getSourceMaxTaskId() == null ? 0L : record.getSourceMaxTaskId());
+    }
+
     public Optional<Projection> projectLatest(Long taskId,
                                               LongFunction<List<Map<String, Object>>> appendedMessageLoader) {
         return projectLatestInternal(taskId, appendedMessageLoader, true);
@@ -233,12 +347,14 @@ public class AgentCompactionService {
     private Map<String, Object> publicRecord(AgentCompactionRecord record) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("compactionId", record.getCompactionId());
+        result.put("scope", scopeOf(record));
         result.put("executionEpoch", record.getExecutionEpoch());
         result.put("compactionEpoch", record.getCompactionEpoch());
         result.put("triggerReason", record.getTriggerReason());
         result.put("status", record.getStatus());
         result.put("retainedTurns", record.getRetainedTurns());
         result.put("sourceMaxSequence", record.getSourceMaxSequence());
+        result.put("sourceMaxTaskId", record.getSourceMaxTaskId());
         result.put("estimatedTokensBefore", record.getEstimatedTokensBefore());
         result.put("estimatedTokensAfter", record.getEstimatedTokensAfter());
         result.put("modelWindowTokens", record.getModelWindowTokens());
@@ -251,7 +367,22 @@ public class AgentCompactionService {
 
     private AgentCompactionRecord latest(Long taskId, String status) {
         LambdaQueryWrapper<AgentCompactionRecord> query = new LambdaQueryWrapper<AgentCompactionRecord>()
-                .eq(AgentCompactionRecord::getTaskId, taskId);
+                .eq(AgentCompactionRecord::getTaskId, taskId)
+                .eq(AgentCompactionRecord::getScope, SCOPE_TASK);
+        if (status != null) {
+            query.eq(AgentCompactionRecord::getStatus, status);
+        }
+        query.orderByDesc(AgentCompactionRecord::getCompactionEpoch).last("LIMIT 1");
+        return mapper.selectOne(query);
+    }
+
+    private AgentCompactionRecord latestConversation(Integer studentId, Integer projectId,
+                                                       String conversationId, String status) {
+        LambdaQueryWrapper<AgentCompactionRecord> query = new LambdaQueryWrapper<AgentCompactionRecord>()
+                .eq(AgentCompactionRecord::getStudentId, studentId)
+                .eq(AgentCompactionRecord::getProjectId, projectId)
+                .eq(AgentCompactionRecord::getConversationId, conversationId)
+                .eq(AgentCompactionRecord::getScope, SCOPE_CONVERSATION);
         if (status != null) {
             query.eq(AgentCompactionRecord::getStatus, status);
         }
@@ -279,6 +410,11 @@ public class AgentCompactionService {
         return value == null ? "" : value;
     }
 
+    private static String scopeOf(AgentCompactionRecord record) {
+        return record == null || record.getScope() == null || record.getScope().isBlank()
+                ? SCOPE_TASK : record.getScope();
+    }
+
     public record StartRequest(Long taskId,
                                String conversationId,
                                Integer studentId,
@@ -291,6 +427,30 @@ public class AgentCompactionService {
                                int estimatedTokensBefore,
                                int modelWindowTokens,
                                int reservedOutputTokens) {
+    }
+
+    public record ConversationStartRequest(Long taskId,
+                                           String conversationId,
+                                           Integer studentId,
+                                           Integer projectId,
+                                           long executionEpoch,
+                                           String triggerReason,
+                                           Long expectedPreviousCompactionId,
+                                           String previousSummary,
+                                           CompactionSelection selection,
+                                           long sourceMaxTaskId,
+                                           int estimatedTokensBefore,
+                                           int modelWindowTokens,
+                                           int reservedOutputTokens) {
+    }
+
+    public record ConversationProjection(List<Map<String, Object>> messages,
+                                         long compactionEpoch,
+                                         long sourceMaxTaskId) {
+        public ConversationProjection {
+            messages = List.copyOf(messages == null ? List.of() : messages);
+            sourceMaxTaskId = Math.max(0L, sourceMaxTaskId);
+        }
     }
 
     public record Projection(List<Map<String, Object>> messages,

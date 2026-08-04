@@ -2,6 +2,8 @@ package com.labex.labexagent.service;
 
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.AgentRunLeaseHeartbeatService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.service.StudentProjectService;
@@ -19,32 +21,42 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class ManualCompactionTaskRunner {
-    private final AgentConversationService conversations;
+    private final AgentConversationCompactionService compactions;
     private final AgentTaskService tasks;
     private final AgentRunLifecycleService lifecycle;
     private final StudentProjectService projects;
     private final AgentCancellationRegistry cancellations;
+    private final AgentRunExecutionLeaseService leases;
+    private final AgentRunLeaseHeartbeatService heartbeats;
     private final ExecutorService executor;
 
     @Autowired
-    public ManualCompactionTaskRunner(AgentConversationService conversations, AgentTaskService tasks,
+    public ManualCompactionTaskRunner(AgentConversationCompactionService compactions, AgentTaskService tasks,
                                       AgentRunLifecycleService lifecycle, StudentProjectService projects,
-                                      AgentCancellationRegistry cancellations) {
-        this(conversations, tasks, lifecycle, projects, cancellations, Executors.newSingleThreadExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "labex-manual-compaction");
-            thread.setDaemon(true);
-            return thread;
-        }));
+                                      AgentCancellationRegistry cancellations,
+                                      AgentRunExecutionLeaseService leases,
+                                      AgentRunLeaseHeartbeatService heartbeats) {
+        this(compactions, tasks, lifecycle, projects, cancellations, leases, heartbeats,
+                Executors.newSingleThreadExecutor(runnable -> {
+                    Thread thread = new Thread(runnable, "labex-manual-compaction");
+                    thread.setDaemon(true);
+                    return thread;
+                }));
     }
 
-    ManualCompactionTaskRunner(AgentConversationService conversations, AgentTaskService tasks,
+    ManualCompactionTaskRunner(AgentConversationCompactionService compactions, AgentTaskService tasks,
                                AgentRunLifecycleService lifecycle, StudentProjectService projects,
-                               AgentCancellationRegistry cancellations, ExecutorService executor) {
-        this.conversations = conversations;
+                               AgentCancellationRegistry cancellations,
+                               AgentRunExecutionLeaseService leases,
+                               AgentRunLeaseHeartbeatService heartbeats,
+                               ExecutorService executor) {
+        this.compactions = compactions;
         this.tasks = tasks;
         this.lifecycle = lifecycle;
         this.projects = projects;
         this.cancellations = cancellations;
+        this.leases = leases;
+        this.heartbeats = heartbeats;
         this.executor = executor;
     }
 
@@ -61,9 +73,16 @@ public class ManualCompactionTaskRunner {
         if (current == null || "cancelled".equalsIgnoreCase(current.getStatus())) {
             return;
         }
-        AgentCancellationRegistry.ActiveRun activeRun = cancellations.register(task.getSessionId(), studentId, projectId,
-                task.getTaskId());
+        AgentRunExecutionLeaseService.ExecutionLease executionLease = null;
+        AgentCancellationRegistry.ActiveRun activeRun = null;
         try {
+            executionLease = leases.acquire(task.getTaskId());
+            if (executionLease == null) {
+                return;
+            }
+            activeRun = cancellations.register(task.getSessionId(), studentId, projectId, task.getTaskId());
+            task.setExecutionEpoch(executionLease.epoch());
+            heartbeats.track(executionLease, task.getSessionId());
             tasks.updateTask(task.getTaskId(), "preparing", "Preparing context compaction", "Preparing checkpoint");
             lifecycle.appendEvent(task.getTaskId(), "COMPACTION_STARTED",
                     Map.of("taskId", task.getTaskId(), "sessionId", task.getSessionId(), "strategy", "manual",
@@ -74,12 +93,13 @@ public class ManualCompactionTaskRunner {
             lifecycle.appendEvent(task.getTaskId(), "COMPACTION_PROGRESS",
                     Map.of("taskId", task.getTaskId(), "sessionId", task.getSessionId(), "phase", "model_summary"),
                     "manual-compaction-model-" + task.getTaskId());
-            AgentConversationService.ManualCompactionResult result = conversations.compactConversation(
-                    studentId, projectId, conversationId, modelConfigId, activeRun);
-            if (activeRun.isCancellationRequested()) throw new CancellationException("Manual compaction cancelled");
+            AgentConversationCompactionService.Result result = compactions.compact(
+                    studentId, projectId, conversationId, modelConfigId, task, activeRun);
             lifecycle.appendEvent(task.getTaskId(), "COMPACTION_COMPLETED", Map.of(
                     "taskId", task.getTaskId(), "sessionId", task.getSessionId(), "strategy", result.strategy(),
-                    "deterministicFallback", result.deterministicFallback()),
+                    "deterministicFallback", result.deterministicFallback(),
+                    "compactionId", result.compactionId(), "sourceMaxTaskId", result.sourceMaxTaskId(),
+                    "legacyProjectionWritten", result.legacyProjectionWritten()),
                     "manual-compaction-complete-" + task.getTaskId());
             tasks.updateTask(task.getTaskId(), "completed", "Context compaction completed", result.strategy());
         } catch (CancellationException cancelled) {
@@ -96,6 +116,10 @@ public class ManualCompactionTaskRunner {
                     "manual-compaction-failed-" + task.getTaskId());
             tasks.updateTask(task.getTaskId(), "failed", "Context compaction failed", reason);
         } finally {
+            if (executionLease != null) {
+                heartbeats.untrack(executionLease);
+                leases.release(executionLease);
+            }
             cancellations.complete(activeRun);
         }
     }

@@ -194,6 +194,7 @@ CREATE TABLE IF NOT EXISTS t_agent_run_part (
 CREATE TABLE IF NOT EXISTS t_agent_compaction_record (
     compaction_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     task_id BIGINT NOT NULL,
+    scope VARCHAR(24) NOT NULL DEFAULT 'task',
     conversation_id VARCHAR(64) DEFAULT NULL,
     student_id INT NOT NULL,
     project_id INT NOT NULL,
@@ -208,6 +209,7 @@ CREATE TABLE IF NOT EXISTS t_agent_compaction_record (
     tail_start_index INT NOT NULL DEFAULT 0,
     retained_turns INT NOT NULL DEFAULT 0,
     source_max_sequence BIGINT NOT NULL DEFAULT -1,
+    source_max_task_id BIGINT DEFAULT NULL,
     estimated_tokens_before INT NOT NULL DEFAULT 0,
     estimated_tokens_after INT DEFAULT NULL,
     model_window_tokens INT NOT NULL DEFAULT 0,
@@ -217,7 +219,9 @@ CREATE TABLE IF NOT EXISTS t_agent_compaction_record (
     update_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     UNIQUE KEY uk_agent_compaction_task_epoch (task_id, compaction_epoch),
     INDEX idx_agent_compaction_task_status (task_id, status, compaction_epoch),
-    INDEX idx_agent_compaction_conversation (conversation_id, compaction_epoch)
+    INDEX idx_agent_compaction_conversation (conversation_id, compaction_epoch),
+    INDEX idx_agent_compaction_conversation_scope
+        (conversation_id, student_id, project_id, scope, status, compaction_epoch)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE TABLE IF NOT EXISTS t_agent_change_set (
     change_set_id BIGINT AUTO_INCREMENT PRIMARY KEY,
