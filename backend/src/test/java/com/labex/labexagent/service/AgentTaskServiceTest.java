@@ -10,15 +10,19 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.google.gson.Gson;
 import com.labex.entity.AgentChangeSet;
 import com.labex.entity.AgentFileChange;
 import com.labex.entity.AgentTask;
+import com.labex.entity.StudentProject;
 import com.labex.mapper.AgentChangeSetMapper;
 import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.mapper.AgentTaskMapper;
 import com.labex.labexagent.run.BackgroundRunWorktreeService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import java.time.LocalDateTime;
+import java.util.Map;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -38,6 +42,27 @@ class AgentTaskServiceTest {
                     new MapperBuilderAssistant(new MybatisConfiguration(), ""),
                     AgentTask.class);
         }
+    }
+
+    @Test
+    void persistsProviderAndUserVisibleRequestsSeparately() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTaskService service = newTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class));
+        StudentProject project = new StudentProject();
+        project.setProjectId(3);
+        LocalDateTime submittedAt = LocalDateTime.of(2026, 8, 4, 20, 15);
+
+        AgentTask task = service.createTask(7, project, "conversation", "session", "build",
+                "Expanded provider review prompt", "/review src/App.vue", "src/App.vue", 17,
+                false, submittedAt);
+
+        Map<?, ?> payload = new Gson().fromJson(task.getRequestPayload(), Map.class);
+        assertEquals("Expanded provider review prompt", payload.get("message"));
+        assertEquals("/review src/App.vue", payload.get("displayMessage"));
+        assertEquals("/review src/App.vue", task.getTitle());
+        assertEquals(submittedAt, task.getSubmittedAt());
+        verify(taskMapper).insert(task);
     }
 
     @Test

@@ -108,14 +108,15 @@ public class StudentAgentController {
     }
 
     @GetMapping(value={"/conversations/{conversationId}/messages"})
-    public Result<AgentConversationService.MessagePage> messages(@PathVariable Integer projectId,
+    public Result<com.labex.labexagent.service.AgentConversationHistoryProjectionService.HistoryPage> messages(
+                                                                  @PathVariable Integer projectId,
                                                                   @PathVariable String conversationId,
-                                                                  @RequestParam(required=false) Long beforeMessageId,
+                                                                  @RequestParam(required=false) Long beforeTaskId,
                                                                   @RequestParam(defaultValue="20") int limit,
                                                                   Authentication auth) {
         try {
             return Result.success(this.conversationService.messagePage(this.getStudentId(auth), projectId,
-                    conversationId, beforeMessageId, limit));
+                    conversationId, beforeTaskId, limit));
         }
         catch (Exception e) {
             return Result.error((String)e.getMessage());

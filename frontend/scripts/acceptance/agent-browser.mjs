@@ -76,6 +76,20 @@ async function api(path, { method = 'GET', body, anonymous = false } = {}) {
   return payload.data
 }
 
+const DURABLE_HISTORY_PROJECTION_VERSION = 'durable-task-history-v1'
+
+function durableHistoryTurns(page, label = 'conversation history') {
+  if (page?.projectionVersion !== DURABLE_HISTORY_PROJECTION_VERSION || !Array.isArray(page?.turns)) {
+    throw new Error(`${label} did not return ${DURABLE_HISTORY_PROJECTION_VERSION}: ${JSON.stringify(page)}`)
+  }
+  return page.turns
+}
+
+function durableHistoryEvents(page, label) {
+  return durableHistoryTurns(page, label).flatMap(turn =>
+    (turn.events || []).map(event => ({ ...event, historyTaskId: turn.taskId, inherited: Boolean(turn.inherited) })))
+}
+
 async function taskEvents(taskId) {
   const path = `/student/projects/${projectId}/agent/tasks/${encodeURIComponent(taskId)}/events?lastEventId=0`
   const response = await fetch(`${apiBase}${path}`, {
@@ -638,11 +652,11 @@ async function runScenario() {
   const slashPromptHistory = await api(
     `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(slashPromptConversationId)}/messages?limit=50`
   )
-  const slashPromptUserEvent = (slashPromptHistory?.events || []).find(event =>
-    event.eventType === 'USER' && event.content === slashPromptInput
+  const slashPromptTurn = durableHistoryTurns(slashPromptHistory, 'slash prompt history').find(turn =>
+    Number(turn.taskId) === Number(slashPromptTask.taskId) && turn.userContent === slashPromptInput
   )
-  if (!slashPromptUserEvent) {
-    throw new Error(`Slash Agent prompt did not preserve the visible user input: ${JSON.stringify(slashPromptHistory)}`)
+  if (!slashPromptTurn) {
+    throw new Error(`Slash Agent prompt did not preserve the visible durable user turn: ${JSON.stringify(slashPromptHistory)}`)
   }
   const slashPromptProjection = await api(`/student/projects/${projectId}/agent/tasks/${slashPromptTask.taskId}`)
   const slashProviderPrompt = (slashPromptProjection?.runMessages || []).find(message =>
@@ -985,13 +999,16 @@ async function runScenario() {
       return bodyIncludes('one-time command approval decision was rejected')
     }, 'command approval same-task resume')
   } catch (error) {
-    const projectedEvents = (commandApprovalHistoryProjection?.events || []).map(event => {
-      let data = {}
-      try { data = JSON.parse(event.eventData || '{}') } catch {}
+    const projectedEvents = durableHistoryEvents(
+      commandApprovalHistoryProjection,
+      'command approval history'
+    ).map(event => {
+      const data = event?.data && typeof event.data === 'object' ? event.data : {}
       return {
-        messageId: event.messageId,
+        eventId: event.eventId,
+        taskId: event.historyTaskId,
         eventType: event.eventType,
-        state: data.state || data.status || data.taskStatus || '',
+        state: data.state || data.status || data.taskStatus || event.state || '',
         contentChars: String(data.content || '').length,
         expectedFinal: event.eventType === 'FINAL'
           && String(data.content || '').includes('one-time command approval decision was rejected')
@@ -1104,9 +1121,9 @@ async function runScenario() {
   const sourceBeforeManualPage = await api(
     `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/messages?limit=50`
   )
-  const sourceBeforeManualEvents = sourceBeforeManualPage?.events || []
-  const sourceLastMessageId = sourceBeforeManualEvents.reduce(
-    (latest, event) => Math.max(latest, Number(event.messageId) || 0),
+  const sourceBeforeManualTurns = durableHistoryTurns(sourceBeforeManualPage, 'source history before manual compaction')
+  const sourceLastTaskId = sourceBeforeManualTurns.reduce(
+    (latest, turn) => Math.max(latest, Number(turn.taskId) || 0),
     0
   )
   const tasksBeforeManualCompaction = await api(`/student/projects/${projectId}/agent/tasks`)
@@ -1136,14 +1153,26 @@ async function runScenario() {
   const sourceAfterManualPage = await api(
     `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/messages?limit=50`
   )
-  const sourceAfterManualEvents = sourceAfterManualPage?.events || []
-  const manualSummary = [...sourceAfterManualEvents].reverse().find(event =>
-    event.eventType === 'COMPACTION_SUMMARY'
-      && Number(event.messageId) > sourceLastMessageId
-      && String(event.content || '').includes('Compaction model: acceptance-compaction')
+  const sourceAfterManualTurns = durableHistoryTurns(sourceAfterManualPage, 'source history after manual compaction')
+  const manualCompactionTurn = sourceAfterManualTurns.find(turn =>
+    Number(turn.taskId) === Number(manualCompaction.taskId)
   )
-  if (!manualSummary) {
-    throw new Error('Manual compaction did not persist a new durable COMPACTION_SUMMARY message')
+  const manualCompactionEvent = (manualCompactionTurn?.events || []).find(event =>
+    event.eventType === 'COMPACTION_COMPLETED'
+  )
+  const manualConversationCompaction = (manualCompactionProjection?.compactions || []).find(record =>
+    record.status === 'completed' && record.scope === 'conversation'
+  )
+  if (!manualCompactionTurn
+      || !manualCompactionEvent
+      || Number(manualCompactionTurn.taskId) <= sourceLastTaskId
+      || !manualConversationCompaction
+      || Number(manualConversationCompaction.sourceMaxTaskId) <= 0) {
+    throw new Error(`Manual compaction did not persist its durable task/event/record graph: ${JSON.stringify({
+      manualCompactionTurn,
+      manualCompactionEvent,
+      compactions: manualCompactionProjection?.compactions || []
+    })}`)
   }
   const sourceConversation = (await api(`/student/projects/${projectId}/agent/conversations`))
     .find(conversation => conversation.conversationId === sourceConversationId)
@@ -1153,27 +1182,36 @@ async function runScenario() {
 
   const forkedConversation = await api(
     `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/fork`,
-    { method: 'POST', body: { messageId: manualSummary.messageId } }
+    { method: 'POST', body: { taskId: manualCompaction.taskId } }
   )
   if (!forkedConversation?.conversationId
       || forkedConversation.parentConversationId !== sourceConversationId
-      || Number(forkedConversation.forkedFromMessageId) !== Number(manualSummary.messageId)
+      || Number(forkedConversation.forkedFromTaskId) !== Number(manualCompaction.taskId)
       || Object.prototype.hasOwnProperty.call(forkedConversation, 'summary')) {
-    throw new Error(`Fork metadata retained the legacy summary or lost its cutoff: ${JSON.stringify(forkedConversation)}`)
+    throw new Error(`Fork metadata lost the durable task cutoff: ${JSON.stringify(forkedConversation)}`)
   }
   const forkedPage = await api(
     `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(forkedConversation.conversationId)}/messages?limit=50`
   )
-  const forkedSummary = (forkedPage?.events || []).find(event =>
-    event.eventType === 'COMPACTION_SUMMARY' && event.content === manualSummary.content
+  const forkedCompactionTurn = durableHistoryTurns(forkedPage, 'forked durable history').find(turn =>
+    Number(turn.taskId) === Number(manualCompaction.taskId) && turn.inherited === true
+  )
+  const forkedCompactionEvent = (forkedCompactionTurn?.events || []).find(event =>
+    event.eventType === 'COMPACTION_COMPLETED'
+  )
+  const sourceMemory = await api(
+    `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(sourceConversationId)}/memory`
   )
   const forkedMemory = await api(
     `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(forkedConversation.conversationId)}/memory`
   )
-  if (!forkedSummary || Number(forkedMemory?.estimatedTokens) <= 0 || forkedMemory?.needsCompact !== true) {
-    throw new Error(`Fork did not rebuild memory from the durable compaction message: ${JSON.stringify({
-      forkedSummary,
-      forkedMemory
+  if (!forkedCompactionEvent
+      || Number(forkedMemory?.estimatedTokens) <= 0
+      || Number(forkedMemory?.estimatedTokens) !== Number(sourceMemory?.estimatedTokens)) {
+    throw new Error(`Fork did not rebuild history and memory from the durable task boundary: ${JSON.stringify({
+      forkedCompactionTurn,
+      forkedMemory,
+      sourceMemory
     })}`)
   }
 
@@ -1197,7 +1235,7 @@ async function runScenario() {
       compactionEpoch: completedCompaction.compactionEpoch,
       manualCompactionTaskId: manualCompaction.taskId,
       forkedConversationId: forkedConversation.conversationId,
-      forkedSummaryMessageId: forkedSummary.messageId
+      forkedBoundaryTaskId: manualCompaction.taskId
     }, null, 2), 'utf8')
     await waitForRestartContinuation(restartHandoffDir)
     let restartedProjection = null
@@ -1235,18 +1273,22 @@ async function runScenario() {
     const restartedForkedPage = await api(
       `/student/projects/${projectId}/agent/conversations/${encodeURIComponent(forkedConversation.conversationId)}/messages?limit=50`
     )
-    const restartedForkedSummary = (restartedForkedPage?.events || []).find(event =>
-      event.eventType === 'COMPACTION_SUMMARY' && event.content === manualSummary.content
+    const restartedForkedCompactionTurn = durableHistoryTurns(
+      restartedForkedPage,
+      'restarted forked durable history'
+    ).find(turn => Number(turn.taskId) === Number(manualCompaction.taskId) && turn.inherited === true)
+    const restartedForkedCompactionEvent = (restartedForkedCompactionTurn?.events || []).find(event =>
+      event.eventType === 'COMPACTION_COMPLETED'
     )
     const restartedFork = (await api(`/student/projects/${projectId}/agent/conversations`))
       .find(conversation => conversation.conversationId === forkedConversation.conversationId)
     if (restartedManualCompaction?.status !== 'completed'
-        || !restartedForkedSummary
+        || !restartedForkedCompactionEvent
         || !restartedFork
         || Object.prototype.hasOwnProperty.call(restartedFork, 'summary')) {
       throw new Error(`Manual compaction/fork did not survive backend restart: ${JSON.stringify({
         manualStatus: restartedManualCompaction?.status,
-        restartedForkedSummary,
+        restartedForkedCompactionTurn,
         restartedFork
       })}`)
     }
@@ -1487,6 +1529,7 @@ async function runScenario() {
     permissionApprovalRefreshRecovery: true,
     multiToolPermissionBatchProtocolComplete: true,
     commandApprovalStableToolIdentity: true,
+    durableHistoryProjection: DURABLE_HISTORY_PROJECTION_VERSION,
     durableProviderMessages: providerMessages.length,
     durableProviderParts: providerParts.length,
     cursorKeys: cursorKeys.length,

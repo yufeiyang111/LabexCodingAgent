@@ -99,7 +99,7 @@ public class ManualCompactionTaskRunner {
                     "taskId", task.getTaskId(), "sessionId", task.getSessionId(), "strategy", result.strategy(),
                     "deterministicFallback", result.deterministicFallback(),
                     "compactionId", result.compactionId(), "sourceMaxTaskId", result.sourceMaxTaskId(),
-                    "legacyProjectionWritten", result.legacyProjectionWritten()),
+                    "conversationMetadataUpdated", result.conversationMetadataUpdated()),
                     "manual-compaction-complete-" + task.getTaskId());
             tasks.updateTask(task.getTaskId(), "completed", "Context compaction completed", result.strategy());
         } catch (CancellationException cancelled) {

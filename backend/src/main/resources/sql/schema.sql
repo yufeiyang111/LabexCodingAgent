@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS t_agent_conversation (
     forked_from_message_id BIGINT DEFAULT NULL,
     forked_from_task_id BIGINT DEFAULT NULL,
     compacted_at DATETIME DEFAULT NULL,
+    history_projection_version VARCHAR(32) DEFAULT NULL,
+    history_migrated_at DATETIME(3) DEFAULT NULL,
     status INT DEFAULT 1,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

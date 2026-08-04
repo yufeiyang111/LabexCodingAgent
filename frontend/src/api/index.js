@@ -33,7 +33,7 @@ export const projectApi = {
   agentConversations(projectId) {
     return request.get('/student/projects/' + projectId + '/agent/conversations')
   },
-  agentMessages(projectId, conversationId, params = {}) {
+  agentConversationHistory(projectId, conversationId, params = {}) {
     return request.get('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/messages', { params })
   },
   agentDeleteConversation(projectId, conversationId) {

@@ -47,6 +47,27 @@ class AgentConversationTranscriptProjectionServiceTest {
     }
 
     @Test
+    void keepsTheProviderExpandedPromptInTheModelTranscript() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunMessageMapper messageMapper = mock(AgentRunMessageMapper.class);
+        AgentTask slashTask = task(16L, "build", "completed", "Expanded provider review prompt");
+        slashTask.setRequestPayload(GSON.toJson(Map.of(
+                "message", "Expanded provider review prompt",
+                "displayMessage", "/review src/App.vue")));
+        when(taskMapper.selectList(any())).thenReturn(List.of(slashTask));
+        when(messageMapper.selectList(any())).thenReturn(List.of());
+        AgentConversationTranscriptProjectionService service =
+                new AgentConversationTranscriptProjectionService(taskMapper, messageMapper);
+
+        AgentConversationTranscriptProjectionService.Snapshot snapshot =
+                service.snapshot(7, 3, "conversation", 0L, null);
+
+        assertThat(snapshot.messages()).containsExactly(
+                Map.of("role", "user", "content", "Expanded provider review prompt"));
+        assertThat(snapshot.messages().toString()).doesNotContain("/review src/App.vue");
+    }
+
+    @Test
     void exposesAContinuationBoundaryInsteadOfSilentlyDroppingTasksAfterTheBatchLimit() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
         AgentRunMessageMapper messageMapper = mock(AgentRunMessageMapper.class);

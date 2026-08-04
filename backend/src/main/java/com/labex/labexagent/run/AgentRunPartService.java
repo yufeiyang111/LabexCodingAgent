@@ -9,6 +9,7 @@ import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -188,6 +189,27 @@ public class AgentRunPartService {
 
     public List<Map<String, Object>> publicHistory(Long taskId) {
         return history(taskId).stream().map(this::publicPayload).toList();
+    }
+
+    /** 按任务批量读取公开 Part 投影，避免历史页重复查询与组装 DTO。 */
+    public Map<Long, List<Map<String, Object>>> publicHistoryByTaskIds(Collection<Long> taskIds) {
+        List<Long> ids = taskIds == null ? List.of() : taskIds.stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) return Map.of();
+        List<AgentRunPart> stored = partMapper.selectList(new LambdaQueryWrapper<AgentRunPart>()
+                .in(AgentRunPart::getTaskId, ids)
+                .orderByAsc(AgentRunPart::getTaskId)
+                .orderByAsc(AgentRunPart::getPartId));
+        Map<Long, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
+        for (AgentRunPart part : stored == null ? List.<AgentRunPart>of() : stored) {
+            if (part == null || part.getTaskId() == null) continue;
+            grouped.computeIfAbsent(part.getTaskId(), ignored -> new java.util.ArrayList<>())
+                    .add(publicPayload(part));
+        }
+        grouped.replaceAll((ignored, values) -> List.copyOf(values));
+        return Map.copyOf(grouped);
     }
 
     /**

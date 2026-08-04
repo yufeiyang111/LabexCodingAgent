@@ -75,8 +75,17 @@ public class AgentTaskService {
     public AgentTask createTask(Integer studentId, StudentProject project, String conversationId, String sessionId,
                                 String mode, String message, String activePath, Integer modelConfigId,
                                 boolean backgroundRun, LocalDateTime submittedAt) {
+        return createTask(studentId, project, conversationId, sessionId, mode, message, message, activePath,
+                modelConfigId, backgroundRun, submittedAt);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AgentTask createTask(Integer studentId, StudentProject project, String conversationId, String sessionId,
+                                String mode, String message, String displayMessage, String activePath,
+                                Integer modelConfigId, boolean backgroundRun, LocalDateTime submittedAt) {
+        String visibleMessage = displayMessage == null || displayMessage.isBlank() ? message : displayMessage;
         Map<String, Object> payload = this.taskPayload(studentId, project, conversationId, sessionId, mode, message,
-                activePath, modelConfigId);
+                visibleMessage, activePath, modelConfigId);
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime effectiveSubmittedAt = submittedAt == null ? now : submittedAt;
         AgentTask task = new AgentTask();
@@ -84,7 +93,7 @@ public class AgentTaskService {
         task.setSessionId(sessionId);
         task.setStudentId(studentId);
         task.setProjectId(project.getProjectId());
-        task.setTitle(this.title(message));
+        task.setTitle(this.title(visibleMessage));
         task.setMode(mode);
         task.setStatus(AgentRunState.QUEUED.persistedStatus());
         task.setCurrentStep("\u5206\u6790\u4efb\u52a1");
@@ -525,7 +534,7 @@ public class AgentTaskService {
     }
 
     private Map<String, Object> taskPayload(Integer studentId, StudentProject project, String conversationId,
-                                             String sessionId, String mode, String message,
+                                             String sessionId, String mode, String message, String displayMessage,
                                              String activePath, Integer modelConfigId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("studentId", studentId);
@@ -534,6 +543,7 @@ public class AgentTaskService {
         payload.put("sessionId", sessionId);
         payload.put("mode", mode);
         payload.put("message", message);
+        payload.put("displayMessage", displayMessage);
         payload.put("activePath", activePath == null ? "" : activePath);
         if (modelConfigId != null) payload.put("modelConfigId", modelConfigId);
         return payload;

@@ -1,11 +1,35 @@
 import { computed, ref, watch } from 'vue'
 import { createTokenUsageState } from './cacheTelemetryStatus.js'
+import { applyRunMessageSnapshot, applyRunPartSnapshot } from './agentRunPartState.js'
+import { isTerminalAgentRunState, normalizeAgentRunState } from './agentRunState.js'
+
+const DURABLE_HISTORY_PROJECTION_VERSION = 'durable-task-history-v1'
+const NON_STREAMING_HISTORY_STATES = new Set([
+  'waiting_approval',
+  'waiting_user',
+  'waiting_workspace',
+  'waiting_environment'
+])
 
 function emptyTokenUsage() {
   return createTokenUsageState()
 }
 
-function createAssistantMessage() {
+function historyTaskIsStreaming(status) {
+  const runState = normalizeAgentRunState(status)
+  if (!runState || isTerminalAgentRunState(runState)) return false
+  return !NON_STREAMING_HISTORY_STATES.has(runState)
+}
+
+function historyTimestamp(value) {
+  const timestamp = Date.parse(value || '')
+  return Number.isFinite(timestamp) ? timestamp : undefined
+}
+
+function createAssistantMessage(turn = {}) {
+  const runState = normalizeAgentRunState(turn.status)
+  const isStreaming = historyTaskIsStreaming(runState)
+  const taskId = turn.taskId ?? null
   return {
     role: 'assistant',
     content: '',
@@ -15,9 +39,25 @@ function createAssistantMessage() {
     toolCalls: [],
     plan: null,
     planJson: null,
-    isStreaming: false,
+    isStreaming,
     error: null,
-    _nextOrder: 0
+    _nextOrder: 0,
+    timestamp: historyTimestamp(turn.startedAt || turn.submittedAt || turn.createdAt),
+    taskId,
+    conversationId: turn.conversationId || null,
+    sourceConversationId: turn.sourceConversationId || turn.conversationId || null,
+    inherited: Boolean(turn.inherited),
+    sessionId: turn.sessionId || null,
+    mode: turn.mode || null,
+    runState,
+    executionEpoch: Number(turn.executionEpoch || 0),
+    lastEventSequence: Number(turn.lastEventSequence || 0),
+    timing: taskId == null ? null : {
+      taskId,
+      startedAt: historyTimestamp(turn.startedAt || turn.submittedAt || turn.createdAt),
+      activeElapsedMs: Number.isFinite(Number(turn.activeElapsedMs)) ? Number(turn.activeElapsedMs) : null,
+      isRunning: isStreaming
+    }
   }
 }
 
@@ -53,10 +93,10 @@ export function useConversationState({
   storage = globalThis.sessionStorage
 }) {
   const conversations = ref([])
-  const historyEvents = ref([])
+  const historyTurns = ref([])
   const hasOlderMessages = ref(false)
   const loadingOlderMessages = ref(false)
-  const nextBeforeMessageId = ref(null)
+  const nextBeforeTaskId = ref(null)
   let historyRequestVersion = 0
   const selectionStore = createConversationSelectionStore(projectId, storage)
   watch(
@@ -74,10 +114,10 @@ export function useConversationState({
   function clearConversationState() {
     historyRequestVersion += 1
     messages.value = []
-    historyEvents.value = []
+    historyTurns.value = []
     hasOlderMessages.value = false
     loadingOlderMessages.value = false
-    nextBeforeMessageId.value = null
+    nextBeforeTaskId.value = null
     currentAgentSession.value = null
     selectionStore.clear()
     sessionChanges.value = []
@@ -116,62 +156,107 @@ export function useConversationState({
     return true
   }
 
-  function normalizeMessagePage(data) {
-    return Array.isArray(data)
-      ? { events: data, hasMore: false, nextBeforeMessageId: null }
-      : (data || {})
+  function normalizeHistoryPage(data, conversationId) {
+    if (!data || data.projectionVersion !== DURABLE_HISTORY_PROJECTION_VERSION) {
+      throw new Error('Unsupported Agent conversation history projection')
+    }
+    if (!Array.isArray(data.turns)) {
+      throw new Error('Agent conversation history is missing durable turns')
+    }
+    if (data.conversationId && String(data.conversationId) !== String(conversationId)) {
+      throw new Error('Agent conversation history belongs to a different conversation')
+    }
+    return data
   }
 
-  function rebuildHistoryMessages(events) {
-    messages.value = []
-    for (const event of events) {
-      let data = {}
-      try {
-        data = JSON.parse(event.eventData || '{}')
-      } catch {
-        data = {}
-      }
-      if (event.eventType === 'USER') {
-        messages.value.push({ role: 'user', content: event.content || data.content || '' })
-        messages.value.push(createAssistantMessage())
-        continue
-      }
-      const message = messages.value.at(-1)
-      if (message?.role === 'assistant') {
-        replayHistoryEvent(event.eventType, data, message)
-      }
-    }
-    finalizeHistoryMessages()
+  function compareTaskIds(left, right) {
+    return Number(left?.taskId || 0) - Number(right?.taskId || 0)
   }
 
-  function mergeHistoryEvents(olderEvents) {
-    const uniqueEvents = new Map()
-    for (const event of [...olderEvents, ...historyEvents.value]) {
-      if (event?.messageId != null) uniqueEvents.set(event.messageId, event)
+  function eventPayload(event) {
+    const data = event?.data
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+  }
+
+  function finalizeHistoryMessage(message) {
+    if (message.role !== 'assistant') return
+    if (message.thinkingBlocks) {
+      message.thinkingBlocks = message.thinkingBlocks.filter(block => block.content?.trim())
     }
-    historyEvents.value = [...uniqueEvents.values()].sort((left, right) => left.messageId - right.messageId)
+  }
+
+  function hydrateHistoryTurn(turn) {
+    const rendered = []
+    const userContent = typeof turn?.userContent === 'string' ? turn.userContent : ''
+    if (userContent.trim()) {
+      rendered.push({
+        role: 'user',
+        content: userContent,
+        timestamp: historyTimestamp(turn.submittedAt || turn.createdAt),
+        taskId: turn.taskId ?? null,
+        conversationId: turn.conversationId || null,
+        sourceConversationId: turn.sourceConversationId || turn.conversationId || null,
+        inherited: Boolean(turn.inherited)
+      })
+    }
+
+    const assistant = createAssistantMessage(turn)
+    const orderedEvents = [...(turn?.events || [])].sort((left, right) =>
+      Number(left?.sequence || left?.eventId || 0) - Number(right?.sequence || right?.eventId || 0))
+    orderedEvents.forEach(event => replayHistoryEvent(event.eventType, eventPayload(event), assistant))
+
+    const parts = Array.isArray(turn?.parts) ? turn.parts : []
+    if (parts.some(part => String(part?.partType || '').toLowerCase() === 'reasoning')) {
+      assistant.thinkingBlocks = []
+    }
+    applyRunMessageSnapshot(assistant, turn?.runMessages || [])
+    applyRunPartSnapshot(assistant, parts)
+
+    assistant.runState = normalizeAgentRunState(turn?.status) || assistant.runState
+    assistant.isStreaming = historyTaskIsStreaming(assistant.runState)
+    if (assistant.timing) assistant.timing.isRunning = assistant.isStreaming
+    finalizeHistoryMessage(assistant)
+
+    const hasAssistantProjection = orderedEvents.length > 0
+      || (turn?.runMessages || []).length > 0
+      || parts.length > 0
+      || Boolean(assistant.runState || turn?.currentStep || turn?.summary)
+    if (hasAssistantProjection) rendered.push(assistant)
+    return rendered
+  }
+
+  function rebuildHistoryMessages() {
+    messages.value = historyTurns.value.flatMap(hydrateHistoryTurn)
+  }
+
+  function mergeHistoryTurns(olderTurns) {
+    const uniqueTurns = new Map()
+    for (const turn of [...olderTurns, ...historyTurns.value]) {
+      if (turn?.taskId != null) uniqueTurns.set(String(turn.taskId), turn)
+    }
+    historyTurns.value = [...uniqueTurns.values()].sort(compareTaskIds)
   }
 
   async function loadConversationMessages(conversationId) {
     const requestVersion = ++historyRequestVersion
     messages.value = []
-    historyEvents.value = []
+    historyTurns.value = []
     hasOlderMessages.value = false
     loadingOlderMessages.value = false
-    nextBeforeMessageId.value = null
+    nextBeforeTaskId.value = null
     sessionChanges.value = []
     tokenUsage.value = emptyTokenUsage()
     currentAgentSession.value = { sessionId: createSessionId(), conversationId }
     agentLoading.value = false
 
     try {
-      const response = await api.agentMessages(projectId.value, conversationId, { limit: 20 })
+      const response = await api.agentConversationHistory(projectId.value, conversationId, { limit: 20 })
       if (requestVersion !== historyRequestVersion || currentAgentSession.value?.conversationId !== conversationId) return false
-      const page = normalizeMessagePage(response.data)
-      historyEvents.value = page.events || []
+      const page = normalizeHistoryPage(response.data, conversationId)
+      historyTurns.value = [...page.turns].sort(compareTaskIds)
       hasOlderMessages.value = Boolean(page.hasMore)
-      nextBeforeMessageId.value = page.nextBeforeMessageId ?? null
-      rebuildHistoryMessages(historyEvents.value)
+      nextBeforeTaskId.value = page.nextBeforeTaskId ?? null
+      rebuildHistoryMessages()
       return true
     } catch (error) {
       return Promise.reject(error)
@@ -182,36 +267,24 @@ export function useConversationState({
 
   async function loadOlderMessages() {
     const conversationId = currentAgentSession.value?.conversationId
-    const beforeMessageId = nextBeforeMessageId.value
-    if (!conversationId || !beforeMessageId || !hasOlderMessages.value || loadingOlderMessages.value || agentLoading.value) return false
+    const beforeTaskId = nextBeforeTaskId.value
+    if (!conversationId || !beforeTaskId || !hasOlderMessages.value || loadingOlderMessages.value || agentLoading.value) return false
 
     const requestVersion = historyRequestVersion
     loadingOlderMessages.value = true
     try {
-      const response = await api.agentMessages(projectId.value, conversationId, { beforeMessageId, limit: 20 })
+      const response = await api.agentConversationHistory(projectId.value, conversationId, { beforeTaskId, limit: 20 })
       if (requestVersion !== historyRequestVersion || currentAgentSession.value?.conversationId !== conversationId) return false
-      const page = normalizeMessagePage(response.data)
-      mergeHistoryEvents(page.events || [])
+      const page = normalizeHistoryPage(response.data, conversationId)
+      mergeHistoryTurns(page.turns)
       hasOlderMessages.value = Boolean(page.hasMore)
-      nextBeforeMessageId.value = page.nextBeforeMessageId ?? null
-      rebuildHistoryMessages(historyEvents.value)
+      nextBeforeTaskId.value = page.nextBeforeTaskId ?? null
+      rebuildHistoryMessages()
       return true
     } catch {
       return false
     } finally {
       if (requestVersion === historyRequestVersion) loadingOlderMessages.value = false
-    }
-  }
-
-  function finalizeHistoryMessages() {
-    for (const message of messages.value) {
-      if (message.role !== 'assistant') continue
-      if (message.thinkingBlocks) {
-        message.thinkingBlocks = message.thinkingBlocks.filter(block => block.content?.trim())
-      }
-      for (const toolCall of message.toolCalls || []) {
-        if (toolCall.status === 'running') toolCall.status = 'completed'
-      }
     }
   }
 

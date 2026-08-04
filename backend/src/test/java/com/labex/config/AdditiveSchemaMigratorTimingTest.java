@@ -205,7 +205,7 @@ class AdditiveSchemaMigratorTimingTest {
     }
 
     @Test
-    void addsDurableForkTaskBoundaryAndLookupIndex() throws Exception {
+    void addsDurableConversationProjectionColumnsAndForkIndex() throws Exception {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
@@ -222,15 +222,20 @@ class AdditiveSchemaMigratorTimingTest {
             String table = invocation.getArgument(2, String.class);
             String column = invocation.getArgument(3, String.class);
             return "t_agent_conversation".equalsIgnoreCase(table)
-                    && "forked_from_task_id".equalsIgnoreCase(column) ? missing : present;
+                    && List.of("forked_from_task_id", "history_projection_version", "history_migrated_at")
+                    .contains(column.toLowerCase()) ? missing : present;
         });
 
         new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, org.mockito.Mockito.atLeast(2)).execute(sql.capture());
+        verify(jdbcTemplate, org.mockito.Mockito.atLeast(4)).execute(sql.capture());
         assertTrue(sql.getAllValues().contains(
                 "ALTER TABLE t_agent_conversation ADD COLUMN forked_from_task_id BIGINT DEFAULT NULL"));
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_conversation ADD COLUMN history_projection_version VARCHAR(32) DEFAULT NULL"));
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_conversation ADD COLUMN history_migrated_at DATETIME(3) DEFAULT NULL"));
         assertTrue(sql.getAllValues().contains(
                 "ALTER TABLE t_agent_conversation ADD INDEX idx_agent_conversation_fork_task (forked_from_task_id)"));
     }

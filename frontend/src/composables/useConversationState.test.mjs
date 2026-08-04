@@ -3,8 +3,7 @@ import test from 'node:test'
 import { ref } from 'vue'
 import { createTokenUsageState } from './cacheTelemetryStatus.js'
 
-const conversationModule = await import('./useConversationState.js').catch(() => ({}))
-const { useConversationState } = conversationModule
+const { useConversationState } = await import('./useConversationState.js')
 
 function memoryStorage(initial = {}) {
   const values = new Map(Object.entries(initial))
@@ -15,25 +14,59 @@ function memoryStorage(initial = {}) {
   }
 }
 
+function turn(taskId, userContent, answer, overrides = {}) {
+  return {
+    taskId,
+    conversationId: 'conversation-1',
+    sourceConversationId: 'conversation-1',
+    inherited: false,
+    sessionId: `session-${taskId}`,
+    mode: 'build',
+    status: 'completed',
+    currentStep: '',
+    summary: '',
+    userContent,
+    lastEventSequence: 2,
+    activeElapsedMs: 17,
+    events: [
+      { eventId: taskId * 10 + 1, taskId, sequence: 1, state: 'running', eventType: 'THINK', data: { content: `think-${taskId}` } },
+      { eventId: taskId * 10 + 2, taskId, sequence: 2, state: 'completed', eventType: 'FINAL', data: { content: answer } }
+    ],
+    runMessages: [{ messageId: taskId * 100, messageKey: 'assistant:final', sequence: 2, role: 'assistant', status: 'completed', content: answer }],
+    parts: [{ partId: taskId * 1000, partKey: 'final', partType: 'text', status: 'completed', output: answer, sequence: 2 }],
+    ...overrides
+  }
+}
+
+function page(turns, overrides = {}) {
+  return {
+    projectionVersion: 'durable-task-history-v1',
+    conversationId: 'conversation-1',
+    turns,
+    hasMore: false,
+    nextBeforeTaskId: null,
+    legacyMigrated: false,
+    ...overrides
+  }
+}
+
 function createHarness(overrides = {}) {
   const projectId = ref(42)
   const messages = ref([])
   const sessionChanges = ref([{ id: 'old-change' }])
-  const tokenUsage = ref({ ...createTokenUsageState(), promptTokens: 9, completionTokens: 8, totalTokens: 17, callCount: 2, conversationTotal: 17 })
+  const tokenUsage = ref({ ...createTokenUsageState(), totalTokens: 17, callCount: 2, conversationTotal: 17 })
   const agentLoading = ref(true)
   const currentAgentSession = ref(null)
-  const changesRefreshKey = ref(0)
   const replayedEvents = []
   const notifications = []
   const api = {
     agentConversations: async () => ({ data: [
-      { conversationId: 'older', title: '旧会话', createTime: '2026-07-10T00:00:00Z' },
-      { conversationId: 'newer', title: '新会话', createTime: '2026-07-11T00:00:00Z' }
+      { conversationId: 'older', title: 'Older conversation' },
+      { conversationId: 'newer', title: 'Newer conversation' }
     ] }),
-    agentMessages: async () => ({ data: [
-      { eventType: 'USER', content: '你好', eventData: '{}' },
-      { eventType: 'FINAL_DELTA', eventData: JSON.stringify({ delta: '你好呀' }) }
-    ] }),
+    agentConversationHistory: async (project, conversationId, params) => ({
+      data: page([turn(7, 'Question', 'Answer')], { conversationId })
+    }),
     agentForkConversation: async () => ({ code: 0, data: { conversationId: 'forked' } }),
     agentCompactConversation: async () => ({ code: 0 }),
     agentDeleteConversation: async () => ({ code: 0 }),
@@ -47,27 +80,24 @@ function createHarness(overrides = {}) {
     tokenUsage,
     agentLoading,
     currentAgentSession,
-    changesRefreshKey,
     replayHistoryEvent(type, data, message) {
       replayedEvents.push({ type, data })
-      if (type === 'FINAL_DELTA') message.content += data.delta || ''
+      if (type === 'FINAL') message.content = data.content || ''
+      if (type === 'THINK') message.thinkingBlocks.push({ content: data.content || '' })
     },
     onHistoryLoaded() { notifications.push('history-loaded') },
     createSessionId: () => 'generated-session',
     storage: overrides.storage || memoryStorage()
   })
-  return { state, api, messages, sessionChanges, tokenUsage, agentLoading, currentAgentSession, changesRefreshKey, replayedEvents, notifications }
+  return { state, messages, sessionChanges, tokenUsage, agentLoading, currentAgentSession, replayedEvents, notifications }
 }
 
 test('loads conversations in server order and exposes the selected title', async () => {
-  assert.equal(typeof useConversationState, 'function')
   const { state, currentAgentSession } = createHarness()
-
   await state.loadConversations()
   assert.deepEqual(state.conversations.value.map(item => item.conversationId), ['older', 'newer'])
-
   currentAgentSession.value = { conversationId: 'older' }
-  assert.equal(state.currentSessionName.value, '旧会话')
+  assert.equal(state.currentSessionName.value, 'Older conversation')
 })
 
 test('restores the last selected conversation after refresh and clears it for an explicit new session', async () => {
@@ -76,88 +106,87 @@ test('restores the last selected conversation after refresh and clears it for an
     storage,
     api: {
       agentConversations: async () => ({ data: [
-        { conversationId: 'conversation-a', title: '?? A' },
-        { conversationId: 'conversation-b', title: '?? B' }
+        { conversationId: 'conversation-a', title: 'Conversation A' },
+        { conversationId: 'conversation-b', title: 'Conversation B' }
       ] }),
-      agentMessages: async () => ({ data: [] })
+      agentConversationHistory: async () => ({ data: page([], { conversationId: 'conversation-b' }) })
     }
   })
-
   await state.loadConversations()
   assert.equal(state.resolveStartupConversation()?.conversationId, 'conversation-b')
-
   await state.loadConversationMessages('conversation-b')
   assert.equal(storage.getItem('labex-agent:selected-conversation:42'), 'conversation-b')
-
   state.createNewSession()
   assert.equal(storage.getItem('labex-agent:selected-conversation:42'), null)
 })
 
-test('rebuilds persisted conversation messages without owning the event reducer', async () => {
+test('hydrates durable task turns with the same event reducer and authoritative message/part snapshots', async () => {
   const { state, messages, sessionChanges, tokenUsage, agentLoading, currentAgentSession, replayedEvents, notifications } = createHarness()
-
   await state.loadConversationMessages('conversation-1')
-
   assert.deepEqual(currentAgentSession.value, { sessionId: 'generated-session', conversationId: 'conversation-1' })
   assert.equal(agentLoading.value, false)
+  assert.deepEqual(messages.value.map(message => message.role), ['user', 'assistant'])
+  assert.equal(messages.value[0].content, 'Question')
+  assert.equal(messages.value[1].content, 'Answer')
+  assert.equal(messages.value[1].taskId, 7)
+  assert.equal(messages.value[1].runState, 'completed')
+  assert.equal(messages.value[1].isStreaming, false)
+  assert.equal(messages.value[1].runMessages[0].messageKey, 'assistant:final')
+  assert.equal(messages.value[1].runParts[0].partKey, 'final')
+  assert.deepEqual(replayedEvents.map(item => item.type), ['THINK', 'FINAL'])
   assert.deepEqual(sessionChanges.value, [])
   assert.deepEqual(tokenUsage.value, createTokenUsageState())
-  assert.deepEqual(messages.value.map(message => message.role), ['user', 'assistant'])
-  assert.equal(messages.value[1].content, '你好呀')
-  assert.deepEqual(replayedEvents, [{ type: 'FINAL_DELTA', data: { delta: '你好呀' } }])
   assert.deepEqual(notifications, ['history-loaded'])
 })
 
-test('loads older history with the server cursor and prepends complete turns', async () => {
-  const messageCalls = []
+test('loads older durable task pages with beforeTaskId and preserves chronological task order', async () => {
+  const calls = []
   const { state, messages } = createHarness({
     api: {
-      agentMessages: async (projectId, conversationId, params) => {
-        messageCalls.push({ projectId, conversationId, params })
-        if (!params.beforeMessageId) {
-          return { data: {
-            events: [
-              { messageId: 30, eventType: 'USER', content: '新问题', eventData: '{}' },
-              { messageId: 31, eventType: 'FINAL_DELTA', eventData: JSON.stringify({ delta: '新回答' }) }
-            ],
-            hasMore: true,
-            nextBeforeMessageId: 30
-          } }
+      agentConversationHistory: async (projectId, conversationId, params) => {
+        calls.push({ projectId, conversationId, params })
+        if (!params.beforeTaskId) {
+          return { data: page([turn(30, 'New question', 'New answer')], { hasMore: true, nextBeforeTaskId: 30 }) }
         }
-        return { data: {
-          events: [
-            { messageId: 10, eventType: 'USER', content: '旧问题', eventData: '{}' },
-            { messageId: 11, eventType: 'FINAL_DELTA', eventData: JSON.stringify({ delta: '旧回答' }) }
-          ],
-          hasMore: false,
-          nextBeforeMessageId: 10
-        } }
+        return { data: page([turn(10, 'Old question', 'Old answer')], { hasMore: false }) }
       }
     }
   })
-
   await state.loadConversationMessages('conversation-1')
   assert.equal(state.hasOlderMessages.value, true)
-
-  const loaded = await state.loadOlderMessages()
-
-  assert.equal(loaded, true)
-  assert.equal(state.hasOlderMessages.value, false)
-  assert.deepEqual(messageCalls, [
+  await state.loadOlderMessages()
+  assert.deepEqual(messages.value.filter(message => message.role === 'user').map(message => message.content), ['Old question', 'New question'])
+  assert.deepEqual(calls, [
     { projectId: 42, conversationId: 'conversation-1', params: { limit: 20 } },
-    { projectId: 42, conversationId: 'conversation-1', params: { beforeMessageId: 30, limit: 20 } }
+    { projectId: 42, conversationId: 'conversation-1', params: { beforeTaskId: 30, limit: 20 } }
   ])
-  assert.deepEqual(messages.value.map(message => message.content), ['旧问题', '旧回答', '新问题', '新回答'])
 })
 
-test('forking a conversation refreshes its list and opens the branch', async () => {
+test('does not infer a terminal tool status from history loading alone', async () => {
+  const waiting = turn(9, 'run', '', {
+    status: 'waiting_approval',
+    events: [{ eventId: 91, taskId: 9, sequence: 1, state: 'waiting_approval', eventType: 'RUN_STATE_WAITING_APPROVAL', data: { taskId: 9 } }],
+    runMessages: [],
+    parts: [{ partId: 90, partKey: 'tool:call-9', partType: 'tool', status: 'waiting_approval', toolCallId: 'call-9', tool: 'run_command', input: '{}', output: '', sequence: 1 }]
+  })
+  const { state, messages } = createHarness({ api: {
+    agentConversationHistory: async () => ({ data: page([waiting]) })
+  } })
+  await state.loadConversationMessages('conversation-1')
+  const assistant = messages.value[1]
+  assert.equal(assistant.runState, 'waiting_approval')
+  assert.equal(assistant.isStreaming, false)
+  assert.equal(assistant.toolCalls[0].status, 'waiting_approval')
+})
+
+test('forking a conversation refreshes its list and opens the durable branch history', async () => {
   const calls = []
   const { state, currentAgentSession } = createHarness({
     api: {
-      agentConversations: async () => ({ data: [{ conversationId: 'forked', title: '分支', createTime: '2026-07-12T00:00:00Z' }] }),
-      agentMessages: async (projectId, conversationId) => {
-        calls.push(['messages', conversationId])
-        return { data: [] }
+      agentConversations: async () => ({ data: [{ conversationId: 'forked', title: 'Fork' }] }),
+      agentConversationHistory: async (projectId, conversationId) => {
+        calls.push(['history', conversationId])
+        return { data: page([], { conversationId }) }
       },
       agentForkConversation: async (projectId, conversationId) => {
         calls.push(['fork', projectId, conversationId])
@@ -165,22 +194,18 @@ test('forking a conversation refreshes its list and opens the branch', async () 
       }
     }
   })
-
   const result = await state.forkConversation({ conversationId: 'source' })
-
   assert.deepEqual(result, { success: true, conversationId: 'forked' })
-  assert.deepEqual(calls, [['fork', 42, 'source'], ['messages', 'forked']])
+  assert.deepEqual(calls, [['fork', 42, 'source'], ['history', 'forked']])
   assert.equal(currentAgentSession.value.conversationId, 'forked')
 })
 
 test('deleting the active conversation clears only conversation state', async () => {
   const { state, messages, currentAgentSession, sessionChanges, tokenUsage } = createHarness()
-  messages.value = [{ role: 'user', content: '待清除' }]
+  messages.value = [{ role: 'user', content: 'To clear' }]
   currentAgentSession.value = { sessionId: 's1', conversationId: 'remove-me' }
   await state.loadConversations()
-
   await state.deleteConversation({ conversationId: 'remove-me' })
-
   assert.deepEqual(messages.value, [])
   assert.equal(currentAgentSession.value, null)
   assert.deepEqual(sessionChanges.value, [])
@@ -189,17 +214,13 @@ test('deleting the active conversation clears only conversation state', async ()
 
 test('manual compaction forwards the selected model config and returns its asynchronous task identity', async () => {
   let request
-  const { state } = createHarness({
-    api: {
-      agentCompactConversation: async (...args) => {
-        request = args
-        return { code: 0, data: { taskId: 88, status: 'queued' } }
-      }
+  const { state } = createHarness({ api: {
+    agentCompactConversation: async (...args) => {
+      request = args
+      return { code: 0, data: { taskId: 88, status: 'queued' } }
     }
-  })
-
+  } })
   const result = await state.compactConversation({ conversationId: 'compact-me' }, 17)
-
   assert.deepEqual(request, [42, 'compact-me', { modelConfigId: 17 }])
   assert.deepEqual(result, { success: true, taskId: 88, status: 'queued' })
 })

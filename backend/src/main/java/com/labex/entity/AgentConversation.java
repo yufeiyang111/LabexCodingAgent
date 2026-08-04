@@ -33,6 +33,10 @@ public class AgentConversation {
     private Long forkedFromTaskId;
     @TableField(value="compacted_at")
     private LocalDateTime compactedAt;
+    @TableField(value="history_projection_version")
+    private String historyProjectionVersion;
+    @TableField(value="history_migrated_at")
+    private LocalDateTime historyMigratedAt;
     @TableField(value="status")
     private Integer status;
     @TableField(value="create_time")
@@ -91,6 +95,14 @@ public class AgentConversation {
 
     public LocalDateTime getCompactedAt() {
         return this.compactedAt;
+    }
+
+    public String getHistoryProjectionVersion() {
+        return this.historyProjectionVersion;
+    }
+
+    public LocalDateTime getHistoryMigratedAt() {
+        return this.historyMigratedAt;
     }
 
     public Integer getStatus() {
@@ -155,6 +167,14 @@ public class AgentConversation {
 
     public void setCompactedAt(LocalDateTime compactedAt) {
         this.compactedAt = compactedAt;
+    }
+
+    public void setHistoryProjectionVersion(String historyProjectionVersion) {
+        this.historyProjectionVersion = historyProjectionVersion;
+    }
+
+    public void setHistoryMigratedAt(LocalDateTime historyMigratedAt) {
+        this.historyMigratedAt = historyMigratedAt;
     }
 
     public void setStatus(Integer status) {

@@ -58,6 +58,8 @@ public class AdditiveSchemaMigrator {
             new ColumnDefinition("t_agent_task", "elapsed_ms", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "active_elapsed_ms", "BIGINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_conversation", "forked_from_task_id", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_conversation", "history_projection_version", "VARCHAR(32) DEFAULT NULL"),
+            new ColumnDefinition("t_agent_conversation", "history_migrated_at", "DATETIME(3) DEFAULT NULL"),
             new ColumnDefinition("t_agent_compaction_record", "scope", "VARCHAR(24) NOT NULL DEFAULT 'task'"),
             new ColumnDefinition("t_agent_compaction_record", "source_max_task_id", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_command_audit_event", "process_host_id", "VARCHAR(64) DEFAULT NULL"),

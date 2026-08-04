@@ -54,19 +54,11 @@ class AgentConversationCompactionServiceTest {
 
         InOrder durabilityOrder = inOrder(compactions, conversations);
         durabilityOrder.verify(compactions).complete(eq(running), eq(result.summary()), any(Integer.class));
-        ArgumentCaptor<Map<String, Object>> metadata = ArgumentCaptor.forClass(Map.class);
-        durabilityOrder.verify(conversations).saveCompactionSummary(
-                eq(conversation), eq(result.summary()), metadata.capture());
-        assertThat(metadata.getValue())
-                .containsEntry("authority", "agent_compaction_record")
-                .containsEntry("projectionOnly", true)
-                .containsEntry("compactionId", 91L)
-                .containsEntry("taskId", 44L)
-                .containsEntry("sourceMaxTaskId", 13L);
+        durabilityOrder.verify(conversations).markCompacted(conversation);
         assertThat(result.strategy()).isEqualTo("manual_model");
         assertThat(result.compactionId()).isEqualTo(91L);
         assertThat(result.sourceMaxTaskId()).isEqualTo(13L);
-        assertThat(result.legacyProjectionWritten()).isTrue();
+        assertThat(result.conversationMetadataUpdated()).isTrue();
         verify(compactions, never()).fail(any(), any());
     }
 
@@ -116,15 +108,15 @@ class AgentConversationCompactionServiceTest {
                 .thenReturn(CompactionAgent.Result.success(
                         "<conversation-checkpoint version=\"3\">durable summary</conversation-checkpoint>",
                         17, "summary-model", false));
-        doThrow(new IllegalStateException("legacy database unavailable"))
-                .when(conversations).saveCompactionSummary(eq(conversation), any(), any());
+        doThrow(new IllegalStateException("conversation metadata unavailable"))
+                .when(conversations).markCompacted(eq(conversation));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
                 conversations, memory, compactions, compactionAgent, modelConfigs);
 
         assertThatThrownBy(() -> service.compact(
                 7, 3, "conversation", null, compactionTask(46L), CancellationToken.none()))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("legacy projection");
+                .hasMessageContaining("conversation metadata unavailable");
         verify(compactions).complete(eq(running), any(), any(Integer.class));
         verify(compactions, never()).fail(any(), any());
     }
@@ -198,7 +190,7 @@ class AgentConversationCompactionServiceTest {
                 .hasMessageContaining("did not reduce");
         verify(compactions).fail(eq(running), eq("Conversation compaction did not reduce durable context"));
         verify(compactions, never()).complete(any(), any(), any(Integer.class));
-        verify(conversations, never()).saveCompactionSummary(any(), any(), any());
+        verify(conversations, never()).markCompacted(any());
     }
 
     private AgentConversationMemoryProjectionService.Projection projection() {

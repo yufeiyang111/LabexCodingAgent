@@ -42,6 +42,8 @@ class AgentRunSchemaTest {
         assertTrue(schema.contains("background_base_ref VARCHAR(128) DEFAULT NULL"));
         assertTrue(schema.contains("background_cleanup_status VARCHAR(32) DEFAULT NULL"));
         assertTrue(schema.contains("forked_from_task_id BIGINT DEFAULT NULL"));
+        assertTrue(schema.contains("history_projection_version VARCHAR(32) DEFAULT NULL"));
+        assertTrue(schema.contains("history_migrated_at DATETIME(3) DEFAULT NULL"));
         assertTrue(schema.contains("idx_agent_conversation_fork_task"));
     }
 

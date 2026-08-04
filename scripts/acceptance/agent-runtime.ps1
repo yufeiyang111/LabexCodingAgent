@@ -98,6 +98,9 @@ $evidence = [ordered]@{
     durableForkCompaction = $false
     durableForkParentTaskId = $null
     durableForkChildSourceMaxTaskId = $null
+    legacyHistoryMigration = $false
+    legacyHistoryMigrationRestart = $false
+    legacyHistoryMigrationTaskId = $null
     cleanup = $false
 }
 
@@ -1355,15 +1358,23 @@ WHERE compaction_id = (
         throw 'Fork conversation row did not persist exactly one immutable parent task boundary.'
     }
 
-    # 删除兼容 UI 投影，后续预览若仍能恢复父历史，就能证明 Provider memory 不依赖 AgentMessage 副本。
+    # fork 只写 immutable task boundary；不得再复制旧 UI 事件。
     $copiedForkEventCount = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$forkConversationId'"
-    if ($copiedForkEventCount -lt 1) {
-        throw 'Fork did not create the expected legacy UI compatibility projection before the authority check.'
+    if ($copiedForkEventCount -ne 0) {
+        throw "Fork copied $copiedForkEventCount legacy AgentMessage rows instead of reading the durable parent graph."
     }
-    Invoke-AcceptanceSql -Sql "DELETE FROM t_agent_message WHERE conversation_id = '$forkConversationId'" | Out-Null
-    $remainingForkEventCount = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$forkConversationId'"
-    if ($remainingForkEventCount -ne 0) {
-        throw 'Acceptance setup could not remove the child legacy projection before durable-memory verification.'
+    $forkHistory = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$forkConversationId/messages?limit=50"
+    if ([string]$forkHistory.projectionVersion -ne 'durable-task-history-v1') {
+        throw "Fork history did not expose the durable task-turn projection: $($forkHistory | ConvertTo-Json -Compress -Depth 8)"
+    }
+    $forkInheritedTaskIds = @($forkHistory.turns | Where-Object { [bool]$_.inherited } | ForEach-Object { [long]$_.taskId })
+    foreach ($expectedTaskId in @($seedTaskId, $secondSeedTaskId, $thirdSeedTaskId)) {
+        if ($forkInheritedTaskIds -notcontains [long]$expectedTaskId) {
+            throw "Fork durable history omitted inherited task $expectedTaskId."
+        }
+    }
+    if (@($forkInheritedTaskIds | Where-Object { $_ -gt $thirdSeedTaskId }).Count -ne 0) {
+        throw 'Fork durable history crossed the immutable parent task boundary.'
     }
 
     $fourthSeedEvents = Invoke-AgentStream -Message '[acceptance:isolation:compaction-seed-4]' -ConversationId $conversationId
@@ -1378,7 +1389,7 @@ WHERE compaction_id = (
     $forkInheritedPreview = Get-NextContextPreviewSectionContent -ConversationId $forkConversationId
     foreach ($expectedMarker in @('compaction-seed-1', 'compaction-seed-2', 'compaction-seed-3')) {
         if (-not $forkInheritedPreview.Contains($expectedMarker)) {
-            throw "Fork durable preview did not inherit boundary marker $expectedMarker after legacy projection deletion."
+            throw "Fork durable preview did not inherit boundary marker $expectedMarker without any legacy projection copy."
         }
     }
     foreach ($forbiddenMarker in @('compaction-seed-4', 'compaction-seed-5')) {
@@ -1449,6 +1460,84 @@ WHERE compaction_id = (
     }
     $evidence.durableForkRestart = $true
 
+    $studentId = Get-AcceptanceSqlScalar -Sql "SELECT student_id FROM t_student_project WHERE project_id = $projectId"
+    $legacyConversationId = "legacy-$($runId.Substring(0, 20))"
+    $legacyThinkPayload = '{"content":"<think>legacy-private-reasoning</think>legacy-visible-reasoning"}'
+    $legacyFinalPayload = '{"content":"legacy-final-visible"}'
+    Invoke-AcceptanceSql -Sql (
+        "INSERT INTO t_agent_conversation " +
+        "(conversation_id, student_id, project_id, title, mode, status, create_time, update_time) VALUES " +
+        "('$legacyConversationId', $studentId, $projectId, 'Legacy acceptance conversation', 'build', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)") | Out-Null
+    Invoke-AcceptanceSql -Sql (
+        "INSERT INTO t_agent_message (conversation_id, student_id, project_id, event_type, role, content, event_data, create_time) VALUES " +
+        "('$legacyConversationId', $studentId, $projectId, 'USER', 'user', 'legacy-user-visible', NULL, CURRENT_TIMESTAMP)") | Out-Null
+    Invoke-AcceptanceSql -Sql (
+        "INSERT INTO t_agent_message (conversation_id, student_id, project_id, event_type, role, content, event_data, create_time) VALUES " +
+        "('$legacyConversationId', $studentId, $projectId, 'THINK', 'assistant', 'legacy-visible-reasoning', " +
+        "'$legacyThinkPayload', CURRENT_TIMESTAMP)") | Out-Null
+    Invoke-AcceptanceSql -Sql (
+        "INSERT INTO t_agent_message (conversation_id, student_id, project_id, event_type, role, content, event_data, create_time) VALUES " +
+        "('$legacyConversationId', $studentId, $projectId, 'FINAL', 'assistant', 'legacy-final-visible', " +
+        "'$legacyFinalPayload', CURRENT_TIMESTAMP)") | Out-Null
+
+    $legacyHistory = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$legacyConversationId/messages?limit=20"
+    $legacyTurns = @($legacyHistory.turns)
+    if ([string]$legacyHistory.projectionVersion -ne 'durable-task-history-v1' -or
+        -not [bool]$legacyHistory.legacyMigrated -or $legacyTurns.Count -ne 1) {
+        throw "Legacy history did not migrate into one durable task turn: $($legacyHistory | ConvertTo-Json -Depth 20 -Compress)"
+    }
+    $legacyTurn = $legacyTurns[0]
+    $legacyTaskId = [long]$legacyTurn.taskId
+    $legacyEventTypes = @($legacyTurn.events | ForEach-Object { [string]$_.eventType })
+    $legacyHistoryJson = $legacyHistory | ConvertTo-Json -Depth 30 -Compress
+    if ([string]$legacyTurn.userContent -ne 'legacy-user-visible' -or
+        $legacyEventTypes -notcontains 'THINK' -or $legacyEventTypes -notcontains 'FINAL' -or
+        -not $legacyHistoryJson.Contains('legacy-final-visible') -or
+        $legacyHistoryJson.Contains('legacy-private-reasoning')) {
+        throw "Legacy durable projection did not preserve public content or leaked private reasoning: $legacyHistoryJson"
+    }
+    $legacyTaskCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_task WHERE conversation_id = '$legacyConversationId' AND mode = 'legacy_import'")
+    $legacyEventCount = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $legacyTaskId"
+    $legacyMarkerCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_conversation WHERE conversation_id = '$legacyConversationId' " +
+        "AND history_projection_version = 'durable-v1' AND history_migrated_at IS NOT NULL")
+    if ($legacyTaskCount -ne 1 -or $legacyEventCount -ne 2 -or $legacyMarkerCount -ne 1) {
+        throw "Legacy migration authority mismatch: tasks=$legacyTaskCount events=$legacyEventCount marker=$legacyMarkerCount"
+    }
+
+    $legacySecondRead = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$legacyConversationId/messages?limit=20"
+    $legacySecondTurns = @($legacySecondRead.turns)
+    $legacySecondTaskCount = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_task WHERE conversation_id = '$legacyConversationId' AND mode = 'legacy_import'")
+    $legacySecondEventCount = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $legacyTaskId"
+    if ([bool]$legacySecondRead.legacyMigrated -or $legacySecondTurns.Count -ne 1 -or
+        [long]$legacySecondTurns[0].taskId -ne $legacyTaskId -or
+        $legacySecondTaskCount -ne $legacyTaskCount -or $legacySecondEventCount -ne $legacyEventCount) {
+        throw 'Repeated legacy history read was not idempotent.'
+    }
+    $evidence.legacyHistoryMigration = $true
+    $evidence.legacyHistoryMigrationTaskId = $legacyTaskId
+
+    Invoke-AcceptanceSql -Sql "DELETE FROM t_agent_message WHERE conversation_id = '$legacyConversationId'" | Out-Null
+    Restart-AcceptanceBackend
+    $legacyAfterRestart = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$legacyConversationId/messages?limit=20"
+    $legacyRestartTurns = @($legacyAfterRestart.turns)
+    $legacyRowsAfterDelete = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$legacyConversationId'"
+    $legacyTasksAfterRestart = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_task WHERE conversation_id = '$legacyConversationId' AND mode = 'legacy_import'")
+    $legacyEventsAfterRestart = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $legacyTaskId"
+    $legacyRestartJson = $legacyAfterRestart | ConvertTo-Json -Depth 30 -Compress
+    if ($legacyRowsAfterDelete -ne 0 -or $legacyRestartTurns.Count -ne 1 -or
+        [long]$legacyRestartTurns[0].taskId -ne $legacyTaskId -or
+        [string]$legacyRestartTurns[0].userContent -ne 'legacy-user-visible' -or
+        $legacyTasksAfterRestart -ne 1 -or $legacyEventsAfterRestart -ne 2 -or
+        -not $legacyRestartJson.Contains('legacy-final-visible') -or
+        $legacyRestartJson.Contains('legacy-private-reasoning')) {
+        throw "Migrated history did not survive legacy-row deletion and JVM restart: $legacyRestartJson"
+    }
+    $evidence.legacyHistoryMigrationRestart = $true
+
     $compaction = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$conversationId/compact" -Method POST -Body @{ modelConfigId = $configId }
     $compactionTaskId = [long]$compaction.taskId
     $compactionTask = Wait-TaskTerminal -TaskId $compactionTaskId
@@ -1471,10 +1560,16 @@ WHERE compaction_id = (
     }
     $legacyProjectionCount = Get-AcceptanceSqlScalar -Sql (
         "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$conversationId' " +
-        "AND event_type = 'COMPACTION_SUMMARY' AND event_data LIKE '%agent_compaction_record%' " +
-        "AND event_data LIKE '%projectionOnly%' AND event_data LIKE '%$compactionTaskId%'")
-    if ($legacyProjectionCount -lt 1) {
-        throw 'Manual compaction did not write the authority-tagged legacy compatibility projection.'
+        "AND event_type = 'COMPACTION_SUMMARY' AND event_data LIKE '%$compactionTaskId%'")
+    if ($legacyProjectionCount -ne 0) {
+        throw 'Manual compaction wrote a retired AgentMessage compatibility projection.'
+    }
+    $compactionHistory = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$conversationId/messages?limit=50"
+    $compactionHistoryTurn = @($compactionHistory.turns | Where-Object { [long]$_.taskId -eq $compactionTaskId })
+    $compactionHistoryEvents = @($compactionHistoryTurn.events | Where-Object { [string]$_.eventType -eq 'COMPACTION_COMPLETED' })
+    if ([string]$compactionHistory.projectionVersion -ne 'durable-task-history-v1' -or
+        $compactionHistoryTurn.Count -ne 1 -or $compactionHistoryEvents.Count -ne 1) {
+        throw 'Manual compaction was not visible through the durable task-turn history projection.'
     }
     $compactionAudit = @($compactionTask.compactions | Where-Object {
         [string]$_.scope -eq 'conversation' -and [long]$_.sourceMaxTaskId -eq $fifthSeedTaskId

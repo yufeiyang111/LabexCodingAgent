@@ -3,14 +3,12 @@ package com.labex.labexagent.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
-import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.google.gson.Gson;
 import com.labex.entity.AgentConversation;
@@ -58,7 +56,6 @@ class AgentConversationForkDurableBoundaryTest {
                 task(13L, "completed")));
         when(tasks.selectById(11L)).thenReturn(stable);
         when(conversations.insert(any())).thenReturn(1);
-        when(messages.selectList(any())).thenReturn(List.of());
         AgentConversationService service = service(conversations, messages, tasks);
 
         AgentConversation child = service.forkConversation(7, 3, "source", null, null);
@@ -67,11 +64,9 @@ class AgentConversationForkDurableBoundaryTest {
         ArgumentCaptor<AgentConversation> inserted = ArgumentCaptor.forClass(AgentConversation.class);
         verify(conversations).insert(inserted.capture());
         assertThat(inserted.getValue().getForkedFromTaskId()).isEqualTo(11L);
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<Wrapper<AgentMessage>> copiedHistory = ArgumentCaptor.forClass(Wrapper.class);
-        verify(messages).selectList(copiedHistory.capture());
-        assertThat(copiedHistory.getValue().getSqlSegment().toLowerCase())
-                .contains("create_time", "message_id");
+        assertThat(inserted.getValue().getHistoryProjectionVersion()).isEqualTo("durable-v1");
+        assertThat(inserted.getValue().getHistoryMigratedAt()).isNotNull();
+        verify(messages, never()).selectList(any());
     }
 
     @Test
@@ -124,7 +119,6 @@ class AgentConversationForkDurableBoundaryTest {
         selected.setProjectId(3);
         selected.setEventData(GSON.toJson(Map.of("taskId", 11L)));
         when(messages.selectById(88L)).thenReturn(selected);
-        when(messages.selectList(any())).thenReturn(List.of());
         AgentConversationService service = service(conversations, messages, tasks);
 
         AgentConversation child = service.forkConversation(7, 3, "source", 88L, null);

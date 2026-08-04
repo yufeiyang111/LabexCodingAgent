@@ -8,6 +8,7 @@ import com.labex.mapper.AgentRunMessageMapper;
 import com.labex.mapper.AgentTaskMapper;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,6 +79,27 @@ public class AgentRunMessageService {
 
     public List<Map<String, Object>> publicHistory(Long taskId) {
         return history(taskId).stream().map(this::publicPayload).toList();
+    }
+
+    /** 按任务批量读取公开消息投影，避免历史页产生 task N+1 查询。 */
+    public Map<Long, List<Map<String, Object>>> publicHistoryByTaskIds(Collection<Long> taskIds) {
+        List<Long> ids = taskIds == null ? List.of() : taskIds.stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) return Map.of();
+        List<AgentRunMessage> stored = messageMapper.selectList(new LambdaQueryWrapper<AgentRunMessage>()
+                .in(AgentRunMessage::getTaskId, ids)
+                .orderByAsc(AgentRunMessage::getTaskId)
+                .orderByAsc(AgentRunMessage::getRunMessageId));
+        Map<Long, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
+        for (AgentRunMessage message : stored == null ? List.<AgentRunMessage>of() : stored) {
+            if (message == null || message.getTaskId() == null) continue;
+            grouped.computeIfAbsent(message.getTaskId(), ignored -> new java.util.ArrayList<>())
+                    .add(publicPayload(message));
+        }
+        grouped.replaceAll((ignored, values) -> List.copyOf(values));
+        return Map.copyOf(grouped);
     }
 
     private AgentRunMessage upsert(Long taskId, String messageKey, long sequence, String role,

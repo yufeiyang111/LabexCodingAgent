@@ -11,7 +11,6 @@ import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.runtime.CompactionAgent;
 import com.labex.service.AgentModelConfigService;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -21,7 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * 手动会话压缩的唯一编排入口：权威记录先完成，旧 AgentMessage 只做兼容投影。
+ * 手动会话压缩的唯一编排入口：权威记录写入 compaction record，conversation 只更新派生元数据。
  */
 @Service
 public class AgentConversationCompactionService {
@@ -122,10 +121,9 @@ public class AgentConversationCompactionService {
             compactions.complete(record, summary, tokensAfter);
             terminalized = true;
 
-            boolean legacyProjectionWritten = writeLegacyProjection(conversation, record, summary, strategy,
-                    fallback, modelResult, sourceMaxTaskId);
+            conversations.markCompacted(conversation);
             return new Result(summary, strategy, fallback, record.getCompactionId(), sourceMaxTaskId,
-                    legacyProjectionWritten);
+                    true);
         } catch (RuntimeException failure) {
             if (record != null && !terminalized) {
                 try {
@@ -135,36 +133,6 @@ public class AgentConversationCompactionService {
                 }
             }
             throw failure;
-        }
-    }
-
-    private boolean writeLegacyProjection(AgentConversation conversation, AgentCompactionRecord record,
-                                          String summary, String strategy, boolean fallback,
-                                          CompactionAgent.Result modelResult, long sourceMaxTaskId) {
-        Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("authority", "agent_compaction_record");
-        metadata.put("projectionOnly", true);
-        metadata.put("compactionId", record.getCompactionId());
-        metadata.put("taskId", record.getTaskId());
-        metadata.put("compactionEpoch", record.getCompactionEpoch());
-        metadata.put("sourceMaxTaskId", sourceMaxTaskId);
-        metadata.put("strategy", strategy);
-        metadata.put("deterministicFallback", fallback);
-        if (modelResult != null && modelResult.modelConfigId() != null) {
-            metadata.put("modelConfigId", modelResult.modelConfigId());
-        }
-        if (modelResult != null) {
-            metadata.put("dedicatedModel", modelResult.dedicatedModelSelected());
-        }
-        try {
-            conversations.saveCompactionSummary(conversation, summary, metadata);
-            conversations.saveEvent(conversation, "COMPACTION_COMPLETED", metadata);
-            return true;
-        } catch (RuntimeException projectionFailure) {
-            log.warn("Durable conversation compaction {} completed but legacy projection failed: {}",
-                    record.getCompactionId(), projectionFailure.getMessage());
-            throw new IllegalStateException(
-                    "Durable conversation compaction completed but legacy projection failed", projectionFailure);
         }
     }
 
@@ -250,6 +218,6 @@ public class AgentConversationCompactionService {
                          boolean deterministicFallback,
                          Long compactionId,
                          long sourceMaxTaskId,
-                         boolean legacyProjectionWritten) {
+                         boolean conversationMetadataUpdated) {
     }
 }

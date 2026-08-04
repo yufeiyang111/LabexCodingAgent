@@ -118,8 +118,8 @@ class AgentLoopEngineNextPreviewTest {
         assertFalse(((List<?>) payload.get("previewSections")).isEmpty());
         assertFalse(payload.toString().contains("FOREIGN_RUN_LOG_SENTINEL"));
         assertFalse(payload.toString().contains("FOREIGN_CHECKPOINT_SENTINEL"));
-        verify(conversations, never()).saveUserMessage(any(AgentConversation.class), anyString());
-        verify(conversations, never()).saveEvent(any(AgentConversation.class), anyString(), any());
+        verify(conversations, never()).touchActivity(any(AgentConversation.class));
+        verify(conversations, never()).markCompacted(any(AgentConversation.class));
         verifyNoInteractions(providers, tasks, usageRegistry);
     }
 }

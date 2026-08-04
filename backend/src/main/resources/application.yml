@@ -52,8 +52,6 @@ jwt:
 labex-agent:
   project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/LabexAgent/workspaces}
   interaction-timeout-poll-interval-ms: ${LABEX_AGENT_INTERACTION_TIMEOUT_POLL_INTERVAL_MS:30000}
-  memory:
-    projection-mode: ${LABEX_AGENT_MEMORY_PROJECTION_MODE:durable}
   retry-poll-interval-ms: ${LABEX_AGENT_RETRY_POLL_INTERVAL_MS:1000}
   loop:
     hard-max-iterations: ${LABEX_AGENT_HARD_MAX_ITERATIONS:0}

@@ -599,10 +599,10 @@ public class AgentLoopEngine {
                 request.setConversationId(conv.getConversationId());
                 memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
                 visibleLanguage = this.visibleLanguage(userVisibleMessage, memoryContext);
-                this.conversationService.saveUserMessage(conv, userVisibleMessage);
                 task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode,
-                        request.getMessage(), request.getActivePath(), modelConfig.getConfigId(),
+                        request.getMessage(), userVisibleMessage, request.getActivePath(), modelConfig.getConfigId(),
                         request.isBackgroundRun(), request.getSubmittedAt());
+                this.conversationService.touchActivity(conv);
             }
             if (this.executionLeaseService != null) {
                 if (preclaimedLease != null) {
@@ -3298,7 +3298,7 @@ public class AgentLoopEngine {
         payload.put("content", checkpoint);
         sse.send("COMPACTION_SUMMARY", payload);
         if (conversation != null) {
-            this.conversationService.saveCompactionSummary(conversation, checkpoint, payload);
+            this.conversationService.markCompacted(conversation);
         }
     }
 
@@ -3648,9 +3648,6 @@ public class AgentLoopEngine {
 
     private void sendEvent(AgentSsePublisher sse, AgentConversation conv, String type, Object data) throws Exception {
         sse.send(type, data);
-        if (conv != null) {
-            this.conversationService.saveEvent(conv, type, data);
-        }
     }
 
     /** 将生命周期已持久化的事件投影到当前连接，不能再次追加同名运行事件。 */
@@ -3672,9 +3669,6 @@ public class AgentLoopEngine {
             sse.sendPersisted(event.getSequenceNumber(), event.getEventType(), data);
         } catch (java.io.IOException ignored) {
             // 浏览器断线只影响观察者，不能把已经提交的终态重新解释成执行失败。
-        }
-        if (conv != null) {
-            this.conversationService.saveEvent(conv, event.getEventType(), data);
         }
     }
 
