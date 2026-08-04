@@ -6,10 +6,12 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -20,15 +22,48 @@ public class LocalProcessExecutor implements ProcessExecutor {
     private static final long POLL_MILLIS = 50L;
     private static final long TERMINATION_GRACE_MILLIS = 500L;
     private static final long OUTPUT_JOIN_MILLIS = 2000L;
+    private final ProcessHostIdentity hostIdentity;
+    private final String ownerId;
+
+    public LocalProcessExecutor() {
+        this(ProcessHostIdentity.localDefault(), "local-executor-" + UUID.randomUUID());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public LocalProcessExecutor(ProcessHostIdentity hostIdentity) {
+        this(hostIdentity, "local-executor-" + UUID.randomUUID());
+    }
+
+    LocalProcessExecutor(String ownerId) {
+        this(ProcessHostIdentity.localDefault(), ownerId);
+    }
+
+    LocalProcessExecutor(ProcessHostIdentity hostIdentity, String ownerId) {
+        this.hostIdentity = Objects.requireNonNull(hostIdentity, "hostIdentity");
+        if (ownerId == null || ownerId.isBlank()) {
+            throw new IllegalArgumentException("ownerId is required");
+        }
+        this.ownerId = ownerId;
+    }
 
     @Override
     public ProcessExecutionResult execute(
             ProcessExecutionRequest request,
             CancellationToken cancellationToken,
             Consumer<String> outputListener) {
+        return execute(request, cancellationToken, outputListener, ProcessExecutionObserver.none());
+    }
+
+    @Override
+    public ProcessExecutionResult execute(
+            ProcessExecutionRequest request,
+            CancellationToken cancellationToken,
+            Consumer<String> outputListener,
+            ProcessExecutionObserver observer) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(cancellationToken, "cancellationToken");
         Objects.requireNonNull(outputListener, "outputListener");
+        Objects.requireNonNull(observer, "observer");
 
         long startedAt = System.nanoTime();
         if (!request.workingDirectory().toFile().isDirectory()) {
@@ -47,6 +82,16 @@ public class LocalProcessExecutor implements ProcessExecutor {
             process = processBuilder.start();
         } catch (IOException e) {
             return infrastructureError(startedAt, e.getMessage());
+        }
+
+        ProcessExecutionIdentity identity = identity(process, request.timeout());
+        try {
+            observer.onStarted(identity);
+        } catch (RuntimeException persistenceFailure) {
+            terminateProcessTree(process);
+            closeProcessStreams(process);
+            return infrastructureError(startedAt,
+                    "Process identity persistence failed: " + persistenceFailure.getMessage());
         }
 
         BoundedOutput output = new BoundedOutput(request.maxOutputChars());
@@ -108,6 +153,24 @@ public class LocalProcessExecutor implements ProcessExecutor {
                 output.truncated());
     }
 
+    private ProcessExecutionIdentity identity(Process process, Duration timeout) {
+        Long processStartEpochMs = process.toHandle().info().startInstant()
+                .map(Instant::toEpochMilli)
+                .orElse(null);
+        long leaseExpiresEpochMs = System.currentTimeMillis()
+                + timeout.toMillis()
+                + TERMINATION_GRACE_MILLIS;
+        return new ProcessExecutionIdentity(
+                hostIdentity.hostId(), ownerId, "host", "", process.pid(),
+                processStartEpochMs, leaseExpiresEpochMs);
+    }
+
+    private void closeProcessStreams(Process process) {
+        try { process.getOutputStream().close(); } catch (IOException ignored) { }
+        try { process.getInputStream().close(); } catch (IOException ignored) { }
+        try { process.getErrorStream().close(); } catch (IOException ignored) { }
+    }
+
     private void drainOutput(
             Process process,
             BoundedOutput output,
@@ -167,6 +230,19 @@ public class LocalProcessExecutor implements ProcessExecutor {
                 process.waitFor(TERMINATION_GRACE_MILLIS, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+            }
+        }
+        waitForHandles(descendants, TERMINATION_GRACE_MILLIS);
+    }
+
+    private void waitForHandles(List<ProcessHandle> handles, long timeoutMillis) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (handles.stream().anyMatch(ProcessHandle::isAlive) && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(20L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
             }
         }
     }

@@ -141,23 +141,15 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
-    void emitsAWorkspaceLocalLongCommandForApprovedCancellationAcceptance() {
-        LlmProvider.StreamChunk source = stream("[acceptance:approval-cancel] prepare hold").stream()
+    void emitsALongCommandWithoutCreatingAnUnverifiedWorkspaceEdit() {
+        LlmProvider.StreamChunk command = stream("[acceptance:approval-cancel] prepare hold").stream()
                 .filter(chunk -> "tool_call".equals(chunk.type()))
                 .findFirst()
                 .orElseThrow();
-        assertEquals("write_file", source.toolName());
-        assertTrue(source.toolArgs().contains("AcceptanceApprovedCommandHold.java"));
 
-        LlmProvider.StreamChunk command = stream(
-                "[acceptance:approval-cancel] prepare hold",
-                "[Tool write_file result] status=completed").stream()
-                .filter(chunk -> "tool_call".equals(chunk.type()))
-                .findFirst()
-                .orElseThrow();
         assertEquals("shell", command.toolName());
         assertEquals("acceptance-approved-command-cancel-shell", command.toolCallId());
-        assertTrue(command.toolArgs().contains("java AcceptanceApprovedCommandHold.java"));
+        assertTrue(command.toolArgs().contains("python3 -m http.server 0"));
         assertTrue(command.toolArgs().contains("timeout_seconds"));
     }
 

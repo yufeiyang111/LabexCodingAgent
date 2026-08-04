@@ -13,6 +13,8 @@ import static org.mockito.Mockito.when;
 import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.AgentRunLeaseHeartbeatService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
@@ -21,6 +23,8 @@ import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionIdentity;
+import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.service.StudentProjectService;
 import java.time.LocalDateTime;
@@ -67,6 +71,12 @@ class CommandApprovalOrchestratorTest {
         AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
         StudentProjectService projects = mock(StudentProjectService.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunExecutionLeaseService executionLeases = mock(AgentRunExecutionLeaseService.class);
+        AgentRunLeaseHeartbeatService leaseHeartbeats = mock(AgentRunLeaseHeartbeatService.class);
+        AgentRunExecutionLeaseService.ExecutionLease executionLease =
+                new AgentRunExecutionLeaseService.ExecutionLease(
+                        71L, "approval-executor-71", 4L, LocalDateTime.now().plusSeconds(30));
+        when(executionLeases.acquire(71L)).thenReturn(executionLease);
         CommandApproval approval = approval("approved");
         StudentProject project = new StudentProject();
         project.setProjectId(12);
@@ -76,12 +86,16 @@ class CommandApprovalOrchestratorTest {
         when(approvals.consume(any())).thenReturn(true);
         AgentCancellationRegistry cancellations = spy(new AgentCancellationRegistry());
         AgentTaskService tasks = mock(AgentTaskService.class);
-        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class)))
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class)))
                 .thenAnswer(invocation -> {
                     CancellationToken token = invocation.getArgument(2);
                     AgentCancellationRegistry.CancellationTarget target = cancellations.findCancellationTarget(
                             "session-71", 7, 12);
                     org.assertj.core.api.Assertions.assertThat(target.activeRun()).isSameAs(token);
+                    ProcessExecutionObserver observer = invocation.getArgument(3);
+                    observer.onStarted(new ProcessExecutionIdentity(
+                            "host-71", "executor-71", "local", "task-71", 12345L,
+                            1700000000000L, 1700000030000L));
                     return new ProcessExecutionResult(
                             ExecutionStatus.SUCCEEDED, 0, 12L, "tests passed", false);
                 });
@@ -93,12 +107,24 @@ class CommandApprovalOrchestratorTest {
         CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
                 projects, lifecycle, metadataRefresh, resumeScheduler, null, toolCalls, transcript,
                 cancellations, tasks);
+        orchestrator.setCommandExecutionLeaseServices(executionLeases, leaseHeartbeats);
 
         CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
 
         org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("resuming");
+        org.mockito.InOrder leaseOrder = org.mockito.Mockito.inOrder(
+                executionLeases, leaseHeartbeats, transcript, resumeScheduler);
+        leaseOrder.verify(executionLeases).acquire(71L);
+        leaseOrder.verify(leaseHeartbeats).track(executionLease, "session-71");
+        leaseOrder.verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
+                org.mockito.ArgumentMatchers.contains("tests passed"));
+        leaseOrder.verify(leaseHeartbeats).untrack(executionLease);
+        leaseOrder.verify(executionLeases).release(executionLease);
+        leaseOrder.verify(resumeScheduler).resumeIfWaiting(approval);
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_STARTED"), any(), any());
         verify(audit).recordExecutionStarted(approval);
+        verify(audit).recordExecutionProcessBound(eq(approval), any(ProcessExecutionIdentity.class));
+        verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_PROCESS_BOUND"), any(), any());
         verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_COMPLETED"), any(), any());
         verify(resumeScheduler).resumeIfWaiting(approval);
         verify(metadataRefresh).schedule(eq(7), eq(12), eq("command_approval"));
@@ -133,7 +159,7 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
         when(approvals.consume(any())).thenReturn(true);
         when(tasks.finalizeCancellation(eq(71L), any(), any())).thenReturn(true);
-        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class)))
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class)))
                 .thenAnswer(invocation -> {
                     CancellationToken token = invocation.getArgument(2);
                     org.assertj.core.api.Assertions.assertThat(cancellations.findCancellationTarget(
@@ -181,7 +207,7 @@ class CommandApprovalOrchestratorTest {
         when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
         when(approvals.consume(any())).thenReturn(true);
         when(tasks.finalizeCancellation(eq(71L), any(), any())).thenReturn(true);
-        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class)))
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class)))
                 .thenReturn(new ProcessExecutionResult(ExecutionStatus.CANCELLED, null, 48L, "", false));
         org.mockito.Mockito.doThrow(new IllegalStateException("transcript unavailable"))
                 .when(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""), any());

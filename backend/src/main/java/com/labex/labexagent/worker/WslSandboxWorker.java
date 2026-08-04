@@ -1,6 +1,7 @@
 package com.labex.labexagent.worker;
 
 import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.execution.ProcessExecutor;
@@ -40,6 +41,13 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
     @Override
     public ProcessExecutionResult execute(
             WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken) {
+        return execute(run, request, cancellationToken, ProcessExecutionObserver.none());
+    }
+
+    @Override
+    public ProcessExecutionResult execute(
+            WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken,
+            ProcessExecutionObserver observer) {
         try {
             prepare(run);
             requireWorkspacePath(run, request.workingDirectory());
@@ -49,7 +57,9 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
                     request.timeout(),
                     request.maxOutputChars(),
                     run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));
-            return processExecutor.execute(sandboxRequest, cancellationToken);
+            return processExecutor.execute(
+                        sandboxRequest, cancellationToken, chunk -> { },
+                        identity -> observer.onStarted(identity.withWorkerContext("wsl", run.runId())));
         } catch (IOException | IllegalArgumentException e) {
             return new ProcessExecutionResult(
                     ExecutionStatus.INFRASTRUCTURE_ERROR, null, 0, e.getMessage(), false);

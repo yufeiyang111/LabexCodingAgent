@@ -3,8 +3,10 @@ package com.labex.labexagent.run;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
+import com.labex.labexagent.commandsecurity.CommandApprovalResumeScheduler;
 import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.commandsecurity.CommandAuditService;
+import com.labex.labexagent.commandsecurity.CommandProcessRecoveryService;
 import com.labex.labexagent.context.AgentCompactionRecord;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.mapper.AgentTaskMapper;
@@ -17,12 +19,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AgentRunRecoveryService {
     private static final Logger log = LoggerFactory.getLogger(AgentRunRecoveryService.class);
     private static final int COMPACTION_RECOVERY_BATCH_SIZE = 200;
+    private static final int COMMAND_PROCESS_RECOVERY_BATCH_SIZE = 100;
     private static final String INTERRUPTED_COMPACTION_REASON =
             "Agent service restarted without the original compaction execution lease";
     private static final List<String> INTERRUPTED_STATES = List.of(
@@ -39,6 +43,8 @@ public class AgentRunRecoveryService {
     private final CommandApprovalService commandApprovalService;
     private final AgentRunTranscriptService transcriptService;
     private final CommandAuditService commandAuditService;
+    private final CommandProcessRecoveryService commandProcessRecoveryService;
+    private final CommandApprovalResumeScheduler commandApprovalResumeScheduler;
 
     public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
                                    AgentRunExecutionLeaseService executionLeaseService,
@@ -47,7 +53,21 @@ public class AgentRunRecoveryService {
                                    AgentRunMessageService messageService,
                                    AgentCompactionService compactionService) {
         this(taskMapper, lifecycleService, executionLeaseService, takeoverScheduler, partService,
-                messageService, compactionService, null, null, null);
+                messageService, compactionService, null, null, null, null, null);
+    }
+
+    public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
+                                   AgentRunExecutionLeaseService executionLeaseService,
+                                   AgentRunTakeoverScheduler takeoverScheduler,
+                                   AgentRunPartService partService,
+                                   AgentRunMessageService messageService,
+                                   AgentCompactionService compactionService,
+                                   CommandApprovalService commandApprovalService,
+                                   AgentRunTranscriptService transcriptService,
+                                   CommandAuditService commandAuditService) {
+        this(taskMapper, lifecycleService, executionLeaseService, takeoverScheduler, partService,
+                messageService, compactionService, commandApprovalService, transcriptService,
+                commandAuditService, null, null);
     }
 
     @Autowired
@@ -59,7 +79,9 @@ public class AgentRunRecoveryService {
                                    AgentCompactionService compactionService,
                                    CommandApprovalService commandApprovalService,
                                    AgentRunTranscriptService transcriptService,
-                                   CommandAuditService commandAuditService) {
+                                   CommandAuditService commandAuditService,
+                                   CommandProcessRecoveryService commandProcessRecoveryService,
+                                   CommandApprovalResumeScheduler commandApprovalResumeScheduler) {
         this.taskMapper = taskMapper;
         this.lifecycleService = lifecycleService;
         this.executionLeaseService = executionLeaseService;
@@ -70,6 +92,8 @@ public class AgentRunRecoveryService {
         this.commandApprovalService = commandApprovalService;
         this.transcriptService = transcriptService;
         this.commandAuditService = commandAuditService;
+        this.commandProcessRecoveryService = commandProcessRecoveryService;
+        this.commandApprovalResumeScheduler = commandApprovalResumeScheduler;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -154,6 +178,76 @@ public class AgentRunRecoveryService {
         return recovered;
     }
 
+    /**
+     * 新 JVM 可能在旧命令 lease 过期前启动。启动恢复会保留该 lease；轮询在它过期后领取新 epoch，
+     * 再核验并回收持久化进程，避免必须再次重启服务才能继续。
+     */
+    @Scheduled(fixedDelayString = "${labex-agent.command-approval-resume-poll-interval-ms:1000}")
+    public void recoverExpiredCommandProcessesScheduled() {
+        recoverExpiredCommandProcesses();
+    }
+
+    public int recoverExpiredCommandProcesses() {
+        if (commandApprovalService == null || transcriptService == null
+                || commandAuditService == null || commandProcessRecoveryService == null
+                || commandApprovalResumeScheduler == null) {
+            return 0;
+        }
+        List<CommandApproval> approvals = commandApprovalService
+                .findResolvedAgentApprovalsAwaitingResume(COMMAND_PROCESS_RECOVERY_BATCH_SIZE);
+        if (approvals == null || approvals.isEmpty()) {
+            return 0;
+        }
+
+        int recovered = 0;
+        for (CommandApproval approval : approvals) {
+            if (!isConsumedRecoveryCandidate(approval)) {
+                continue;
+            }
+            AgentRunExecutionLeaseService.ExecutionLease recoveryLease = null;
+            CommandApproval recoveredApproval = null;
+            try {
+                if (recoveryAlreadyClassified(approval)
+                        || transcriptService.hasPersistedToolResult(
+                        approval.getTaskId(), approval.getToolCallId())) {
+                    continue;
+                }
+                CommandApproval latest = commandApprovalService.findLatestForTask(
+                        approval.getStudentId(), approval.getProjectId(), approval.getTaskId());
+                if (latest == null || !Objects.equals(latest.getApprovalId(), approval.getApprovalId())) {
+                    continue;
+                }
+                AgentTask task = taskMapper.selectById(approval.getTaskId());
+                if (!waitingApproval(task)) {
+                    continue;
+                }
+                recoveryLease = executionLeaseService.acquire(task.getTaskId());
+                if (recoveryLease == null) {
+                    continue;
+                }
+                AgentTask claimedTask = taskMapper.selectById(task.getTaskId());
+                if (!waitingApproval(claimedTask)
+                        || transcriptService.hasPersistedToolResult(
+                        approval.getTaskId(), approval.getToolCallId())) {
+                    continue;
+                }
+                recoveredApproval = recoverConsumedCommandExecution(claimedTask);
+                if (recoveredApproval != null) {
+                    recovered++;
+                }
+            } catch (RuntimeException failure) {
+                log.warn("Unable to retry expired approved command recovery taskId={} approvalId={}",
+                        approval.getTaskId(), approval.getApprovalId(), failure);
+            } finally {
+                if (recoveryLease != null) {
+                    executionLeaseService.release(recoveryLease);
+                }
+            }
+            resumeRecoveredCommand(recoveredApproval);
+        }
+        return recovered;
+    }
+
     private void recover(AgentTask task) {
         AgentRunState state = AgentRunState.fromPersistedStatus(task.getStatus());
         if (executionLeaseService.hasActiveLease(task, java.time.LocalDateTime.now())) {
@@ -178,7 +272,7 @@ public class AgentRunRecoveryService {
                 "recoveryAttempt", attempts);
 
         if (state == AgentRunState.WAITING_APPROVAL) {
-            recordUncertainCommandExecution(task);
+            resumeRecoveredCommand(recoverConsumedCommandExecution(task));
         }
 
         if (state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER
@@ -231,29 +325,41 @@ public class AgentRunRecoveryService {
      * JVM 重启后只要 approval 已消费但 tool result 尚未落库，就标记为执行结果不确定。
      * 这里严禁自动重放命令；命令副作用可能已经发生，后续只能由明确的人工/治理流程处理。
      */
-    private void recordUncertainCommandExecution(AgentTask task) {
+    private CommandApproval recoverConsumedCommandExecution(AgentTask task) {
         if (commandApprovalService == null || transcriptService == null || task == null
                 || task.getTaskId() == null || task.getStudentId() == null || task.getProjectId() == null) {
-            return;
+            return null;
         }
         try {
             CommandApproval approval = commandApprovalService.findLatestForTask(
                     task.getStudentId(), task.getProjectId(), task.getTaskId());
-            if (approval == null || !"agent_shell".equals(approval.getSource())
-                    || !"consumed".equals(approval.getStatus())
-                    || approval.getApprovalId() == null || approval.getToolCallId() == null
-                    || approval.getToolCallId().isBlank()
+            if (!isConsumedRecoveryCandidate(approval)
                     || transcriptService.hasPersistedToolResult(task.getTaskId(), approval.getToolCallId())) {
-                return;
+                return null;
             }
-            if (commandAuditService != null) {
-                com.labex.entity.CommandAuditEvent latest =
-                        commandAuditService.findLatestExecutionOutcome(approval.getApprovalId());
-                if (latest != null && !"claimed".equals(latest.getExecutionStatus())
-                        && !"running".equals(latest.getExecutionStatus())) {
-                    return;
+            com.labex.entity.CommandAuditEvent latest = commandAuditService == null
+                    ? null : commandAuditService.findLatestExecutionOutcome(approval.getApprovalId());
+            if (latest != null && !"claimed".equals(latest.getExecutionStatus())
+                    && !"running".equals(latest.getExecutionStatus())) {
+                if ("interrupted".equals(latest.getExecutionStatus())
+                        && persistRecoveredCommandInterruption(task, approval,
+                        CommandProcessRecoveryService.RecoveryResult.ALREADY_INTERRUPTED)) {
+                    return approval;
+                }
+                return null;
+            }
+
+            CommandProcessRecoveryService.RecoveryResult recoveryResult = recoverPersistedProcess(latest);
+            if (recoveryResult == CommandProcessRecoveryService.RecoveryResult.TERMINATED
+                    || recoveryResult == CommandProcessRecoveryService.RecoveryResult.NOT_RUNNING) {
+                if (persistRecoveredCommandInterruption(task, approval, recoveryResult)) {
+                    return approval;
                 }
             }
+
+            String recoveryReason = recoveryResult == null
+                    ? "process_identity_not_persisted"
+                    : recoveryResult.name().toLowerCase(java.util.Locale.ROOT);
             lifecycleService.appendEventIfCurrent(
                     task.getTaskId(),
                     AgentRunState.WAITING_APPROVAL,
@@ -262,11 +368,104 @@ public class AgentRunRecoveryService {
                             "approvalId", approval.getApprovalId(),
                             "toolCallId", approval.getToolCallId(),
                             "automaticReplay", false,
+                            "processRecovery", recoveryReason,
                             "reason", "The approval was consumed before the command outcome became durable"),
-                    "recovery-" + task.getTaskId() + "-command-execution-uncertain-" + approval.getApprovalId());
+                    commandRecoveryKey(task, approval, "uncertain"));
         } catch (RuntimeException failure) {
             log.warn("Unable to classify consumed command approval after restart taskId={}",
                     task.getTaskId(), failure);
+        }
+        return null;
+    }
+
+    private CommandProcessRecoveryService.RecoveryResult recoverPersistedProcess(
+            com.labex.entity.CommandAuditEvent latest) {
+        if (commandProcessRecoveryService == null || latest == null
+                || latest.getProcessHostId() == null || latest.getProcessHostId().isBlank()
+                || latest.getProcessId() == null || latest.getProcessStartEpochMs() == null) {
+            return null;
+        }
+        return commandProcessRecoveryService.recover(latest);
+    }
+
+    private boolean persistRecoveredCommandInterruption(
+            AgentTask task, CommandApproval approval,
+            CommandProcessRecoveryService.RecoveryResult recoveryResult) {
+        String detail = "status=interrupted\n"
+                + "execution_status=outcome_lost_after_restart\n"
+                + "process_recovery=" + recoveryResult.name().toLowerCase(java.util.Locale.ROOT) + "\n"
+                + "automatic_replay=false";
+        try {
+            commandAuditService.recordExecutionInterrupted(
+                    approval, "service_restart_process_outcome_lost");
+            transcriptService.appendDeferredToolResult(
+                    task.getTaskId(), approval.getToolCallId(), "", detail);
+        } catch (RuntimeException persistenceFailure) {
+            log.warn("Unable to persist recovered command interruption taskId={} approvalId={}",
+                    task.getTaskId(), approval.getApprovalId(), persistenceFailure);
+            return false;
+        }
+
+        try {
+            lifecycleService.appendEventIfCurrent(
+                    task.getTaskId(),
+                    AgentRunState.WAITING_APPROVAL,
+                    "COMMAND_EXECUTION_RECOVERY_INTERRUPTED",
+                    Map.of(
+                            "approvalId", approval.getApprovalId(),
+                            "toolCallId", approval.getToolCallId(),
+                            "processRecovery", recoveryResult.name().toLowerCase(java.util.Locale.ROOT),
+                            "automaticReplay", false,
+                            "resumeAgentLoop", true),
+                    commandRecoveryKey(task, approval, "interrupted"));
+        } catch (RuntimeException eventFailure) {
+            log.warn("Unable to append recovered command interruption event taskId={} approvalId={}",
+                    task.getTaskId(), approval.getApprovalId(), eventFailure);
+        }
+        return true;
+    }
+
+    private boolean isConsumedRecoveryCandidate(CommandApproval approval) {
+        return approval != null
+                && approval.getTaskId() != null
+                && approval.getStudentId() != null
+                && approval.getProjectId() != null
+                && approval.getApprovalId() != null
+                && approval.getToolCallId() != null
+                && !approval.getToolCallId().isBlank()
+                && "agent_shell".equals(approval.getSource())
+                && "consumed".equals(approval.getStatus());
+    }
+
+    private boolean waitingApproval(AgentTask task) {
+        return task != null && task.getTaskId() != null
+                && AgentRunState.WAITING_APPROVAL.persistedStatus().equals(task.getStatus());
+    }
+
+    private boolean recoveryAlreadyClassified(CommandApproval approval) {
+        return lifecycleService.hasEvent(approval.getTaskId(),
+                commandRecoveryKey(approval.getTaskId(), approval.getApprovalId(), "interrupted"))
+                || lifecycleService.hasEvent(approval.getTaskId(),
+                commandRecoveryKey(approval.getTaskId(), approval.getApprovalId(), "uncertain"));
+    }
+
+    private String commandRecoveryKey(AgentTask task, CommandApproval approval, String outcome) {
+        return commandRecoveryKey(task.getTaskId(), approval.getApprovalId(), outcome);
+    }
+
+    private String commandRecoveryKey(Long taskId, String approvalId, String outcome) {
+        return "recovery-" + taskId + "-command-execution-" + outcome + "-" + approvalId;
+    }
+
+    private void resumeRecoveredCommand(CommandApproval approval) {
+        if (approval == null || commandApprovalResumeScheduler == null) {
+            return;
+        }
+        try {
+            commandApprovalResumeScheduler.resumeIfWaiting(approval);
+        } catch (RuntimeException resumeFailure) {
+            log.warn("Unable to schedule recovered command continuation taskId={} approvalId={}",
+                    approval.getTaskId(), approval.getApprovalId(), resumeFailure);
         }
     }
 

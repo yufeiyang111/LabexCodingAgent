@@ -1,5 +1,6 @@
 package com.labex.labexagent.worker;
 
+import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.runtime.CancellationToken;
@@ -25,6 +26,12 @@ public interface SandboxWorker {
 
     ProcessExecutionResult execute(
             WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken);
+
+    default ProcessExecutionResult execute(
+            WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken,
+            ProcessExecutionObserver observer) {
+        return execute(run, request, cancellationToken);
+    }
 
     WorkerProcess startProcess(WorkerRunSpec run, ProcessExecutionRequest request) throws IOException;
 

@@ -16,4 +16,12 @@ public interface ProcessExecutor {
             ProcessExecutionRequest request,
             CancellationToken cancellationToken,
             Consumer<String> outputListener);
+
+    default ProcessExecutionResult execute(
+            ProcessExecutionRequest request,
+            CancellationToken cancellationToken,
+            Consumer<String> outputListener,
+            ProcessExecutionObserver observer) {
+        return execute(request, cancellationToken, outputListener);
+    }
 }

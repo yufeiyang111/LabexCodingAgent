@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.network.NetworkAccessService;
@@ -31,14 +32,14 @@ class AgentApprovedCommandExecutorTest {
     @Test
     void executesOnlyConsumedAgentApprovalAsDirectArgv() throws Exception {
         SandboxWorker worker = mock(SandboxWorker.class);
-        when(worker.execute(any(), any(), any())).thenReturn(new ProcessExecutionResult(
+        when(worker.execute(any(), any(), any(), any(ProcessExecutionObserver.class))).thenReturn(new ProcessExecutionResult(
                 ExecutionStatus.SUCCEEDED, 0, 10, "ok", false));
         AgentApprovedCommandExecutor executor = new AgentApprovedCommandExecutor(worker);
 
         executor.execute(consumedApproval(), project());
 
         ArgumentCaptor<ProcessExecutionRequest> request = ArgumentCaptor.forClass(ProcessExecutionRequest.class);
-        verify(worker).execute(any(), request.capture(), any());
+        verify(worker).execute(any(), request.capture(), any(), any(ProcessExecutionObserver.class));
         assertThat(request.getValue().command()).containsExactly("npm", "test");
         assertThat(request.getValue().workingDirectory()).isEqualTo(workspace.toRealPath());
     }
@@ -48,7 +49,7 @@ class AgentApprovedCommandExecutorTest {
         SandboxWorker worker = mock(SandboxWorker.class);
         NetworkAccessService network = mock(NetworkAccessService.class);
         when(network.consumeGrant(7, 12, 71L, "npm test")).thenReturn(true);
-        when(worker.execute(any(), any(), any())).thenReturn(new ProcessExecutionResult(
+        when(worker.execute(any(), any(), any(), any(ProcessExecutionObserver.class))).thenReturn(new ProcessExecutionResult(
                 ExecutionStatus.SUCCEEDED, 0, 10, "ok", false));
         AgentApprovedCommandExecutor executor = new AgentApprovedCommandExecutor(worker, network);
         CommandApproval approval = consumedApproval();
@@ -59,7 +60,7 @@ class AgentApprovedCommandExecutorTest {
         executor.execute(approval, project());
 
         ArgumentCaptor<WorkerRunSpec> run = ArgumentCaptor.forClass(WorkerRunSpec.class);
-        verify(worker).execute(run.capture(), any(), any());
+        verify(worker).execute(run.capture(), any(), any(), any(ProcessExecutionObserver.class));
         assertThat(run.getValue().policy().networkEnabled()).isTrue();
         verify(network).consumeGrant(7, 12, 71L, "npm test");
     }

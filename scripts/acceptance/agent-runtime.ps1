@@ -66,6 +66,8 @@ $evidence = [ordered]@{
     commandRejectRestart = $false
     approvedCommandCancellation = $false
     approvedCommandCancellationElapsedMs = $null
+    approvedCommandRestartRecovery = $false
+    approvedCommandRestartProcessId = $null
     checkoutContention = $false
     runMessagePartProjection = $false
     toolPartAuthority = $false
@@ -184,6 +186,9 @@ function Start-AcceptanceBackend {
         "--spring.profiles.active=$Profile",
         "--labex-agent.project-base-path=$workspaceRoot",
         "--labex-agent.instance-id=acceptance-$runId-$Profile",
+        "--labex-agent.process-host-id=acceptance-host-$runId",
+        '--labex-agent.execution-lease-duration-ms=15000',
+        '--labex-agent.execution-heartbeat-interval-ms=1000',
         '--spring.datasource.driver-class-name=org.h2.Driver',
         "--spring.datasource.url=$h2JdbcUrl",
         '--spring.datasource.username=sa',
@@ -204,6 +209,11 @@ function Start-AcceptanceBackend {
         }
     }
     throw "后端在 $TimeoutSeconds 秒内未就绪，日志目录：$logRoot"
+}
+
+function Test-ProcessAlive {
+    param([Parameter(Mandatory)][long]$ProcessId)
+    return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
 }
 
 function Stop-AcceptanceBackend {
@@ -829,6 +839,100 @@ WHERE event_id = (
         $evidence.approvedCommandCancellationElapsedMs = $approvedCancelElapsedMs
     } finally {
         Remove-Job -Job $approvedCancelJob -Force -ErrorAction SilentlyContinue
+    }
+
+    # Crash the backend after the real approved process identity is durable, then prove startup recovery reaps it and resumes without replay.
+    $approvedRestartEvents = Invoke-AgentStream -Message '[acceptance:approval-cancel] restart approved command recovery'
+    $approvedRestartApproval = Get-RequiredEvent -Events $approvedRestartEvents -Type 'COMMAND_APPROVAL_REQUIRED'
+    $approvedRestartTaskId = [long]$approvedRestartApproval.data.taskId
+    $approvedRestartApprovalId = [string]$approvedRestartApproval.data.approvalId
+    $approvedRestartToolCallId = [string]$approvedRestartApproval.data.toolCallId
+    Invoke-ApiData -Path "/student/projects/$projectId/agent/command-approvals/$approvedRestartApprovalId/decision" -Method POST -Body @{
+        action = 'approve'; decisionIdempotencyKey = [Guid]::NewGuid().ToString()
+    } | Out-Null
+    $approvedRestartExecuteUri = "$baseUrl/student/projects/$projectId/agent/command-approvals/$approvedRestartApprovalId/execute"
+    $approvedRestartJob = Start-Job -ScriptBlock {
+        param($Uri, $Headers, $Timeout)
+        Invoke-RestMethod -Uri $Uri -Method Post -Headers $Headers -TimeoutSec $Timeout
+    } -ArgumentList $approvedRestartExecuteUri, (Get-Headers), $TimeoutSeconds
+    $approvedRestartBackendStopped = $false
+    try {
+        $processBound = $null
+        $processBoundDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            $approvedRestartDurableEvents = Get-TaskEvents -TaskId $approvedRestartTaskId
+            $processBound = $approvedRestartDurableEvents |
+                Where-Object { $_.type -eq 'COMMAND_EXECUTION_PROCESS_BOUND' } | Select-Object -First 1
+            if ($processBound) { break }
+            if ($approvedRestartJob.State -in @('Completed','Failed','Stopped')) {
+                throw "Approved restart command ended before process identity became durable; jobState=$($approvedRestartJob.State)."
+            }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $processBoundDeadline)
+        if (-not $processBound) { throw 'Approved restart command did not persist COMMAND_EXECUTION_PROCESS_BOUND in time.' }
+
+        $processSql = "SELECT process_id FROM t_command_audit_event WHERE approval_id = '$approvedRestartApprovalId' AND event_type = 'EXECUTION_PROCESS_BOUND' ORDER BY event_id DESC LIMIT 1"
+        $processSqlText = (Invoke-AcceptanceSql -Sql $processSql) -join "`n"
+        $processIdMatches = [regex]::Matches($processSqlText, '(?m)^\s*(\d+)\s*$')
+        if ($processIdMatches.Count -lt 1) {
+            throw "Durable process identity query returned no PID: $processSqlText"
+        }
+        $approvedRestartProcessId = [long]$processIdMatches[$processIdMatches.Count - 1].Groups[1].Value
+        if (-not (Test-ProcessAlive -ProcessId $approvedRestartProcessId)) {
+            throw "Approved restart process $approvedRestartProcessId was not alive before backend crash."
+        }
+
+        Stop-AcceptanceBackend
+        $approvedRestartBackendStopped = $true
+        Start-Sleep -Milliseconds 500
+        if (-not (Test-ProcessAlive -ProcessId $approvedRestartProcessId)) {
+            throw "Approved restart process $approvedRestartProcessId did not survive the forced backend crash; orphan recovery was not exercised."
+        }
+
+        # Restart before the prior lease expires. Startup must preserve the process, then the durable poller must reap it after expiry.
+        Start-AcceptanceBackend -Profile 'acceptance,local'
+        $approvedRestartBackendStopped = $false
+        if (-not (Test-ProcessAlive -ProcessId $approvedRestartProcessId)) {
+            throw "Startup recovery ignored the still-active execution lease for process $approvedRestartProcessId."
+        }
+        $activeLeaseEvents = Get-TaskEvents -TaskId $approvedRestartTaskId
+        if (@($activeLeaseEvents | Where-Object { $_.type -eq 'RUN_RECOVERY_ACTIVE_LEASE' }).Count -ne 1) {
+            throw 'Immediate restart did not persist the active-lease recovery fence.'
+        }
+
+        $processExitDeadline = [DateTime]::UtcNow.AddSeconds(25)
+        while ((Test-ProcessAlive -ProcessId $approvedRestartProcessId) -and
+               [DateTime]::UtcNow -lt $processExitDeadline) {
+            Start-Sleep -Milliseconds 100
+        }
+        if (Test-ProcessAlive -ProcessId $approvedRestartProcessId) {
+            throw "Expired-lease recovery did not terminate orphan process $approvedRestartProcessId."
+        }
+
+        $approvedRestartTask = Wait-TaskTerminal -TaskId $approvedRestartTaskId -Seconds 30
+        if ([string]$approvedRestartTask.status -ne 'completed') {
+            throw "Restart-recovered approved command task ended as $($approvedRestartTask.status), not completed."
+        }
+        $approvedRestartToolResults = @($approvedRestartTask.parts | Where-Object {
+            [string]$_.toolCallId -eq $approvedRestartToolCallId -and [string]$_.partType -eq 'tool_result'
+        })
+        if ($approvedRestartToolResults.Count -ne 1 -or
+            [string]$approvedRestartToolResults[0].output -notmatch 'outcome_lost_after_restart' -or
+            [string]$approvedRestartToolResults[0].output -notmatch 'automatic_replay=false') {
+            throw 'Restart recovery did not persist one protocol-safe interrupted tool result.'
+        }
+        $approvedRestartDurableEvents = Get-TaskEvents -TaskId $approvedRestartTaskId
+        if (@($approvedRestartDurableEvents | Where-Object { $_.type -eq 'COMMAND_EXECUTION_PROCESS_BOUND' }).Count -ne 1 -or
+            @($approvedRestartDurableEvents | Where-Object { $_.type -eq 'COMMAND_EXECUTION_RECOVERY_INTERRUPTED' }).Count -ne 1) {
+            throw 'Restart recovery did not persist exactly one process-bound and one recovery-interrupted event.'
+        }
+        $evidence.approvedCommandRestartRecovery = $true
+        $evidence.approvedCommandRestartProcessId = $approvedRestartProcessId
+    } finally {
+        Remove-Job -Job $approvedRestartJob -Force -ErrorAction SilentlyContinue
+        if ($approvedRestartBackendStopped) {
+            Start-AcceptanceBackend -Profile 'acceptance,local'
+        }
     }
 
     $holderSessionId = [Guid]::NewGuid().ToString()

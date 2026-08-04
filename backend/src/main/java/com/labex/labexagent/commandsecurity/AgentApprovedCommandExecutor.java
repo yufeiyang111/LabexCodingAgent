@@ -2,6 +2,7 @@ package com.labex.labexagent.commandsecurity;
 
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.network.NetworkAccessService;
@@ -38,6 +39,12 @@ public class AgentApprovedCommandExecutor {
 
     public ProcessExecutionResult execute(CommandApproval approval, StudentProject project,
                                           CancellationToken cancellationToken) {
+        return execute(approval, project, cancellationToken, ProcessExecutionObserver.none());
+    }
+
+    public ProcessExecutionResult execute(CommandApproval approval, StudentProject project,
+                                          CancellationToken cancellationToken,
+                                          ProcessExecutionObserver observer) {
         if (approval == null || project == null || approval.getTaskId() == null) {
             throw new IllegalArgumentException("approved command and project are required");
         }
@@ -56,7 +63,8 @@ public class AgentApprovedCommandExecutor {
         ProcessExecutionRequest request = new ProcessExecutionRequest(
                 command, workingDirectory, Duration.ofSeconds(timeoutSeconds), MAX_OUTPUT_CHARS);
         CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
-        return sandboxWorker.execute(run, request, token);
+        ProcessExecutionObserver effectiveObserver = observer == null ? ProcessExecutionObserver.none() : observer;
+        return sandboxWorker.execute(run, request, token, effectiveObserver);
     }
 
     private boolean networkEnabled(String options) {

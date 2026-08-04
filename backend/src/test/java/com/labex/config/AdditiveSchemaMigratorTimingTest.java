@@ -63,6 +63,53 @@ class AdditiveSchemaMigratorTimingTest {
     }
 
     @Test
+    void addsDurableCommandProcessIdentityColumnsToAnExistingAuditTable() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+        ResultSet present = mock(ResultSet.class);
+        ResultSet missing = mock(ResultSet.class);
+        ResultSet existingIndexes = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.getMetaData()).thenReturn(metadata);
+        when(connection.getCatalog()).thenReturn("labex");
+        when(present.next()).thenReturn(true);
+        when(missing.next()).thenReturn(false);
+        when(metadata.getTables(any(), isNull(), anyString(), any())).thenReturn(present);
+        when(metadata.getColumns(any(), isNull(), anyString(), anyString())).thenAnswer(invocation -> {
+            String table = invocation.getArgument(2, String.class);
+            String column = invocation.getArgument(3, String.class);
+            boolean missingProcessColumn = "t_command_audit_event".equalsIgnoreCase(table)
+                    && List.of("process_host_id", "process_owner", "worker_runtime", "worker_run_id",
+                    "process_id", "process_start_epoch_ms", "process_lease_expires_epoch_ms")
+                    .contains(column.toLowerCase());
+            return missingProcessColumn ? missing : present;
+        });
+        when(existingIndexes.next()).thenReturn(true, true, true, true, false);
+        when(existingIndexes.getString("INDEX_NAME")).thenReturn(
+                "idx_task_retry_due",
+                "idx_task_execution_lease",
+                "idx_conv_project_updated",
+                "idx_msg_conversation_history");
+        when(metadata.getIndexInfo(eq("labex"), isNull(), anyString(), eq(false), eq(false)))
+                .thenReturn(existingIndexes);
+
+        new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate, org.mockito.Mockito.times(7)).execute(sql.capture());
+        assertTrue(sql.getAllValues().containsAll(List.of(
+                "ALTER TABLE t_command_audit_event ADD COLUMN process_host_id VARCHAR(64) DEFAULT NULL",
+                "ALTER TABLE t_command_audit_event ADD COLUMN process_owner VARCHAR(128) DEFAULT NULL",
+                "ALTER TABLE t_command_audit_event ADD COLUMN worker_runtime VARCHAR(32) DEFAULT NULL",
+                "ALTER TABLE t_command_audit_event ADD COLUMN worker_run_id VARCHAR(128) DEFAULT NULL",
+                "ALTER TABLE t_command_audit_event ADD COLUMN process_id BIGINT DEFAULT NULL",
+                "ALTER TABLE t_command_audit_event ADD COLUMN process_start_epoch_ms BIGINT DEFAULT NULL",
+                "ALTER TABLE t_command_audit_event ADD COLUMN process_lease_expires_epoch_ms BIGINT DEFAULT NULL")));
+    }
+
+    @Test
     void createsCommandAuditTableForAnExistingDatabaseMissingTheNewTable() throws Exception {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         DataSource dataSource = mock(DataSource.class);

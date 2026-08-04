@@ -3,6 +3,7 @@ package com.labex.labexagent.commandsecurity;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.CommandAuditEvent;
+import com.labex.labexagent.execution.ProcessExecutionIdentity;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.mapper.CommandAuditEventMapper;
 import java.nio.charset.StandardCharsets;
@@ -46,6 +47,18 @@ public class CommandAuditService {
                 eventKey(approval, "execution-started"));
     }
 
+    /** 在调用方等待命令结束前持久化真实进程身份。 */
+    public CommandAuditEvent recordExecutionProcessBound(
+            CommandApproval approval, ProcessExecutionIdentity identity) {
+        if (identity == null) {
+            throw new IllegalArgumentException("process identity is required");
+        }
+        return record(approval, "EXECUTION_PROCESS_BOUND", "", "running", null, null, null,
+                eventKey(approval, "process-bound:" + identity.processId() + ":"
+                        + (identity.processStartEpochMs() == null ? "unknown" : identity.processStartEpochMs())),
+                identity);
+    }
+
     public CommandAuditEvent recordExecutionOutcome(CommandApproval approval,
                                                      ProcessExecutionResult result,
                                                      long durationMs) {
@@ -77,6 +90,13 @@ public class CommandAuditService {
     private CommandAuditEvent record(CommandApproval approval, String eventType, String decision,
                                      String executionStatus, Integer exitCode, Long durationMs,
                                      String output, String idempotencyKey) {
+        return record(approval, eventType, decision, executionStatus, exitCode, durationMs,
+                output, idempotencyKey, null);
+    }
+
+    private CommandAuditEvent record(CommandApproval approval, String eventType, String decision,
+                                     String executionStatus, Integer exitCode, Long durationMs,
+                                     String output, String idempotencyKey, ProcessExecutionIdentity identity) {
         requireApproval(approval);
         CommandAuditEvent existing = auditMapper.selectOne(new QueryWrapper<CommandAuditEvent>()
                 .eq("approval_id", approval.getApprovalId())
@@ -102,6 +122,15 @@ public class CommandAuditService {
         event.setExecutionStatus(emptyToNull(executionStatus));
         event.setExitCode(exitCode);
         event.setDurationMs(durationMs);
+        if (identity != null) {
+            event.setProcessHostId(identity.hostId());
+            event.setProcessOwner(identity.ownerId());
+            event.setWorkerRuntime(identity.workerRuntime());
+            event.setWorkerRunId(identity.workerRunId());
+            event.setProcessId(identity.processId());
+            event.setProcessStartEpochMs(identity.processStartEpochMs());
+            event.setProcessLeaseExpiresEpochMs(identity.leaseExpiresEpochMs());
+        }
         if (output != null) {
             event.setOutputDigest(sha256(output));
             event.setOutputSizeBytes((long) output.getBytes(StandardCharsets.UTF_8).length);

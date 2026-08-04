@@ -28,6 +28,13 @@ public class CommandAuditEvent {
     @TableField("execution_status") private String executionStatus;
     @TableField("exit_code") private Integer exitCode;
     @TableField("duration_ms") private Long durationMs;
+    @TableField("process_host_id") private String processHostId;
+    @TableField("process_owner") private String processOwner;
+    @TableField("worker_runtime") private String workerRuntime;
+    @TableField("worker_run_id") private String workerRunId;
+    @TableField("process_id") private Long processId;
+    @TableField("process_start_epoch_ms") private Long processStartEpochMs;
+    @TableField("process_lease_expires_epoch_ms") private Long processLeaseExpiresEpochMs;
     @TableField("output_digest") private String outputDigest;
     @TableField("output_size_bytes") private Long outputSizeBytes;
     @TableField("idempotency_key") private String idempotencyKey;
@@ -69,6 +76,22 @@ public class CommandAuditEvent {
     public void setExitCode(Integer exitCode) { this.exitCode = exitCode; }
     public Long getDurationMs() { return durationMs; }
     public void setDurationMs(Long durationMs) { this.durationMs = durationMs; }
+    public String getProcessHostId() { return processHostId; }
+    public void setProcessHostId(String processHostId) { this.processHostId = processHostId; }
+    public String getProcessOwner() { return processOwner; }
+    public void setProcessOwner(String processOwner) { this.processOwner = processOwner; }
+    public String getWorkerRuntime() { return workerRuntime; }
+    public void setWorkerRuntime(String workerRuntime) { this.workerRuntime = workerRuntime; }
+    public String getWorkerRunId() { return workerRunId; }
+    public void setWorkerRunId(String workerRunId) { this.workerRunId = workerRunId; }
+    public Long getProcessId() { return processId; }
+    public void setProcessId(Long processId) { this.processId = processId; }
+    public Long getProcessStartEpochMs() { return processStartEpochMs; }
+    public void setProcessStartEpochMs(Long processStartEpochMs) { this.processStartEpochMs = processStartEpochMs; }
+    public Long getProcessLeaseExpiresEpochMs() { return processLeaseExpiresEpochMs; }
+    public void setProcessLeaseExpiresEpochMs(Long processLeaseExpiresEpochMs) {
+        this.processLeaseExpiresEpochMs = processLeaseExpiresEpochMs;
+    }
     public String getOutputDigest() { return outputDigest; }
     public void setOutputDigest(String outputDigest) { this.outputDigest = outputDigest; }
     public Long getOutputSizeBytes() { return outputSizeBytes; }

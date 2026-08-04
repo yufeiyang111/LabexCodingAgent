@@ -67,6 +67,7 @@ labex-agent:
     verification-strategy: ${LABEX_AGENT_VERIFICATION_STRATEGY:auto}
     fallback-verification-strategy: ${LABEX_AGENT_FALLBACK_VERIFICATION_STRATEGY:manual}
   instance-id: ${LABEX_AGENT_INSTANCE_ID:}
+  process-host-id: ${LABEX_AGENT_PROCESS_HOST_ID:}
   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
   worker:

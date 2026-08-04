@@ -13,8 +13,10 @@ import static org.mockito.Mockito.when;
 import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.CommandAuditEvent;
+import com.labex.labexagent.commandsecurity.CommandApprovalResumeScheduler;
 import com.labex.labexagent.commandsecurity.CommandApprovalService;
 import com.labex.labexagent.commandsecurity.CommandAuditService;
+import com.labex.labexagent.commandsecurity.CommandProcessRecoveryService;
 import com.labex.labexagent.context.AgentCompactionRecord;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.mapper.AgentTaskMapper;
@@ -168,6 +170,155 @@ class AgentRunRecoveryServiceTest {
                 eq(72L), eq(AgentRunState.WAITING_APPROVAL),
                 eq("RUN_RECOVERY_WAITING"), any(), eq("recovery-72-waiting"));
         verify(lifecycle, never()).transition(eq(72L), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void sealsARecoverableOrphanAsInterruptedAndResumesWithoutReplayingTheCommand() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTask task = task(72L, AgentRunState.WAITING_APPROVAL);
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        CommandProcessRecoveryService processRecovery = mock(CommandProcessRecoveryService.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        CommandAuditEvent binding = new CommandAuditEvent();
+        binding.setExecutionStatus("running");
+        binding.setProcessHostId("host-71");
+        binding.setProcessId(12345L);
+        binding.setProcessStartEpochMs(1700000000000L);
+        CommandApproval approval = new CommandApproval();
+        approval.setApprovalId("approval-72");
+        approval.setTaskId(72L);
+        approval.setStudentId(7);
+        approval.setProjectId(12);
+        approval.setToolCallId("tool-72");
+        approval.setSource("agent_shell");
+        approval.setStatus("consumed");
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+        when(lifecycle.recordRecoveryAttemptIfCurrent(72L, AgentRunState.WAITING_APPROVAL)).thenReturn(1);
+        when(approvals.findLatestForTask(7, 12, 72L)).thenReturn(approval);
+        when(transcript.hasPersistedToolResult(72L, "tool-72")).thenReturn(false);
+        when(audit.findLatestExecutionOutcome("approval-72")).thenReturn(binding);
+        when(processRecovery.recover(binding))
+                .thenReturn(CommandProcessRecoveryService.RecoveryResult.NOT_RUNNING);
+        when(resumeScheduler.resumeIfWaiting(approval))
+                .thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle,
+                mock(AgentRunExecutionLeaseService.class), mock(AgentRunTakeoverScheduler.class),
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class),
+                mock(AgentCompactionService.class), approvals, transcript, audit,
+                processRecovery, resumeScheduler);
+
+        int recovered = service.recoverInterruptedRuns();
+
+        assertEquals(1, recovered);
+        verify(audit).recordExecutionInterrupted(approval, "service_restart_process_outcome_lost");
+        verify(transcript).appendDeferredToolResult(eq(72L), eq("tool-72"), eq(""),
+                org.mockito.ArgumentMatchers.contains("automatic_replay=false"));
+        verify(lifecycle).appendEventIfCurrent(
+                eq(72L), eq(AgentRunState.WAITING_APPROVAL),
+                eq("COMMAND_EXECUTION_RECOVERY_INTERRUPTED"), any(),
+                eq("recovery-72-command-execution-interrupted-approval-72"));
+        verify(resumeScheduler).resumeIfWaiting(approval);
+        verify(lifecycle, never()).appendEventIfCurrent(
+                eq(72L), eq(AgentRunState.WAITING_APPROVAL),
+                eq("COMMAND_EXECUTION_RECOVERY_UNCERTAIN"), any(), anyString());
+    }
+
+    @Test
+    void retriesOrphanRecoveryAfterThePreviousLeaseExpiresWithoutAnotherRestart() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        AgentTask task = task(72L, AgentRunState.WAITING_APPROVAL);
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        CommandProcessRecoveryService processRecovery = mock(CommandProcessRecoveryService.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        CommandAuditEvent binding = new CommandAuditEvent();
+        binding.setExecutionStatus("running");
+        binding.setProcessHostId("host-71");
+        binding.setProcessId(12345L);
+        binding.setProcessStartEpochMs(1700000000000L);
+        CommandApproval approval = new CommandApproval();
+        approval.setApprovalId("approval-72");
+        approval.setTaskId(72L);
+        approval.setStudentId(7);
+        approval.setProjectId(12);
+        approval.setToolCallId("tool-72");
+        approval.setSource("agent_shell");
+        approval.setStatus("consumed");
+        AgentRunExecutionLeaseService.ExecutionLease recoveryLease =
+                new AgentRunExecutionLeaseService.ExecutionLease(
+                        72L, "recovery-owner", 4L, java.time.LocalDateTime.now().plusSeconds(30));
+        when(approvals.findResolvedAgentApprovalsAwaitingResume(100)).thenReturn(List.of(approval));
+        when(approvals.findLatestForTask(7, 12, 72L)).thenReturn(approval);
+        when(taskMapper.selectById(72L)).thenReturn(task);
+        when(transcript.hasPersistedToolResult(72L, "tool-72")).thenReturn(false);
+        when(leases.acquire(72L)).thenReturn(null, recoveryLease);
+        when(audit.findLatestExecutionOutcome("approval-72")).thenReturn(binding);
+        when(processRecovery.recover(binding))
+                .thenReturn(CommandProcessRecoveryService.RecoveryResult.NOT_RUNNING);
+        when(resumeScheduler.resumeIfWaiting(approval))
+                .thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle,
+                leases, mock(AgentRunTakeoverScheduler.class),
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class),
+                mock(AgentCompactionService.class), approvals, transcript, audit,
+                processRecovery, resumeScheduler);
+
+        assertEquals(0, service.recoverExpiredCommandProcesses());
+        assertEquals(1, service.recoverExpiredCommandProcesses());
+
+        verify(processRecovery).recover(binding);
+        verify(transcript).appendDeferredToolResult(eq(72L), eq("tool-72"), eq(""),
+                org.mockito.ArgumentMatchers.contains("automatic_replay=false"));
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(leases, resumeScheduler);
+        order.verify(leases, org.mockito.Mockito.times(2)).acquire(72L);
+        order.verify(leases).release(recoveryLease);
+        order.verify(resumeScheduler).resumeIfWaiting(approval);
+    }
+
+    @Test
+    void retriesTranscriptProjectionWhenTheInterruptedAuditWasAlreadyPersisted() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTask task = task(72L, AgentRunState.WAITING_APPROVAL);
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        CommandAuditEvent interrupted = new CommandAuditEvent();
+        interrupted.setExecutionStatus("interrupted");
+        CommandApproval approval = new CommandApproval();
+        approval.setApprovalId("approval-72");
+        approval.setTaskId(72L);
+        approval.setStudentId(7);
+        approval.setProjectId(12);
+        approval.setToolCallId("tool-72");
+        approval.setSource("agent_shell");
+        approval.setStatus("consumed");
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+        when(lifecycle.recordRecoveryAttemptIfCurrent(72L, AgentRunState.WAITING_APPROVAL)).thenReturn(1);
+        when(approvals.findLatestForTask(7, 12, 72L)).thenReturn(approval);
+        when(transcript.hasPersistedToolResult(72L, "tool-72")).thenReturn(false);
+        when(audit.findLatestExecutionOutcome("approval-72")).thenReturn(interrupted);
+        when(resumeScheduler.resumeIfWaiting(approval))
+                .thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle,
+                mock(AgentRunExecutionLeaseService.class), mock(AgentRunTakeoverScheduler.class),
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class),
+                mock(AgentCompactionService.class), approvals, transcript, audit,
+                mock(CommandProcessRecoveryService.class), resumeScheduler);
+
+        assertEquals(1, service.recoverInterruptedRuns());
+
+        verify(audit).recordExecutionInterrupted(approval, "service_restart_process_outcome_lost");
+        verify(transcript).appendDeferredToolResult(eq(72L), eq("tool-72"), eq(""),
+                org.mockito.ArgumentMatchers.contains("process_recovery=already_interrupted"));
+        verify(resumeScheduler).resumeIfWaiting(approval);
     }
 
     @Test

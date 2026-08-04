@@ -1,6 +1,7 @@
 package com.labex.labexagent.worker;
 
 import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessCommandResolver;
 import com.labex.labexagent.execution.ProcessExecutionResult;
@@ -42,6 +43,13 @@ public class LocalDevelopmentWorker implements SandboxWorker {
     @Override
     public ProcessExecutionResult execute(
             WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken) {
+        return execute(run, request, cancellationToken, ProcessExecutionObserver.none());
+    }
+
+    @Override
+    public ProcessExecutionResult execute(
+            WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken,
+            ProcessExecutionObserver observer) {
         try {
             prepare(run);
             requireWorkspacePath(run, request.workingDirectory());
@@ -51,7 +59,9 @@ public class LocalDevelopmentWorker implements SandboxWorker {
                     request.timeout(),
                     request.maxOutputChars(),
                     run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));
-            return processExecutor.execute(safeRequest, cancellationToken);
+            return processExecutor.execute(
+                        safeRequest, cancellationToken, chunk -> { },
+                        identity -> observer.onStarted(identity.withWorkerContext("local", run.runId())));
         } catch (IOException | IllegalArgumentException e) {
             return new ProcessExecutionResult(
                     ExecutionStatus.INFRASTRUCTURE_ERROR, null, 0, e.getMessage(), false);

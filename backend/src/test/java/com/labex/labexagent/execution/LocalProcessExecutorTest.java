@@ -13,6 +13,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -109,6 +110,47 @@ class LocalProcessExecutorTest {
         } finally {
             scheduler.shutdownNow();
         }
+    }
+
+    @Test
+    void reportsVerifiableIdentityOnlyAfterTheProcessStarts() {
+        AtomicReference<ProcessExecutionIdentity> observed = new AtomicReference<>();
+
+        ProcessExecutionResult result = executor.execute(
+                request(Duration.ofSeconds(5), 4096, "exit", "0"),
+                CancellationToken.none(),
+                chunk -> { },
+                observed::set);
+
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCEEDED);
+        assertThat(observed.get()).isNotNull();
+        assertThat(observed.get().ownerId()).isNotBlank();
+        assertThat(observed.get().processId()).isPositive();
+        assertThat(observed.get().processStartEpochMs()).isPositive();
+        assertThat(observed.get().leaseExpiresEpochMs())
+                .isGreaterThan(observed.get().processStartEpochMs());
+    }
+
+    @Test
+    void terminatesTheRealProcessWhenIdentityPersistenceFails() throws Exception {
+        AtomicReference<ProcessExecutionIdentity> observed = new AtomicReference<>();
+
+        ProcessExecutionRequest fixtureRequest = request(Duration.ofSeconds(30), 4096, "sleep", "30000");
+        ProcessExecutionRequest longRunningRequest = new ProcessExecutionRequest(
+                fixtureRequest.command(), Path.of(System.getProperty("user.dir")),
+                fixtureRequest.timeout(), fixtureRequest.maxOutputChars());
+        ProcessExecutionResult result = executor.execute(
+                longRunningRequest,
+                CancellationToken.none(),
+                chunk -> { },
+                identity -> {
+                    observed.set(identity);
+                    throw new IllegalStateException("durable process identity unavailable");
+                });
+
+        assertThat(result.status()).isEqualTo(ExecutionStatus.INFRASTRUCTURE_ERROR);
+        assertThat(observed.get()).isNotNull();
+        assertThat(waitUntilTerminated(observed.get().processId(), Duration.ofSeconds(2))).isTrue();
     }
 
     private ProcessExecutionRequest request(Duration timeout, int maxOutputChars, String... fixtureArgs) {

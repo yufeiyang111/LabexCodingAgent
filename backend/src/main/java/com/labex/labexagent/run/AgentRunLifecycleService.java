@@ -551,6 +551,13 @@ public class AgentRunLifecycleService {
         }
     }
 
+    /** 查询某个持久事件是否已经完成投影，供恢复调度器抑制重复副作用。 */
+    public boolean hasEvent(Long taskId, String idempotencyKey) {
+        return taskId != null && taskId > 0L
+                && idempotencyKey != null && !idempotencyKey.isBlank()
+                && findByIdempotencyKey(taskId, idempotencyKey) != null;
+    }
+
     private AgentRunEvent findByIdempotencyKey(Long taskId, String idempotencyKey) {
         return eventMapper.selectOne(new LambdaQueryWrapper<AgentRunEvent>()
                 .eq(AgentRunEvent::getTaskId, taskId)

@@ -174,6 +174,7 @@ Agent `web_search` 只返回搜索发现结果和来源 URL，不抓取结果正
 | Variable | Default | Description |
 |---|---|---|
 | `LABEX_AGENT_INSTANCE_ID` | generated at startup | Stable identifier for one backend instance. Set it explicitly when running multiple instances. |
+| `LABEX_AGENT_PROCESS_HOST_ID` | hashed local host fallback | Stable host identity used with PID and process start time during command recovery. Set it explicitly for multi-host deployments. The stored value is a SHA-256-derived fingerprint, not the raw configured value. |
 | `LABEX_AGENT_EXECUTION_LEASE_DURATION_MS` | `30000` | Duration of the durable execution lease held by an active Agent task. |
 | `LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS` | `10000` | Lease renewal interval. If renewal loses the fencing token, the local Agent run is cancelled. |
 

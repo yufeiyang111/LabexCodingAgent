@@ -38,16 +38,6 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             """;
     private static final String ENVIRONMENT_TEST_PACKAGE =
             "{\"name\":\"acceptance-environment\",\"scripts\":{\"test\":\"node acceptance-environment-test.cjs\"}}";
-    private static final String APPROVED_COMMAND_CANCEL_SOURCE = """
-            import java.nio.file.Files;
-            import java.nio.file.Path;
-            public class AcceptanceApprovedCommandHold {
-                public static void main(String[] args) throws Exception {
-                    Files.writeString(Path.of(args[0]), "started");
-                    Thread.sleep(30000L);
-                }
-            }
-            """;
     private static final Map<String, Object> USAGE = Map.of(
             "prompt_tokens", 64,
             "completion_tokens", 32,
@@ -279,17 +269,9 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return;
         }
         if (prompt.contains("[acceptance:approval-cancel]")
-                && !prompt.contains("[Tool write_file result]")) {
-            emitTool(onChunk, "write_file",
-                    writeFileArguments("AcceptanceApprovedCommandHold.java", APPROVED_COMMAND_CANCEL_SOURCE),
-                    "acceptance-approved-command-cancel-source");
-            return;
-        }
-        if (prompt.contains("[acceptance:approval-cancel]")
                 && !hasResumedInteraction(prompt, "waiting_approval")) {
             emitTool(onChunk, "shell",
-                    "{\"command\":\"java AcceptanceApprovedCommandHold.java .acceptance-approved-command-started\","
-                            + "\"timeout_seconds\":40}",
+                    "{\"command\":\"python3 -m http.server 0\",\"timeout_seconds\":40}",
                     "acceptance-approved-command-cancel-shell");
             return;
         }

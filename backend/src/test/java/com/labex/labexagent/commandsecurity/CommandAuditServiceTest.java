@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.CommandAuditEvent;
 import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionIdentity;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.mapper.CommandAuditEventMapper;
 import java.time.LocalDateTime;
@@ -33,6 +34,35 @@ class CommandAuditServiceTest {
         assertThat(event.getExecutionStatus()).isEqualTo("running");
         assertThat(event.getIdempotencyKey()).contains("execution-started");
         assertThat(event.getOutputDigest()).isNull();
+        verify(mapper).insert(event);
+    }
+
+    @Test
+    void persistsAnIdempotentProcessBindingWithoutCommandOrOutputContent() {
+        CommandAuditEventMapper mapper = mock(CommandAuditEventMapper.class);
+        when(mapper.selectOne(any())).thenReturn(null);
+        when(mapper.insert(any(CommandAuditEvent.class))).thenAnswer(invocation -> {
+            CommandAuditEvent event = invocation.getArgument(0);
+            event.setEventId(3L);
+            return 1;
+        });
+        CommandAuditService service = new CommandAuditService(mapper);
+        ProcessExecutionIdentity identity = new ProcessExecutionIdentity(
+                "host-71", "executor-boot-71", "local", "task-71", 12345L, 1700000000000L, 1700000030000L);
+
+        CommandAuditEvent event = service.recordExecutionProcessBound(approval(), identity);
+
+        assertThat(event.getEventType()).isEqualTo("EXECUTION_PROCESS_BOUND");
+        assertThat(event.getExecutionStatus()).isEqualTo("running");
+        assertThat(event.getProcessHostId()).isEqualTo("host-71");
+        assertThat(event.getProcessOwner()).isEqualTo("executor-boot-71");
+        assertThat(event.getWorkerRuntime()).isEqualTo("local");
+        assertThat(event.getWorkerRunId()).isEqualTo("task-71");
+        assertThat(event.getProcessId()).isEqualTo(12345L);
+        assertThat(event.getProcessStartEpochMs()).isEqualTo(1700000000000L);
+        assertThat(event.getProcessLeaseExpiresEpochMs()).isEqualTo(1700000030000L);
+        assertThat(event.getOutputDigest()).isNull();
+        assertThat(event.getIdempotencyKey()).contains("process-bound");
         verify(mapper).insert(event);
     }
 

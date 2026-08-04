@@ -4,6 +4,8 @@ import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.AgentRunLeaseHeartbeatService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
@@ -42,6 +44,8 @@ public class CommandApprovalOrchestrator {
     private final AgentTaskService taskService;
     private CommandFailureGuard commandFailureGuard = new CommandFailureGuard(1, 2);
     private final NetworkAccessService networkAccessService;
+    private AgentRunExecutionLeaseService executionLeaseService;
+    private AgentRunLeaseHeartbeatService leaseHeartbeatService;
 
     @org.springframework.beans.factory.annotation.Autowired
     public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
@@ -78,6 +82,13 @@ public class CommandApprovalOrchestrator {
         if (commandFailureGuard != null) this.commandFailureGuard = commandFailureGuard;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setCommandExecutionLeaseServices(AgentRunExecutionLeaseService executionLeaseService,
+                                          AgentRunLeaseHeartbeatService leaseHeartbeatService) {
+        this.executionLeaseService = executionLeaseService;
+        this.leaseHeartbeatService = leaseHeartbeatService;
+    }
+
     public DecisionResult decide(Integer studentId, Integer projectId, String approvalId,
                                  boolean approve, String decisionIdempotencyKey) {
         CommandApproval approval = ownedAgentApproval(studentId, projectId, approvalId);
@@ -112,8 +123,20 @@ public class CommandApprovalOrchestrator {
         long requestStartedNanos = System.nanoTime();
         StudentProject project = projectService.getOwnedProject(studentId, projectId);
         CommandApproval approval = ownedAgentApproval(studentId, projectId, approvalId);
-        if (project == null || approval == null || !isLatestTaskApproval(approval) || !consume(approval)) {
-            log.warn("COMMAND_APPROVAL_EXECUTION_UNAVAILABLE projectId={} approvalId={} reason=superseded_missing_or_consumed",
+        if (project == null || approval == null || !isLatestTaskApproval(approval)) {
+            log.warn("COMMAND_APPROVAL_EXECUTION_UNAVAILABLE projectId={} approvalId={} reason=superseded_or_missing",
+                    projectId, approvalId);
+            return ExecutionResult.unavailable();
+        }
+        AgentRunExecutionLeaseService.ExecutionLease executionLease = acquireExecutionLease(approval);
+        if (executionLeaseService != null && executionLease == null) {
+            log.warn("COMMAND_APPROVAL_EXECUTION_UNAVAILABLE taskId={} projectId={} approvalId={} reason=execution_lease_unavailable",
+                    approval.getTaskId(), projectId, approvalId);
+            return ExecutionResult.unavailable();
+        }
+        if (!consume(approval)) {
+            releaseExecutionLease(executionLease);
+            log.warn("COMMAND_APPROVAL_EXECUTION_UNAVAILABLE projectId={} approvalId={} reason=already_consumed",
                     projectId, approvalId);
             return ExecutionResult.unavailable();
         }
@@ -122,6 +145,9 @@ public class CommandApprovalOrchestrator {
         approval.setStatus("consumed");
         AgentCancellationRegistry.ActiveRun activeRun = null;
         try {
+            if (leaseHeartbeatService != null && executionLease != null) {
+                leaseHeartbeatService.track(executionLease, approval.getSessionId());
+            }
             activeRun = cancellationRegistry.register(approval.getSessionId(), studentId, projectId, approval.getTaskId());
             lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_EXECUTION_STARTED",
                     publicPayload(approval, Map.of("resumeAgentLoop", false)),
@@ -130,7 +156,8 @@ public class CommandApprovalOrchestrator {
             log.info("COMMAND_APPROVAL_PROCESS_STARTED taskId={} projectId={} approvalId={} workingDirectory={}",
                     approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory());
             long processStartedNanos = System.nanoTime();
-            ProcessExecutionResult result = executor.execute(approval, project, activeRun);
+            ProcessExecutionResult result = executor.execute(approval, project, activeRun,
+                    identity -> recordExecutionProcessBound(approval, identity));
             long orchestrationDurationMs = elapsedMs(processStartedNanos);
             long processDurationMs = result.durationMs();
             if (result.status() == ExecutionStatus.CANCELLED) {
@@ -182,6 +209,8 @@ public class CommandApprovalOrchestrator {
                             "resumeAgentLoop", resumeAgentLoop)),
                     lifecycleKey(approval, "execution-outcome:" + executionStatus));
             closeApprovedToolCall(approval, succeeded, result);
+            releaseExecutionLease(executionLease);
+            executionLease = null;
             if (resumeAgentLoop) {
                 resumeAgentLoop = resumeAgentLoop(approval, executionStatus, result);
             } else {
@@ -208,6 +237,7 @@ public class CommandApprovalOrchestrator {
             return ExecutionResult.unavailable();
         } finally {
             cancellationRegistry.complete(activeRun);
+            releaseExecutionLease(executionLease);
         }
     }
 
@@ -291,6 +321,51 @@ public class CommandApprovalOrchestrator {
                 || normalized.startsWith("gradle") || normalized.startsWith("./gradlew")
                 || normalized.startsWith("python") || normalized.startsWith("pytest")
                 ? "run_tests" : "run_command";
+    }
+
+    private void recordExecutionProcessBound(
+            CommandApproval approval, com.labex.labexagent.execution.ProcessExecutionIdentity identity) {
+        auditService.recordExecutionProcessBound(approval, identity);
+        lifecycleService.appendEvent(approval.getTaskId(), "COMMAND_EXECUTION_PROCESS_BOUND",
+                publicPayload(approval, Map.of(
+                        "processIdentityPersisted", true,
+                        "workerRuntime", identity.workerRuntime(),
+                        "workerRunId", identity.workerRunId(),
+                        "leaseExpiresEpochMs", identity.leaseExpiresEpochMs(),
+                        "resumeAgentLoop", false)),
+                lifecycleKey(approval, "execution-process-bound"));
+    }
+
+    private AgentRunExecutionLeaseService.ExecutionLease acquireExecutionLease(CommandApproval approval) {
+        if (executionLeaseService == null) {
+            return null;
+        }
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2L);
+        do {
+            AgentRunExecutionLeaseService.ExecutionLease lease = executionLeaseService.acquire(approval.getTaskId());
+            if (lease != null) {
+                return lease;
+            }
+            try {
+                Thread.sleep(50L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        } while (System.nanoTime() < deadline);
+        return null;
+    }
+
+    private void releaseExecutionLease(AgentRunExecutionLeaseService.ExecutionLease lease) {
+        if (lease == null) {
+            return;
+        }
+        if (leaseHeartbeatService != null) {
+            leaseHeartbeatService.untrack(lease);
+        }
+        if (executionLeaseService != null) {
+            executionLeaseService.release(lease);
+        }
     }
 
     private boolean consume(CommandApproval approval) {

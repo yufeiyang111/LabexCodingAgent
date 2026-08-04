@@ -56,7 +56,14 @@ public class AdditiveSchemaMigrator {
             new ColumnDefinition("t_agent_task", "active_segment_started_at", "DATETIME(3) DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "finished_at", "DATETIME(3) DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "elapsed_ms", "BIGINT DEFAULT NULL"),
-            new ColumnDefinition("t_agent_task", "active_elapsed_ms", "BIGINT NOT NULL DEFAULT 0"));
+            new ColumnDefinition("t_agent_task", "active_elapsed_ms", "BIGINT NOT NULL DEFAULT 0"),
+            new ColumnDefinition("t_command_audit_event", "process_host_id", "VARCHAR(64) DEFAULT NULL"),
+            new ColumnDefinition("t_command_audit_event", "process_owner", "VARCHAR(128) DEFAULT NULL"),
+            new ColumnDefinition("t_command_audit_event", "worker_runtime", "VARCHAR(32) DEFAULT NULL"),
+            new ColumnDefinition("t_command_audit_event", "worker_run_id", "VARCHAR(128) DEFAULT NULL"),
+            new ColumnDefinition("t_command_audit_event", "process_id", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_command_audit_event", "process_start_epoch_ms", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_command_audit_event", "process_lease_expires_epoch_ms", "BIGINT DEFAULT NULL"));
 
     private final JdbcTemplate jdbcTemplate;
     private final DataSource dataSource;
@@ -74,11 +81,11 @@ public class AdditiveSchemaMigrator {
             log.info("Running additive schema migration against database catalog '{}' ({})",
                     catalog == null || catalog.isBlank() ? "<default>" : catalog,
                     metadata.getDatabaseProductName());
+            createCommandAuditTableIfMissing(metadata, catalog);
+            createProjectCheckoutLeaseTableIfMissing(metadata, catalog);
             for (ColumnDefinition column : REQUIRED_COLUMNS) {
                 addColumnIfMissing(metadata, catalog, column);
             }
-            createCommandAuditTableIfMissing(metadata, catalog);
-            createProjectCheckoutLeaseTableIfMissing(metadata, catalog);
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_retry_due", "status, next_retry_at");
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_execution_lease", "execution_lease_expires_at");
             addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_conv_project_updated", "student_id, project_id, status, update_time");
@@ -162,6 +169,13 @@ public class AdditiveSchemaMigrator {
                     execution_status VARCHAR(32) DEFAULT NULL,
                     exit_code INT DEFAULT NULL,
                     duration_ms BIGINT DEFAULT NULL,
+                    process_host_id VARCHAR(64) DEFAULT NULL,
+                    process_owner VARCHAR(128) DEFAULT NULL,
+                    worker_runtime VARCHAR(32) DEFAULT NULL,
+                    worker_run_id VARCHAR(128) DEFAULT NULL,
+                    process_id BIGINT DEFAULT NULL,
+                    process_start_epoch_ms BIGINT DEFAULT NULL,
+                    process_lease_expires_epoch_ms BIGINT DEFAULT NULL,
                     output_digest VARCHAR(64) DEFAULT NULL,
                     output_size_bytes BIGINT DEFAULT NULL,
                     idempotency_key VARCHAR(192) NOT NULL,
