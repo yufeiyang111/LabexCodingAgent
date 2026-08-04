@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 class AgentLoopEnginePolicyContractTest {
 
     @Test
-    void loopEngineMustUseInjectedPolicyAndCheckpointBeans() throws Exception {
+    void loopEngineMustUseInjectedPolicyAndDurableProgressBeans() throws Exception {
         String engine = source("src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java");
         String classifier = source("src/main/java/com/labex/labexagent/commandsecurity/CommandClassifier.java");
         String normalizer = source("src/main/java/com/labex/labexagent/commandsecurity/CommandNormalizer.java");
@@ -26,6 +26,13 @@ class AgentLoopEnginePolicyContractTest {
         assertTrue(engine.contains("void setCommandClassifier"));
         assertTrue(engine.contains("void setCheckpointStore"));
         assertTrue(engine.contains("void setContextCompactionServices"));
+        assertTrue(engine.contains("void setRunProgressProjectionService"));
+        assertTrue(engine.contains("checkpointStore.loadLegacy"));
+        assertTrue(engine.contains("providerMessagesForInvocation"));
+        assertTrue(engine.contains("<agent_runtime_projection"));
+        assertFalse(engine.contains("checkpointStore.save"));
+        assertFalse(engine.contains("restoreInto(ctx)"));
+        assertFalse(engine.contains("checkpointStore::renderForPrompt"));
         assertTrue(classifier.contains("@Service"));
         assertTrue(normalizer.contains("@Service"));
         assertTrue(checkpoint.contains("@Service"));

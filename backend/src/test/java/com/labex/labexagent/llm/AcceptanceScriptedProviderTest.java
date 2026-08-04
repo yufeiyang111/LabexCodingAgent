@@ -386,6 +386,53 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void rebuildsDurableExecutionProgressBeforeContinuingAfterRestart() {
+        LlmProvider.StreamChunk write = stream("[acceptance:durable-progress] restart progress").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("write_file", write.toolName());
+        assertEquals("acceptance-durable-progress-write", write.toolCallId());
+
+        LlmProvider.StreamChunk question = stream(
+                "[acceptance:durable-progress] restart progress",
+                "[Tool write_file result]\nwritten").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("question", question.toolName());
+
+        String progress = """
+                <agent_runtime_projection purpose="derived_read_only">
+                <agent_run_progress version="1">
+                authority: agent_run_part_event
+                stage: implement
+                write_count: 1
+                unverified_changes: true
+                unverified_change_targets_json: ["durable-progress.txt"]
+                last_tool: question
+                last_tool_status: completed
+                </agent_run_progress>
+                </agent_runtime_projection>
+                """;
+        LlmProvider.StreamChunk read = stream(
+                "[acceptance:durable-progress] restart progress",
+                "[Tool write_file result]\nwritten",
+                "Resolution status: answered",
+                progress).stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst().orElseThrow();
+        assertEquals("read_file", read.toolName());
+        assertEquals("acceptance-durable-progress-read", read.toolCallId());
+
+        String finalText = text(stream(
+                "[acceptance:durable-progress] restart progress",
+                "[Tool write_file result]\nwritten",
+                "Resolution status: answered",
+                progress,
+                "[Tool read_file result]\n[read_file path=durable-progress.txt sha256=abc]"));
+        assertTrue(finalText.contains("Durable execution progress survived JVM restart"));
+    }
+
+    @Test
     void drivesTheDurablePlanThroughQuestionRestartAndTwoCompletions() {
         LlmProvider.StreamChunk create = stream("[acceptance:durable-plan] restart plan").stream()
                 .filter(chunk -> "tool_call".equals(chunk.type()))

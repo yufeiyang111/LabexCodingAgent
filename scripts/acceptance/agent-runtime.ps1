@@ -105,6 +105,10 @@ $evidence = [ordered]@{
     durablePlanCheckpointIndependent = $false
     durablePlanTaskId = $null
     durablePlanRevision = $null
+    durableExecutionProgressRestart = $false
+    durableExecutionProgressCheckpointRetired = $false
+    durableExecutionProgressEventOrder = $false
+    durableExecutionProgressTaskId = $null
     cleanup = $false
 }
 
@@ -839,25 +843,9 @@ WHERE run_event.task_id = $completionTaskId
     $durablePlanConversationId = [string]$durablePlanTaskBeforeRestart.conversationId
     $checkpointCandidates = @(Get-ChildItem -LiteralPath $workspaceRoot -Recurse -File -Filter "$durablePlanTaskId.json" |
         Where-Object { $_.FullName -like '*\.labex\agent-checkpoints\*' })
-    if ($checkpointCandidates.Count -ne 1) {
-        throw "Expected exactly one durable-plan checkpoint for task $durablePlanTaskId, found $($checkpointCandidates.Count)."
+    if ($checkpointCandidates.Count -ne 0) {
+        throw "New durable-plan task $durablePlanTaskId still wrote retired workspace checkpoints: $($checkpointCandidates.FullName -join ', ')"
     }
-    $durablePlanCheckpoint = $checkpointCandidates[0]
-    $workspaceFull = [IO.Path]::GetFullPath($workspaceRoot)
-    $checkpointFull = [IO.Path]::GetFullPath($durablePlanCheckpoint.FullName)
-    if (-not $checkpointFull.StartsWith($workspaceFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to inspect/delete checkpoint outside acceptance workspace: $checkpointFull"
-    }
-    $checkpointJson = [IO.File]::ReadAllText($checkpointFull, [Text.Encoding]::UTF8)
-    if (-not $checkpointJson.Contains('"version": 2') -or $checkpointJson.Contains('"plan"') -or
-        $checkpointJson.Contains('Inspect durable plan storage')) {
-        throw "Checkpoint v2 still contains authoritative plan state: $checkpointFull"
-    }
-    [IO.File]::Delete($checkpointFull)
-    if ([IO.File]::Exists($checkpointFull)) {
-        throw "Unable to delete disposable durable-plan checkpoint: $checkpointFull"
-    }
-
     Restart-AcceptanceBackend
     Invoke-ApiData -Path "/student/projects/$projectId/agent/question/reply" -Method POST -Body @{
         requestId = [string]$durablePlanQuestion.data.requestId; action = 'answer'; answer = 'Continue durable plan'
@@ -901,6 +889,85 @@ WHERE run_event.task_id = $completionTaskId
     $evidence.durablePlanCheckpointIndependent = $true
     $evidence.durablePlanTaskId = $durablePlanTaskId
     $evidence.durablePlanRevision = 3
+
+    $durableProgressEvents = Invoke-AgentStream -Message '[acceptance:durable-progress] rebuild execution progress'
+    $durableProgressQuestion = Get-RequiredEvent -Events $durableProgressEvents -Type 'USER_QUESTION'
+    $durableProgressTaskId = [long]$durableProgressQuestion.data.taskId
+    $durableProgressBefore = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$durableProgressTaskId"
+    if ([string]$durableProgressBefore.status -ne 'waiting_user') {
+        throw "Durable execution progress task $durableProgressTaskId was $($durableProgressBefore.status) before restart."
+    }
+    $durableProgressEpochBefore = Get-AcceptanceSqlScalar -Sql "SELECT execution_epoch FROM t_agent_task WHERE task_id = $durableProgressTaskId"
+    $durableWriteParts = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_part WHERE task_id = $durableProgressTaskId " +
+        "AND part_type = 'tool' AND tool_name = 'write_file' AND status = 'completed'")
+    $durableWaitingQuestions = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_part WHERE task_id = $durableProgressTaskId " +
+        "AND part_type = 'tool' AND tool_name = 'question' AND status = 'waiting_user'")
+    $durableProgressMigrations = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $durableProgressTaskId " +
+        "AND event_type = 'RUN_PROGRESS_MIGRATED'")
+    if ($durableWriteParts -ne 1 -or $durableWaitingQuestions -ne 1 -or $durableProgressMigrations -ne 0) {
+        throw "Durable execution progress facts were incomplete before restart: writes=$durableWriteParts waitingQuestions=$durableWaitingQuestions migrations=$durableProgressMigrations"
+    }
+
+    $durableProgressCheckpoints = @(Get-ChildItem -LiteralPath $workspaceRoot -Recurse -File -Filter "$durableProgressTaskId.json" |
+        Where-Object { $_.FullName -like '*\.labex\agent-checkpoints\*' })
+    if ($durableProgressCheckpoints.Count -ne 0) {
+        throw "New execution-progress task $durableProgressTaskId still wrote retired checkpoints."
+    }
+
+    $directProgressIds = @($durableProgressEvents | Where-Object { $_.PSObject.Properties['eventId'] -and $_.eventId } | ForEach-Object { [long]$_.eventId })
+    if ($directProgressIds.Count -lt 3) {
+        throw "Durable execution progress direct stream exposed too few durable IDs: $($directProgressIds -join ', ')"
+    }
+    for ($index = 1; $index -lt $directProgressIds.Count; $index++) {
+        if ($directProgressIds[$index] -le $directProgressIds[$index - 1]) {
+            throw "Durable execution progress direct SSE IDs were not strictly increasing: $($directProgressIds -join ', ')"
+        }
+    }
+    $durableProgressReplayBefore = Get-TaskEvents -TaskId $durableProgressTaskId
+    $firstDirectId = $directProgressIds[0]
+    $lastDirectId = $directProgressIds[$directProgressIds.Count - 1]
+    $replayedDirectRange = @($durableProgressReplayBefore | Where-Object {
+        $_.PSObject.Properties['eventId'] -and $_.eventId -and
+        [long]$_.eventId -ge $firstDirectId -and [long]$_.eventId -le $lastDirectId
+    } | ForEach-Object { [long]$_.eventId })
+    if ($replayedDirectRange.Count -ne $directProgressIds.Count) {
+        throw "Direct SSE skipped committed events in range ${firstDirectId}-${lastDirectId}: direct=$($directProgressIds -join ', ') replay=$($replayedDirectRange -join ', ')"
+    }
+    for ($index = 0; $index -lt $directProgressIds.Count; $index++) {
+        if ($directProgressIds[$index] -ne $replayedDirectRange[$index]) {
+            throw "Direct SSE order diverged from durable replay at index ${index}: direct=$($directProgressIds -join ', ') replay=$($replayedDirectRange -join ', ')"
+        }
+    }
+
+    Restart-AcceptanceBackend
+    Invoke-ApiData -Path "/student/projects/$projectId/agent/question/reply" -Method POST -Body @{
+        requestId = [string]$durableProgressQuestion.data.requestId
+        action = 'answer'
+        answer = 'Continue durable progress'
+    } | Out-Null
+    Assert-SameTaskContinuation -TaskId $durableProgressTaskId -RequiredType 'USER_QUESTION'
+
+    $durableProgressAfter = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$durableProgressTaskId"
+    $durableProgressEpochAfter = Get-AcceptanceSqlScalar -Sql "SELECT execution_epoch FROM t_agent_task WHERE task_id = $durableProgressTaskId"
+    $durableReadParts = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_part WHERE task_id = $durableProgressTaskId " +
+        "AND part_type = 'tool' AND tool_name = 'read_file' AND status = 'completed' " +
+        "AND output_text LIKE '%sha256=%'")
+    $durableProgressMigrationsAfter = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $durableProgressTaskId " +
+        "AND event_type = 'RUN_PROGRESS_MIGRATED'")
+    if ($durableProgressEpochAfter -le $durableProgressEpochBefore -or $durableReadParts -ne 1 -or
+        $durableProgressMigrationsAfter -ne 0 -or
+        -not ([string]$durableProgressAfter.summary).Contains('Durable execution progress survived JVM restart')) {
+        throw "Durable execution progress did not reconstruct from Tool Parts after restart: beforeEpoch=$durableProgressEpochBefore afterEpoch=$durableProgressEpochAfter reads=$durableReadParts migrations=$durableProgressMigrationsAfter summary=$($durableProgressAfter.summary)"
+    }
+    $evidence.durableExecutionProgressRestart = $true
+    $evidence.durableExecutionProgressCheckpointRetired = $true
+    $evidence.durableExecutionProgressEventOrder = $true
+    $evidence.durableExecutionProgressTaskId = $durableProgressTaskId
 
     $permissionEvents = Invoke-AgentStream -Message '[acceptance:permission] restart recovery'
     $permission = Get-RequiredEvent -Events $permissionEvents -Type 'PERMISSION_ASK'

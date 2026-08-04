@@ -11,11 +11,13 @@ import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.context.AgentRequestTokenEstimator;
 import com.labex.labexagent.context.CompactionSelection;
+import com.labex.labexagent.run.AgentRunProgressProjectionService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.tool.ToolRegistry;
 import java.lang.reflect.Constructor;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class AgentLoopEngineContextBudgetTest {
@@ -44,6 +46,35 @@ class AgentLoopEngineContextBudgetTest {
         assertEquals(durableMessages, engine.providerMessagesForBudget(71L));
         assertThrows(IllegalStateException.class,
                 () -> engine.providerMessagesForBudget(null));
+    }
+
+    @Test
+    void appendsFreshDurableProgressOnlyAtTheProviderInvocationBoundary() throws Exception {
+        AgentLoopEngine engine = newEngine();
+        AgentTranscriptProjectionService transcript = mock(AgentTranscriptProjectionService.class);
+        AgentRunProgressProjectionService progress = mock(AgentRunProgressProjectionService.class);
+        List<Map<String, Object>> durableMessages = List.of(Map.of("role", "user", "content", "durable request"));
+        when(transcript.loadProviderMessages(71L)).thenReturn(durableMessages);
+        when(progress.load(71L, 3L)).thenReturn(new AgentRunProgressProjectionService.Projection(
+                71L, 3L, "implement", 1, 0, true, Set.of(), Set.of("durable-progress.txt"),
+                "call-write", "write_file", "completed", "written", ".labex/agent-logs/run.md",
+                "running", "Thinking", "", "", 8L, 0L, "agent_run_part_event"));
+
+        var transcriptField = AgentLoopEngine.class.getDeclaredField("transcriptProjectionService");
+        transcriptField.setAccessible(true);
+        transcriptField.set(engine, transcript);
+        engine.setRunProgressProjectionService(progress);
+
+        List<Map<String, Object>> invocation = engine.providerMessagesForInvocation(71L, 3L);
+
+        assertEquals(2, invocation.size());
+        assertEquals(durableMessages.get(0), invocation.get(0));
+        String projection = String.valueOf(invocation.get(1).get("content"));
+        assertTrue(projection.contains("<agent_runtime_projection"));
+        assertTrue(projection.contains("stage: implement"));
+        assertTrue(projection.contains("write_count: 1"));
+        assertTrue(projection.contains("durable-progress.txt"));
+        assertEquals(1, engine.providerMessagesForBudget(71L).size());
     }
 
     @Test

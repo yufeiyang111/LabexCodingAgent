@@ -356,3 +356,23 @@ node --test src/composables/agentHistoryReducer.test.mjs src/composables/useAgen
 - 需要基于本计划第 12 节逐项做最终架构收敛审计，确认所有旧兼容路径均已删除或明确降级为只读迁移源后，才能关闭总目标。
 
 下一轮停止边界：只审计并迁移 checkpoint 的剩余执行辅助状态与通用 durable-event 投影顺序；不得顺带重写整个 `AgentLoopEngine` 或进行无关前端视觉改版。
+
+### 第 75 轮进度：durable execution progress projection 已完成
+
+已完成：
+
+- `AgentRunExecutionProgressReducer` 成为运行时增量和重启重放共用的唯一进度规则；stage、write/verification count、trusted/unverified targets、last tool/result 和 run-log pointer 均由 `AgentRunPart` / `AgentRunEvent(SESSION)` 投影。
+- `AgentRunProgressProjectionService` 校验 execution epoch，数据库 Tool Part/Event 优先；旧 v1/v2 checkpoint 只允许一次幂等 `RUN_PROGRESS_MIGRATED` 迁移，不能覆盖已有 durable 事实。
+- `AgentCheckpointStore` 已退役为只读 legacy reader，`AgentLoopEngine` 删除新 checkpoint 写入路径；Provider 调用边界使用不落库的只读运行时投影，避免派生状态成为 transcript 第二事实源。
+- `AgentSsePublisher` 已对所有 durable event 做 sequence 缺口补齐；前端单调 cursor 不会因为工具事务事件晚于外围 event 而跳过已提交事实。
+- 后端 1,033 项测试、前端 213 项测试、15 项验收单元测试和生产构建通过；后端真实 H2/Spring JVM/HTTP/SSE/restart acceptance run `fe05cdb9627448cba97935db233356cf` 通过；浏览器 restart/refresh acceptance run `99621f04b5734dba8c90d568ee5f0cf3` 通过，console/network errors 均为 0。
+
+证据文档：`docs/iterations/2026-08-04-iteration-75-durable-execution-progress-and-event-order.md`。
+
+尚未完成，因此本计划仍不能标记为全部完成：
+
+- 仍需按第 12 节逐项审计所有 Provider transcript、legacy `t_agent_message`、checkpoint reader、兼容 projection 和 shadow 开关的删除条件；本轮只完成 execution progress 这一条边界。
+- 仍需确认所有状态迁移、compaction、approval、question、tool batch 和 frontend reducer 的旧兼容路径均已停止写入，并为每个删除动作补迁移/回滚证据。
+- 仍需在最终架构审计中核对启动 JVM 的 PID、启动时间、classpath 与实际加载 class，避免把源码验证误报成运行时验证。
+
+下一轮停止边界：只做第 12 节最终审计与遗留兼容路径收口；不得重新引入第二套状态、transcript、checkpoint 或前端实时事实源，也不得以本轮 acceptance 通过宣称整体 OpenCode 等价已经完成。

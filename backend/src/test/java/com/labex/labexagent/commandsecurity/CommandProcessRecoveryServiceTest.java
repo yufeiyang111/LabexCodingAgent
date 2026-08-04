@@ -145,7 +145,10 @@ class CommandProcessRecoveryServiceTest {
         long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         while (System.nanoTime() < deadline) {
             if (Files.exists(childPidFile)) {
-                return Long.parseLong(Files.readString(childPidFile).trim());
+                String value = Files.readString(childPidFile).trim();
+                if (!value.isBlank()) {
+                    return Long.parseLong(value);
+                }
             }
             Thread.sleep(25L);
         }

@@ -29,6 +29,7 @@ import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunPlanService;
+import com.labex.labexagent.run.AgentRunProgressProjectionService;
 import com.labex.labexagent.run.AgentRunTransitionKey;
 import com.labex.labexagent.run.AgentRunArtifactService;
 import com.labex.labexagent.run.AgentRunInteractionService;
@@ -189,6 +190,7 @@ public class AgentLoopEngine {
     private AgentRunTranscriptService transcriptService;
     private AgentRunInteractionService runInteractionService;
     private AgentRunPlanService runPlanService;
+    private AgentRunProgressProjectionService runProgressProjectionService;
     private AgentTranscriptProjectionService transcriptProjectionService;
     private AgentCompactionService compactionService;
     private AgentRequestTokenEstimator requestTokenEstimator;
@@ -301,6 +303,12 @@ public class AgentLoopEngine {
     @Autowired
     void setRunPlanService(AgentRunPlanService runPlanService) {
         this.runPlanService = requireRuntimeDependency(runPlanService, "runPlanService");
+    }
+
+    @Autowired
+    void setRunProgressProjectionService(AgentRunProgressProjectionService runProgressProjectionService) {
+        this.runProgressProjectionService = requireRuntimeDependency(
+                runProgressProjectionService, "runProgressProjectionService");
     }
 
     @Autowired
@@ -681,7 +689,7 @@ public class AgentLoopEngine {
             if (checkoutLease != null && this.projectCheckoutLeaseHeartbeatService != null) {
                 this.projectCheckoutLeaseHeartbeatService.track(checkoutLease, request.getSessionId());
             }
-            java.util.Optional<AgentCheckpointStore.Snapshot> resumedCheckpoint = java.util.Optional.empty();
+            java.util.Optional<AgentCheckpointStore.Snapshot> legacyCheckpoint = java.util.Optional.empty();
             ctx = AgentContext.create(request.getSessionId(), studentId, project, conv.getConversationId(), task.getTaskId());
             this.applyBackgroundWorkspace(ctx, project, task);
             ctx.setCancellationToken(cancellationToken);
@@ -694,14 +702,23 @@ public class AgentLoopEngine {
             task.setExecutionEpoch(activeExecutionEpoch);
             ctx.setExecutionEpoch(activeExecutionEpoch);
             if (resumedRun) {
-                resumedCheckpoint = this.checkpointStore.load(project, conv.getConversationId(), task.getTaskId());
-                if (resumedCheckpoint.isPresent()) {
-                    resumedCheckpoint.get().restoreInto(ctx);
-                }
-            } else {
-                ctx.setStage("intake");
+                legacyCheckpoint = this.checkpointStore.loadLegacy(
+                        project, conv.getConversationId(), task.getTaskId());
             }
-            List<AgentRunPlanService.PlanDraft> legacyPlan = resumedCheckpoint
+            AgentRunProgressProjectionService.Projection progressProjection =
+                    this.requireRunProgressProjectionService().restoreOrMigrate(
+                            task.getTaskId(), activeExecutionEpoch,
+                            legacyCheckpoint.flatMap(AgentCheckpointStore.Snapshot::legacyExecutionSeed).orElse(null));
+            progressProjection.applyTo(ctx);
+            if (progressProjection.eventSequence() > 0L) {
+                try {
+                    sse.sendPersisted(progressProjection.eventSequence(), "RUN_PROGRESS_MIGRATED",
+                            progressProjection.eventPayload());
+                } catch (java.io.IOException ignored) {
+                    // 迁移事件已经持久化；客户端断开不影响数据库中的恢复事实。
+                }
+            }
+            List<AgentRunPlanService.PlanDraft> legacyPlan = legacyCheckpoint
                     .flatMap(AgentCheckpointStore.Snapshot::legacyPlanSeed)
                     .map(seed -> seed.items().stream()
                             .map(item -> new AgentRunPlanService.PlanDraft(
@@ -731,14 +748,16 @@ public class AgentLoopEngine {
             AgentContextOrchestrator.ContextBundle contextBundle = this.contextOrchestrator.buildInitialBundle(project, request.getActivePath(), activeFileContent, toolDefinitions, request.getMessage(), projectIndex, false, ctx);
             String sessionContext = contextBundle.content();
             String recentRunLog = "";
-            String checkpoint = resumedCheckpoint.map(this.checkpointStore::renderForPrompt).orElse("");
+            // 执行进度是可重建的动态投影，不写入 Provider transcript；每次调用前从 durable Part/Event 注入。
             String globalSkills = this.skillService.buildPromptContext(studentId);
             String mcpContext = this.mcpServerService.buildPromptContext(studentId);
             String modePolicy = this.buildModePolicy(mode);
             String languagePolicy = this.buildVisibleLanguagePolicy(visibleLanguage);
-            String initialContextMessage = modePolicy + "\n\n" + languagePolicy + "\n\n" + this.buildContextMessage(projectRules, memoryContext, sessionContext, recentRunLog, checkpoint, globalSkills, mcpContext);
+            String initialContextMessage = modePolicy + "\n\n" + languagePolicy + "\n\n"
+                    + this.buildContextMessage(projectRules, memoryContext, sessionContext, recentRunLog, "",
+                    globalSkills, mcpContext);
             ContextUsageEstimator.PromptContext contextPrompt = ContextUsageEstimator.PromptContext.of(
-                    projectRules, memoryContext, sessionContext, recentRunLog, checkpoint, globalSkills,
+                    projectRules, memoryContext, sessionContext, recentRunLog, "", globalSkills,
                     mcpContext, modePolicy, languagePolicy, initialContextMessage);
             List<Map<String, Object>> persistedMessages;
             try {
@@ -776,7 +795,6 @@ public class AgentLoopEngine {
                     tools.size(), GSON.toJson(tools).length(), contextBundle.stats().get("estimatedTokens"));
             this.sendEvent(sse, conv, "CONTEXT_STATS", contextBundle.stats());
             this.appendRunLog(runLog, "\n## Context orchestration\n\n```json\n" + GSON.toJson(contextBundle.stats()) + "\n```\n");
-            this.writeAgentCheckpoint(project, request, task, ctx, "running", "Session started, preparing first model call.", "", "", runLog);
             int i = 1;
             AgentLoopGuard loopGuard = new AgentLoopGuard(loopProperties);
             ContextOverflowRecoveryPolicy overflowRecoveryPolicy = new ContextOverflowRecoveryPolicy();
@@ -814,7 +832,6 @@ public class AgentLoopEngine {
                                             this.failTaskAndProject(sse, conv, task, noProgressStop
                                                     ? this.localText(visibleLanguage, "\u8fde\u7eed\u65e0\u8fdb\u5c55", "No progress")
                                                     : this.localText(visibleLanguage, "\u8fbe\u5230\u6700\u7ec8\u8fd0\u884c\u4fdd\u9669\u4e0a\u9650", "Hard iteration fuse reached"), stopReason);
-                                            this.writeAgentCheckpoint(project, request, task, ctx, noProgressStop ? "no_progress_guard" : "hard_iteration_limit", stopReason, "", "", runLog);
                                             this.streamFinal(sse, conv, this.buildStopFinal(this.localText(visibleLanguage, "\u5df2\u505c\u6b62", "Stopped"), stopReason, project, runLog, visibleLanguage), visibleLanguage);
                                             this.sendEvent(sse, conv, "DONE", Map.of("message", noProgressStop
                                                     ? this.localText(visibleLanguage, "\u65e0\u8fdb\u5c55\u5faa\u73af\u4fdd\u62a4\u5df2\u505c\u6b62", "No-progress guard stopped the run")
@@ -831,7 +848,7 @@ public class AgentLoopEngine {
                                             this.taskService.updateTask(task.getTaskId(), "running", runningStep, null);
                                         }
                                         // Provider 请求、上下文预算和最终门禁必须使用同一份持久化投影。
-                                        List<Map<String, Object>> providerMessagesBeforeManagement = this.providerMessagesForBudget(task.getTaskId());
+                                        List<Map<String, Object>> providerMessagesBeforeManagement = this.providerMessagesForInvocation(task.getTaskId(), activeExecutionEpoch);
                                         ContextAdmissionDecision preCompactionAdmission = this.evaluateContextAdmission(
                                                 modelConfig, sysPrompt, tools, contextPrompt, providerMessagesBeforeManagement);
                                         if (preCompactionAdmission != null
@@ -847,7 +864,7 @@ public class AgentLoopEngine {
                                         ContextManagementResult contextManagement = this.manageContextBeforeModel(
                                                 sysPrompt, tools, contextWindowPolicy, request.getMessage(), ctx,
                                                 sse, conv, modelConfig, studentId, cancellationToken, transcriptEpoch);
-                                        List<Map<String, Object>> providerMessages = this.providerMessagesForBudget(task.getTaskId());
+                                        List<Map<String, Object>> providerMessages = this.providerMessagesForInvocation(task.getTaskId(), activeExecutionEpoch);
                                         ContextAdmissionDecision admission = this.evaluateContextAdmission(
                                                 modelConfig, sysPrompt, tools, contextPrompt, providerMessages);
                                         this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
@@ -1035,8 +1052,6 @@ public class AgentLoopEngine {
                                                                 "Rejected invalid native tool call"),
                                                         rejectionDetail, task.getTaskId());
                                                 this.appendToolResult(runLog, rejected);
-                                                this.writeAgentCheckpoint(project, request, task, ctx,
-                                                        "native_tool_input_rejected", rejectionDetail, tn, "", runLog);
                                                 this.sendObserve(sse, conv, i, tn, rejected, task.getTaskId());
                                                 this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
                                                         this.toolCallBatchProtocol.toolResultMessage(call,
@@ -1074,13 +1089,10 @@ public class AgentLoopEngine {
                                                     AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
                                                             task.getTaskId(), blockedResult, visibleLanguage);
                                                     this.publishUserQuestion(sse, conv, blockedResult);
-                                                    this.writeAgentCheckpoint(project, request, task, ctx, pause.state(),
-                                                            pause.detail(), tn, this.compactToolResultForCheckpoint(tn, blockedResult), runLog);
                                                     this.publishInteractionPause(sse, conv, task.getTaskId(), blockedResult, pause, i);
                                                     emitter.complete();
                                                     return;
                                                 }
-                                                this.writeAgentCheckpoint(project, request, task, ctx, "loop_guard_strategy_switch", loopMessage, tn, "", runLog);
                                                 this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
                                                         + "\nDo not repeat the blocked pattern. Change the tool, target, scope, or verification method; use existing evidence; or finish if the task is complete."));
                                                 executed = true;
@@ -1124,10 +1136,6 @@ public class AgentLoopEngine {
                                                 this.journalToolFinished(task.getTaskId(), toolCallId, tn, publicArgs, i, res);
                                             }
                                             this.appendToolResult(runLog, res);
-                                            this.writeAgentCheckpoint(project, request, task, ctx,
-                                                    res.isInteractionRequired() ? this.interactionWaitingState(res) : (res.isSuccess() ? "tool_success" : "tool_failed"),
-                                                    "Tool `" + this.safeLogText(tn) + "` returned.", tn,
-                                                    this.compactToolResultForCheckpoint(tn, res), runLog);
 
                                             this.sendObserve(sse, conv, i, tn, res, task.getTaskId());
                                             this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u67e5\u7ed3\u679c", "Check result"),
@@ -1143,8 +1151,6 @@ public class AgentLoopEngine {
                                                 String waitingDetail = pause.detail();
                                                 this.appendRunLog(runLog, "\n- Durable user interaction pending: type=`" + this.safeLogText(res.getInteractionType())
                                                         + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
-                                                this.writeAgentCheckpoint(project, request, task, ctx, waitingState, waitingDetail, tn,
-                                                        this.compactToolResultForCheckpoint(tn, res), runLog);
                                                 this.publishInteractionPause(sse, conv, task.getTaskId(), res, pause, i);
                                                 emitter.complete();
                                                 return;
@@ -1188,8 +1194,6 @@ public class AgentLoopEngine {
                                                         this.buildStopFinal(failureTitle, failureReason, project, runLog, visibleLanguage),
                                                         visibleLanguage);
                                                 this.failTaskAndProject(sse, conv, task, failureTitle, failureReason);
-                                                this.writeAgentCheckpoint(project, request, task, ctx,
-                                                        "failed_native_tool_input_recovery", failureReason, "", "", runLog);
                                                 this.sendEvent(sse, conv, "DONE", Map.of(
                                                         "message", failureTitle,
                                                         "iterations", i,
@@ -1245,8 +1249,6 @@ public class AgentLoopEngine {
                                                 i, recoveredTextCall.status(), recoveredTextCall.format(),
                                                 textToolCallRecoveryFailures, MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES);
                                         this.sendThought(sse, conv, i, recoverySummary, recoveredRejection, task.getTaskId());
-                                        this.writeAgentCheckpoint(project, request, task, ctx,
-                                                "text_tool_call_rejected", recoveredRejection, invTool, "", runLog);
                                         loopGuard.recordModelNoProgress();
                                         this.appendProviderMessage(task.getTaskId(), transcriptEpoch,
                                                 Map.of("role", "assistant", "content", content));
@@ -1262,8 +1264,6 @@ public class AgentLoopEngine {
                                                     this.buildStopFinal(recoverySummary, stopReason, project, runLog, visibleLanguage),
                                                     visibleLanguage);
                                             this.failTaskAndProject(sse, conv, task, recoverySummary, stopReason);
-                                            this.writeAgentCheckpoint(project, request, task, ctx,
-                                                    "failed_text_tool_call_recovery", stopReason, invTool, "", runLog);
                                             this.sendEvent(sse, conv, "DONE", Map.of(
                                                     "message", recoverySummary,
                                                     "iterations", i,
@@ -1306,13 +1306,10 @@ public class AgentLoopEngine {
                                             AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
                                                     task.getTaskId(), blockedResult, visibleLanguage);
                                             this.publishUserQuestion(sse, conv, blockedResult);
-                                            this.writeAgentCheckpoint(project, request, task, ctx, pause.state(),
-                                                    pause.detail(), invTool, this.compactToolResultForCheckpoint(invTool, blockedResult), runLog);
                                             this.publishInteractionPause(sse, conv, task.getTaskId(), blockedResult, pause, i);
                                             emitter.complete();
                                             return;
                                         }
-                                        this.writeAgentCheckpoint(project, request, task, ctx, "loop_guard_strategy_switch", loopMessage, invTool, "", runLog);
                                         this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ""));
                                         this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
                                                 + "\nDo not repeat the blocked pattern. Change the tool, target, scope, or verification method; use existing evidence; or finish if the task is complete."));
@@ -1337,7 +1334,6 @@ public class AgentLoopEngine {
                                     }
                                     this.journalToolResult(task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i, res);
                                     this.appendToolResult(runLog, res);
-                                    this.writeAgentCheckpoint(project, request, task, ctx, res.isInteractionRequired() ? this.interactionWaitingState(res) : (res.isSuccess() ? "tool_success" : "tool_failed"), "Recovered and executed tool `" + this.safeLogText(invTool) + "`.", invTool, this.compactToolResultForCheckpoint(invTool, res), runLog);
                                     this.sendObserve(sse, conv, i, invTool, res, task.getTaskId());
 
                                     this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u67e5\u7ed3\u679c", "Check result"), this.toolNarrator.buildResultThought(invTool, parsedArgs, res, visibleLanguage), task.getTaskId());
@@ -1350,8 +1346,6 @@ public class AgentLoopEngine {
                                         String waitingDetail = pause.detail();
                                         this.appendRunLog(runLog, "\n- Durable user interaction pending: type=`" + this.safeLogText(res.getInteractionType())
                                                 + "`, requestId=`" + this.safeLogText(res.getInteractionRequestId()) + "`\n");
-                                        this.writeAgentCheckpoint(project, request, task, ctx, waitingState, waitingDetail, invTool,
-                                                this.compactToolResultForCheckpoint(invTool, res), runLog);
                                         this.publishInteractionPause(sse, conv, task.getTaskId(), res, pause, i);
                                         emitter.complete();
                                         return;
@@ -1381,7 +1375,6 @@ public class AgentLoopEngine {
                             if (!this.isPrematureFinal(ft, ctx)) break block24;
                             loopGuard.recordModelNoProgress();
                             this.appendRunLog(runLog, "\n- Model returned mid-placeholder text, rejecting as final, continuing: `" + this.safeLogText(ft) + "`\n");
-            this.writeAgentCheckpoint(project, request, task, ctx, "continuing_after_premature_final", "Model returned mid-placeholder text, rejected as final.", "", ft, runLog);
                             this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
                             this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", this.buildContinuationInstruction(ctx)));
                             executed = true;
@@ -1390,7 +1383,6 @@ public class AgentLoopEngine {
                         if (this.hasOpenPlan(ctx)) {
                             loopGuard.recordModelNoProgress();
                             this.appendRunLog(runLog, "\n- Plan has unfinished tasks, rejecting premature end. Remaining: " + ctx.getPlanSummary() + "\n");
-                            this.writeAgentCheckpoint(project, request, task, ctx, "continuing_open_plan", "Plan has unfinished tasks, rejecting premature end.", "", ft, runLog);
                             this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
                             String planMsg = "Your plan has unfinished tasks. Cannot end yet. Continue execution:\n" + ctx.getPlanSummary() + "\nUse create_plan complete to mark done items, then continue next item.";
                             this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", planMsg));
@@ -1418,8 +1410,6 @@ public class AgentLoopEngine {
                                     if (!completion.allowed()) {
                                         loopGuard.recordModelNoProgress();
                                         this.appendRunLog(runLog, "\n- Server completion evidence rejected the model final response.\n");
-                                        this.writeAgentCheckpoint(project, request, task, ctx, "continuing_missing_completion_evidence",
-                                                completion.guidance(), "", this.limitForContext(ft, 2000), runLog);
                                         this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
                                         this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", completion.guidance()));
                                         executed = true;
@@ -1430,7 +1420,6 @@ public class AgentLoopEngine {
                                 AgentRunEvent completedEvent = this.taskService.updateTask(task.getTaskId(), "completed",
                                         this.localText(visibleLanguage, "\u5df2\u5b8c\u6210", "Completed"), ft);
                                 ctx.setStage("final");
-                                this.writeAgentCheckpoint(project, request, task, ctx, "completed", "Task completed with final response.", "", this.limitForContext(ft, 2000), runLog);
                                 this.sendPersistedEvent(sse, conv, completedEvent);
                                 this.sendEvent(sse, conv, "DONE", Map.of("message", this.localText(visibleLanguage, "\u5b8c\u6210", "Done"), "iterations", i));
                                 emitter.complete();
@@ -1445,7 +1434,7 @@ public class AgentLoopEngine {
                         // 上下文溢出只允许有限策略切换：先压缩，再减少工具 schema，之后明确停止。
                         if (this.isContextOverflowError(errMsg)) {
                             List<Map<String, Object>> overflowMessagesBefore =
-                                    this.providerMessagesForBudget(task.getTaskId());
+                                    this.providerMessagesForInvocation(task.getTaskId(), activeExecutionEpoch);
                             int tokensBeforeRecovery = this.estimateProviderRequestTokens(
                                     sysPrompt, tools, overflowMessagesBefore, modelConfig);
                             String overflowStrategy = "NONE";
@@ -1467,7 +1456,7 @@ public class AgentLoopEngine {
                                             transcriptEpoch);
                                     overflowStrategy = compaction.strategy();
                                     int afterCompaction = this.estimateProviderRequestTokens(sysPrompt, tools,
-                                            this.providerMessagesForBudget(task.getTaskId()), modelConfig);
+                                            this.providerMessagesForInvocation(task.getTaskId(), activeExecutionEpoch), modelConfig);
                                     recovered = compaction.changed()
                                             && hasContextCompactionProgress(tokensBeforeRecovery, afterCompaction);
                                 } catch (Exception compactErr) {
@@ -1480,12 +1469,12 @@ public class AgentLoopEngine {
                             if (!recovered && recoveryAction == ContextOverflowRecoveryPolicy.Action.REDUCE_TOOL_SCHEMA) {
                                 int toolCountBefore = tools.size();
                                 List<Map<String, Object>> overflowMessagesBeforeToolReduction =
-                                        this.providerMessagesForBudget(task.getTaskId());
+                                        this.providerMessagesForInvocation(task.getTaskId(), activeExecutionEpoch);
                                 int tokensBeforeToolReduction = this.estimateProviderRequestTokens(
                                         sysPrompt, tools, overflowMessagesBeforeToolReduction, modelConfig);
                                 boolean reduced = this.reduceToolSchemaForOverflow(tools);
                                 int tokensAfterToolReduction = this.estimateProviderRequestTokens(
-                                        sysPrompt, tools, this.providerMessagesForBudget(task.getTaskId()), modelConfig);
+                                        sysPrompt, tools, this.providerMessagesForInvocation(task.getTaskId(), activeExecutionEpoch), modelConfig);
                                 recovered = reduced && hasContextCompactionProgress(
                                         tokensBeforeToolReduction, tokensAfterToolReduction);
                                 overflowStrategy = "REDUCED_TOOL_SCHEMA";
@@ -1499,7 +1488,7 @@ public class AgentLoopEngine {
                                 }
                             }
                             List<Map<String, Object>> overflowMessagesAfter =
-                                    this.providerMessagesForBudget(task.getTaskId());
+                                    this.providerMessagesForInvocation(task.getTaskId(), activeExecutionEpoch);
                             int tokensAfterRecovery = this.estimateProviderRequestTokens(
                                     sysPrompt, tools, overflowMessagesAfter, modelConfig);
                             this.publishContextStatus(sse, conv, request, llmProvider, llmConfig, modelConfig,
@@ -1516,7 +1505,6 @@ public class AgentLoopEngine {
                                         "iteration", i, "reasonCode", "context_overflow_recovery_exhausted"));
                                 this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
                                 this.failTaskAndProject(sse, conv, task, modelFailTitle, errMsg);
-                                this.writeAgentCheckpoint(project, request, task, ctx, "failed_context_overflow", modelFailReason, "", errMsg, runLog);
                                 this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle,
                                         "iterations", i, "reasonCode", "context_overflow_recovery_exhausted"));
                                 emitter.complete();
@@ -1536,7 +1524,6 @@ public class AgentLoopEngine {
                             this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
                             this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
                             this.failTaskAndProject(sse, conv, task, modelFailTitle, errMsg);
-                            this.writeAgentCheckpoint(project, request, task, ctx, "failed_model_timeout", modelFailReason, "", errMsg, runLog);
                             this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle, "iterations", i));
                             emitter.complete();
                             return;
@@ -1552,9 +1539,6 @@ public class AgentLoopEngine {
                                 this.appendRunLog(runLog, "\n- Recoverable error, retry " + retry.attempt()
                                         + ", scheduled for " + retry.nextRetryAt()
                                         + "\n- Guidance: " + this.safeLogText(guidance) + "\n");
-                                this.writeAgentCheckpoint(project, request, task, ctx, "retrying",
-                                        "Recoverable model connection error; retry " + retry.attempt() + " is scheduled.",
-                                        "", errMsg, runLog);
                                 this.sendPersistedEvent(sse, conv, retry.event());
                                 this.sendThought(sse, conv, i,
                                         this.localText(visibleLanguage, "Network retry", "Network retry"), guidance,
@@ -1571,7 +1555,6 @@ public class AgentLoopEngine {
                             this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
                             this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
                             this.failTaskAndProject(sse, conv, task, modelFailTitle, errMsg);
-                            this.writeAgentCheckpoint(project, request, task, ctx, "failed_model_error", "Model connection failed continuously. Task paused.", "", errMsg, runLog);
                             this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle, "iterations", i));
                             emitter.complete();
                             return;
@@ -1605,7 +1588,6 @@ public class AgentLoopEngine {
                             "Agent encountered exception during execution: `" + e.getMessage() + "`.");
                     this.streamFinal(sse, conv, this.buildStopFinal(runtimeTitle, runtimeReason, project, runLog, visibleLanguage), visibleLanguage);
                     this.failTaskAndProject(sse, conv, task, runtimeTitle, e.getMessage());
-                    this.writeAgentCheckpoint(project, request, task, ctx, "failed_exception", "Agent encountered exception during execution.", "", e.toString(), runLog);
                     this.sendEvent(sse, conv, "DONE", Map.of("message", runtimeTitle));
                 }
             } catch (Exception ignored) {
@@ -1678,10 +1660,8 @@ public class AgentLoopEngine {
         event.put("taskStatus", "waiting_environment");
         event.put("retryable", true);
         event.put("manualRetryRequired", true);
-        event.put("result", this.compactToolResultForCheckpoint(toolName, result));
+        event.put("result", this.compactToolResultForModel(toolName, result));
         this.sendEvent(sse, conv, "ENVIRONMENT_BLOCKED", event);
-        this.writeAgentCheckpoint(project, request, task, ctx, "waiting_environment", detail, toolName,
-                this.compactToolResultForCheckpoint(toolName, result), runLog);
         this.sendEvent(sse, conv, "TASK_PAUSED", Map.of(
                 "message", summary,
                 "detail", detail,
@@ -2338,7 +2318,6 @@ public class AgentLoopEngine {
                 "The provider did not return a tool-call identity suitable for one-time approval binding, so execution stopped safely.");
         this.failTaskAndProject(sse, conv, task, summary, detail);
         this.appendRunLog(runLog, "\n- " + detail + " Tool=`" + this.safeLogText(toolName) + "`\n");
-        this.writeAgentCheckpoint(project, request, task, ctx, "tool_call_identity_missing", detail, toolName, "", runLog);
         this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
         this.sendEvent(sse, conv, "DONE", Map.of("message", summary, "iterations", iteration));
         emitter.complete();
@@ -2641,8 +2620,6 @@ public class AgentLoopEngine {
                 "message", summary,
                 "detail", detail,
                 "resumeAgentLoop", true));
-        this.writeAgentCheckpoint(project, request, task, ctx, "waiting_approval", detail, toolName,
-                "approvalId=" + result.getApprovalId() + "; displayCommand=" + publicDisplay, runLog);
         // The request transport closes here, but the durable task is paused rather than terminal.
         // Do not send FINAL/DONE: those events are rendered as a completed conversation by the client.
         emitter.complete();
@@ -2875,12 +2852,32 @@ public class AgentLoopEngine {
         return total;
     }
 
-    /** Provider 请求、预算与 admission 只读取 durable transcript，缺失运行身份时明确失败。 */
+    /** Provider transcript、压缩选择等权威输入只读取持久化 Message/Part。 */
     List<Map<String, Object>> providerMessagesForBudget(Long taskId) {
         if (taskId == null || taskId <= 0) {
             throw new IllegalStateException("Provider projection requires a positive durable taskId");
         }
         return this.requireTranscriptProjectionService().loadProviderMessages(taskId);
+    }
+
+    /**
+     * 在 Provider 调用边界附加只读运行时投影。
+     *
+     * <p>该消息不写回 transcript，避免把可重建派生状态变成第二事实源；预算、admission 与真实调用
+     * 必须复用同一返回值。</p>
+     */
+    List<Map<String, Object>> providerMessagesForInvocation(Long taskId, long executionEpoch) {
+        List<Map<String, Object>> durable = this.providerMessagesForBudget(taskId);
+        AgentRunProgressProjectionService.Projection progress =
+                this.requireRunProgressProjectionService().load(taskId, executionEpoch);
+        ArrayList<Map<String, Object>> projected = new ArrayList<>(durable.size() + 1);
+        projected.addAll(durable);
+        projected.add(Map.of(
+                "role", "user",
+                "content", "<agent_runtime_projection purpose=\"derived_read_only\">\n"
+                        + progress.renderForPrompt()
+                        + "</agent_runtime_projection>"));
+        return List.copyOf(projected);
     }
 
     private AgentCompactionService requireCompactionService() {
@@ -2892,6 +2889,10 @@ public class AgentLoopEngine {
 
     private AgentRunPlanService requireRunPlanService() {
         return requireRuntimeDependency(this.runPlanService, "runPlanService");
+    }
+
+    private AgentRunProgressProjectionService requireRunProgressProjectionService() {
+        return requireRuntimeDependency(this.runProgressProjectionService, "runProgressProjectionService");
     }
 
     private AgentRunTranscriptService requireTranscriptService() {
@@ -2971,7 +2972,6 @@ public class AgentLoopEngine {
         this.appendRunLog(runLog, "\n- Context admission blocked provider invocation: `"
                 + this.safeLogText(decision.reasonCode()) + "`\n");
         this.sendEvent(sse, conversation, "CONTEXT_LIMIT_BLOCKED", payload);
-        this.writeAgentCheckpoint(project, request, task, context, "waiting_environment", detail, "", "", runLog);
         this.sendEvent(sse, conversation, "TASK_PAUSED", Map.of(
                 "message", title,
                 "detail", detail,
@@ -3062,7 +3062,7 @@ public class AgentLoopEngine {
         List<Map<String, Object>> budgetMessages = this.providerMessagesForBudget(context == null ? null : context.getTaskId());
         int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, budgetMessages,
                 activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
-        // Provider 预算与压缩选择都从同一个 durable projection 读取。
+        // 自动压缩只裁剪 durable transcript；只读运行时投影由后续硬门禁单独计入。
         ContextWindowSupervisor.Decision decision = new ContextWindowSupervisor().decide(
                 policy, estimatedTokens, false);
         if (decision.action() == ContextWindowSupervisor.Action.NONE) {
@@ -3833,32 +3833,6 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
         catch (Exception ignored) {
             return "";
         }
-    }
-
-    private void writeAgentCheckpoint(StudentProject project, AgentStreamRequest request, AgentTask task,
-                                      AgentContext context, String status, String note, String lastTool,
-                                      String lastResult, Path runLog) {
-        try {
-            this.checkpointStore.save(project, request, task, context, status, note, lastTool, lastResult, runLog);
-        } catch (Exception exception) {
-            log.warn("Unable to write task-scoped agent checkpoint: {}", exception.getMessage());
-        }
-    }
-
-    private String compactToolResultForCheckpoint(String toolName, ToolResult result) {
-        if (result == null) {
-            return "Tool returned no result.";
-        }
-        String content = result.getContent() == null ? "" : result.getContent();
-        String approval = result.isApprovalRequired()
-                ? "\napprovalId=" + (result.getApprovalId() == null ? "" : result.getApprovalId())
-                + "\ndisplayCommand=" + CommandRedactor.redact(
-                        result.getApprovalDisplayCommand() == null ? "<redacted>" : result.getApprovalDisplayCommand())
-                : "";
-        return "success=" + result.isSuccess()
-                + (result.getPendingChangeId() == null ? "" : "\npendingChangeId=" + result.getPendingChangeId())
-                + approval + "\n"
-                + this.contextManager.compactCheckpointResult(this.safeTool(toolName), content, result.isSuccess());
     }
 
     /*

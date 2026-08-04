@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.lsp.LspSessionManager;
 import com.labex.labexagent.runtime.AgentContext;
+import com.labex.labexagent.run.AgentRunExecutionProgressReducer;
 import com.labex.labexagent.runtime.AgentContextManager;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.workspace.ProjectWorkspace;
@@ -30,17 +31,20 @@ public class AgentContextOrchestrator {
     private final AgentWorkspaceMemoryService workspaceMemoryService;
     private final LspSessionManager lspSessionManager;
     private final ProjectCodeMapService projectCodeMapService;
+    private final AgentRunExecutionProgressReducer progressReducer;
 
     public AgentContextOrchestrator(AgentContextManager contextManager,
                                     ProjectIndexService projectIndexService,
                                     AgentWorkspaceMemoryService workspaceMemoryService,
                                     LspSessionManager lspSessionManager,
-                                    ProjectCodeMapService projectCodeMapService) {
+                                    ProjectCodeMapService projectCodeMapService,
+                                    AgentRunExecutionProgressReducer progressReducer) {
         this.contextManager = contextManager;
         this.projectIndexService = projectIndexService;
         this.workspaceMemoryService = workspaceMemoryService;
         this.lspSessionManager = lspSessionManager;
         this.projectCodeMapService = projectCodeMapService;
+        this.progressReducer = progressReducer;
     }
 
     public ContextBundle buildInitialBundle(StudentProject project,
@@ -94,87 +98,23 @@ public class AgentContextOrchestrator {
     public void afterTool(AgentContext context, String toolName, JsonObject args, ToolResult result) {
         if (context == null || toolName == null || result == null) return;
         workspaceMemoryService.recordToolResult(context, toolName, args, result);
-        advanceStage(context, toolName, args, result);
+        AgentRunExecutionProgressReducer.State current = new AgentRunExecutionProgressReducer.State(
+                context.getStage(), context.getWriteCount(), context.getVerificationCount(),
+                context.hasUnverifiedChanges(), context.getTrustedVerificationSources(),
+                context.getUnverifiedChangeTargets());
+        AgentRunExecutionProgressReducer.State next = progressReducer.apply(
+                current, toolName, args, toolStatus(result), result.getContent());
+        context.applyExecutionProgressProjection(next.stage(), next.writeCount(), next.verificationCount(),
+                next.hasUnverifiedChanges(), next.trustedVerificationSources(), next.unverifiedChangeTargets());
     }
 
-    private void advanceStage(AgentContext context, String toolName, JsonObject args, ToolResult result) {
-        String tool = toolName.trim().toLowerCase();
-        String stage = context.getStage();
-        if (!result.isSuccess()) {
-            context.setStage("repair");
-            return;
+    private String toolStatus(ToolResult result) {
+        if (result.isSuccess()) return "completed";
+        if (result.isApprovalRequired()) return "waiting_approval";
+        if (result.isInteractionRequired()) {
+            return "question".equals(result.getInteractionType()) ? "waiting_user" : "waiting_approval";
         }
-        if ("create_plan".equals(tool) || "plan".equals(tool) || "todo_write".equals(tool)) {
-            if ("intake".equals(stage)) context.setStage("explore");
-            return;
-        }
-        if (isReadTool(tool)) {
-            if (isManualVerificationRead(context, tool, args, result)) {
-                context.incrementVerificationCount();
-                context.recordTrustedVerification("read_file");
-                context.markChangesVerified();
-                context.setStage("verify");
-                return;
-            }
-            if ("intake".equals(stage) || "explore".equals(stage)) context.setStage("design");
-            return;
-        }
-        if (isWriteTool(tool)) {
-            context.incrementWriteCount();
-            context.markUnverifiedChangeTarget(toolTarget(args));
-            context.setStage("implement");
-            return;
-        }
-        if (isVerificationTool(tool)) {
-            if (result.isSuccess()) {
-                context.incrementVerificationCount();
-                context.recordTrustedVerification(tool);
-                context.markChangesVerified();
-            }
-            context.setStage(result.isSuccess() ? "verify" : "repair");
-        }
-    }
-
-    private boolean isManualVerificationRead(AgentContext context, String tool, JsonObject args, ToolResult result) {
-        if (!context.hasUnverifiedChanges() || !"read_file".equals(tool)) {
-            return false;
-        }
-        String target = toolTarget(args);
-        if (!context.matchesUnverifiedChangeTarget(target)) {
-            return false;
-        }
-        String content = result.getContent() == null ? "" : result.getContent();
-        return content.contains("[read_file path=") && content.contains("sha256=");
-    }
-
-    private String toolTarget(JsonObject args) {
-        if (args == null) {
-            return "";
-        }
-        for (String key : List.of("file_path", "path", "target_file", "relativePath")) {
-            if (args.has(key) && !args.get(key).isJsonNull()) {
-                String value = args.get(key).isJsonPrimitive() ? args.get(key).getAsString() : args.get(key).toString();
-                if (value != null && !value.isBlank()) {
-                    return value.trim().replace('\\', '/');
-                }
-            }
-        }
-        return "";
-    }
-
-    private boolean isReadTool(String tool) {
-        return "read_file".equals(tool) || "grep".equals(tool) || "glob".equals(tool)
-                || "list_files".equals(tool) || "search_code".equals(tool) || "project_overview".equals(tool)
-                || "retrieve_context".equals(tool);
-    }
-
-    private boolean isWriteTool(String tool) {
-        return "write_file".equals(tool) || "edit_file".equals(tool) || "apply_patch".equals(tool)
-                || "write".equals(tool) || "edit".equals(tool) || "patch".equals(tool);
-    }
-
-    private boolean isVerificationTool(String tool) {
-        return "run_tests".equals(tool);
+        return "error";
     }
 
     private String stageGuidance(String stage) {

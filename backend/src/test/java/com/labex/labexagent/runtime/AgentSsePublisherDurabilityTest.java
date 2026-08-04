@@ -194,6 +194,36 @@ class AgentSsePublisherDurabilityTest {
         verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
     }
 
+    @Test
+    void fillsPersistedSequenceGapsBeforeProjectingANewerDirectEvent() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunEvent plan = event(41L, "PLAN_UPDATE", "{\"planRevision\":1}");
+        AgentRunEvent think = event(42L, "THINK", "{\"content\":\"after plan\"}");
+        when(lifecycle.currentEventSequence(71L)).thenReturn(40L);
+        when(lifecycle.appendEvent(eq(71L), eq("THINK"), any(), anyString())).thenReturn(think);
+        when(lifecycle.eventsAfter(eq(71L), eq(40L), eq(42L))).thenReturn(java.util.List.of(plan, think));
+
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter);
+        publisher.bindRun(lifecycle, 71L);
+        publisher.send("THINK", Map.of("content", "after plan"));
+        publisher.sendPersisted(41L, "PLAN_UPDATE", Map.of("planRevision", 1));
+
+        ArgumentCaptor<SseEmitter.SseEventBuilder> frames =
+                ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        verify(emitter, org.mockito.Mockito.times(2)).send(frames.capture());
+        org.junit.jupiter.api.Assertions.assertTrue(frameData(frames.getAllValues().get(0)).contains("planRevision"));
+        org.junit.jupiter.api.Assertions.assertTrue(frameData(frames.getAllValues().get(1)).contains("after plan"));
+    }
+
+    private AgentRunEvent event(long sequence, String type, String payload) {
+        AgentRunEvent event = new AgentRunEvent();
+        event.setTaskId(71L);
+        event.setSequenceNumber(sequence);
+        event.setEventType(type);
+        event.setPayload(payload);
+        return event;
+    }
     private String frameData(SseEmitter.SseEventBuilder builder) {
         return builder.build().stream()
                 .map(item -> String.valueOf(item.getData()))

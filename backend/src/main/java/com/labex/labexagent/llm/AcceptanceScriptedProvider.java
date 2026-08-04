@@ -174,6 +174,28 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             emitTool(onChunk, "list_files", "{\"path\":\"\"}", "acceptance-tool-list");
             return;
         }
+        if (prompt.contains("[acceptance:durable-progress]")) {
+            if (!prompt.contains("[Tool write_file result]")) {
+                emitTool(onChunk, "write_file",
+                        writeFileArguments("durable-progress.txt", "durable progress survives restart\n"),
+                        "acceptance-durable-progress-write");
+                return;
+            }
+            if (!hasResumedInteraction(prompt, "waiting_user")) {
+                emitTool(onChunk, "question",
+                        "{\"question\":\"Continue after rebuilding durable execution progress?\","
+                                + "\"summary\":\"durable-progress-restart-wait\","
+                                + "\"options\":[\"Continue durable progress\",\"Stop\"]}",
+                        "acceptance-durable-progress-question");
+                return;
+            }
+            if (hasExpectedDurableProgressProjection(prompt)
+                    && !prompt.contains("[Tool read_file result]")) {
+                emitTool(onChunk, "read_file", "{\"file_path\":\"durable-progress.txt\"}",
+                        "acceptance-durable-progress-read");
+                return;
+            }
+        }
         boolean durablePlanScenario = prompt.contains("[acceptance:durable-plan]");
         boolean browserPlanScenario = prompt.contains("[acceptance:browser-plan]");
         if (durablePlanScenario || browserPlanScenario) {
@@ -428,6 +450,16 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 || lower.contains("persisted user response is ready");
     }
 
+    private boolean hasExpectedDurableProgressProjection(String prompt) {
+        return prompt.contains("<agent_runtime_projection")
+                && prompt.contains("<agent_run_progress version=\"1\">")
+                && prompt.contains("authority: agent_run_part_event")
+                && prompt.contains("stage: implement")
+                && prompt.contains("write_count: 1")
+                && prompt.contains("unverified_changes: true")
+                && prompt.contains("durable-progress.txt");
+    }
+
     private boolean isCompactionScenario(String prompt) {
         return prompt.contains("[acceptance:compaction]");
     }
@@ -465,6 +497,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             return "## Summary\n**Completed**\n- The production Agent loop executed `list_files` and returned its result.\n"
                     + "**Verification**\n- Native tool-call identity, tool observation, token usage, and final SSE completion were preserved.\n"
                     + "**Risk**\n- This response is generated only by the non-production acceptance profile.";
+        }
+        if (prompt.contains("[acceptance:durable-progress]")) {
+            return "## Summary\n**Completed**\n- Durable execution progress survived JVM restart without a workspace checkpoint.\n"
+                    + "**Verification**\n- The Provider observed reconstructed Tool Part state and verified the written file by SHA-backed read_file.\n"
+                    + "**Risk**\n- This deterministic restart flow runs only under the acceptance profile.";
         }
         if (prompt.contains("[acceptance:durable-plan]") || prompt.contains("[acceptance:browser-plan]")) {
             return "## Summary\n**Completed**\n- The durable task plan survived its persistence boundary and all items completed.\n"

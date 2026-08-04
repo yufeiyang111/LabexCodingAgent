@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.lsp.LspSessionManager;
 import com.labex.labexagent.runtime.AgentContextManager;
+import com.labex.labexagent.run.AgentRunExecutionProgressReducer;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -24,7 +25,8 @@ class AgentContextOrchestratorIndexReuseTest {
         ProjectCodeMapService projectCodeMapService = mock(ProjectCodeMapService.class);
         LspSessionManager lspSessionManager = mock(LspSessionManager.class);
         AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(
-                contextManager, projectIndexService, workspaceMemoryService, lspSessionManager, projectCodeMapService);
+                contextManager, projectIndexService, workspaceMemoryService, lspSessionManager, projectCodeMapService,
+                new AgentRunExecutionProgressReducer());
 
         StudentProject project = new StudentProject();
         project.setProjectName("SnapshotWorkspace");

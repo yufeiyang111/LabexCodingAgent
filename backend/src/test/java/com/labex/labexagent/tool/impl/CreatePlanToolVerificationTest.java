@@ -55,11 +55,13 @@ class CreatePlanToolVerificationTest {
         complete.addProperty("action", "complete");
         complete.addProperty("task_index", 1);
         assertThat(tool.execute(context, complete).isSuccess()).isFalse();
-        context.incrementVerificationCount();
+        context.applyExecutionProgressProjection("verify", 0, 1, false,
+                java.util.Set.of(), java.util.Set.of());
         assertThat(tool.execute(context, complete).isSuccess()).isFalse();
         verify(plans, never()).complete(71L, 4L, 0, "create_plan");
 
-        context.recordTrustedVerification("run_tests");
+        context.applyExecutionProgressProjection("verify", 0, 1, false,
+                java.util.Set.of("run_tests"), java.util.Set.of());
         assertThat(tool.execute(context, complete).isSuccess()).isTrue();
         verify(plans).complete(71L, 4L, 0, "create_plan");
         assertThat(context.getPlan().get(0).isCompleted()).isTrue();

@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.lsp.LspSessionManager;
 import com.labex.labexagent.runtime.AgentContext;
+import com.labex.labexagent.run.AgentRunExecutionProgressReducer;
 import com.labex.labexagent.runtime.AgentContextManager;
 import com.labex.labexagent.tool.ToolResult;
 import java.nio.file.Files;
@@ -23,7 +24,7 @@ class AgentContextOrchestratorVerificationTrustTest {
         AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(
                 mock(AgentContextManager.class), mock(ProjectIndexService.class),
                 mock(AgentWorkspaceMemoryService.class), mock(LspSessionManager.class),
-                mock(ProjectCodeMapService.class));
+                mock(ProjectCodeMapService.class), new AgentRunExecutionProgressReducer());
         StudentProject project = new StudentProject();
         project.setWorkspacePath(Files.createDirectories(workspace).toString());
         AgentContext context = AgentContext.create("session", 1, project, "conversation", 1L);
@@ -44,11 +45,12 @@ class AgentContextOrchestratorVerificationTrustTest {
         AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(
                 mock(AgentContextManager.class), mock(ProjectIndexService.class),
                 mock(AgentWorkspaceMemoryService.class), mock(LspSessionManager.class),
-                mock(ProjectCodeMapService.class));
+                mock(ProjectCodeMapService.class), new AgentRunExecutionProgressReducer());
         StudentProject project = new StudentProject();
         project.setWorkspacePath(Files.createDirectories(workspace).toString());
         AgentContext context = AgentContext.create("session", 1, project, "conversation", 1L);
-        context.markUnverifiedChangeTarget("package.json");
+        context.applyExecutionProgressProjection("implement", 1, 0, true, java.util.Set.of(),
+                java.util.Set.of("package.json"));
         JsonObject args = new JsonObject();
         args.addProperty("file_path", "package.json");
 

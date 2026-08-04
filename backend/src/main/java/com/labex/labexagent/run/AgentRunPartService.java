@@ -128,6 +128,9 @@ public class AgentRunPartService {
                  "COMPACTION_COMPLETED", "COMPACTION_FAILED", "CONTEXT_PRUNED" ->
                     upsertPart(taskId, messageId, "context:" + sequence, "context", "completed",
                             null, null, data, GSON.toJson(data), sequence);
+            case "RUN_PROGRESS_MIGRATED" ->
+                    upsertPart(taskId, messageId, "progress:migration", "progress", "completed",
+                            null, null, data, GSON.toJson(data), sequence);
             case "RUN_STATE_WAITING_APPROVAL", "RUN_STATE_WAITING_USER",
                  "RUN_INTERACTION_RESUME_QUEUED", "RUN_INTERACTION_TIMED_OUT" ->
                     upsertPart(taskId, messageId, "interaction:" + sequence, "interaction",
@@ -292,7 +295,7 @@ public class AgentRunPartService {
                  "RUN_CANCELLED", "RUN_STATE_CANCELLED", "INTERRUPTED",
                  "COMMAND_EXECUTION_INTERRUPTED", "RUN_MODEL_RETRY_SCHEDULED",
                  "RUN_MODEL_RETRY_STARTED", "RUN_RECOVERY_TAKEOVER",
-                 "RUN_STATE_RECOVERING", "DONE", "RUN_STATE_COMPLETED",
+                 "RUN_STATE_RECOVERING", "RUN_PROGRESS_MIGRATED", "DONE", "RUN_STATE_COMPLETED",
                  "RUN_STATE_FAILED" -> true;
             default -> false;
         };

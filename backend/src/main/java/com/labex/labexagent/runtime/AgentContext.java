@@ -247,44 +247,14 @@ public class AgentContext {
     }
 
     public boolean hasUnverifiedChanges() { return unverifiedChanges; }
-    public void setUnverifiedChanges(boolean unverifiedChanges) { this.unverifiedChanges = unverifiedChanges; }
     public int getWriteCount() { return writeCount; }
-    public void incrementWriteCount() { this.writeCount++; }
     public int getVerificationCount() { return verificationCount; }
-    public void incrementVerificationCount() { this.verificationCount++; }
-    public void recordTrustedVerification(String source) {
-        if (source != null && !source.isBlank()) {
-            this.trustedVerificationSources.add(source.trim().toLowerCase(java.util.Locale.ROOT));
-        }
-    }
     public boolean hasTrustedVerification() { return !this.trustedVerificationSources.isEmpty(); }
     public Set<String> getTrustedVerificationSources() { return Set.copyOf(this.trustedVerificationSources); }
-    public Set<String> getUnverifiedChangeTargets() { return unverifiedChangeTargets; }
-    public void markUnverifiedChangeTarget(String target) {
-        this.unverifiedChanges = true;
-        if (target != null && !target.isBlank()) {
-            this.unverifiedChangeTargets.add(target.trim().replace('\\', '/'));
-        }
-    }
-    public boolean matchesUnverifiedChangeTarget(String target) {
-        if (this.unverifiedChangeTargets == null || this.unverifiedChangeTargets.isEmpty()) {
-            return true;
-        }
-        if (target == null || target.isBlank()) {
-            return false;
-        }
-        String normalized = target.trim().replace('\\', '/');
-        return this.unverifiedChangeTargets.contains(normalized);
-    }
-    public void markChangesVerified() {
-        this.unverifiedChanges = false;
-        if (this.unverifiedChangeTargets != null) {
-            this.unverifiedChangeTargets.clear();
-        }
-    }
+    public Set<String> getUnverifiedChangeTargets() { return Set.copyOf(this.unverifiedChangeTargets); }
 
-    /** 文件 checkpoint 只恢复辅助执行信息，计划必须随后从数据库 projector 读取。 */
-    public void restoreCheckpointExecutionState(String stage,
+    /** 使用 durable Tool Part/Event 重建的执行进度刷新内存投影。 */
+    public void applyExecutionProgressProjection(String stage,
                                                 int writeCount, int verificationCount,
                                                 boolean unverifiedChanges,
                                                 Set<String> trustedVerificationSources,

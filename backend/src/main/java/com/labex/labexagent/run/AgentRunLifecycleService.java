@@ -551,6 +551,30 @@ public class AgentRunLifecycleService {
         }
     }
 
+    /** 返回任务已经提交的最大持久事件序号。 */
+    public long currentEventSequence(Long taskId) {
+        if (taskId == null || taskId <= 0L) return 0L;
+        AgentTask task = taskMapper.selectById(taskId);
+        if (task == null) throw new IllegalArgumentException("Agent task not found: " + taskId);
+        return Math.max(valueOrZero(task.getLastEventSequence()),
+                valueOrZero(eventMapper.selectMaxSequenceByTaskId(taskId)));
+    }
+
+    /** 读取实时游标之后、目标序号之前（含目标序号）的已提交事件。 */
+    public java.util.List<AgentRunEvent> eventsAfter(Long taskId, long afterExclusive, long throughInclusive) {
+        if (taskId == null || taskId <= 0L || throughInclusive <= afterExclusive) {
+            return java.util.List.of();
+        }
+        java.util.List<AgentRunEvent> events = eventMapper.selectList(
+                new LambdaQueryWrapper<AgentRunEvent>()
+                        .eq(AgentRunEvent::getTaskId, taskId)
+                        .gt(AgentRunEvent::getSequenceNumber, Math.max(0L, afterExclusive))
+                        .le(AgentRunEvent::getSequenceNumber, throughInclusive)
+                        .orderByAsc(AgentRunEvent::getSequenceNumber)
+                        .last("LIMIT 1000"));
+        return events == null ? java.util.List.of() : java.util.List.copyOf(events);
+    }
+
     /** 查询某个持久事件是否已经完成投影，供恢复调度器抑制重复副作用。 */
     public boolean hasEvent(Long taskId, String idempotencyKey) {
         return taskId != null && taskId > 0L
