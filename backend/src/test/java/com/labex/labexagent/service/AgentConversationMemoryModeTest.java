@@ -8,39 +8,23 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.mapper.AgentConversationMapper;
-import com.labex.mapper.AgentMessageMapper;
-import com.labex.mapper.AgentTaskMapper;
 import com.labex.rag.config.RagConfig;
 import org.junit.jupiter.api.Test;
 
 class AgentConversationMemoryModeTest {
 
     @Test
-    void removedLegacyModeCannotOverrideTheDurableMemoryProjection() {
+    void durableMemoryProjectionIsTheOnlyProviderMemoryPath() {
         AgentConversationMapper conversations = mock(AgentConversationMapper.class);
-        AgentMessageMapper legacyMessages = mock(AgentMessageMapper.class);
         AgentConversationMemoryProjectionService durable = mock(AgentConversationMemoryProjectionService.class);
         when(durable.buildContext(7, 3, "conversation")).thenReturn("durable request\ndurable answer");
         AgentConversationService service = new AgentConversationService(
-                conversations, legacyMessages, mock(RagConfig.class), mock(AgentTaskMapper.class), durable, "legacy");
+                conversations, mock(RagConfig.class), null, durable, null);
 
         String context = service.buildMemoryContext(7, 3, "conversation");
 
         assertThat(context).contains("durable request", "durable answer");
-        verify(legacyMessages, never()).selectList(any());
+        verify(durable).buildContext(7, 3, "conversation");
         verify(conversations, never()).selectOne(any());
-    }
-
-    @Test
-    void removedShadowModeAlsoReturnsOnlyTheDurableProjection() {
-        AgentConversationMapper conversations = mock(AgentConversationMapper.class);
-        AgentMessageMapper legacyMessages = mock(AgentMessageMapper.class);
-        AgentConversationMemoryProjectionService durable = mock(AgentConversationMemoryProjectionService.class);
-        when(durable.buildContext(7, 3, "conversation")).thenReturn("durable only");
-        AgentConversationService service = new AgentConversationService(
-                conversations, legacyMessages, mock(RagConfig.class), mock(AgentTaskMapper.class), durable, "shadow");
-
-        assertThat(service.buildMemoryContext(7, 3, "conversation")).isEqualTo("durable only");
-        verify(legacyMessages, never()).selectList(any());
     }
 }

@@ -6,8 +6,6 @@ import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentModelConfig;
 import com.labex.entity.StudentProject;
 import com.labex.mapper.AgentConversationMapper;
-import com.labex.mapper.AgentMessageMapper;
-import com.labex.mapper.AgentTaskMapper;
 import com.labex.rag.config.RagConfig;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -24,26 +22,6 @@ public class AgentConversationService {
     private final AgentConversationForkBoundaryService forkBoundaries;
     private final AgentConversationMemoryProjectionService durableMemoryProjection;
     private final AgentConversationHistoryProjectionService historyProjection;
-
-    /** 生产构造器只装配 durable projector 与不可变分叉边界。 */
-    public AgentConversationService(AgentConversationMapper conversationMapper,
-                                    AgentMessageMapper ignoredLegacyMessages,
-                                    RagConfig ragConfig) {
-        this(conversationMapper, ragConfig, null, null, null);
-    }
-
-    /** 旧构造器仅供既有测试装配；projectionMode 参数不能重新打开 legacy/shadow 路径。 */
-    public AgentConversationService(AgentConversationMapper conversationMapper,
-                                    AgentMessageMapper legacyMessages,
-                                    RagConfig ragConfig,
-                                    AgentTaskMapper taskMapper,
-                                    AgentConversationMemoryProjectionService durableMemoryProjection,
-                                    String ignoredProjectionMode) {
-        this(conversationMapper, ragConfig,
-                taskMapper == null ? null
-                        : new AgentConversationForkBoundaryService(conversationMapper, legacyMessages, taskMapper),
-                durableMemoryProjection, null);
-    }
 
     @Autowired
     public AgentConversationService(AgentConversationMapper conversationMapper,

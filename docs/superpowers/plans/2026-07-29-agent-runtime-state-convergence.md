@@ -266,7 +266,7 @@ node --test src/composables/agentHistoryReducer.test.mjs src/composables/useAgen
 - 后端测试、前端测试、构建和 live fault-injection 全部有证据；
 - 文档不再把“已有部分落地”写成“已完成 OpenCode 等价对齐”。
 
-## 13. 执行进度（截至 2026-08-04）
+## 13. 执行进度（截至 2026-08-05）
 
 ### 第 71 轮进度：conversation compaction authority shadow 已完成
 
@@ -376,3 +376,35 @@ node --test src/composables/agentHistoryReducer.test.mjs src/composables/useAgen
 - 仍需在最终架构审计中核对启动 JVM 的 PID、启动时间、classpath 与实际加载 class，避免把源码验证误报成运行时验证。
 
 下一轮停止边界：只做第 12 节最终审计与遗留兼容路径收口；不得重新引入第二套状态、transcript、checkpoint 或前端实时事实源，也不得以本轮 acceptance 通过宣称整体 OpenCode 等价已经完成。
+### 第 76 轮计划：收口旧 memory 构造入口与 fork durable 边界
+
+本轮只处理最终审计发现的兼容入口，不扩大到 AgentLoopEngine 重写或前端视觉改版：
+
+1. 删除 `AgentConversationService` 中携带 `AgentMessageMapper`、`AgentTaskMapper` 和 `legacy/shadow` 字符串的旧构造器；生产服务只接受 durable memory/history/fork projector。
+2. 更新已有回归测试，使测试直接装配生产构造路径，并保留“memory 不读取旧消息表”的回归断言。
+3. 为 fork 增加 durable task 优先的回归覆盖：显式 `taskId` 时不得触碰 legacy message mapper；只有旧 `messageId` 兼容请求才允许进入 fork boundary 的一次性 legacy 映射。
+4. 对代码、测试和文档做最终审计，明确保留的两类迁移 reader：`t_agent_message` 历史迁移与 v1/v2 checkpoint 一次性迁移；二者都不得成为 Provider/UI/runtime 的常规事实源。
+5. 运行定向后端测试、完整后端测试、前端测试/构建和现有系统 acceptance；若 acceptance 环境不可用，必须记录具体阻断原因，不以编译替代真实验收。
+
+本轮停止边界：不删除 `AgentMessage` 表、`AgentLegacyConversationHistoryMigrationService` 或 `AgentCheckpointStore`，因为它们仍需覆盖未迁移存量；不改变数据库 schema；不宣称总计划第 12 节已全部完成，除非最终 JVM/浏览器/迁移退出条件均有独立证据。
+### 第 76 轮进度：durable memory 构造入口与 WSL 审批取消边界已完成
+
+已完成：
+
+- `AgentConversationService` 只保留生产五参数 durable 构造器；携带 `AgentMessageMapper`、`AgentTaskMapper` 或 `legacy/shadow` 字符串的旧构造入口已删除。
+- Provider memory、UI history、memory stats 和显式 task fork 均从 durable projector/boundary 进入；稳定 `taskId` fork 的回归测试证明不会访问旧 `AgentMessageMapper`。
+- `AgentLegacyConversationHistoryMigrationService` 与 `AgentCheckpointStore` 已重新审计并明确为只读迁移入口：前者只读旧消息后创建 durable graph，后者只读 v1/v2 seed；两者都不是常规 Provider/UI/runtime 事实源。
+- 新增 package-private `WslCommandSupervisor`，非交互 WSL 命令取消/超时先通过 workspace 临时控制文件终止 Linux 进程组，2.5 秒后才允许 Windows wrapper 强制兜底；`WslSandboxWorker` 保持轻量编排，终端路径不变。
+- 后端全量 1,033 项测试、前端 213 项测试、15 项验收单元测试和生产构建通过；真实 WSL execute/cancel/next-command/toolchain/terminal smoke 通过。
+- 后端真实 restart acceptance run `631419761ea245a2a010485a4b91f1b4` 通过；审批命令取消耗时 `2903ms`，进程身份、active lease、孤儿回收、durable history/compaction/fork/plan/progress/SSE 顺序全部通过。
+- 浏览器真实 acceptance run `3dddca4eaad14b60aeacbfbcedf286f5` 通过；审批/提问刷新恢复、durable history、模型重试、compaction/fork/restart 和内部思考隐藏通过，console/network errors 均为 0。
+
+证据文档：`docs/iterations/2026-08-05-iteration-76-durable-memory-entry-and-wsl-cancellation.md`。
+
+尚未完成，因此本计划仍不能标记为全部完成：
+
+- `t_agent_message` 与 v1/v2 checkpoint reader 仍需服务未迁移存量；必须先建立存量归零、读取命中和删除版本的可观测退出条件，不能直接删表或删 reader。
+- deterministic acceptance 使用 scripted Provider；真实外部云 Provider 的代理/TLS/stream interruption 仍需具备本地凭据后的独立 smoke。
+- 最终关闭总目标前仍需逐项核对第 12 节，并确认兼容 reader 达到删除条件，而不是仅凭本轮 JVM/浏览器验收宣称 OpenCode 等价完成。
+
+下一轮停止边界：只建立 legacy history/checkpoint reader 的迁移命中遥测、存量归零报告和删除条件；不得新增平行 transcript、状态机或前端本地事实源，也不得顺带进行无关 UI 改版。

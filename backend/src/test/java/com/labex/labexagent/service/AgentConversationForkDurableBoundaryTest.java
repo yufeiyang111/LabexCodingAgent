@@ -100,6 +100,7 @@ class AgentConversationForkDurableBoundaryTest {
         assertThatThrownBy(() -> service.forkConversation(7, 3, "source", null, 13L))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("stable");
+        verify(messages, never()).selectById(any());
     }
 
     @Test
@@ -129,8 +130,8 @@ class AgentConversationForkDurableBoundaryTest {
     private AgentConversationService service(AgentConversationMapper conversations,
                                              AgentMessageMapper messages,
                                              AgentTaskMapper tasks) {
-        return new AgentConversationService(conversations, messages, mock(RagConfig.class),
-                tasks, null, "legacy");
+        return new AgentConversationService(conversations, mock(RagConfig.class),
+                new AgentConversationForkBoundaryService(conversations, messages, tasks), null, null);
     }
 
     private AgentConversation conversation(String id) {

@@ -10,7 +10,6 @@ import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentModelConfig;
 import com.labex.entity.StudentProject;
 import com.labex.mapper.AgentConversationMapper;
-import com.labex.mapper.AgentMessageMapper;
 import com.labex.rag.config.RagConfig;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -22,7 +21,7 @@ class AgentConversationUserModelMetadataTest {
         AgentConversationMapper conversationMapper = mock(AgentConversationMapper.class);
         when(conversationMapper.insert(any())).thenReturn(1);
         AgentConversationService service = new AgentConversationService(
-                conversationMapper, mock(AgentMessageMapper.class), mock(RagConfig.class));
+                conversationMapper, mock(RagConfig.class), null, null, null);
         StudentProject project = new StudentProject();
         project.setProjectId(11);
         AgentModelConfig config = new AgentModelConfig();

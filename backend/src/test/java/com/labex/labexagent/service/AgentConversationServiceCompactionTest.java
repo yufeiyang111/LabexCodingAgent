@@ -1,11 +1,9 @@
 package com.labex.labexagent.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -13,7 +11,6 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.labex.entity.AgentConversation;
 import com.labex.mapper.AgentConversationMapper;
-import com.labex.mapper.AgentMessageMapper;
 import com.labex.rag.config.RagConfig;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
@@ -30,18 +27,15 @@ class AgentConversationServiceCompactionTest {
 
     @Test
     void memoryContextAlwaysUsesTheDurableConversationProjector() {
-        AgentConversationMapper conversations = mock(AgentConversationMapper.class);
-        AgentMessageMapper legacy = mock(AgentMessageMapper.class);
         AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
         when(memory.buildContext(7, 3, "conversation")).thenReturn("durable summary\nTail final outcome");
         AgentConversationService service = new AgentConversationService(
-                conversations, legacy, mock(RagConfig.class), null, memory, "legacy");
+                mock(AgentConversationMapper.class), mock(RagConfig.class), null, memory, null);
 
         String recovered = service.buildMemoryContext(7, 3, "conversation");
 
         assertTrue(recovered.contains("durable summary"));
         assertTrue(recovered.contains("Tail final outcome"));
-        verify(legacy, never()).selectList(any());
     }
 
     @Test
@@ -61,19 +55,16 @@ class AgentConversationServiceCompactionTest {
     }
 
     @Test
-    void compactionOnlyUpdatesConversationMetadataAndNeverWritesLegacyMessages() {
+    void compactionOnlyUpdatesConversationMetadata() {
         AgentConversationMapper conversations = mock(AgentConversationMapper.class);
-        AgentMessageMapper legacy = mock(AgentMessageMapper.class);
         AgentConversation conversation = conversation();
         AgentConversationService service = new AgentConversationService(
-                conversations, legacy, mock(RagConfig.class));
+                conversations, mock(RagConfig.class), null, null, null);
 
         service.markCompacted(conversation);
 
         assertTrue(conversation.getCompactedAt() != null);
-        assertFalse("obsolete legacy summary".isBlank());
         verify(conversations).update(any(), any());
-        verify(legacy, never()).insert(any());
     }
 
     private AgentConversation conversation() {

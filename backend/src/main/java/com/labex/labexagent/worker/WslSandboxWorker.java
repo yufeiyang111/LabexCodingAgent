@@ -48,18 +48,26 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
     public ProcessExecutionResult execute(
             WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken,
             ProcessExecutionObserver observer) {
+        CancellationToken sourceToken = cancellationToken == null ? CancellationToken.none() : cancellationToken;
+        if (sourceToken.isCancellationRequested()) {
+            return new ProcessExecutionResult(ExecutionStatus.CANCELLED, null, 0, "", false);
+        }
         try {
             prepare(run);
             requireWorkspacePath(run, request.workingDirectory());
-            ProcessExecutionRequest sandboxRequest = new ProcessExecutionRequest(
-                    buildWslCommand(run, request),
-                    run.workspaceRoot(),
-                    request.timeout(),
-                    request.maxOutputChars(),
-                    run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));
-            return processExecutor.execute(
-                        sandboxRequest, cancellationToken, chunk -> { },
+            try (WslCommandSupervisor.Execution supervision =
+                         WslCommandSupervisor.open(run, request, sourceToken)) {
+                ProcessExecutionRequest sandboxRequest = new ProcessExecutionRequest(
+                        buildWslCommand(run, request, supervision.command()),
+                        run.workspaceRoot(),
+                        supervision.processTimeout(),
+                        request.maxOutputChars(),
+                        run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));
+                ProcessExecutionResult result = processExecutor.execute(
+                        sandboxRequest, supervision.cancellationToken(), chunk -> { },
                         identity -> observer.onStarted(identity.withWorkerContext("wsl", run.runId())));
+                return supervision.translate(result);
+            }
         } catch (IOException | IllegalArgumentException e) {
             return new ProcessExecutionResult(
                     ExecutionStatus.INFRASTRUCTURE_ERROR, null, 0, e.getMessage(), false);
@@ -144,6 +152,11 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
     }
 
     List<String> buildWslCommand(WorkerRunSpec run, ProcessExecutionRequest request) {
+        return buildWslCommand(run, request, request.command());
+    }
+
+    private List<String> buildWslCommand(
+            WorkerRunSpec run, ProcessExecutionRequest request, List<String> commandArguments) {
         requireWorkspacePath(run, request.workingDirectory());
         String workspace = toWslPath(run.workspaceRoot());
         String workingDirectory = toSandboxPath(run, request.workingDirectory());
@@ -207,7 +220,7 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
         setEnvironment(command, "LANG", "C.UTF-8");
         command.add("--chdir");
         command.add(workingDirectory);
-        command.addAll(request.command());
+        command.addAll(commandArguments);
         return List.copyOf(command);
     }
 
