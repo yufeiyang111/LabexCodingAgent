@@ -439,3 +439,36 @@ node --test src/composables/agentHistoryReducer.test.mjs src/composables/useAgen
 - 不物理删除 `t_agent_message`、旧 checkpoint 文件或兼容 reader；必须等待真实运行形成连续 14 天零存量且无新命中的证据。
 - 不把 deterministic scripted Provider 验收误报为真实外部云 Provider/代理/TLS smoke。
 - 不继续扩大 AgentLoopEngine、状态机、前端 UI 或其他架构重构；下一步仅由用户进行常用浏览器和现有数据的手工验收，或在观察窗口满足后另开独立删除迭代。
+
+### 第 78 轮计划：上下文来源与有效压缩线可视化修正
+
+本轮只修正上下文预算派生投影和用户可见解释，不改变 compaction 决策、阈值默认值或状态机：
+
+1. 将 conversation memory、run recovery context 和真实 compaction summary 拆分为独立分类。
+2. 为新快照增加分类版本，旧 `compactedContext` 只作为 v1 兼容投影显示。
+3. 前端直接消费后端 `softLimitTokens`，同时显示总窗口占比、有效线占比、距触发距离和本轮 trim state。
+4. 模型配置按后端公式预览输入容量、百分比线、安全缓冲线与最终有效线；后端继续拥有配置校验权威。
+5. 通过失败回归测试、完整后端/前端门槛和真实浏览器组件渲染检查验收。
+
+本轮停止边界：不调整运行时压缩阈值，不迁移旧事件，不伪造 compaction before/after，不重写 AgentLoopEngine，不顺带处理无关 UI 或兼容 reader 删除。
+
+### 第 78 轮进度：上下文预算来源与有效压缩线可视化已完成
+
+已完成：
+
+- `ContextUsageEstimator` 已拆分 `conversationMemory`、`runRecoveryContext` 和 `compactionSummary`，并识别 durable `<conversation-checkpoint>` 消息；
+- 新 `CONTEXT_STATUS` / preview payload 标记 `context-budget-v2`，旧事件恢复为 `context-budget-v1`；
+- 前端旧 `compactedContext` 改显示为“旧版恢复上下文”，不再把普通恢复记忆宣称为已压缩摘要；
+- 上下文弹窗和环形指示器已展示有效软上限、当前占有效线比例、距触发距离、本轮 trim state 和总窗口比例；
+- 模型配置实时预览与后端 `ContextWindowPolicy` 公式一致；204800 / 51200 / 90% / 默认缓冲的有效线显示为 153600，而不是误导性的 184320；
+- 后端干净重编译与全量 `1044` 项测试通过，前端当前共享工作区 `223/223`、acceptance 辅助 `16/16` 和生产构建通过；
+- 真实浏览器挂载生产 Vue 组件验证 39.2K 快照显示为总窗口 19%、有效线 25.5%、距触发 114.4K、本轮未执行压缩，v1 快照显示“旧版恢复上下文”。
+
+证据文档：`docs/iterations/2026-08-05-iteration-78-context-budget-visualization.md`。
+
+本轮停止边界已经到达：
+
+- 不继续修改 compaction engine、Provider transcript、状态机或审批恢复；
+- 旧事件保持只读兼容，不批量重写数据库；
+- 实际 8080 JVM 需要重启并产生一次新请求后才会出现 v2 分类；
+- 最终验收由用户使用自己的账号、项目和常用浏览器执行。

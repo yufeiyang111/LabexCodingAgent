@@ -20,7 +20,7 @@ test('ContextUsageDialog exposes stable categories and a safely rendered actual-
   const source = await component('ContextUsageDialog.vue')
   const workspace = await readFile(new URL('../../views/CloudWorkspace.vue', import.meta.url), 'utf8')
   const api = await readFile(new URL('../../api/index.js', import.meta.url), 'utf8')
-  for (const category of ['systemPrompt', 'toolDefinitions', 'projectContext', 'workspaceMemory', 'compactedContext', 'skillsAndInstructions', 'conversationMessages', 'toolResults']) {
+  for (const category of ['systemPrompt', 'toolDefinitions', 'projectContext', 'workspaceMemory', 'conversationMemory', 'runRecoveryContext', 'compactionSummary', 'compactedContext', 'skillsAndInstructions', 'conversationMessages', 'toolResults', 'messageProtocol']) {
     assert.match(source, new RegExp(category))
   }
   assert.match(source, /previewSections/)
@@ -29,6 +29,11 @@ test('ContextUsageDialog exposes stable categories and a safely rendered actual-
   assert.match(source, /NEXT_REQUEST_ESTIMATE/)
   assert.match(source, /load-next-preview/)
   assert.match(source, /predictionLoading/)
+  assert.match(source, /softLimitTokens/)
+  assert.match(source, /distanceToSoftLimitTokens/)
+  assert.match(source, /本轮未执行压缩/)
+  assert.match(source, /旧版恢复上下文/)
+  assert.doesNotMatch(source, /compactedContext['"]?, label: ['"]压缩上下文/)
   assert.match(source, /<pre>{{ section\.content }}<\/pre>/)
   assert.match(api, /agentNextContextPreview/)
   assert.match(workspace, /loadNextContextPreview/)

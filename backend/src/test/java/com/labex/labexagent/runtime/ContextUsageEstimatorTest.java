@@ -36,7 +36,7 @@ class ContextUsageEstimatorTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void separatesProjectWorkspaceAndCompactedContext() {
+    void separatesProjectWorkspaceMemoryRecoveryAndCompactionSources() {
         String sessionContext = "<project_context>repo map</project_context>\n"
                 + "<workspace_memory>durable file facts</workspace_memory>";
         ContextUsageEstimator.PromptContext context = ContextUsageEstimator.PromptContext.of(
@@ -52,9 +52,12 @@ class ContextUsageEstimatorTest {
         assertEquals(estimator.estimateTokens("<workspace_memory>durable file facts</workspace_memory>"), categories.get("workspaceMemory"));
         assertEquals(estimator.estimateTokens("project rules<project_context>repo map</project_context>"),
                 categories.get("projectContext"));
-        assertEquals(estimator.estimateTokens(
-                        "compressed conversation and tool recordsrecent run tool logconversation checkpoint"),
-                categories.get("compactedContext"));
+        assertEquals(estimator.estimateTokens("compressed conversation and tool records"),
+                categories.get("conversationMemory"));
+        assertEquals(estimator.estimateTokens("recent run tool log"), categories.get("runRecoveryContext"));
+        assertEquals(estimator.estimateTokens("conversation checkpoint"), categories.get("compactionSummary"));
+        assertFalse(categories.containsKey("compactedContext"));
+        assertEquals("context-budget-v2", snapshot.toPayload().get("contextCategoryVersion"));
     }
 
     @Test
@@ -113,6 +116,19 @@ class ContextUsageEstimatorTest {
         assertEquals(Boolean.TRUE, metadata.get("nextUserMessageIncluded"));
         assertEquals("build", metadata.get("agentMode"));
         assertTrue(((List<?>) payload.get("previewSections")).size() > 0);
+    }
+
+    @Test
+    void classifiesDurableConversationCheckpointMessagesAsCompactionSummaries() {
+        String checkpoint = "<conversation-checkpoint version=\"3\">summary</conversation-checkpoint>";
+
+        Map<String, Integer> categories = estimator.estimateCategories("", List.of(),
+                new ContextUsageEstimator.PromptContext("", "", "", ""),
+                List.of(Map.of("role", "user", "content", checkpoint),
+                        Map.of("role", "user", "content", "latest question")));
+
+        assertEquals(estimator.estimateTokens(checkpoint), categories.get("compactionSummary"));
+        assertEquals(estimator.estimateTokens("latest question"), categories.get("conversationMessages"));
     }
 
     @Test

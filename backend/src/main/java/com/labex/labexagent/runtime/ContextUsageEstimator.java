@@ -56,7 +56,9 @@ public class ContextUsageEstimator {
         categories.put("toolDefinitions", estimateTokens(serialize(tools)));
         categories.put("projectContext", estimateTokens(context.projectContext()));
         categories.put("workspaceMemory", estimateTokens(context.workspaceMemory()));
-        categories.put("compactedContext", estimateTokens(context.compactedContext()));
+        categories.put("conversationMemory", estimateTokens(context.conversationMemory()));
+        categories.put("runRecoveryContext", estimateTokens(context.runRecoveryContext()));
+        categories.put("compactionSummary", estimateTokens(context.compactionSummary()));
         categories.put("skillsAndInstructions", estimateTokens(context.skillsAndInstructions()));
         categories.put("fixedInstructions", estimateTokens(context.fixedInstructions()));
         categories.put("conversationMessages", 0);
@@ -68,9 +70,15 @@ public class ContextUsageEstimator {
             String text = content instanceof String value ? value : serialize(content);
             if (text.equals(context.initialContextMessage())) continue;
             String role = String.valueOf(message.getOrDefault("role", "user"));
-            String category = "tool".equalsIgnoreCase(role)
-                    || (text.startsWith(TOOL_RESULT_PREFIX) && text.contains("result]"))
-                    ? "toolResults" : "conversationMessages";
+            String category;
+            if ("tool".equalsIgnoreCase(role)
+                    || (text.startsWith(TOOL_RESULT_PREFIX) && text.contains("result]"))) {
+                category = "toolResults";
+            } else if (isCompactionSummary(text)) {
+                category = "compactionSummary";
+            } else {
+                category = "conversationMessages";
+            }
             categories.merge(category, estimateTokens(text), Integer::sum);
             LinkedHashMap<String, Object> protocol = new LinkedHashMap<>(message);
             protocol.remove("content");
@@ -83,19 +91,37 @@ public class ContextUsageEstimator {
         return text == null || text.isBlank() ? 0 : Math.max(1, text.length() / 3);
     }
 
+    private boolean isCompactionSummary(String text) {
+        return text != null && text.contains("<conversation-checkpoint");
+    }
+
+    private String joinNonBlank(String... values) {
+        StringBuilder result = new StringBuilder();
+        for (String value : values) {
+            if (value == null || value.isBlank()) continue;
+            if (!result.isEmpty()) result.append('\n');
+            result.append(value);
+        }
+        return result.toString();
+    }
+
     private List<ContextPreviewSection> buildPreview(String systemPrompt, Object tools,
                                                      PromptContext promptContext,
                                                      List<Map<String, Object>> messages) {
         StringBuilder conversation = new StringBuilder();
         StringBuilder toolResults = new StringBuilder();
+        StringBuilder compactionSummaries = new StringBuilder();
         for (Map<String, Object> message : messages == null ? List.<Map<String, Object>>of() : messages) {
             Object content = message.get("content");
             String text = content instanceof String value ? value : serialize(content);
             if (text.equals(promptContext.initialContextMessage())) continue;
             String role = String.valueOf(message.getOrDefault("role", "user"));
             String entry = "[" + role + "] " + text + "\n";
-            if (text.startsWith(TOOL_RESULT_PREFIX) && text.contains("result]")) {
+            if ("tool".equalsIgnoreCase(role)
+                    || (text.startsWith(TOOL_RESULT_PREFIX) && text.contains("result]"))) {
                 toolResults.append(entry);
+            } else if (isCompactionSummary(text)) {
+                compactionSummaries.append(entry);
             } else {
                 conversation.append(entry);
             }
@@ -104,7 +130,9 @@ public class ContextUsageEstimator {
                 new PreviewInput("systemPrompt", systemPrompt),
                 new PreviewInput("projectContext", promptContext.projectContext()),
                 new PreviewInput("workspaceMemory", promptContext.workspaceMemory()),
-                new PreviewInput("compactedContext", promptContext.compactedContext()),
+                new PreviewInput("conversationMemory", promptContext.conversationMemory()),
+                new PreviewInput("runRecoveryContext", promptContext.runRecoveryContext()),
+                new PreviewInput("compactionSummary", joinNonBlank(promptContext.compactionSummary(), compactionSummaries.toString())),
                 new PreviewInput("skillsAndInstructions", promptContext.skillsAndInstructions()),
                 new PreviewInput("toolDefinitions", serialize(tools)),
                 new PreviewInput("fixedInstructions", promptContext.fixedInstructions()),
@@ -138,12 +166,27 @@ public class ContextUsageEstimator {
     private record PreviewInput(String key, String content) {
     }
 
-    public record PromptContext(String projectContext, String workspaceMemory, String compactedContext,
+    public record PromptContext(String projectContext, String workspaceMemory, String conversationMemory,
+                                String runRecoveryContext, String compactionSummary,
                                 String skillsAndInstructions, String fixedInstructions,
                                 String initialContextMessage) {
         public PromptContext(String workspaceMemory, String skillsAndInstructions, String fixedInstructions,
                              String initialContextMessage) {
-            this("", workspaceMemory, "", skillsAndInstructions, fixedInstructions, initialContextMessage);
+            this("", workspaceMemory, "", "", "", skillsAndInstructions, fixedInstructions, initialContextMessage);
+        }
+
+        /** 兼容旧调用：第三个参数只代表确实存在的压缩摘要，不能再混入普通恢复上下文。 */
+        public PromptContext(String projectContext, String workspaceMemory, String compactedContext,
+                             String skillsAndInstructions, String fixedInstructions,
+                             String initialContextMessage) {
+            this(projectContext, workspaceMemory, "", "", compactedContext,
+                    skillsAndInstructions, fixedInstructions, initialContextMessage);
+        }
+
+        /** 兼容旧访问器，返回真正的压缩摘要。 */
+        @Deprecated
+        public String compactedContext() {
+            return compactionSummary;
         }
 
         public static PromptContext of(String projectRules, String memoryContext, String sessionContext,
@@ -152,10 +195,10 @@ public class ContextUsageEstimator {
                                        String initialContextMessage) {
             TaggedSection workspaceSection = extractTaggedSection(sessionContext, "workspace_memory");
             String projectContext = join(projectRules, workspaceSection.remaining());
-            String compactedContext = join(memoryContext, recentRunLog, checkpoint);
             String skillsAndInstructions = join(globalSkills, mcpContext);
-            return new PromptContext(projectContext, workspaceSection.section(), compactedContext,
-                    skillsAndInstructions, join(modePolicy, languagePolicy), initialContextMessage);
+            return new PromptContext(projectContext, workspaceSection.section(), memoryContext,
+                    recentRunLog, checkpoint, skillsAndInstructions,
+                    join(modePolicy, languagePolicy), initialContextMessage);
         }
 
         private static TaggedSection extractTaggedSection(String value, String tag) {

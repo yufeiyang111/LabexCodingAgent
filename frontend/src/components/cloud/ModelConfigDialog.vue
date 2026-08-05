@@ -172,12 +172,21 @@
                   <div class="mc-field">
                     <label>自动压缩触发阈值 (%)</label>
                     <input v-model.number="state.mcForm.compactionThresholdPercent" class="mc-input" type="number" min="70" max="99" step="1" />
-                    <div class="mc-hint">按总上下文窗口计算；例如 200K 窗口配置 90%，将在 180K tokens 时触发自动压缩。</div>
+                    <div class="mc-hint">百分比阈值只是上限之一；最终有效线还会同时受 Max Tokens 输出预留和安全缓冲约束。</div>
                   </div>
                   <div class="mc-field">
                     <label>压缩安全缓冲 Tokens</label>
                     <input v-model.number="state.mcForm.compactionReservedTokens" class="mc-input" type="number" min="0" step="1" placeholder="自动（总窗口的 10%）" />
-                    <div class="mc-hint">作为总窗口末尾的安全上限；只有当百分比阈值过高时才会更早触发，空值时自动计算。</div>
+                    <div class="mc-hint">作为总窗口末尾的安全上限；空值时按总窗口 10% 计算，并限制在 2,048 到 8,192 tokens。</div>
+                  </div>
+                  <div class="mc-policy-preview" :class="{ invalid: !effectivePolicy.valid }">
+                    <strong>有效自动压缩线</strong>
+                    <template v-if="effectivePolicy.valid">
+                      <span>{{ formatPolicyTokens(effectivePolicy.softLimitTokens) }} tokens（占总上下文窗口 {{ effectivePolicy.softLimitPercent.toFixed(1) }}%）</span>
+                      <small>输入容量 {{ formatPolicyTokens(effectivePolicy.inputCapacityTokens) }}；百分比线 {{ formatPolicyTokens(effectivePolicy.thresholdLimitTokens) }}；安全缓冲线 {{ formatPolicyTokens(effectivePolicy.reserveLimitTokens) }}。系统取三者最小值。</small>
+                      <small v-if="!state.mcForm.compactionAuto">自动压缩当前已关闭；该数值仍用于解释输入预算。</small>
+                    </template>
+                    <span v-else>{{ effectivePolicy.reason }}</span>
                   </div>
                   <div class="mc-field">
                     <label>压缩专用模型</label>
@@ -213,8 +222,14 @@
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+import { calculateContextWindowPolicy } from '@/composables/contextWindowPolicyView'
+
+const props = defineProps({
   state: { type: Object, required: true },
   actions: { type: Object, required: true }
 })
+
+const effectivePolicy = computed(() => calculateContextWindowPolicy(props.state?.mcForm || {}))
+const formatPolicyTokens = value => Number(value || 0).toLocaleString('zh-CN')
 </script>

@@ -1,4 +1,4 @@
-const STATIC_KEYS = new Set(['systemPrompt', 'toolDefinitions', 'fixedInstructions', 'skillsAndInstructions'])
+﻿const STATIC_KEYS = new Set(['systemPrompt', 'toolDefinitions', 'fixedInstructions', 'skillsAndInstructions'])
 
 export function normalizeContextBudget(status = {}) {
   const categories = status?.categories || {}
@@ -10,12 +10,30 @@ export function normalizeContextBudget(status = {}) {
   const reducibleCategories = explicitReducible && typeof explicitReducible === 'object'
     ? { ...explicitReducible }
     : selectCategories(categories, key => !STATIC_KEYS.has(key))
+  const staticTokens = numericOrSum(status?.staticTokens, staticCategories)
+  const reducibleTokens = numericOrSum(status?.reducibleTokens, reducibleCategories)
+  const reservedOutputTokens = number(status?.reservedOutputTokens)
+  const contextWindowTokens = number(status?.contextWindowTokens)
+  const inputCapacityTokens = number(status?.inputCapacityTokens) || Math.max(0,
+    contextWindowTokens - reservedOutputTokens)
+  const hasBackendSoftLimit = positiveNumber(status?.softLimitTokens) !== null
+  const softLimitTokens = hasBackendSoftLimit
+    ? positiveNumber(status.softLimitTokens)
+    : inputCapacityTokens
+  const explicitUsedTokens = Number(status?.usedTokens)
+  const usedTokens = Number.isFinite(explicitUsedTokens) ? Math.max(0, explicitUsedTokens) : staticTokens + reducibleTokens
+
   return {
-    staticTokens: numericOrSum(status?.staticTokens, staticCategories),
-    reducibleTokens: numericOrSum(status?.reducibleTokens, reducibleCategories),
-    reservedOutputTokens: number(status?.reservedOutputTokens),
-    inputCapacityTokens: number(status?.inputCapacityTokens) || Math.max(0,
-      number(status?.contextWindowTokens) - number(status?.reservedOutputTokens)),
+    staticTokens,
+    reducibleTokens,
+    reservedOutputTokens,
+    inputCapacityTokens,
+    softLimitTokens,
+    usedTokens,
+    distanceToSoftLimitTokens: Math.max(0, softLimitTokens - usedTokens),
+    usedAgainstSoftLimitPercent: ratio(usedTokens, softLimitTokens),
+    softLimitOfWindowPercent: ratio(softLimitTokens, contextWindowTokens),
+    softLimitSource: hasBackendSoftLimit ? 'backend' : 'input_capacity_fallback',
     staticCategories,
     reducibleCategories
   }
@@ -31,6 +49,15 @@ function numericOrSum(value, categories) {
   const explicit = Number(value)
   if (Number.isFinite(explicit)) return Math.max(0, explicit)
   return Object.values(categories).reduce((total, item) => total + number(item), 0)
+}
+
+function positiveNumber(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function ratio(value, capacity) {
+  return capacity > 0 ? Math.round(value * 1000 / capacity) / 10 : 0
 }
 
 function number(value) {

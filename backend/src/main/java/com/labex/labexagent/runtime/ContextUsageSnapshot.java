@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class ContextUsageSnapshot {
+    private static final String CURRENT_CATEGORY_VERSION = "context-budget-v2";
     private final String conversationId;
     private final String sessionId;
     private final String provider;
@@ -18,6 +19,7 @@ public final class ContextUsageSnapshot {
     private final List<ContextPreviewSection> previewSections;
     private final String previewSource;
     private final Map<String, Object> previewMetadata;
+    private final String contextCategoryVersion;
     private ContextBudgetBreakdown budgetBreakdown;
     private final LocalDateTime updatedAt;
 
@@ -39,13 +41,14 @@ public final class ContextUsageSnapshot {
                                 List<ContextPreviewSection> previewSections, String previewSource,
                                 Map<String, Object> previewMetadata) {
         this(conversationId, sessionId, provider, model, contextWindowTokens, categories, trimState,
-                previewSections, previewSource, previewMetadata, LocalDateTime.now());
+                previewSections, previewSource, previewMetadata, CURRENT_CATEGORY_VERSION, LocalDateTime.now());
     }
 
     private ContextUsageSnapshot(String conversationId, String sessionId, String provider, String model,
                                  Integer contextWindowTokens, Map<String, Integer> categories, String trimState,
                                  List<ContextPreviewSection> previewSections, String previewSource,
-                                 Map<String, Object> previewMetadata, LocalDateTime updatedAt) {
+                                 Map<String, Object> previewMetadata, String contextCategoryVersion,
+                                 LocalDateTime updatedAt) {
         this.conversationId = conversationId;
         this.sessionId = sessionId;
         this.provider = provider;
@@ -60,6 +63,8 @@ public final class ContextUsageSnapshot {
         this.previewSource = previewSource == null || previewSource.isBlank()
                 ? (this.previewSections.isEmpty() ? "UNAVAILABLE" : "LAST_ACTUAL_REQUEST") : previewSource;
         this.previewMetadata = Map.copyOf(previewMetadata == null ? Map.of() : new LinkedHashMap<>(previewMetadata));
+        this.contextCategoryVersion = contextCategoryVersion == null || contextCategoryVersion.isBlank()
+                ? "context-budget-v1" : contextCategoryVersion;
         this.updatedAt = updatedAt == null ? LocalDateTime.now() : updatedAt;
     }
 
@@ -95,7 +100,7 @@ public final class ContextUsageSnapshot {
                 string(payload.get("provider")), string(payload.get("model")),
                 nullablePositiveNumber(payload.get("contextWindowTokens")), categories,
                 string(payload.get("trimState")), sections, string(payload.get("previewSource")), metadata,
-                updatedAt(payload.get("updatedAt")));
+                string(payload.get("contextCategoryVersion")), updatedAt(payload.get("updatedAt")));
         Map<String, Integer> staticCategories = integerMap(payload.get("staticCategories"));
         Map<String, Integer> reducibleCategories = integerMap(payload.get("reducibleCategories"));
         if (!staticCategories.isEmpty() || !reducibleCategories.isEmpty()) {
@@ -144,6 +149,7 @@ public final class ContextUsageSnapshot {
         payload.put("model", model);
         payload.put("contextWindowTokens", contextWindowTokens);
         payload.put("usedTokens", usedTokens);
+        payload.put("contextCategoryVersion", contextCategoryVersion);
         payload.put("previewSource", previewSource);
         payload.put("previewMetadata", previewMetadata);
         payload.put("updatedAt", updatedAt.toString());
@@ -161,6 +167,7 @@ public final class ContextUsageSnapshot {
         payload.put("usedTokens", usedTokens);
         payload.put("usagePercent", usagePercent);
         payload.put("measurementSource", "ESTIMATED_CHARS");
+        payload.put("contextCategoryVersion", contextCategoryVersion);
         payload.put("categories", categories);
         if (budgetBreakdown != null) {
             payload.put("staticTokens", budgetBreakdown.staticTokens());

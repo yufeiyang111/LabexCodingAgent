@@ -24,5 +24,7 @@ class ContextUsageSnapshotBudgetTest {
         assertEquals(4000, payload.get("reservedOutputTokens"));
         assertEquals(budget.staticCategories(), payload.get("staticCategories"));
         assertEquals(budget.reducibleCategories(), payload.get("reducibleCategories"));
+        assertEquals(11_000, payload.get("softLimitTokens"));
+        assertEquals("context-budget-v2", payload.get("contextCategoryVersion"));
     }
 }

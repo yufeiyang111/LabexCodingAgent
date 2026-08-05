@@ -1801,6 +1801,22 @@
 .mc-input::placeholder { color: var(--ai-text-faint); }
 .mc-model-select { margin-top: 6px; }
 .mc-hint { font-size: 11px; color: var(--ai-text-faint); margin-top: 2px; }
+.mc-policy-preview {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 12px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--ai-accent) 58%, var(--ai-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--ai-accent) 10%, var(--ai-bg-secondary));
+  color: var(--ai-text);
+}
+.mc-policy-preview strong,
+.mc-policy-preview span,
+.mc-policy-preview small { display: block; }
+.mc-policy-preview span { font-size: 13px; font-variant-numeric: tabular-nums; }
+.mc-policy-preview small { color: var(--ai-text-faint); font-size: 11px; line-height: 1.5; }
+.mc-policy-preview.invalid { border-color: color-mix(in srgb, var(--ai-yellow) 55%, var(--ai-border)); }
 .mc-hint-ok { color: var(--ai-green); }
 .mc-row { display: flex; gap: 12px; }
 .mc-field-half { flex: 1; }
