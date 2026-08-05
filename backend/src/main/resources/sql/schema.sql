@@ -152,6 +152,20 @@ CREATE TABLE IF NOT EXISTS t_agent_message (
     INDEX idx_msg_conversation_history (conversation_id, student_id, project_id, message_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS t_agent_legacy_migration_gate (
+    reader_key VARCHAR(64) NOT NULL PRIMARY KEY,
+    target_removal_version VARCHAR(32) NOT NULL,
+    observation_window_days INT NOT NULL DEFAULT 14,
+    read_hit_count BIGINT NOT NULL DEFAULT 0,
+    source_item_hit_count BIGINT NOT NULL DEFAULT 0,
+    last_read_hit_at DATETIME(3) DEFAULT NULL,
+    pending_source_count BIGINT NOT NULL DEFAULT 0,
+    last_inventory_at DATETIME(3) DEFAULT NULL,
+    zero_inventory_since DATETIME(3) DEFAULT NULL,
+    create_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    update_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS t_agent_run_message (
     run_message_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     task_id BIGINT NOT NULL,

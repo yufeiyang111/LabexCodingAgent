@@ -67,6 +67,8 @@ Agent 不会把所有失败都当成代码错误。命令失败会先识别 DNS/
 | `LABEX_AGENT_MAX_TOOL_CYCLE_LENGTH` | `3` | 可识别的交替工具调用循环最大长度，例如 `A-B-A-B-A-B`。 |
 | `LABEX_AGENT_MAX_AUTOMATIC_STRATEGY_SWITCHES` | `1` | 同一循环模式允许 Agent 自动切换策略的次数；之后升级为持久化用户问题。 |
 | `LABEX_AGENT_MAX_NON_PROGRESS_ITERATIONS` | `8` | 连续没有成功工具进展的模型回合上限；防止空答复、反复失败或策略无效时无限消耗请求。 |
+| `LABEX_AGENT_LEGACY_REMOVAL_VERSION` | `1.1.0` | 旧版 history/checkpoint reader 达到删除门槛后的目标版本；为空时永远不报告可删除。 |
+| `LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS` | `14` | 旧 reader pending 存量归零且无新命中后的连续观察天数；任何新命中都会重置观察起点。 |
 
 用户点击“环境恢复后重试”时，Agent 会开启新的失败代际，但仍受上述次数限制；切换验证策略也会生成不同的命令指纹，从而避免旧失败记录阻塞新策略。
 

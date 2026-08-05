@@ -408,3 +408,34 @@ node --test src/composables/agentHistoryReducer.test.mjs src/composables/useAgen
 - 最终关闭总目标前仍需逐项核对第 12 节，并确认兼容 reader 达到删除条件，而不是仅凭本轮 JVM/浏览器验收宣称 OpenCode 等价完成。
 
 下一轮停止边界：只建立 legacy history/checkpoint reader 的迁移命中遥测、存量归零报告和删除条件；不得新增平行 transcript、状态机或前端本地事实源，也不得顺带进行无关 UI 改版。
+
+### 第 77 轮计划：legacy migration 读取遥测与删除门槛
+
+本轮只建立两个只读兼容 reader 的可删除证据，不扩大为新的 transcript、checkpoint 或状态机：
+
+1. 为 legacy history/checkpoint reader 建立事务化命中计数、最近命中、pending inventory、零存量起点、观察窗口和目标删除版本。
+2. checkpoint 首次 resumed inspection 后写稳定幂等 `LEGACY_CHECKPOINT_INSPECTED` durable event；后续恢复必须跳过旧文件读取。
+3. 提供 `ROLE_ADMIN` 限制的全局聚合报告，不向普通用户泄露跨用户项目或历史统计。
+4. 报告必须区分 pending source、durable-covered archive source、invalid/unowned source；只有 pending 为 0 且连续 14 天无 reader hit 时才允许目标版本 `1.1.0` 删除 reader。
+5. 运行定向测试、完整后端/前端门槛和真实 JVM/restart/browser acceptance，并记录 hit count 在重复恢复后不增长的数据库证据。
+
+本轮停止边界：不删除旧表、旧文件或 reader；不新增前端本地状态；不把 migration gate 写入 Provider prompt；不以一次零存量快照代替连续观察窗口。
+### 第 77 轮进度：legacy migration 删除门槛与可见终态错误已完成
+
+已完成：
+
+- 新增事务化 `t_agent_legacy_migration_gate`，为 legacy history/checkpoint reader 保存读取命中、pending inventory、零存量起点、14 天观察窗口和目标删除版本 `1.1.0`。
+- history reader 只在真实旧消息迁移时命中；checkpoint reader 首次 resumed inspection 后写幂等 `LEGACY_CHECKPOINT_INSPECTED` durable event，重复恢复和 JVM 重启均跳过旧文件读取。
+- checkpoint inventory 已增加规范路径、身份归属、文件大小、扫描深度、条目上限和符号链接边界；损坏、未归属或归属不匹配来源继续阻断删除。
+- 新增 ADMIN-only 聚合接口 `/admin/agent/runtime/legacy-migration-readiness`；普通用户真实请求返回 403。
+- 系统验收发现并修复“Provider 已输出部分正文后终态失败不可见”的实时/历史投影缺陷；正文与错误现在幂等合并，刷新前后行为一致。
+- 后端 `1043` 项测试（`0` failure、`0` error、`9` skipped）、前端 `215/215` 测试、`16/16` 验收单元测试和生产构建全部通过。
+- 后端真实 JVM/H2/HTTP/SSE/restart acceptance run `f1685da75d9a42d9bd9f366f6b19b073` 通过；浏览器 acceptance run `af6451e436cb4d66bf4fda72b0006719` 通过，legacy marker 未显示为消息文本，Provider 中断终态实时可见，console/network errors 均为 0。
+
+证据文档：`docs/iterations/2026-08-05-iteration-77-legacy-migration-removal-gates.md`。
+
+本轮停止边界已经到达：
+
+- 不物理删除 `t_agent_message`、旧 checkpoint 文件或兼容 reader；必须等待真实运行形成连续 14 天零存量且无新命中的证据。
+- 不把 deterministic scripted Provider 验收误报为真实外部云 Provider/代理/TLS smoke。
+- 不继续扩大 AgentLoopEngine、状态机、前端 UI 或其他架构重构；下一步仅由用户进行常用浏览器和现有数据的手工验收，或在观察窗口满足后另开独立删除迭代。

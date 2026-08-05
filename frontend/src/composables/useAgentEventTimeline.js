@@ -3,6 +3,7 @@ import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyTokenUsageEvent } from './cacheTelemetryStatus.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
+import { projectVisibleAgentError } from './agentErrorProjection.js'
 
 function toolResultStatus(success, result) {
   if (success === false) return 'error'
@@ -377,7 +378,7 @@ export function useAgentEventTimeline(options) {
       case 'ERROR': {
         const message = data.message || '模型服务调用失败'
         assistantMsg.error = message
-        if (!assistantMsg.content) assistantMsg.content = `错误：${message}`
+        assistantMsg.content = projectVisibleAgentError(assistantMsg.content, message)
         assistantMsg.isStreaming = false
         stopMessageTimer(assistantMsg)
         break

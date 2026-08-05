@@ -3,6 +3,7 @@ import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachCommandApprovalState, updateCommandApprovalState } from './agentCommandApprovalState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
+import { projectVisibleAgentError } from './agentErrorProjection.js'
 
 function nextOrder(message) {
   message._nextOrder = (message._nextOrder || 0) + 1
@@ -346,7 +347,7 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'ERROR': {
       const error = data.message || '模型服务调用失败'
       message.error = error
-      if (!message.content) message.content = `错误：${error}`
+      message.content = projectVisibleAgentError(message.content, error)
       message.isStreaming = false
       break
     }

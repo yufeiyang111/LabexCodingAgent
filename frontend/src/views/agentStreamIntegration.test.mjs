@@ -47,7 +47,7 @@ test('CloudWorkspace lazy-loads heavy editor, terminal, and chart components', (
 })
 
 test('CloudWorkspace renders provider failures instead of leaving a loading skeleton', () => {
-  assert.match(timelineSource, /case 'ERROR':[\s\S]*assistantMsg\.content = `错误：\$\{message\}`[\s\S]*assistantMsg\.isStreaming = false/)
+  assert.match(timelineSource, /case 'ERROR':[\s\S]*assistantMsg\.content = projectVisibleAgentError\(assistantMsg\.content, message\)[\s\S]*assistantMsg\.isStreaming = false/)
 })
 
 test('CloudWorkspace keeps the actual provider error when a stop final event follows', () => {
@@ -71,7 +71,7 @@ test('CloudWorkspace applies the internal-reasoning boundary again at render tim
 test('direct SSE events persist cursors through the extracted task runtime', () => {
   assert.match(timelineSource, /recordTaskEventCursor\(data\.taskId \|\| assistantMsg\?\.taskId, event\.eventId\)/)
   assert.match(source, /recordTaskEventCursor,[\s\S]*?syncTaskTiming/)
-  assert.doesNotMatch(source, /saveTaskEventCursor\(/)
+  assert.doesNotMatch(source, /\bsaveTaskEventCursor\(/)
   assert.match(runtimeSource, /function recordTaskEventCursor\(taskId, eventId\)/)
   assert.match(runtimeSource, /logTaskRecovery: log/)
 })

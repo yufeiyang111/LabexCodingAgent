@@ -50,6 +50,10 @@ class AgentRunSchemaTest {
         assertTrue(schema.contains("history_projection_version VARCHAR(32) DEFAULT NULL"));
         assertTrue(schema.contains("history_migrated_at DATETIME(3) DEFAULT NULL"));
         assertTrue(schema.contains("idx_agent_conversation_fork_task"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS t_agent_legacy_migration_gate"));
+        assertTrue(schema.contains("reader_key VARCHAR(64) NOT NULL PRIMARY KEY"));
+        assertTrue(schema.contains("zero_inventory_since DATETIME(3) DEFAULT NULL"));
+        assertTrue(schema.contains("target_removal_version VARCHAR(32) NOT NULL"));
     }
 
     @Test

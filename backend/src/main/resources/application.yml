@@ -53,6 +53,9 @@ labex-agent:
   project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/LabexAgent/workspaces}
   interaction-timeout-poll-interval-ms: ${LABEX_AGENT_INTERACTION_TIMEOUT_POLL_INTERVAL_MS:30000}
   retry-poll-interval-ms: ${LABEX_AGENT_RETRY_POLL_INTERVAL_MS:1000}
+  legacy-migration:
+    target-removal-version: ${LABEX_AGENT_LEGACY_REMOVAL_VERSION:1.1.0}
+    observation-window-days: ${LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS:14}
   loop:
     hard-max-iterations: ${LABEX_AGENT_HARD_MAX_ITERATIONS:0}
     repeated-tool-call-threshold: ${LABEX_AGENT_REPEATED_TOOL_CALL_THRESHOLD:3}

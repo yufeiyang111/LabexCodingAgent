@@ -891,6 +891,14 @@ async function runScenario() {
     () => client.evaluate(`!document.querySelector('.tc-question') && document.body.innerText.includes('durable user-question interaction resumed')`),
     'question reply completion'
   )
+  const resumedQuestionEvents = await taskEvents(waitingTask.taskId)
+  if (!resumedQuestionEvents.some(event => event.type === 'LEGACY_CHECKPOINT_INSPECTED')) {
+    throw new Error('Question resume did not persist the one-time legacy checkpoint inspection marker')
+  }
+  if (await bodyIncludes('LEGACY_CHECKPOINT_INSPECTED')) {
+    throw new Error('Internal legacy checkpoint inspection event leaked into the user-visible timeline')
+  }
+  const legacyCheckpointInspectionHidden = true
 
   await createNewConversation()
   const tasksBeforePermission = await api(`/student/projects/${projectId}/agent/tasks`)
@@ -1593,6 +1601,7 @@ async function runScenario() {
     durablePlanTaskId: browserPlanTask.taskId,
     durablePlanRevision: Number(browserPlanFinalEvent.data.planRevision),
     questionReplyComponent: true,
+    legacyCheckpointInspectionHidden,
     permissionApprovalRefreshRecovery: true,
     multiToolPermissionBatchProtocolComplete: true,
     commandApprovalStableToolIdentity: true,

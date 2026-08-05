@@ -378,3 +378,15 @@ test('removes protocol delimiters from replayed reasoning summaries', () => {
 
   assert.equal(target.thinkingBlocks[0].summary, 'Analysis complete')
 })
+
+
+test('history replay keeps a terminal provider error visible after partial content', () => {
+  const target = message()
+  target.content = 'Partial response before disconnect.'
+
+  reduceHistoryEvent('ERROR', { taskId: 91, message: 'Model API failed after bounded retries' }, target)
+
+  assert.equal(target.error, 'Model API failed after bounded retries')
+  assert.equal(target.content, 'Partial response before disconnect.\n\n\u9519\u8bef\uff1aModel API failed after bounded retries')
+  assert.equal(target.isStreaming, false)
+})

@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.security.MessageDigest;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,6 +25,8 @@ import org.springframework.stereotype.Service;
 @Service
 public final class AgentCheckpointStore {
     private static final Set<Integer> LEGACY_VERSIONS = Set.of(1, 2);
+    private static final int MAX_INVENTORY_ENTRIES = 10_000;
+    private static final long MAX_CHECKPOINT_BYTES = 1_048_576L;
     private static final Gson GSON = new GsonBuilder().create();
 
     public Optional<Snapshot> loadLegacy(StudentProject project, String conversationId, Long taskId) {
@@ -35,15 +38,122 @@ public final class AgentCheckpointStore {
             return Optional.empty();
         }
         try {
-            Snapshot snapshot = GSON.fromJson(Files.readString(path, StandardCharsets.UTF_8), Snapshot.class);
-            if (snapshot == null || !LEGACY_VERSIONS.contains(snapshot.version)
-                    || !conversationId.equals(snapshot.conversationId) || !taskId.equals(snapshot.taskId)) {
-                return Optional.empty();
+            Snapshot snapshot = readSnapshot(path);
+            if (!validIdentity(snapshot)
+                    || !conversationId.equals(snapshot.conversationId)
+                    || !taskId.equals(snapshot.taskId)) {
+                throw new IllegalStateException("Legacy task checkpoint identity does not match its requested task");
             }
             return Optional.of(snapshot.normalized());
+        } catch (IllegalStateException exception) {
+            throw exception;
         } catch (Exception exception) {
             throw new IllegalStateException("Unable to read legacy task checkpoint", exception);
         }
+    }
+
+    /**
+     * 扫描活动 workspace 中的 v1/v2 checkpoint；不跟随符号链接，并对扫描规模设置硬上限。
+     */
+    public LegacyInventory scanLegacySources(List<StudentProject> projects) {
+        List<LegacySource> sources = new ArrayList<>();
+        long invalidSources = 0L;
+        long unscannableProjects = 0L;
+        int inspectedEntries = 0;
+        boolean truncated = false;
+        List<StudentProject> candidates = projects == null ? List.of() : projects;
+        for (StudentProject project : candidates) {
+            Path root;
+            try {
+                root = ProjectWorkspace.paths(project).resolveForCreate(".labex/agent-checkpoints");
+            } catch (RuntimeException unavailableWorkspace) {
+                unscannableProjects++;
+                continue;
+            }
+            if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
+                continue;
+            }
+            if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(root)) {
+                invalidSources++;
+                continue;
+            }
+            try (var paths = Files.walk(root, 2)) {
+                var iterator = paths.iterator();
+                while (iterator.hasNext()) {
+                    Path candidate = iterator.next();
+                    if (candidate.equals(root)) {
+                        continue;
+                    }
+                    inspectedEntries++;
+                    if (inspectedEntries > MAX_INVENTORY_ENTRIES) {
+                        truncated = true;
+                        break;
+                    }
+                    if (Files.isSymbolicLink(candidate)) {
+                        invalidSources++;
+                        continue;
+                    }
+                    if (Files.isDirectory(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                        continue;
+                    }
+                    if (candidate.getFileName() == null
+                            || !candidate.getFileName().toString().endsWith(".json")) {
+                        continue;
+                    }
+                    if (!Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                        invalidSources++;
+                        continue;
+                    }
+                    try {
+                        Snapshot snapshot = readSnapshot(candidate);
+                        if (!validIdentity(snapshot)) {
+                            invalidSources++;
+                            continue;
+                        }
+                        Path expected = checkpointPath(project, snapshot.conversationId, snapshot.taskId)
+                                .toAbsolutePath().normalize();
+                        Path actual = candidate.toAbsolutePath().normalize();
+                        if (!actual.equals(expected)) {
+                            invalidSources++;
+                            continue;
+                        }
+                        sources.add(new LegacySource(
+                                project == null ? null : project.getStudentId(),
+                                project == null ? null : project.getProjectId(),
+                                snapshot.conversationId, snapshot.taskId, snapshot.version));
+                    } catch (Exception invalidCheckpoint) {
+                        invalidSources++;
+                    }
+                }
+            } catch (Exception scanFailure) {
+                unscannableProjects++;
+            }
+            if (truncated) {
+                break;
+            }
+        }
+        return new LegacyInventory(List.copyOf(sources), invalidSources, unscannableProjects, truncated);
+    }
+
+    private Snapshot readSnapshot(Path path) throws Exception {
+        long size = Files.size(path);
+        if (size < 0L || size > MAX_CHECKPOINT_BYTES) {
+            throw new IllegalStateException("Legacy task checkpoint exceeds the supported size limit");
+        }
+        Snapshot snapshot = GSON.fromJson(Files.readString(path, StandardCharsets.UTF_8), Snapshot.class);
+        if (snapshot == null) {
+            throw new IllegalStateException("Legacy task checkpoint payload is empty");
+        }
+        return snapshot;
+    }
+
+    private boolean validIdentity(Snapshot snapshot) {
+        return snapshot != null
+                && LEGACY_VERSIONS.contains(snapshot.version)
+                && snapshot.conversationId != null
+                && !snapshot.conversationId.isBlank()
+                && snapshot.taskId != null
+                && snapshot.taskId > 0L;
     }
 
     Path checkpointPath(StudentProject project, String conversationId, Long taskId) {
@@ -71,6 +181,24 @@ public final class AgentCheckpointStore {
 
     private static String safe(String value) {
         return value == null ? "" : value.replace("\u0000", "").strip();
+    }
+
+    public record LegacySource(Integer studentId,
+                               Integer projectId,
+                               String conversationId,
+                               Long taskId,
+                               int version) {
+    }
+
+    public record LegacyInventory(List<LegacySource> sources,
+                                  long invalidSources,
+                                  long unscannableProjects,
+                                  boolean truncated) {
+        public LegacyInventory {
+            sources = sources == null ? List.of() : List.copyOf(sources);
+            invalidSources = Math.max(0L, invalidSources);
+            unscannableProjects = Math.max(0L, unscannableProjects);
+        }
     }
 
     public static final class Snapshot {

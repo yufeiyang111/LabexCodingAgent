@@ -16,6 +16,7 @@ import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentMessage;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.migration.AgentLegacyMigrationGateService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.mapper.AgentConversationMapper;
 import com.labex.mapper.AgentMessageMapper;
@@ -53,6 +54,7 @@ class AgentLegacyConversationHistoryMigrationServiceTest {
         AgentRunMessageMapper runMessages = mock(AgentRunMessageMapper.class);
         AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentLegacyMigrationGateService migrationGates = mock(AgentLegacyMigrationGateService.class);
         AgentConversation conversation = conversation();
         when(conversations.selectOne(any())).thenReturn(conversation);
         when(conversations.updateById(any())).thenReturn(1);
@@ -79,7 +81,7 @@ class AgentLegacyConversationHistoryMigrationServiceTest {
         });
 
         AgentLegacyConversationHistoryMigrationService service = new AgentLegacyConversationHistoryMigrationService(
-                conversations, messages, tasks, events, runMessages, parts, lifecycle);
+                conversations, messages, tasks, events, runMessages, parts, lifecycle, migrationGates);
 
         boolean migrated = service.ensureMigrated(7, 3, "legacy");
         boolean repeated = service.ensureMigrated(7, 3, "legacy");
@@ -99,6 +101,8 @@ class AgentLegacyConversationHistoryMigrationServiceTest {
         assertThat(conversation.getHistoryMigratedAt()).isNotNull();
         verify(conversations).updateById(conversation);
         verify(messages, times(1)).selectList(any());
+        verify(migrationGates).recordReaderHit(
+                AgentLegacyMigrationGateService.LEGACY_HISTORY_READER, 4L);
     }
 
     private AgentConversation conversation() {

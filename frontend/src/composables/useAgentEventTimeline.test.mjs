@@ -415,3 +415,16 @@ test('removes protocol delimiters from live reasoning summaries', () => {
 
   assert.equal(assistant.thinkingBlocks[0].summary, 'Analysis complete')
 })
+
+
+test('provider failure remains visible after a partial streamed response', () => {
+  const state = harness()
+  const assistant = message()
+  assistant.content = 'Partial response before disconnect.'
+
+  state.handleAgentEvent({ type: 'ERROR', data: { taskId: 91, message: 'Model API failed after bounded retries' } }, assistant)
+
+  assert.equal(assistant.error, 'Model API failed after bounded retries')
+  assert.equal(assistant.content, 'Partial response before disconnect.\n\n\u9519\u8bef\uff1aModel API failed after bounded retries')
+  assert.equal(assistant.isStreaming, false)
+})

@@ -8,8 +8,10 @@
 4. 验证问题、工具权限、命令批准/拒绝在后端重启后仍续跑同一任务；
 5. 验证同一 checkout 的竞争任务进入 `WORKSPACE_WAITING`，并校验 `runSession / runMessages / parts` 的真实 API 投影；
 6. 验证手动压缩异步任务完成；
-7. 删除一次性项目和模型配置；
-8. 用普通 `local` profile 重启并确认不会暴露脚本化 Provider。
+7. 验证 legacy history/checkpoint reader 只命中一次，JVM 重启后不重复读取；
+8. 验证普通用户读取全局迁移报告返回 403，ADMIN 只能获取聚合门槛；
+9. 删除一次性项目和模型配置；
+10. 用普通 `local` profile 重启并确认不会暴露脚本化 Provider。
 
 脚本不会把密码、JWT 或请求头写入磁盘或最终 JSON。后端日志写到系统临时目录，失败时会报告目录位置用于排查。
 

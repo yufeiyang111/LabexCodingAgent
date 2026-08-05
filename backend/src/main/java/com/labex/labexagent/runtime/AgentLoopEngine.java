@@ -26,6 +26,7 @@ import com.labex.labexagent.commandsecurity.VerificationStrategy;
 import com.labex.labexagent.diff.GitSnapshotService;
 import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.dto.AgentStreamRequest;
+import com.labex.labexagent.migration.AgentLegacyCheckpointMigrationService;
 import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunPlanService;
@@ -177,7 +178,7 @@ public class AgentLoopEngine {
 
     @Value("${labex-agent.acceptance.auto-approve-verification:false}")
     private boolean acceptanceAutoApproveVerification;
-    private AgentCheckpointStore checkpointStore;
+    private AgentLegacyCheckpointMigrationService legacyCheckpointMigrationService;
     private AgentRunExecutionLeaseService executionLeaseService;
     private AgentRunLeaseHeartbeatService leaseHeartbeatService;
     private WorkspaceLeaseService workspaceLeaseService;
@@ -324,8 +325,10 @@ public class AgentLoopEngine {
     }
 
     @Autowired
-    void setCheckpointStore(AgentCheckpointStore checkpointStore) {
-        this.checkpointStore = requireRuntimeDependency(checkpointStore, "checkpointStore");
+    void setLegacyCheckpointMigrationService(
+            AgentLegacyCheckpointMigrationService legacyCheckpointMigrationService) {
+        this.legacyCheckpointMigrationService = requireRuntimeDependency(
+                legacyCheckpointMigrationService, "legacyCheckpointMigrationService");
     }
 
     @Autowired
@@ -689,7 +692,6 @@ public class AgentLoopEngine {
             if (checkoutLease != null && this.projectCheckoutLeaseHeartbeatService != null) {
                 this.projectCheckoutLeaseHeartbeatService.track(checkoutLease, request.getSessionId());
             }
-            java.util.Optional<AgentCheckpointStore.Snapshot> legacyCheckpoint = java.util.Optional.empty();
             ctx = AgentContext.create(request.getSessionId(), studentId, project, conv.getConversationId(), task.getTaskId());
             this.applyBackgroundWorkspace(ctx, project, task);
             ctx.setCancellationToken(cancellationToken);
@@ -701,32 +703,20 @@ public class AgentLoopEngine {
                     : executionLease.epoch();
             task.setExecutionEpoch(activeExecutionEpoch);
             ctx.setExecutionEpoch(activeExecutionEpoch);
-            if (resumedRun) {
-                legacyCheckpoint = this.checkpointStore.loadLegacy(
-                        project, conv.getConversationId(), task.getTaskId());
-            }
-            AgentRunProgressProjectionService.Projection progressProjection =
-                    this.requireRunProgressProjectionService().restoreOrMigrate(
-                            task.getTaskId(), activeExecutionEpoch,
-                            legacyCheckpoint.flatMap(AgentCheckpointStore.Snapshot::legacyExecutionSeed).orElse(null));
+            AgentLegacyCheckpointMigrationService.RestoreResult legacyRestore =
+                    this.requireLegacyCheckpointMigrationService().restoreOrMigrate(
+                            project, conv.getConversationId(), task, activeExecutionEpoch, resumedRun);
+            AgentRunProgressProjectionService.Projection progressProjection = legacyRestore.progressProjection();
             progressProjection.applyTo(ctx);
             if (progressProjection.eventSequence() > 0L) {
                 try {
                     sse.sendPersisted(progressProjection.eventSequence(), "RUN_PROGRESS_MIGRATED",
                             progressProjection.eventPayload());
                 } catch (java.io.IOException ignored) {
-                    // 迁移事件已经持久化；客户端断开不影响数据库中的恢复事实。
+                    // 事件已持久化；SSE 断开不影响后续按游标重放。
                 }
             }
-            List<AgentRunPlanService.PlanDraft> legacyPlan = legacyCheckpoint
-                    .flatMap(AgentCheckpointStore.Snapshot::legacyPlanSeed)
-                    .map(seed -> seed.items().stream()
-                            .map(item -> new AgentRunPlanService.PlanDraft(
-                                    item.getTitle(), item.getDescription(), item.isCompleted()))
-                            .toList())
-                    .orElse(List.of());
-            AgentRunPlanService.Projection restoredPlan = this.requireRunPlanService()
-                    .restoreOrMigrate(task.getTaskId(), activeExecutionEpoch, legacyPlan);
+            AgentRunPlanService.Projection restoredPlan = legacyRestore.planProjection();
             restoredPlan.applyTo(ctx);
             if (restoredPlan.eventSequence() > 0L) {
                 this.projectPersistedPlanUpdate(sse, ctx);
@@ -2885,6 +2875,11 @@ public class AgentLoopEngine {
             throw new IllegalStateException("Durable compaction service is unavailable");
         }
         return this.compactionService;
+    }
+
+    private AgentLegacyCheckpointMigrationService requireLegacyCheckpointMigrationService() {
+        return requireRuntimeDependency(
+                this.legacyCheckpointMigrationService, "legacyCheckpointMigrationService");
     }
 
     private AgentRunPlanService requireRunPlanService() {

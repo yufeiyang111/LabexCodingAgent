@@ -9,6 +9,7 @@ import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
+import com.labex.labexagent.migration.AgentLegacyMigrationGateService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.mapper.AgentConversationMapper;
 import com.labex.mapper.AgentMessageMapper;
@@ -43,6 +44,7 @@ public class AgentLegacyConversationHistoryMigrationService {
     private final AgentRunMessageMapper runMessageMapper;
     private final AgentRunPartMapper runPartMapper;
     private final AgentRunLifecycleService lifecycleService;
+    private final AgentLegacyMigrationGateService migrationGateService;
 
     public AgentLegacyConversationHistoryMigrationService(AgentConversationMapper conversationMapper,
                                                           AgentMessageMapper legacyMessageMapper,
@@ -50,7 +52,8 @@ public class AgentLegacyConversationHistoryMigrationService {
                                                           AgentRunEventMapper eventMapper,
                                                           AgentRunMessageMapper runMessageMapper,
                                                           AgentRunPartMapper runPartMapper,
-                                                          AgentRunLifecycleService lifecycleService) {
+                                                          AgentRunLifecycleService lifecycleService,
+                                                          AgentLegacyMigrationGateService migrationGateService) {
         this.conversationMapper = conversationMapper;
         this.legacyMessageMapper = legacyMessageMapper;
         this.taskMapper = taskMapper;
@@ -58,6 +61,7 @@ public class AgentLegacyConversationHistoryMigrationService {
         this.runMessageMapper = runMessageMapper;
         this.runPartMapper = runPartMapper;
         this.lifecycleService = lifecycleService;
+        this.migrationGateService = migrationGateService;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -75,6 +79,9 @@ public class AgentLegacyConversationHistoryMigrationService {
                 .eq(AgentMessage::getProjectId, projectId)
                 .eq(AgentMessage::getConversationId, conversationId)
                 .orderByAsc(AgentMessage::getMessageId));
+        migrationGateService.recordReaderHit(
+                AgentLegacyMigrationGateService.LEGACY_HISTORY_READER,
+                legacy == null ? 0L : legacy.size());
         List<LegacyTurn> turns = splitTurns(legacy, conversation);
         List<AgentTask> existing = taskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
                 .eq(AgentTask::getStudentId, studentId)

@@ -3,6 +3,7 @@ package com.labex.labexagent.runtime;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.labex.entity.StudentProject;
 import java.nio.file.Files;
@@ -103,6 +104,57 @@ class AgentCheckpointStoreTest {
         assertEquals("implement", execution.stage());
         assertEquals(1, execution.writeCount());
         assertEquals(Set.of("src/Main.java"), execution.unverifiedChangeTargets());
+    }
+
+    @Test
+    void scansLegacyCheckpointInventoryWithoutTreatingInvalidJsonAsCovered() throws Exception {
+        StudentProject project = project(workspace);
+        AgentCheckpointStore store = new AgentCheckpointStore();
+        Path valid = store.checkpointPath(project, "conversation-a", 41L);
+        Files.createDirectories(valid.getParent());
+        Files.writeString(valid, """
+                {"version":2,"conversationId":"conversation-a","taskId":41,"stage":"verify"}
+                """);
+        Path invalid = valid.getParent().resolve("broken.json");
+        Files.writeString(invalid, "{not-json");
+
+        AgentCheckpointStore.LegacyInventory inventory = store.scanLegacySources(java.util.List.of(project));
+
+        assertEquals(1, inventory.sources().size());
+        assertEquals(41L, inventory.sources().get(0).taskId());
+        assertEquals(1L, inventory.invalidSources());
+        assertFalse(inventory.truncated());
+    }
+
+    @Test
+    void exactLegacyCheckpointWithInvalidIdentityFailsClosedInsteadOfLookingAbsent() throws Exception {
+        StudentProject project = project(workspace);
+        AgentCheckpointStore store = new AgentCheckpointStore();
+        Path checkpoint = store.checkpointPath(project, "conversation-a", 41L);
+        Files.createDirectories(checkpoint.getParent());
+        Files.writeString(checkpoint, """
+                {"version":2,"conversationId":"conversation-b","taskId":41}
+                """);
+
+        assertThrows(IllegalStateException.class,
+                () -> store.loadLegacy(project, "conversation-a", 41L));
+    }
+
+    @Test
+    void inventoryRejectsCheckpointWhosePayloadDoesNotMatchItsCanonicalPath() throws Exception {
+        StudentProject project = project(workspace);
+        AgentCheckpointStore store = new AgentCheckpointStore();
+        Path misplaced = store.checkpointPath(project, "conversation-a", 41L);
+        Files.createDirectories(misplaced.getParent());
+        Files.writeString(misplaced, """
+                {"version":2,"conversationId":"conversation-b","taskId":42}
+                """);
+
+        AgentCheckpointStore.LegacyInventory inventory = store.scanLegacySources(java.util.List.of(project));
+
+        assertTrue(inventory.sources().isEmpty());
+        assertEquals(1L, inventory.invalidSources());
+        assertFalse(inventory.truncated());
     }
 
     @Test

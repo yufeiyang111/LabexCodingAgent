@@ -101,6 +101,11 @@ $evidence = [ordered]@{
     legacyHistoryMigration = $false
     legacyHistoryMigrationRestart = $false
     legacyHistoryMigrationTaskId = $null
+    legacyHistoryReaderHitOnce = $false
+    legacyCheckpointInspectionRestart = $false
+    legacyCheckpointInspectionTaskId = $null
+    legacyMigrationUserForbidden = $false
+    legacyMigrationAdminReport = $false
     durablePlanRestart = $false
     durablePlanCheckpointIndependent = $false
     durablePlanTaskId = $null
@@ -289,6 +294,39 @@ function Invoke-ApiData {
         throw "API $Method $Path 失败：$message"
     }
     return $response.data
+}
+
+function Get-ApiStatusCode {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateSet('GET','POST','PUT','DELETE')][string]$Method = 'GET'
+    )
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl$Path" -Method $Method -Headers (Get-Headers) -TimeoutSec 30
+        return [int]$response.StatusCode
+    } catch {
+        $response = $_.Exception.Response
+        if ($null -eq $response -or $null -eq $response.StatusCode) {
+            throw
+        }
+        return [int]$response.StatusCode
+    }
+}
+
+function ConvertTo-LegacyCheckpointSegment {
+    param([Parameter(Mandatory)][string]$Value)
+    $normalized = [regex]::Replace($Value, '[^a-zA-Z0-9._-]', '_')
+    if ($normalized -ceq $Value) {
+        return $normalized
+    }
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value))
+        $suffix = -join ($digest[0..5] | ForEach-Object { $_.ToString('x2') })
+        return "$normalized-$suffix"
+    } finally {
+        $sha256.Dispose()
+    }
 }
 
 function ConvertFrom-AgentSse {
@@ -1186,14 +1224,11 @@ WHERE run_event.task_id = $completionTaskId
         }
 
         # 再显式过期同一租约，验证 durable poller 回收孤儿进程，而不是依赖等待 15 秒。
-        Invoke-AcceptanceSql -Sql (
+        $expireLeaseOutput = (Invoke-AcceptanceSql -Sql (
             "UPDATE t_agent_task SET execution_lease_expires_at = DATEADD('SECOND', -1, CURRENT_TIMESTAMP) " +
-            "WHERE task_id = $approvedRestartTaskId") | Out-Null
-        $expiredLeaseRows = Get-AcceptanceSqlScalar -Sql (
-            "SELECT COUNT(*) FROM t_agent_task WHERE task_id = $approvedRestartTaskId " +
-            "AND execution_lease_expires_at <= CURRENT_TIMESTAMP")
-        if ($expiredLeaseRows -ne 1) {
-            throw "Unable to deterministically expire execution lease for task $approvedRestartTaskId."
+            "WHERE task_id = $approvedRestartTaskId")) -join "`n"
+        if ($expireLeaseOutput -notmatch '(?i)Update count:\s*1') {
+            throw "Unable to deterministically expire execution lease for task ${approvedRestartTaskId}: $expireLeaseOutput"
         }
 
         $processExitDeadline = [DateTime]::UtcNow.AddSeconds(25)
@@ -1437,6 +1472,37 @@ WHERE run_event.task_id = $completionTaskId
     $firstCompactionQuestion = Get-RequiredEvent -Events $compactionRestartEvents -Type 'USER_QUESTION'
     $compactionTaskId = [long]$firstCompactionQuestion.data.taskId
     $firstCompactionRequestId = [string]$firstCompactionQuestion.data.requestId
+    $legacyCheckpointTask = Invoke-ApiData -Path "/student/projects/$projectId/agent/tasks/$compactionTaskId"
+    $legacyCheckpointConversationId = [string]$legacyCheckpointTask.conversationId
+    $projectWorkspacePath = [string]$project.workspacePath
+    if ([string]::IsNullOrWhiteSpace($projectWorkspacePath)) {
+        $projectWorkspacePath = [string](Invoke-ApiData -Path "/student/projects/$projectId").workspacePath
+    }
+    if ([string]::IsNullOrWhiteSpace($projectWorkspacePath) -or -not (Test-Path -LiteralPath $projectWorkspacePath -PathType Container)) {
+        throw "Acceptance project workspace path is unavailable: $projectWorkspacePath"
+    }
+    $checkpointSegment = ConvertTo-LegacyCheckpointSegment -Value $legacyCheckpointConversationId
+    $legacyCheckpointDirectory = Join-Path $projectWorkspacePath ".labex\agent-checkpoints\$checkpointSegment"
+    New-Item -ItemType Directory -Force -Path $legacyCheckpointDirectory | Out-Null
+    $legacyCheckpointPath = Join-Path $legacyCheckpointDirectory "$compactionTaskId.json"
+    $legacyCheckpointPayload = [ordered]@{
+        version = 2
+        conversationId = $legacyCheckpointConversationId
+        taskId = $compactionTaskId
+        status = 'waiting_user'
+        stage = 'intake'
+    } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($legacyCheckpointPath, $legacyCheckpointPayload, [Text.UTF8Encoding]::new($false))
+    $legacyCheckpointHitBefore = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COALESCE((SELECT read_hit_count FROM t_agent_legacy_migration_gate " +
+        "WHERE reader_key = 'legacy_checkpoint'), 0)")
+    $legacyCheckpointMarkerBefore = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $compactionTaskId " +
+        "AND event_type = 'LEGACY_CHECKPOINT_INSPECTED'")
+    if ($legacyCheckpointHitBefore -ne 0 -or $legacyCheckpointMarkerBefore -ne 0) {
+        throw "Legacy checkpoint acceptance source was already inspected: hits=$legacyCheckpointHitBefore marker=$legacyCheckpointMarkerBefore"
+    }
+
     Invoke-ApiData -Path "/student/projects/$projectId/agent/question/reply" -Method POST -Body @{
         requestId = $firstCompactionRequestId; action = 'answer'; answer = 'continue compaction acceptance'
     } | Out-Null
@@ -1445,6 +1511,19 @@ WHERE run_event.task_id = $completionTaskId
         Sort-Object { [long]$_.compactionEpoch })
     if ($completedCompactions.Count -eq 0) {
         throw "Task $compactionTaskId reached the restart checkpoint without a completed durable compaction."
+    }
+    $legacyCheckpointHitAfterFirstResume = Get-AcceptanceSqlScalar -Sql (
+        "SELECT read_hit_count FROM t_agent_legacy_migration_gate WHERE reader_key = 'legacy_checkpoint'")
+    $legacyCheckpointSourceHitsAfterFirstResume = Get-AcceptanceSqlScalar -Sql (
+        "SELECT source_item_hit_count FROM t_agent_legacy_migration_gate WHERE reader_key = 'legacy_checkpoint'")
+    $legacyCheckpointMarkerAfterFirstResume = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $compactionTaskId " +
+        "AND event_type = 'LEGACY_CHECKPOINT_INSPECTED' " +
+        "AND idempotency_key = 'legacy-checkpoint-inspected:$compactionTaskId'")
+    if ($legacyCheckpointHitAfterFirstResume -ne 1 -or
+        $legacyCheckpointSourceHitsAfterFirstResume -ne 1 -or
+        $legacyCheckpointMarkerAfterFirstResume -ne 1) {
+        throw "First legacy checkpoint resume did not persist exactly one hit and marker: hits=$legacyCheckpointHitAfterFirstResume sourceHits=$legacyCheckpointSourceHitsAfterFirstResume marker=$legacyCheckpointMarkerAfterFirstResume"
     }
     $completedEpoch = [long]$completedCompactions[-1].compactionEpoch
     $compactionInsertSql = @"
@@ -1505,6 +1584,17 @@ WHERE compaction_id = (
     if ($completedAfterResume.Count -eq 0 -or [long]$completedAfterResume[-1].compactionEpoch -ne $completedEpoch) {
         throw 'Interaction resume did not continue from the previously completed compaction epoch.'
     }
+    $legacyCheckpointHitAfterSecondResume = Get-AcceptanceSqlScalar -Sql (
+        "SELECT read_hit_count FROM t_agent_legacy_migration_gate WHERE reader_key = 'legacy_checkpoint'")
+    $legacyCheckpointMarkerAfterSecondResume = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $compactionTaskId " +
+        "AND event_type = 'LEGACY_CHECKPOINT_INSPECTED'")
+    if ($legacyCheckpointHitAfterSecondResume -ne $legacyCheckpointHitAfterFirstResume -or
+        $legacyCheckpointMarkerAfterSecondResume -ne 1) {
+        throw "Repeated resume re-read the legacy checkpoint or duplicated its marker: firstHits=$legacyCheckpointHitAfterFirstResume secondHits=$legacyCheckpointHitAfterSecondResume marker=$legacyCheckpointMarkerAfterSecondResume"
+    }
+    $evidence.legacyCheckpointInspectionRestart = $true
+    $evidence.legacyCheckpointInspectionTaskId = $compactionTaskId
     $evidence.compactionEpochRecovery = $true
     Invoke-ApiData -Path "/student/model-configs/$compactionConfigId" -Method DELETE | Out-Null
     $compactionConfigId = $null
@@ -1662,6 +1752,12 @@ WHERE compaction_id = (
         "('$legacyConversationId', $studentId, $projectId, 'FINAL', 'assistant', 'legacy-final-visible', " +
         "'$legacyFinalPayload', CURRENT_TIMESTAMP)") | Out-Null
 
+    $legacyHistoryHitBefore = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COALESCE((SELECT read_hit_count FROM t_agent_legacy_migration_gate " +
+        "WHERE reader_key = 'legacy_history'), 0)")
+    $legacyHistorySourceHitsBefore = Get-AcceptanceSqlScalar -Sql (
+        "SELECT COALESCE((SELECT source_item_hit_count FROM t_agent_legacy_migration_gate " +
+        "WHERE reader_key = 'legacy_history'), 0)")
     $legacyHistory = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$legacyConversationId/messages?limit=20"
     $legacyTurns = @($legacyHistory.turns)
     if ([string]$legacyHistory.projectionVersion -ne 'durable-task-history-v1' -or
@@ -1687,18 +1783,30 @@ WHERE compaction_id = (
     if ($legacyTaskCount -ne 1 -or $legacyEventCount -ne 2 -or $legacyMarkerCount -ne 1) {
         throw "Legacy migration authority mismatch: tasks=$legacyTaskCount events=$legacyEventCount marker=$legacyMarkerCount"
     }
+    $legacyHistoryHitAfterFirstRead = Get-AcceptanceSqlScalar -Sql (
+        "SELECT read_hit_count FROM t_agent_legacy_migration_gate WHERE reader_key = 'legacy_history'")
+    $legacyHistorySourceHitsAfterFirstRead = Get-AcceptanceSqlScalar -Sql (
+        "SELECT source_item_hit_count FROM t_agent_legacy_migration_gate WHERE reader_key = 'legacy_history'")
+    if ($legacyHistoryHitAfterFirstRead -ne ($legacyHistoryHitBefore + 1) -or
+        $legacyHistorySourceHitsAfterFirstRead -ne ($legacyHistorySourceHitsBefore + 3)) {
+        throw "Legacy history reader telemetry mismatch after first migration: hits=$legacyHistoryHitAfterFirstRead sourceHits=$legacyHistorySourceHitsAfterFirstRead"
+    }
 
     $legacySecondRead = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$legacyConversationId/messages?limit=20"
     $legacySecondTurns = @($legacySecondRead.turns)
     $legacySecondTaskCount = Get-AcceptanceSqlScalar -Sql (
         "SELECT COUNT(*) FROM t_agent_task WHERE conversation_id = '$legacyConversationId' AND mode = 'legacy_import'")
     $legacySecondEventCount = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $legacyTaskId"
+    $legacyHistoryHitAfterSecondRead = Get-AcceptanceSqlScalar -Sql (
+        "SELECT read_hit_count FROM t_agent_legacy_migration_gate WHERE reader_key = 'legacy_history'")
     if ([bool]$legacySecondRead.legacyMigrated -or $legacySecondTurns.Count -ne 1 -or
         [long]$legacySecondTurns[0].taskId -ne $legacyTaskId -or
-        $legacySecondTaskCount -ne $legacyTaskCount -or $legacySecondEventCount -ne $legacyEventCount) {
-        throw 'Repeated legacy history read was not idempotent.'
+        $legacySecondTaskCount -ne $legacyTaskCount -or $legacySecondEventCount -ne $legacyEventCount -or
+        $legacyHistoryHitAfterSecondRead -ne $legacyHistoryHitAfterFirstRead) {
+        throw 'Repeated legacy history read was not idempotent or re-hit the retired reader.'
     }
     $evidence.legacyHistoryMigration = $true
+    $evidence.legacyHistoryReaderHitOnce = $true
     $evidence.legacyHistoryMigrationTaskId = $legacyTaskId
 
     Invoke-AcceptanceSql -Sql "DELETE FROM t_agent_message WHERE conversation_id = '$legacyConversationId'" | Out-Null
@@ -1710,15 +1818,54 @@ WHERE compaction_id = (
         "SELECT COUNT(*) FROM t_agent_task WHERE conversation_id = '$legacyConversationId' AND mode = 'legacy_import'")
     $legacyEventsAfterRestart = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_run_event WHERE task_id = $legacyTaskId"
     $legacyRestartJson = $legacyAfterRestart | ConvertTo-Json -Depth 30 -Compress
+    $legacyHistoryHitAfterRestart = Get-AcceptanceSqlScalar -Sql (
+        "SELECT read_hit_count FROM t_agent_legacy_migration_gate WHERE reader_key = 'legacy_history'")
     if ($legacyRowsAfterDelete -ne 0 -or $legacyRestartTurns.Count -ne 1 -or
         [long]$legacyRestartTurns[0].taskId -ne $legacyTaskId -or
         [string]$legacyRestartTurns[0].userContent -ne 'legacy-user-visible' -or
         $legacyTasksAfterRestart -ne 1 -or $legacyEventsAfterRestart -ne 2 -or
+        $legacyHistoryHitAfterRestart -ne $legacyHistoryHitAfterFirstRead -or
         -not $legacyRestartJson.Contains('legacy-final-visible') -or
         $legacyRestartJson.Contains('legacy-private-reasoning')) {
-        throw "Migrated history did not survive legacy-row deletion and JVM restart: $legacyRestartJson"
+        throw "Migrated history did not survive legacy-row deletion/JVM restart or re-hit the reader: $legacyRestartJson"
     }
     $evidence.legacyHistoryMigrationRestart = $true
+
+    $userReadinessStatus = Get-ApiStatusCode -Path '/admin/agent/runtime/legacy-migration-readiness'
+    if ($userReadinessStatus -ne 403) {
+        throw "Ordinary USER received HTTP $userReadinessStatus from the global legacy migration readiness endpoint."
+    }
+    $evidence.legacyMigrationUserForbidden = $true
+    $userToken = $token
+    try {
+        Invoke-AcceptanceSql -Sql "UPDATE t_user SET role = 'ADMIN', update_time = CURRENT_TIMESTAMP WHERE user_id = $studentId" | Out-Null
+        $adminLogin = Invoke-ApiData -Path '/auth/login' -Method POST -Anonymous -Body @{
+            username = $username; password = $password
+        }
+        $token = [string]$adminLogin.token
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            throw 'Admin re-login did not return a JWT.'
+        }
+        $readiness = Invoke-ApiData -Path '/admin/agent/runtime/legacy-migration-readiness'
+        $historyReadiness = @($readiness.readers | Where-Object { [string]$_.readerKey -eq 'legacy_history' }) | Select-Object -First 1
+        $checkpointReadiness = @($readiness.readers | Where-Object { [string]$_.readerKey -eq 'legacy_checkpoint' }) | Select-Object -First 1
+        if (-not $historyReadiness -or -not $checkpointReadiness -or [bool]$readiness.readyForRemoval -or
+            [long]$historyReadiness.pendingSources -ne 0 -or
+            [long]$historyReadiness.gate.readHitCount -ne $legacyHistoryHitAfterFirstRead -or
+            [long]$checkpointReadiness.pendingSources -ne 0 -or
+            [long]$checkpointReadiness.coveredSources -lt 1 -or
+            [long]$checkpointReadiness.unownedSources -ne 0 -or
+            [long]$checkpointReadiness.invalidSources -ne 0 -or
+            [long]$checkpointReadiness.gate.readHitCount -ne $legacyCheckpointHitAfterFirstResume -or
+            [string]::IsNullOrWhiteSpace([string]$historyReadiness.gate.zeroInventorySince) -or
+            [string]::IsNullOrWhiteSpace([string]$checkpointReadiness.gate.zeroInventorySince)) {
+            throw "ADMIN legacy migration readiness report mismatch: $($readiness | ConvertTo-Json -Depth 12 -Compress)"
+        }
+        $evidence.legacyMigrationAdminReport = $true
+    } finally {
+        $token = $userToken
+        Invoke-AcceptanceSql -Sql "UPDATE t_user SET role = 'USER', update_time = CURRENT_TIMESTAMP WHERE user_id = $studentId" | Out-Null
+    }
 
     $compaction = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$conversationId/compact" -Method POST -Body @{ modelConfigId = $configId }
     $compactionTaskId = [long]$compaction.taskId

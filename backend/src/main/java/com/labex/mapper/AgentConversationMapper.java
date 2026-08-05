@@ -14,4 +14,11 @@ public interface AgentConversationMapper extends BaseMapper<AgentConversation> {
     AgentConversation selectOwnedForUpdate(@Param("studentId") Integer studentId,
                                            @Param("projectId") Integer projectId,
                                            @Param("conversationId") String conversationId);
+
+    @Select("SELECT COUNT(*) FROM t_agent_conversation WHERE status = 1")
+    Long countActiveHistorySources();
+
+    @Select("SELECT COUNT(*) FROM t_agent_conversation WHERE status = 1 "
+            + "AND (history_projection_version IS NULL OR history_projection_version <> #{durableVersion})")
+    Long countPendingHistorySources(@Param("durableVersion") String durableVersion);
 }

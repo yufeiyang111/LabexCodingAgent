@@ -24,10 +24,11 @@ class AgentLoopEnginePolicyContractTest {
         assertFalse(engine.contains("new AgentLoopProperties()"));
         assertFalse(engine.contains("new AgentRequestTokenEstimator()"));
         assertTrue(engine.contains("void setCommandClassifier"));
-        assertTrue(engine.contains("void setCheckpointStore"));
+        assertTrue(engine.contains("void setLegacyCheckpointMigrationService"));
         assertTrue(engine.contains("void setContextCompactionServices"));
         assertTrue(engine.contains("void setRunProgressProjectionService"));
-        assertTrue(engine.contains("checkpointStore.loadLegacy"));
+        assertTrue(engine.contains("requireLegacyCheckpointMigrationService().restoreOrMigrate"));
+        assertFalse(engine.contains("checkpointStore.loadLegacy"));
         assertTrue(engine.contains("providerMessagesForInvocation"));
         assertTrue(engine.contains("<agent_runtime_projection"));
         assertFalse(engine.contains("checkpointStore.save"));
