@@ -38,3 +38,16 @@ cd D:\LabexAgent
 ```
 
 若 Java、Maven、Node、npm、Chrome/Edge、MySQL 缺失，或验收端口已被占用，脚本会 fail closed 并指出具体 gate。每个运行脚本都在 `finally` 中停止自己启动的进程；浏览器临时 profile 只会在确认路径位于系统临时目录且包含 `labex-agent-browser-` 前缀时删除。
+
+## OpenCode-first Shell fixture
+
+第一阶段的可重复 fixture 位于 `scripts/acceptance/fixtures/opencode-shell-fixture`：
+
+```powershell
+Set-Location D:\LabexAgent\scripts\acceptance\fixtures\opencode-shell-fixture
+npm test                 # 初始版本应失败，验证 Agent 修复后再运行
+npm install --prefix frontend
+npm run build
+```
+
+它专门用于验证完整 `command`、`workdir`、Shell 链接/重定向和失败证据，不读取仓库 `.env` 或用户工作区数据。

@@ -56,7 +56,9 @@ final class WslCommandSupervisor {
                 sleep 0.05
               done
             }
-            setsid "$@" &
+            # bwrap --new-session makes this wrapper a process-group leader. Without --wait,
+            # util-linux setsid may fork and return before the real command has completed.
+            setsid --wait "$@" &
             child_pid=$!
             monitor_child &
             monitor_pid=$!
@@ -94,12 +96,84 @@ final class WslCommandSupervisor {
         Path supervisor = hostDirectory.resolve("supervisor.sh");
         Files.writeString(supervisor, SUPERVISOR_SCRIPT, StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        Path commandScript = hostDirectory.resolve("command.sh");
+        List<String> stagedCommand = stageShellPayload(
+                commandScript, sandboxPath(workspace, commandScript), request.command());
         return new Execution(
                 hostDirectory,
                 sandboxPath(workspace, hostDirectory),
                 sandboxPath(workspace, supervisor),
-                request,
+                stagedCommand,
+                request.timeout(),
                 sourceToken);
+    }
+
+    /**
+     * Windows ProcessBuilder -> wsl.exe 传递 Shell payload 时，先写入 workspace 脚本，
+     * 避免 Windows 到 WSL 的引号转义改变命令语义。
+     */
+    private static List<String> stageShellPayload(
+            Path hostScript, String sandboxScript, List<String> originalCommand) throws IOException {
+        int commandFlagIndex = shellCommandFlagIndex(originalCommand);
+        if (commandFlagIndex < 0 || commandFlagIndex + 1 != originalCommand.size() - 1) {
+            return List.copyOf(originalCommand);
+        }
+        String payload = originalCommand.get(commandFlagIndex + 1);
+        if (payload == null || payload.isBlank()) {
+            return List.copyOf(originalCommand);
+        }
+        Files.writeString(hostScript, payload, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        List<String> staged = new ArrayList<>();
+        for (int index = 0; index < originalCommand.size(); index++) {
+            if (index == commandFlagIndex) {
+                String retainedFlag = removeCommandFlag(originalCommand.get(index));
+                if (!retainedFlag.isBlank()) {
+                    staged.add(retainedFlag);
+                }
+                continue;
+            }
+            if (index != commandFlagIndex + 1) {
+                staged.add(originalCommand.get(index));
+            }
+        }
+        staged.add(sandboxScript);
+        return List.copyOf(staged);
+    }
+
+    private static int shellCommandFlagIndex(List<String> command) {
+        if (command == null || command.size() < 3 || !isPosixShell(command.get(0))) {
+            return -1;
+        }
+        for (int index = 1; index + 1 < command.size(); index++) {
+            String argument = command.get(index);
+            if ("--command".equals(argument)) {
+                return index;
+            }
+            if (argument != null && argument.matches("-[A-Za-z]+") && argument.indexOf('c') >= 1) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isPosixShell(String executable) {
+        return "/bin/bash".equals(executable) || "/bin/sh".equals(executable)
+                || "/usr/bin/bash".equals(executable) || "/usr/bin/sh".equals(executable)
+                || "bash".equals(executable) || "sh".equals(executable)
+                || "zsh".equals(executable) || "dash".equals(executable);
+    }
+
+    private static String removeCommandFlag(String argument) {
+        if ("--command".equals(argument)) {
+            return "";
+        }
+        if (argument == null || !argument.startsWith("-")) {
+            return argument == null ? "" : argument;
+        }
+        String retained = argument.substring(0, argument.indexOf('c'))
+                + argument.substring(argument.indexOf('c') + 1);
+        return "-".equals(retained) ? "" : retained;
     }
 
     private static String sandboxPath(Path workspace, Path path) {
@@ -123,7 +197,8 @@ final class WslCommandSupervisor {
                 Path hostDirectory,
                 String sandboxDirectory,
                 String supervisorPath,
-                ProcessExecutionRequest request,
+                List<String> stagedCommand,
+                Duration timeout,
                 CancellationToken sourceToken) {
             this.hostDirectory = hostDirectory;
             this.cancelMarker = hostDirectory.resolve("cancel");
@@ -133,12 +208,12 @@ final class WslCommandSupervisor {
             wrapped.add(supervisorPath);
             wrapped.add(sandboxDirectory);
             wrapped.add("--");
-            wrapped.addAll(request.command());
+            wrapped.addAll(stagedCommand);
             this.command = List.copyOf(wrapped);
-            this.processTimeout = request.timeout().plusMillis(GRACEFUL_TERMINATION_GRACE_MILLIS);
+            this.processTimeout = timeout.plusMillis(GRACEFUL_TERMINATION_GRACE_MILLIS);
             this.cancellation = new DelayedCancellation(
                     sourceToken,
-                    System.nanoTime() + request.timeout().toNanos(),
+                    System.nanoTime() + timeout.toNanos(),
                     cancelMarker,
                     timeoutMarker);
         }
@@ -173,7 +248,8 @@ final class WslCommandSupervisor {
 
         private ProcessExecutionResult withStatus(ProcessExecutionResult result, ExecutionStatus status) {
             return new ProcessExecutionResult(
-                    status, result.exitCode(), result.durationMs(), result.output(), result.truncated());
+                    status, result.exitCode(), result.durationMs(), result.output(), result.truncated(),
+                    result.outputPath(), result.outputChars());
         }
     }
 

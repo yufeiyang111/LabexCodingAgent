@@ -45,6 +45,25 @@ class AgentApprovedCommandExecutorTest {
     }
 
     @Test
+    void executesPersistedRealShellApprovalAsOnePayload() throws Exception {
+        SandboxWorker worker = mock(SandboxWorker.class);
+        when(worker.usesLinuxShell()).thenReturn(true);
+        when(worker.execute(any(), any(), any(), any(ProcessExecutionObserver.class))).thenReturn(new ProcessExecutionResult(
+                ExecutionStatus.SUCCEEDED, 0, 10, "ok", false));
+        AgentApprovedCommandExecutor executor = new AgentApprovedCommandExecutor(worker);
+        CommandApproval approval = consumedApproval();
+        approval.setShell("shell");
+        approval.setCanonicalCommand("cd frontend&&npm install");
+
+        executor.execute(approval, project());
+
+        ArgumentCaptor<ProcessExecutionRequest> request = ArgumentCaptor.forClass(ProcessExecutionRequest.class);
+        verify(worker).execute(any(), request.capture(), any(), any(ProcessExecutionObserver.class));
+        assertThat(request.getValue().command()).containsExactly(
+                "/bin/bash", "--noprofile", "--norc", "-lc", "cd frontend&&npm install");
+    }
+
+    @Test
     void consumesNetworkGrantBeforeEnablingWorkerNetwork() throws Exception {
         SandboxWorker worker = mock(SandboxWorker.class);
         NetworkAccessService network = mock(NetworkAccessService.class);

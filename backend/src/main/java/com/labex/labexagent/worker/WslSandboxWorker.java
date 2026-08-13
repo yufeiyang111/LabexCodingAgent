@@ -4,6 +4,7 @@ import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.execution.WorkerShellDescriptor;
 import com.labex.labexagent.execution.ProcessExecutor;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.terminal.TerminalSession;
@@ -62,7 +63,8 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
                         run.workspaceRoot(),
                         supervision.processTimeout(),
                         request.maxOutputChars(),
-                        run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));
+                        run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()),
+                        request.outputArtifactPath());
                 ProcessExecutionResult result = processExecutor.execute(
                         sandboxRequest, supervision.cancellationToken(), chunk -> { },
                         identity -> observer.onStarted(identity.withWorkerContext("wsl", run.runId())));
@@ -123,6 +125,12 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
     @Override
     public boolean usesLinuxShell() {
         return true;
+    }
+
+    @Override
+    public WorkerShellDescriptor shellDescriptor(WorkerRunSpec run) {
+        return WorkerShellDescriptor.bash(
+                "linux-wsl", "/bin/bash", SANDBOX_ROOT, run != null && run.policy().networkEnabled());
     }
 
     @Override

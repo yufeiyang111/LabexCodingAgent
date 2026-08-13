@@ -44,18 +44,27 @@ class ProjectCommandSafetyTest {
     }
 
     @Test
-    void blocksNetworkCommandRegardlessOfLegacyApproval() {
+    void requiresApprovalForNetworkCommandRegardlessOfLegacyApproval() {
         ProjectCommandSafety.SafetyCheck result = ProjectCommandSafety.check("curl https://example.invalid", true);
 
         assertFalse(result.allowed());
-        assertFalse(result.approvalRequired());
-        assertEquals("blocked", result.riskLevel());
+        assertTrue(result.approvalRequired());
+        assertEquals("approval_required", result.riskLevel());
         assertEquals("network_url", result.matchedRule());
     }
 
     @Test
-    void requiresApprovalForNpmTestBecauseProjectScriptsAreExecutable() {
+    void allowsNpmTestAsOrdinaryWorkspaceCommand() {
         ProjectCommandSafety.SafetyCheck result = ProjectCommandSafety.check("npm test", false);
+
+        assertTrue(result.allowed());
+        assertFalse(result.approvalRequired());
+        assertEquals("safe", result.riskLevel());
+    }
+
+    @Test
+    void requiresApprovalForDestructiveGitOperations() {
+        ProjectCommandSafety.SafetyCheck result = ProjectCommandSafety.check("git reset --hard HEAD", false);
 
         assertFalse(result.allowed());
         assertTrue(result.approvalRequired());

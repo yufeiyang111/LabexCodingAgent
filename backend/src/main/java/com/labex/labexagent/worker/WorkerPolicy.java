@@ -25,6 +25,11 @@ public record WorkerPolicy(
     }
 
     public static WorkerPolicy defaults() {
+        return WorkerResourceDefaults.defaults();
+    }
+
+    /** 无 Spring 上下文时的兜底默认值，只用于纯单元测试路径。 */
+    static WorkerPolicy fallbackDefaults() {
         return new WorkerPolicy("labex-agent-sandbox:latest", 1_000, 1_024, 256, false);
     }
 

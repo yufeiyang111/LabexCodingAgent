@@ -40,6 +40,28 @@ class ToolResultTest {
     }
 
     @Test
+    void structuredProcessResultExposesArtifactAndExecutionEnvironment() {
+        ProcessExecutionResult execution = new ProcessExecutionResult(
+                ExecutionStatus.FAILED, 2, 321, "build output", true,
+                ".labex-agent/artifacts/task-9/call-1.log", 15_000L);
+
+        ToolResult result = ToolResult.fromProcessExecution(execution, "bash", "frontend");
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getExecutionStatus()).isEqualTo("failed");
+        assertThat(result.getExecutionExitCode()).isEqualTo(2);
+        assertThat(result.getExecutionDurationMs()).isEqualTo(321L);
+        assertThat(result.isExecutionOutputTruncated()).isTrue();
+        assertThat(result.getExecutionOutputChars()).isEqualTo(15_000L);
+        assertThat(result.getExecutionOutputPath()).isEqualTo(".labex-agent/artifacts/task-9/call-1.log");
+        assertThat(result.getExecutionShell()).isEqualTo("bash");
+        assertThat(result.getExecutionWorkdir()).isEqualTo("frontend");
+        assertThat(result.getContent()).contains("output_path=.labex-agent/artifacts/task-9/call-1.log")
+                .contains("shell=bash")
+                .contains("workdir=frontend");
+    }
+
+    @Test
     void durableUserInteractionIsASeparateSuspensionState() {
         ToolResult result = ToolResult.interactionRequired("Waiting for answer", "question-1", "question");
 

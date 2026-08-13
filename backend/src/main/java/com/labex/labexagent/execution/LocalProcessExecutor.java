@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -94,7 +95,14 @@ public class LocalProcessExecutor implements ProcessExecutor {
                     "Process identity persistence failed: " + persistenceFailure.getMessage());
         }
 
-        BoundedOutput output = new BoundedOutput(request.maxOutputChars());
+        BoundedOutput output;
+        try {
+            output = new BoundedOutput(request.maxOutputChars(), request.outputArtifactPath());
+        } catch (RuntimeException artifactFailure) {
+            terminateProcessTree(process);
+            closeProcessStreams(process);
+            return infrastructureError(startedAt, artifactFailure.getMessage());
+        }
         AtomicReference<IOException> outputFailure = new AtomicReference<>();
         Thread outputThread = new Thread(
                 () -> drainOutput(process, output, outputListener, outputFailure),
@@ -136,21 +144,31 @@ public class LocalProcessExecutor implements ProcessExecutor {
         }
 
         joinOutput(outputThread, process);
+        try {
+            output.close();
+        } catch (IOException closeFailure) {
+            outputFailure.compareAndSet(null, closeFailure);
+        }
+        String visibleOutput = output.visibleContent();
         if ((status == ExecutionStatus.SUCCEEDED || status == ExecutionStatus.FAILED)
                 && outputFailure.get() != null) {
             return new ProcessExecutionResult(
                     ExecutionStatus.INFRASTRUCTURE_ERROR,
                     exitCode,
                     elapsedMillis(startedAt),
-                    appendError(output.content(), outputFailure.get().getMessage()),
-                    output.truncated());
+                    appendError(visibleOutput, outputFailure.get().getMessage()),
+                    output.truncated(),
+                    output.artifactPath(),
+                    output.totalChars());
         }
         return new ProcessExecutionResult(
                 status,
                 exitCode,
                 elapsedMillis(startedAt),
-                output.content(),
-                output.truncated());
+                visibleOutput,
+                output.truncated(),
+                output.artifactPath(),
+                output.totalChars());
     }
 
     private ProcessExecutionIdentity identity(Process process, Duration timeout) {
@@ -267,36 +285,93 @@ public class LocalProcessExecutor implements ProcessExecutor {
         return output + (output.isBlank() ? "" : "\n") + "Output read failed: " + error;
     }
 
-    private static final class BoundedOutput {
+    private static final class BoundedOutput implements AutoCloseable {
+        private static final int TAIL_LIMIT = 4_096;
         private final int limit;
-        private final StringBuilder content;
+        private final StringBuilder head;
+        private final StringBuilder tail;
+        private final Path artifactPath;
+        private final java.io.Writer artifactWriter;
+        private long totalChars;
         private boolean truncated;
 
-        private BoundedOutput(int limit) {
+        private BoundedOutput(int limit, Path artifactPath) {
             this.limit = limit;
-            this.content = new StringBuilder(Math.min(limit, 8192));
+            this.head = new StringBuilder(Math.min(limit, 8192));
+            this.tail = new StringBuilder(Math.min(TAIL_LIMIT, 8192));
+            this.artifactPath = artifactPath == null ? null : artifactPath.toAbsolutePath().normalize();
+            try {
+                if (this.artifactPath != null) {
+                    Path parent = this.artifactPath.getParent();
+                    if (parent != null) {
+                        java.nio.file.Files.createDirectories(parent);
+                    }
+                    this.artifactWriter = java.nio.file.Files.newBufferedWriter(this.artifactPath,
+                            StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE,
+                            java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
+                            java.nio.file.StandardOpenOption.WRITE);
+                } else {
+                    this.artifactWriter = null;
+                }
+            } catch (IOException failure) {
+                throw new IllegalStateException("Unable to create process output artifact", failure);
+            }
         }
 
-        private void append(String chunk) {
-            int remaining = limit - content.length();
+        private synchronized void append(String chunk) throws IOException {
+            if (chunk == null || chunk.isEmpty()) {
+                return;
+            }
+            totalChars += chunk.length();
+            if (artifactWriter != null) {
+                artifactWriter.write(chunk);
+            }
+            int remaining = limit - head.length();
             if (remaining <= 0) {
                 truncated = true;
-                return;
+            } else if (chunk.length() <= remaining) {
+                head.append(chunk);
+            } else {
+                head.append(chunk, 0, remaining);
+                truncated = true;
             }
-            if (chunk.length() <= remaining) {
-                content.append(chunk);
-                return;
+            if (truncated) {
+                appendTail(chunk);
             }
-            content.append(chunk, 0, remaining);
-            truncated = true;
         }
 
-        private String content() {
-            return content.toString();
+        private void appendTail(String chunk) {
+            tail.append(chunk);
+            if (tail.length() > TAIL_LIMIT) {
+                tail.delete(0, tail.length() - TAIL_LIMIT);
+            }
+        }
+
+        private synchronized String visibleContent() {
+            if (!truncated || artifactPath == null) {
+                return head.toString();
+            }
+            return head + "\n[output truncated; total_chars=" + totalChars
+                    + "; full_output_path=" + artifactPath() + "; tail follows]\n" + tail;
         }
 
         private boolean truncated() {
             return truncated;
+        }
+
+        private long totalChars() {
+            return totalChars;
+        }
+
+        private String artifactPath() {
+            return artifactPath == null ? null : artifactPath.toString();
+        }
+
+        @Override
+        public synchronized void close() throws IOException {
+            if (artifactWriter != null) {
+                artifactWriter.close();
+            }
         }
     }
 }

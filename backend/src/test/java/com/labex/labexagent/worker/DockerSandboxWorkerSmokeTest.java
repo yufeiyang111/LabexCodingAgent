@@ -32,10 +32,11 @@ class DockerSandboxWorkerSmokeTest {
         Files.createDirectories(workspace);
         Files.deleteIfExists(workspace.resolve("smoke-result.txt"));
 
+        boolean wslMapping = Boolean.getBoolean("labex.docker.smoke.wsl-mapping");
         DockerSandboxWorker worker = new DockerSandboxWorker(
                 new LocalProcessExecutor(),
                 System.getProperty("labex.docker.smoke.image"),
-                null);
+                8, wslMapping, null);
         WorkerRunSpec run = new WorkerRunSpec(
                 RUN_ID,
                 workspace,
@@ -48,7 +49,8 @@ class DockerSandboxWorkerSmokeTest {
 
         List<String> command = worker.buildDockerCommand(run, request);
         assertOption(command, "--network", "none");
-        assertOption(command, "--mount", "type=bind,src=" + workspace + ",dst=/workspace");
+        String expectedSource = wslMapping ? wslPath(workspace.toString()) : workspace.toString();
+        assertOption(command, "--mount", "type=bind,src=" + expectedSource + ",dst=/workspace");
 
         var result = worker.execute(run, request, CancellationToken.none());
 
@@ -61,11 +63,27 @@ class DockerSandboxWorkerSmokeTest {
                 () -> "worker left disposable container(s): " + remainingContainers);
     }
 
+    private String wslPath(String windowsPath) {
+        if (windowsPath.length() < 2 || windowsPath.charAt(1) != ':') {
+            return windowsPath;
+        }
+        return "/mnt/" + Character.toLowerCase(windowsPath.charAt(0)) + windowsPath.substring(2).replace('\\', '/');
+    }
+
     private Path workspace() {
-        String configured = System.getProperty("labex.docker.smoke.workspace", "D:/LabexAgent/.labex/docker-smoke-workspace");
-        Path workspace = Path.of(configured).toAbsolutePath().normalize();
-        assertTrue(workspace.toString().matches("(?i)^[d]:[\\\\/].*"),
-                () -> "Docker smoke workspace must stay on D: " + workspace);
+        String configured = System.getProperty("labex.docker.smoke.workspace");
+        Path workspace;
+        if (configured == null || configured.isBlank()) {
+            String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+            workspace = os.contains("win")
+                    ? Path.of("D:/LabexAgent/.labex/docker-smoke-workspace")
+                    : Path.of(System.getProperty("user.home"), ".labex", "docker-smoke-workspace");
+        } else {
+            workspace = Path.of(configured);
+        }
+        workspace = workspace.toAbsolutePath().normalize();
+        final Path absoluteWorkspace = workspace;
+        assertTrue(absoluteWorkspace.isAbsolute(), () -> "Docker smoke workspace must be absolute: " + absoluteWorkspace);
         return workspace;
     }
 

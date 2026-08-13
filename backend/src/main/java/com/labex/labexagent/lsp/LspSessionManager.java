@@ -1,6 +1,8 @@
 package com.labex.labexagent.lsp;
 
 import com.labex.labexagent.execution.ProcessExecutionRequest;
+import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.worker.SandboxWorker;
 import com.labex.labexagent.worker.WorkerRunSpec;
 import org.eclipse.lsp4j.Diagnostic;
@@ -30,6 +32,7 @@ import org.eclipse.lsp4j.TextDocumentContentChangeEvent;
 import org.eclipse.lsp4j.TextDocumentIdentifier;
 import org.eclipse.lsp4j.TextDocumentItem;
 import org.eclipse.lsp4j.VersionedTextDocumentIdentifier;
+import org.eclipse.lsp4j.WorkspaceFolder;
 import org.eclipse.lsp4j.jsonrpc.Launcher;
 import org.eclipse.lsp4j.jsonrpc.messages.Either;
 import org.eclipse.lsp4j.launch.LSPLauncher;
@@ -63,10 +66,19 @@ import java.util.stream.Collectors;
 @Service
 public class LspSessionManager {
     private static final Logger log = LoggerFactory.getLogger(LspSessionManager.class);
-    private static final int DEFAULT_START_TIMEOUT_SECONDS = 12;
+    private static final int DEFAULT_START_TIMEOUT_SECONDS = 90;
     private static final int DEFAULT_REQUEST_TIMEOUT_SECONDS = 6;
     private static final int DEFAULT_DIAGNOSTIC_TIMEOUT_MILLIS = 1_500;
-    private static final int DEFAULT_FAILURE_COOLDOWN_SECONDS = 30;
+    private static final long DEFAULT_FAILURE_COOLDOWN_SECONDS = 300;
+    private static final int STDERR_TAIL_LIMIT = 4_096;
+    private static final int PROBE_TIMEOUT_SECONDS = 5;
+    private static final int PROBE_MAX_OUTPUT_BYTES = 4_096;
+    private static final java.util.regex.Pattern PROBE_SAFE_EXECUTABLE =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_./:+-]+");
+    private static final String DEFAULT_JAVA_COMMAND = "jdtls";
+    private static final String DEFAULT_TYPESCRIPT_COMMAND = "typescript-language-server --stdio";
+    private static final String DEFAULT_VUE_COMMAND = "vue-language-server --stdio";
+    private static final String DEFAULT_PYTHON_COMMAND = "pyright-langserver --stdio";
 
     private final SandboxWorker sandboxWorker;
     private final Map<String, ManagedSession> sessions = new ConcurrentHashMap<>();
@@ -85,6 +97,9 @@ public class LspSessionManager {
     @Value("${labex-agent.lsp.failure-cooldown-seconds:" + DEFAULT_FAILURE_COOLDOWN_SECONDS + "}")
     private long failureCooldownSeconds;
 
+    @Value("${labex-agent.lsp.enabled:true}")
+    private boolean lspEnabled;
+
     @Value("${labex-agent.lsp.commands.java:jdtls}")
     private String javaCommand;
 
@@ -102,6 +117,9 @@ public class LspSessionManager {
     }
 
     public Optional<String> status(Path workspaceRoot, Path file) {
+        if (!lspEnabled) {
+            return Optional.of("disabled by configuration");
+        }
         LanguageSpec spec = specFor(file);
         if (spec == null) {
             return Optional.of("unsupported file type: " + file.getFileName());
@@ -119,6 +137,9 @@ public class LspSessionManager {
     }
 
     public LspDiagnosticsResult diagnostics(Path workspaceRoot, Path file) {
+        if (!lspEnabled) {
+            return LspDiagnosticsResult.unavailable("LSP disabled by configuration");
+        }
         LanguageSpec spec = specFor(file);
         if (spec == null) {
             return LspDiagnosticsResult.unavailable("unsupported file type: " + file.getFileName());
@@ -130,11 +151,14 @@ public class LspSessionManager {
             List<Diagnostic> diagnostics = session.awaitDiagnostics(uri, diagnosticTimeoutMillis);
             return LspDiagnosticsResult.ok(spec.languageId(), diagnostics);
         } catch (Exception e) {
-            return LspDiagnosticsResult.unavailable("real LSP unavailable for " + spec.languageId() + ": " + e.getMessage());
+            return LspDiagnosticsResult.unavailable("real LSP unavailable for " + spec.languageId() + ": " + message(e));
         }
     }
 
     public LspSymbolsResult documentSymbols(Path workspaceRoot, Path file) {
+        if (!lspEnabled) {
+            return LspSymbolsResult.unavailable("LSP disabled by configuration");
+        }
         LanguageSpec spec = specFor(file);
         if (spec == null) {
             return LspSymbolsResult.unavailable("unsupported file type: " + file.getFileName());
@@ -156,11 +180,14 @@ public class LspSessionManager {
             }
             return LspSymbolsResult.ok(spec.languageId(), lines);
         } catch (Exception e) {
-            return LspSymbolsResult.unavailable("real LSP symbols unavailable for " + spec.languageId() + ": " + e.getMessage());
+            return LspSymbolsResult.unavailable("real LSP symbols unavailable for " + spec.languageId() + ": " + message(e));
         }
     }
 
     public LspLocationsResult definition(Path workspaceRoot, Path file, int zeroBasedLine, int zeroBasedCharacter) {
+        if (!lspEnabled) {
+            return LspLocationsResult.unavailable("LSP disabled by configuration");
+        }
         LanguageSpec spec = specFor(file);
         if (spec == null) {
             return LspLocationsResult.unavailable("unsupported file type: " + file.getFileName());
@@ -184,11 +211,14 @@ public class LspSessionManager {
             }
             return LspLocationsResult.ok(spec.languageId(), locations);
         } catch (Exception e) {
-            return LspLocationsResult.unavailable("real LSP definition unavailable for " + spec.languageId() + ": " + e.getMessage());
+            return LspLocationsResult.unavailable("real LSP definition unavailable for " + spec.languageId() + ": " + message(e));
         }
     }
 
     public LspLocationsResult references(Path workspaceRoot, Path file, int zeroBasedLine, int zeroBasedCharacter, boolean includeDeclaration) {
+        if (!lspEnabled) {
+            return LspLocationsResult.unavailable("LSP disabled by configuration");
+        }
         LanguageSpec spec = specFor(file);
         if (spec == null) {
             return LspLocationsResult.unavailable("unsupported file type: " + file.getFileName());
@@ -206,11 +236,14 @@ public class LspSessionManager {
             }
             return LspLocationsResult.ok(spec.languageId(), locations);
         } catch (Exception e) {
-            return LspLocationsResult.unavailable("real LSP references unavailable for " + spec.languageId() + ": " + e.getMessage());
+            return LspLocationsResult.unavailable("real LSP references unavailable for " + spec.languageId() + ": " + message(e));
         }
     }
 
     public LspHoverResult hover(Path workspaceRoot, Path file, int zeroBasedLine, int zeroBasedCharacter) {
+        if (!lspEnabled) {
+            return LspHoverResult.unavailable("LSP disabled by configuration");
+        }
         LanguageSpec spec = specFor(file);
         if (spec == null) {
             return LspHoverResult.unavailable("unsupported file type: " + file.getFileName());
@@ -222,7 +255,7 @@ public class LspSessionManager {
             Hover hover = session.server().getTextDocumentService().hover(params).get(requestTimeoutSeconds, TimeUnit.SECONDS);
             return LspHoverResult.ok(spec.languageId(), hoverText(hover));
         } catch (Exception e) {
-            return LspHoverResult.unavailable("real LSP hover unavailable for " + spec.languageId() + ": " + e.getMessage());
+            return LspHoverResult.unavailable("real LSP hover unavailable for " + spec.languageId() + ": " + message(e));
         }
     }
 
@@ -285,7 +318,7 @@ public class LspSessionManager {
         return new IllegalStateException(message(cause), cause);
     }
 
-    private String message(Throwable error) {
+    String message(Throwable error) {
         if (error == null || error.getMessage() == null || error.getMessage().isBlank()) {
             return error == null ? "LSP startup failed" : error.getClass().getSimpleName();
         }
@@ -306,13 +339,17 @@ public class LspSessionManager {
     }
 
     private ManagedSession start(Path root, LanguageSpec spec) throws Exception {
-        List<String> configuredCommand = commandForRoot(root, spec);
+        WorkerRunSpec run = lspRun(root);
+        List<String> configuredCommand = commandForRoot(root, run, spec);
         List<String> command = sandboxWorker.usesLinuxShell() ? configuredCommand : processCommand(configuredCommand);
         if (command.isEmpty()) {
             throw new IllegalStateException("language server command is empty");
         }
-        WorkerRunSpec run = lspRun(root);
+        if (!probeExecutable(run, command)) {
+            throw new IllegalStateException("language server executable not found in worker: " + command.get(0));
+        }
         SandboxWorker.WorkerProcess process = startWorkerProcess(run, command);
+        StderrCapture stderr = StderrCapture.start(process.standardError());
         try {
             LspClient client = new LspClient();
             InputStream in = process.standardOutput();
@@ -323,19 +360,51 @@ public class LspSessionManager {
 
             InitializeParams init = new InitializeParams();
             init.setProcessId((int) Math.min(Integer.MAX_VALUE, process.processId()));
-            init.setRootUri(workspaceUri(run, root));
+            String rootUri = workspaceUri(run, root);
+            init.setRootUri(rootUri);
+            init.setWorkspaceFolders(List.of(new WorkspaceFolder(rootUri, "workspace")));
             server.initialize(init).get(startTimeoutSeconds, TimeUnit.SECONDS);
             server.initialized(new InitializedParams());
-            return new ManagedSession(spec.languageId(), configuredCommand, process, sandboxWorker, run, server, client, listening);
+            return new ManagedSession(
+                    spec.languageId(), configuredCommand, process, sandboxWorker, run, server, client, listening, stderr);
         } catch (Exception e) {
             process.terminate();
-            throw e;
+            throw startupFailure(spec.languageId(), configuredCommand, e, stderr.tail());
         }
     }
 
     SandboxWorker.WorkerProcess startWorkerProcess(WorkerRunSpec run, List<String> command) throws IOException {
         return sandboxWorker.startProcess(run, new ProcessExecutionRequest(
                 command, run.workspaceRoot(), Duration.ofHours(4), 1));
+    }
+
+    /**
+     * Probes whether the language server executable exists inside the worker before spending a full
+     * startup timeout on a missing command. Only safe bare names or absolute paths are probed;
+     * anything unusual is left to the startup timeout as a fallback.
+     */
+    boolean probeExecutable(WorkerRunSpec run, List<String> command) {
+        if (command == null || command.isEmpty() || !PROBE_SAFE_EXECUTABLE.matcher(command.get(0)).matches()) {
+            return true;
+        }
+        String executable = command.get(0);
+        try {
+            List<String> probe = sandboxWorker.usesLinuxShell()
+                    ? List.of("sh", "-c", "command -v '" + executable + "'")
+                    : List.of("where", executable);
+            ProcessExecutionResult result = sandboxWorker.execute(run, new ProcessExecutionRequest(
+                    probe, run.workspaceRoot(), Duration.ofSeconds(PROBE_TIMEOUT_SECONDS), PROBE_MAX_OUTPUT_BYTES),
+                    CancellationToken.none());
+            if (!result.succeeded() || result.output().isBlank()) {
+                log.warn("LSP executable '{}' not found in worker; language server will be unavailable (cooldown {})",
+                        executable, DEFAULT_FAILURE_COOLDOWN_SECONDS);
+                return false;
+            }
+            return true;
+        } catch (Exception probeFailure) {
+            log.debug("LSP executable probe failed for '{}': {}", executable, probeFailure.getMessage());
+            return true;
+        }
     }
 
     String workspaceUri(WorkerRunSpec run, Path path) {
@@ -347,40 +416,126 @@ public class LspSessionManager {
                 "lsp-" + Integer.toUnsignedString(root.toString().hashCode(), 16), root);
     }
 
-    private List<String> commandForRoot(Path root, LanguageSpec spec) throws Exception {
+    private List<String> commandForRoot(Path root, WorkerRunSpec run, LanguageSpec spec) throws Exception {
         List<String> command = new ArrayList<>(spec.command());
         if ("java".equals(spec.languageId()) && command.stream().noneMatch("-data"::equalsIgnoreCase)) {
             Path dataDir = root.resolve(".labexagent").resolve("jdtls-workspace").toAbsolutePath().normalize();
             Files.createDirectories(dataDir);
             command.add("-data");
-            command.add(dataDir.toString());
+            command.add(sandboxWorker.usesLinuxShell()
+                    ? URI.create(workspaceUri(run, dataDir)).getPath()
+                    : dataDir.toString());
         }
         return command;
+    }
+
+    List<String> commandForFile(Path root, Path file) throws Exception {
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        LanguageSpec spec = specFor(file);
+        if (spec == null) {
+            return List.of();
+        }
+        return commandForRoot(normalizedRoot, lspRun(normalizedRoot), spec);
     }
 
     private LanguageSpec specFor(Path file) {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
         if (name.endsWith(".java")) {
-            return new LanguageSpec("java", configuredCommand("LABEX_LSP_JAVA_CMD", javaCommand));
+            return specForLanguage("java");
         }
         if (name.endsWith(".vue")) {
-            return new LanguageSpec("vue", configuredCommand("LABEX_LSP_VUE_CMD", vueCommand));
+            return specForLanguage("vue");
         }
         if (name.endsWith(".ts") || name.endsWith(".tsx") || name.endsWith(".js") || name.endsWith(".jsx")) {
-            return new LanguageSpec("typescript", configuredCommand("LABEX_LSP_TS_CMD", typescriptCommand));
+            return specForLanguage("typescript");
         }
         if (name.endsWith(".py")) {
-            return new LanguageSpec("python", configuredCommand("LABEX_LSP_PY_CMD", pythonCommand));
+            return specForLanguage("python");
         }
         return null;
     }
 
-    private List<String> configuredCommand(String envName, String fallback) {
+    private LanguageSpec specForLanguage(String languageId) {
+        if (languageId == null || languageId.isBlank()) {
+            return null;
+        }
+        return switch (languageId.toLowerCase(Locale.ROOT)) {
+            case "java" -> new LanguageSpec("java", configuredCommand(
+                    "LABEX_LSP_JAVA_CMD", javaCommand, DEFAULT_JAVA_COMMAND));
+            case "vue" -> new LanguageSpec("vue", configuredCommand(
+                    "LABEX_LSP_VUE_CMD", vueCommand, DEFAULT_VUE_COMMAND));
+            case "typescript" -> new LanguageSpec("typescript", configuredCommand(
+                    "LABEX_LSP_TS_CMD", typescriptCommand, DEFAULT_TYPESCRIPT_COMMAND));
+            case "python" -> new LanguageSpec("python", configuredCommand(
+                    "LABEX_LSP_PY_CMD", pythonCommand, DEFAULT_PYTHON_COMMAND));
+            default -> null;
+        };
+    }
+
+    /**
+     * Starts (or reuses) the language server session for a language in the background warm-up path.
+     * Failures are recorded into the failure cooldown and never thrown to the caller, so an eager
+     * prewarm can never block or break an Agent session.
+     */
+    public void prewarm(Path workspaceRoot, String languageId) {
+        if (!lspEnabled || workspaceRoot == null) {
+            return;
+        }
+        LanguageSpec spec = specForLanguage(languageId);
+        if (spec == null) {
+            log.debug("LSP_PREWARM_SKIPPED language={} reason=unsupported", languageId);
+            return;
+        }
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        try {
+            getOrStart(root, spec);
+            log.info("LSP_PREWARMED language={} root={} via `{}`",
+                    spec.languageId(), root, String.join(" ", spec.command()));
+        } catch (Exception failure) {
+            log.info("LSP_PREWARM_UNAVAILABLE language={} root={} reason={}",
+                    spec.languageId(), root, message(failure));
+        }
+    }
+
+    private List<String> configuredCommand(String envName, String configured, String builtInDefault) {
         String raw = System.getenv(envName);
         if (raw == null || raw.isBlank()) {
-            raw = System.getProperty(envName.toLowerCase(Locale.ROOT).replace('_', '.'), fallback);
+            raw = System.getProperty(envName.toLowerCase(Locale.ROOT).replace('_', '.'));
         }
-        return splitCommand(raw);
+        if (raw == null || raw.isBlank()) {
+            raw = configured;
+        }
+        return resolveConfiguredCommand(raw, builtInDefault);
+    }
+
+    List<String> resolveConfiguredCommand(String configured, String builtInDefault) {
+        List<String> command = splitCommand(configured);
+        if (command.isEmpty()) {
+            command = splitCommand(builtInDefault);
+        }
+        if (sandboxWorker.usesLinuxShell() && isWindowsHostCommand(command)) {
+            List<String> fallback = splitCommand(builtInDefault);
+            log.warn("Ignoring Windows-only LSP command '{}' for Linux worker; using '{}'",
+                    configured, String.join(" ", fallback));
+            return fallback;
+        }
+        return command;
+    }
+
+    private boolean isWindowsHostCommand(List<String> command) {
+        if (command == null || command.isEmpty()) {
+            return false;
+        }
+        String executable = command.get(0).trim().replace('\\', '/').toLowerCase(Locale.ROOT);
+        String fileName = executable.substring(executable.lastIndexOf('/') + 1);
+        return executable.matches("^[a-z]:/.*")
+                || executable.matches("^/mnt/[a-z]/.*")
+                || fileName.endsWith(".cmd")
+                || fileName.endsWith(".bat")
+                || fileName.endsWith(".ps1")
+                || "cmd.exe".equals(fileName)
+                || "powershell.exe".equals(fileName)
+                || "pwsh.exe".equals(fileName);
     }
 
     private List<String> splitCommand(String command) {
@@ -411,6 +566,20 @@ public class LspSessionManager {
             parts.add(current.toString());
         }
         return parts;
+    }
+
+    private IllegalStateException startupFailure(
+            String languageId, List<String> command, Exception cause, String stderrTail) {
+        StringBuilder detail = new StringBuilder("failed to start ")
+                .append(languageId)
+                .append(" LSP via `")
+                .append(String.join(" ", command))
+                .append("`: ")
+                .append(message(cause));
+        if (stderrTail != null && !stderrTail.isBlank()) {
+            detail.append("; stderr: ").append(stderrTail.strip());
+        }
+        return new IllegalStateException(detail.toString(), cause);
     }
 
     private List<String> processCommand(List<String> command) {
@@ -583,6 +752,7 @@ public class LspSessionManager {
         private final LanguageServer server;
         private final LspClient client;
         private final Future<?> listening;
+        private final StderrCapture stderr;
         private final Map<String, Integer> versions = new ConcurrentHashMap<>();
 
         ManagedSession(
@@ -593,7 +763,8 @@ public class LspSessionManager {
                 WorkerRunSpec run,
                 LanguageServer server,
                 LspClient client,
-                Future<?> listening) {
+                Future<?> listening,
+                StderrCapture stderr) {
             this.languageId = languageId;
             this.command = command;
             this.process = process;
@@ -602,6 +773,7 @@ public class LspSessionManager {
             this.server = server;
             this.client = client;
             this.listening = listening;
+            this.stderr = stderr;
         }
 
         boolean isAlive() {
@@ -615,6 +787,7 @@ public class LspSessionManager {
         void close() {
             listening.cancel(true);
             process.terminate();
+            stderr.close();
         }
 
         String workspaceUri(Path file) {
@@ -659,6 +832,56 @@ public class LspSessionManager {
             }
             List<Diagnostic> diagnostics = client.diagnostics(uri);
             return diagnostics == null ? List.of() : diagnostics;
+        }
+    }
+
+    private static final class StderrCapture implements AutoCloseable {
+        private final InputStream input;
+        private final StringBuilder tail = new StringBuilder();
+        private final Thread reader;
+
+        private StderrCapture(InputStream input) {
+            this.input = input;
+            this.reader = new Thread(this::drain, "labex-lsp-stderr");
+            this.reader.setDaemon(true);
+            this.reader.start();
+        }
+
+        static StderrCapture start(InputStream input) {
+            return new StderrCapture(input);
+        }
+
+        private void drain() {
+            byte[] buffer = new byte[512];
+            try {
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    append(new String(buffer, 0, read, StandardCharsets.UTF_8));
+                }
+            } catch (IOException ignored) {
+                // 进程终止时关闭 stderr 属于正常生命周期。
+            }
+        }
+
+        private synchronized void append(String value) {
+            tail.append(value);
+            if (tail.length() > STDERR_TAIL_LIMIT) {
+                tail.delete(0, tail.length() - STDERR_TAIL_LIMIT);
+            }
+        }
+
+        synchronized String tail() {
+            return tail.toString();
+        }
+
+        @Override
+        public void close() {
+            try {
+                input.close();
+            } catch (IOException ignored) {
+                // 尽力关闭，不覆盖原始启动错误。
+            }
+            reader.interrupt();
         }
     }
 

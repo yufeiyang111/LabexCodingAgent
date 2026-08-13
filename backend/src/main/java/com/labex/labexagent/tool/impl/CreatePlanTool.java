@@ -3,7 +3,9 @@ package com.labex.labexagent.tool.impl;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunPlanService;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
@@ -16,6 +18,14 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class CreatePlanTool implements AgentTool {
+    private static final int MIN_TITLE_LENGTH = 4;
+    private static final List<String> VAGUE_PHRASES = List.of(
+            "improve the code", "improve code", "optimize the code", "optimize code",
+            "make it better", "make better", "fix everything", "test everything",
+            "do everything", "expand features", "continue expanding", "improve everything",
+            "优化代码", "优化一下", "改进代码", "改进一下", "让代码更好", "继续扩展", "继续加功能",
+            "全部测试", "修好一切");
+
     private final AgentRunPlanService planService;
 
     public CreatePlanTool(AgentRunPlanService planService) {
@@ -54,6 +64,7 @@ public class CreatePlanTool implements AgentTool {
     }
 
     private ToolResult createPlan(AgentContext context, JsonObject args) {
+        ExecutionFence fence = requireActiveFence(context);
         if (!args.has("tasks") || !args.get("tasks").isJsonArray()) {
             return ToolResult.failed("tasks 参数必须是数组");
         }
@@ -75,11 +86,15 @@ public class CreatePlanTool implements AgentTool {
             if (title.isBlank()) {
                 return ToolResult.failed("任务 " + (index + 1) + " 的 title 必填");
             }
+            String qualityError = validatePlanItem(index, title);
+            if (qualityError != null) {
+                return ToolResult.failed(qualityError);
+            }
             String description = task.has("description") ? task.get("description").getAsString() : "";
             drafts.add(new AgentRunPlanService.PlanDraft(title, description, false));
         }
         AgentRunPlanService.Projection projection = planService.replace(
-                context.getTaskId(), context.getExecutionEpoch(), drafts, "create_plan");
+                fence, context.getTaskId(), context.getExecutionEpoch(), drafts, "create_plan");
         projection.applyTo(context);
 
         StringBuilder summary = new StringBuilder("已创建持久化执行计划:\n");
@@ -94,6 +109,7 @@ public class CreatePlanTool implements AgentTool {
     }
 
     private ToolResult completeTask(AgentContext context, JsonObject args) {
+        ExecutionFence fence = requireActiveFence(context);
         if (!args.has("task_index")) {
             return ToolResult.failed("task_index 参数必填");
         }
@@ -111,7 +127,7 @@ public class CreatePlanTool implements AgentTool {
             return ToolResult.failed("Verification task cannot be completed before a successful test, build, or manual file verification.");
         }
         AgentRunPlanService.Projection updated = planService.complete(
-                context.getTaskId(), context.getExecutionEpoch(), index, "create_plan");
+                fence, context.getTaskId(), context.getExecutionEpoch(), index, "create_plan");
         updated.applyTo(context);
 
         StringBuilder summary = new StringBuilder();
@@ -127,6 +143,7 @@ public class CreatePlanTool implements AgentTool {
     }
 
     private ToolResult updatePlan(AgentContext context, JsonObject args) {
+        ExecutionFence fence = requireActiveFence(context);
         AgentRunPlanService.Projection current = planService.load(context.getTaskId());
         current.applyTo(context);
         if (current.items().isEmpty()) {
@@ -143,11 +160,25 @@ public class CreatePlanTool implements AgentTool {
         if (title.isBlank()) {
             return ToolResult.failed("title 不能为空");
         }
+        String qualityError = validatePlanItem(index, title);
+        if (qualityError != null) {
+            return ToolResult.failed(qualityError);
+        }
         String description = args.has("description") ? args.get("description").getAsString() : null;
         AgentRunPlanService.Projection updated = planService.update(
-                context.getTaskId(), context.getExecutionEpoch(), index, title, description, "create_plan");
+                fence, context.getTaskId(), context.getExecutionEpoch(), index, title, description, "create_plan");
         updated.applyTo(context);
         return ToolResult.ok("已更新任务 " + (index + 1) + "\n\n" + context.getPlanSummary());
+    }
+
+    /** 执行者必须携带其 lease 派生 fence 才能写计划；缺失时以 typed failure fail closed。 */
+    private ExecutionFence requireActiveFence(AgentContext context) {
+        ExecutionFence fence = context == null ? null : context.getExecutionFence();
+        if (fence == null) {
+            throw new AgentRunExecutionLeaseService.StaleExecutionFenceException(
+                    AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.INVALID_FENCE);
+        }
+        return fence;
     }
 
     private boolean requiresVerification(AgentRunPlanService.PlanItem item) {
@@ -156,5 +187,20 @@ public class CreatePlanTool implements AgentTool {
         return text.contains("verify") || text.contains("verification") || text.contains("test")
                 || text.contains("build") || text.contains("compile") || text.contains("lint")
                 || text.contains("验证") || text.contains("测试") || text.contains("构建") || text.contains("编译");
+    }
+
+    /** 计划项必须具体、可验证，拒绝含糊标题（含糊计划是死循环的主要来源）。 */
+    static String validatePlanItem(int index, String title) {
+        String trimmed = title == null ? "" : title.strip();
+        if (trimmed.length() < MIN_TITLE_LENGTH) {
+            return "任务 " + (index + 1) + " 标题过于笼统（过短），请改为具体、可验证的表述。示例: \"修复 auth.py 第 45-60 行的登录校验逻辑\"";
+        }
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        for (String phrase : VAGUE_PHRASES) {
+            if (lower.contains(phrase)) {
+                return "任务 " + (index + 1) + " 标题包含模糊描述（" + phrase + "），无法验证完成状态。请改为具体、可验证的表述。示例: \"修复 auth.py 第 45-60 行的登录校验逻辑\"";
+            }
+        }
+        return null;
     }
 }

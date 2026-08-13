@@ -41,6 +41,24 @@ class LocalProcessExecutorTest {
     }
 
     @Test
+    void writesCompleteOutputToWorkspaceArtifactWhileReturningReadableHeadAndTail() throws Exception {
+        Path artifactPath = tempDir.resolve(".labex-agent/artifacts/task-1/tool-1.log");
+        ProcessExecutionRequest base = request(Duration.ofSeconds(10), 256, "large", "12000");
+        ProcessExecutionRequest request = new ProcessExecutionRequest(
+                base.command(), base.workingDirectory(), base.timeout(), base.maxOutputChars(),
+                base.environment(), artifactPath);
+
+        ProcessExecutionResult result = executor.execute(request);
+
+        assertThat(result.status()).isEqualTo(ExecutionStatus.SUCCEEDED);
+        assertThat(result.truncated()).isTrue();
+        assertThat(result.output()).contains("[output truncated;").contains("total_chars=");
+        assertThat(result.outputPath()).isEqualTo(artifactPath.toAbsolutePath().normalize().toString());
+        assertThat(result.outputChars()).isGreaterThanOrEqualTo(12_000L);
+        assertThat(Files.readString(artifactPath)).hasSize((int) result.outputChars());
+    }
+
+    @Test
     void reportsNonZeroExitAsFailed() {
         ProcessExecutionResult result = executor.execute(
                 request(Duration.ofSeconds(5), 4096, "exit", "7"));

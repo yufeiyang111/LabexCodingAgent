@@ -3,6 +3,7 @@ package com.labex.labexagent.commandsecurity;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.labex.entity.CommandApproval;
+import com.labex.entity.CommandAuditEvent;
 import com.labex.mapper.CommandApprovalMapper;
 import java.time.LocalDateTime;
 import java.util.Objects;
@@ -172,6 +173,31 @@ public class CommandApprovalService {
                 .eq("task_id", taskId)
                 .orderByDesc("update_time")
                 .last("LIMIT 1"));
+    }
+
+    /**
+     * Returns true while a one-time command approval for the task is approved-but-not-yet-executed
+     * or consumed-but-still-executing. Other resume paths (e.g. interaction resume) must yield to
+     * the command approval execution instead of failing the task while the command runs.
+     */
+    public boolean hasPendingExecution(Long taskId) {
+        if (taskId == null) {
+            return false;
+        }
+        CommandApproval approval = approvalMapper.selectOne(new QueryWrapper<CommandApproval>()
+                .eq("task_id", taskId)
+                .in("status", java.util.List.of(APPROVED, CONSUMED))
+                .orderByDesc("update_time")
+                .last("LIMIT 1"));
+        if (approval == null) {
+            return false;
+        }
+        if (APPROVED.equals(approval.getStatus())) {
+            return true;
+        }
+        CommandAuditEvent outcome = auditService == null
+                ? null : auditService.findLatestExecutionOutcome(approval.getApprovalId());
+        return outcome == null;
     }
 
     /**

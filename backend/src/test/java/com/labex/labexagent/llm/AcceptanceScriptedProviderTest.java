@@ -135,9 +135,55 @@ class AcceptanceScriptedProviderTest {
         assertEquals(2, approvalCalls.size());
         assertEquals("shell", approvalCalls.get(0).toolName());
         assertEquals("acceptance-command-approval-shell", approvalCalls.get(0).toolCallId());
-        assertTrue(approvalCalls.get(0).toolArgs().contains("git add ."));
+        assertTrue(approvalCalls.get(0).toolArgs().contains(
+                "rm -f .labex-acceptance-command-approval.marker"));
         assertEquals("list_files", approvalCalls.get(1).toolName());
         assertEquals("acceptance-command-approval-list", approvalCalls.get(1).toolCallId());
+    }
+
+    @Test
+    void drivesAnExactMavenNetworkRetryScenario() {
+        LlmProvider.StreamChunk setup = stream("[acceptance:network-retry] verify live approval").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("write_file", setup.toolName());
+        assertEquals("acceptance-network-retry-pom", setup.toolCallId());
+        assertTrue(setup.toolArgs().contains("junit-bom"));
+
+        LlmProvider.StreamChunk command = stream(
+                "[acceptance:network-retry] verify live approval",
+                "[Tool write_file result]\ncreated pom.xml").stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("shell", command.toolName());
+        assertEquals("acceptance-network-retry-shell", command.toolCallId());
+        assertTrue(command.toolArgs().contains("mvn validate"));
+
+        String completed = text(stream(
+                "[acceptance:network-retry] verify live approval",
+                "[Tool write_file result]\ncreated pom.xml",
+                "[Tool shell result]\nstatus=completed"));
+        assertTrue(completed.contains("server-owned exact network retry completed"));
+    }
+
+    @Test
+    void recognizesDeferredStructuredToolResultWithoutLegacyTextWrapper() {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "user", "content", "[acceptance:network-retry] verify live approval"));
+        messages.add(Map.of("role", "user", "content", "[Tool write_file result]\ncreated pom.xml"));
+        messages.add(Map.of(
+                "role", "tool",
+                "tool_call_id", "acceptance-network-retry-shell",
+                "name", "shell",
+                "content", "status=completed\nexit=0"));
+        List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+
+        provider.chatStream("", messages, List.of(), config(), CancellationToken.none(), chunks::add);
+
+        assertTrue(chunks.stream().noneMatch(chunk -> "tool_call".equals(chunk.type())));
+        assertTrue(text(chunks).contains("server-owned exact network retry completed"));
     }
 
     @Test
@@ -149,7 +195,8 @@ class AcceptanceScriptedProviderTest {
 
         assertEquals("shell", command.toolName());
         assertEquals("acceptance-approved-command-cancel-shell", command.toolCallId());
-        assertTrue(command.toolArgs().contains("node .labex-acceptance-command-hold.cjs"));
+        assertTrue(command.toolArgs().contains(
+                "rm -f .labex-acceptance-command-hold.marker && node .labex-acceptance-command-hold.cjs"));
         assertTrue(command.toolArgs().contains("timeout_seconds"));
     }
 
@@ -246,6 +293,7 @@ class AcceptanceScriptedProviderTest {
                 .findFirst()
                 .orElseThrow();
         assertEquals("run_tests", test.toolName());
+        assertTrue(test.toolArgs().contains("\"target_path\":\"package.json\""));
 
         String completed = text(stream(
                 "[acceptance:evidence] evidence scenario",
@@ -263,6 +311,10 @@ class AcceptanceScriptedProviderTest {
                 .toList();
         assertEquals(2, setupCalls.size());
         assertTrue(setupCalls.stream().allMatch(chunk -> "write_file".equals(chunk.toolName())));
+        assertTrue(setupCalls.stream().anyMatch(chunk -> chunk.toolArgs().contains(
+                "acceptance-environment/acceptance-environment-test.cjs")));
+        assertTrue(setupCalls.stream().anyMatch(chunk -> chunk.toolArgs().contains(
+                "acceptance-environment/package.json")));
 
         LlmProvider.StreamChunk firstVerification = stream(
                 "[acceptance:environment-wait] recover dependency environment",
@@ -270,11 +322,13 @@ class AcceptanceScriptedProviderTest {
                 .filter(chunk -> "tool_call".equals(chunk.type()))
                 .findFirst().orElseThrow();
         assertEquals("run_tests", firstVerification.toolName());
+        assertTrue(firstVerification.toolArgs().contains(
+                "\"target_path\":\"acceptance-environment/package.json\""));
 
         LlmProvider.StreamChunk retriedVerification = stream(
                 "[acceptance:environment-wait] recover dependency environment",
                 "[Tool write_file result]\ncreated fixtures",
-                "[Tool run_tests result]\nNon-resolvable parent POM for acceptance fixture").stream()
+                "[Tool run_tests result]\nfailure_code=environment_blocked").stream()
                 .filter(chunk -> "tool_call".equals(chunk.type()))
                 .findFirst().orElseThrow();
         assertEquals("run_tests", retriedVerification.toolName());
@@ -282,7 +336,7 @@ class AcceptanceScriptedProviderTest {
         String completed = text(stream(
                 "[acceptance:environment-wait] recover dependency environment",
                 "[Tool write_file result]\ncreated fixtures",
-                "[Tool run_tests result]\nNon-resolvable parent POM for acceptance fixture",
+                "[Tool run_tests result]\nfailure_code=environment_blocked",
                 "[Tool run_tests result]\nenvironment restored"));
         assertTrue(completed.contains("environment recovery"));
     }
@@ -320,6 +374,28 @@ class AcceptanceScriptedProviderTest {
 
         assertTrue(resumed.contains("rejected") || resumed.contains("approved"));
         assertFalse(resumed.isEmpty());
+    }
+
+    @Test
+    void recognizesDurableCommandApprovalToolResultWithoutSyntheticContinuationText() {
+        List<LlmProvider.StreamChunk> chunks = stream(
+                "[acceptance:approval] durable rejection",
+                "[Tool shell result]\nCommand approval was rejected");
+
+        assertTrue(chunks.stream().noneMatch(chunk -> "tool_call".equals(chunk.type())));
+        assertTrue(text(chunks).contains("rejected"));
+    }
+
+
+    @Test
+    void recognizesStructuredPermissionApprovalToolResultWithoutSyntheticContinuationText() {
+        List<LlmProvider.StreamChunk> chunks = stream(
+                "[acceptance:permission-batch] durable approval",
+                "[Tool read_file result]\n{\"interactionType\":\"permission\",\"status\":\"approved\"}",
+                "[Tool list_files result]\n{\"status\":\"skipped\",\"reason\":\"not_executed_after_interaction_pause\"}");
+
+        assertTrue(chunks.stream().noneMatch(chunk -> "tool_call".equals(chunk.type())));
+        assertTrue(text(chunks).contains("multi-tool permission batch"));
     }
 
     @Test

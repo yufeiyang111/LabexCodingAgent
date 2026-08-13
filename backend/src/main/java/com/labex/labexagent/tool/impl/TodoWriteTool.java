@@ -1,7 +1,9 @@
 package com.labex.labexagent.tool.impl;
 
 import com.google.gson.JsonObject;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunPlanService;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
@@ -48,10 +50,21 @@ public class TodoWriteTool implements AgentTool {
         if (drafts.size() > MAX_ITEMS) {
             return ToolResult.failed("todos may contain at most " + MAX_ITEMS + " items");
         }
+        ExecutionFence fence = requireActiveFence(context);
         AgentRunPlanService.Projection projection = planService.replace(
-                context.getTaskId(), context.getExecutionEpoch(), drafts, "todo_write");
+                fence, context.getTaskId(), context.getExecutionEpoch(), drafts, "todo_write");
         projection.applyTo(context);
         return ToolResult.ok("Current durable todo list:\n" + context.getPlanSummary());
+    }
+
+    /** 执行者必须携带其 lease 派生 fence 才能写计划；缺失时以 typed failure fail closed。 */
+    private ExecutionFence requireActiveFence(AgentContext context) {
+        ExecutionFence fence = context == null ? null : context.getExecutionFence();
+        if (fence == null) {
+            throw new AgentRunExecutionLeaseService.StaleExecutionFenceException(
+                    AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.INVALID_FENCE);
+        }
+        return fence;
     }
 
     private List<AgentRunPlanService.PlanDraft> parse(String todos) {

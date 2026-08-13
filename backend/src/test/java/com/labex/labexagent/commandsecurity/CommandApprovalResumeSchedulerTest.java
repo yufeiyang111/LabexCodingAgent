@@ -88,7 +88,10 @@ class CommandApprovalResumeSchedulerTest {
                 eq("Resuming after approved command"), eq("The approved command result is persisted and ready for the Agent continuation."));
         ArgumentCaptor<AgentStreamRequest> requestCaptor = ArgumentCaptor.forClass(AgentStreamRequest.class);
         verify(engine).resume(eq(7), eq(12), requestCaptor.capture(), eq(71L), eq(true), eq(lease));
+        assertThat(requestCaptor.getValue().getMessage()).isEqualTo("continue original approval task");
         assertThat(requestCaptor.getValue().getMessage())
+                .doesNotContain("Original user objective", "Durable continuation context", "Command approval decision");
+        assertThat(requestCaptor.getValue().getResumeNote())
                 .contains("Command approval decision: approved", "Resolution status: approved");
     }
 
@@ -161,6 +164,7 @@ class CommandApprovalResumeSchedulerTest {
         task.setSessionId("session-71");
         task.setMode("build");
         task.setStatus("waiting_approval");
+        task.setRequestPayload("{\"message\":\"continue original approval task\",\"displayMessage\":\"continue original approval task\"}");
         return task;
     }
 

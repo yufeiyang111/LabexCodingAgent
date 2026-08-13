@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 
+import com.labex.entity.AgentRunInteraction;
 import com.labex.labexagent.run.AgentRunInteractionService;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -69,6 +70,24 @@ class NetworkAccessServiceTest {
 
         assertThat(service.hasApprovedOfflineRetryGrant(71L, "mvn compile")).isTrue();
         verify(interactions).hasApprovedNetworkGrant(71L, digest, "offline_failure_retry");
+    }
+
+    @Test
+    void returnsThePersistedInteractionIdWhenIdempotencyReusesAnExistingRequest() {
+        AgentRunInteractionService interactions = mock(AgentRunInteractionService.class);
+        AgentRunInteraction existing = new AgentRunInteraction();
+        existing.setInteractionId("network-existing-71");
+        existing.setInteractionType("network");
+        existing.setStatus("waiting");
+        when(interactions.createWaiting(any())).thenReturn(existing);
+        NetworkAccessService service = new NetworkAccessService(interactions);
+
+        NetworkAccessService.NetworkAccessRequest request = service.begin(
+                7, 12, 71L, "conversation-1", "session-1", "run_tests",
+                "mvn test", "download dependencies", "offline_failure_retry", true,
+                "tool-call-71", "tool-call-71", List.of());
+
+        assertThat(request.requestId()).isEqualTo("network-existing-71");
     }
 
 }

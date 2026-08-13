@@ -10,14 +10,18 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.AgentRunInteractionService;
 import com.labex.labexagent.run.AgentRunLeaseHeartbeatService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
+import com.labex.labexagent.run.AgentVerificationRecorder;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.runtime.CancellationToken;
@@ -285,6 +289,328 @@ class CommandApprovalOrchestratorTest {
         verify(lifecycle, never()).transition(any(), any(), any(), any(), any(), any(), any());
     }
 
+    @Test
+    void mavenDependencyFailurePausesForNetworkApprovalWithoutModelReplay() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        StudentProjectService projects = mock(StudentProjectService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentCancellationRegistry cancellations = spy(new AgentCancellationRegistry());
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        CommandApproval approval = approval("approved");
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        NetworkAccessService.NetworkAccessRequest request = new NetworkAccessService.NetworkAccessRequest(
+                "network-71", "digest-network-71", "mvn test",
+                java.util.Map.of("requestKind", "offline_failure_retry"));
+
+        when(projects.getOwnedProject(7, 12)).thenReturn(project);
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
+        when(approvals.consume(any())).thenReturn(true);
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class)))
+                .thenReturn(new ProcessExecutionResult(ExecutionStatus.FAILED, 1, 120L,
+                        "Non-resolvable parent POM: Could not transfer artifact from central", false));
+        when(network.beginOfflineCommandRetry(eq(7), eq(12), eq(71L), eq("conversation-71"),
+                eq("session-71"), eq("run_tests"), eq("mvn test"), any(), eq("tool-71"),
+                eq("tool-71"), eq("approval-71"), any())).thenReturn(request);
+
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
+                projects, lifecycle, metadataRefresh, resumeScheduler, network, toolCalls, transcript,
+                cancellations, tasks);
+
+        CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
+
+        org.assertj.core.api.Assertions.assertThat(result.available()).isTrue();
+        org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("waiting_network");
+        verify(network).beginOfflineCommandRetry(eq(7), eq(12), eq(71L), eq("conversation-71"),
+                eq("session-71"), eq("run_tests"), eq("mvn test"), any(), eq("tool-71"),
+                eq("tool-71"), eq("approval-71"), any());
+        verify(lifecycle).transition(eq(71L), eq(AgentRunState.WAITING_APPROVAL),
+                eq("NETWORK_ACCESS_ASK"), any(), any(), any(), any());
+        verify(resumeScheduler, never()).resumeIfWaiting(any());
+        verify(transcript, never()).appendDeferredToolResult(any(), any(), any(), any());
+        verify(toolCalls, never()).completedExisting(any(), any(), any());
+    }
+
+    @Test
+    void approvedOfflineNetworkRetryExecutesPersistedCommandOnceAndResumesOriginalToolCall() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        StudentProjectService projects = mock(StudentProjectService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentCancellationRegistry cancellations = spy(new AgentCancellationRegistry());
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        AgentRunLeaseHeartbeatService heartbeats = mock(AgentRunLeaseHeartbeatService.class);
+        AgentVerificationRecorder verifications = mock(AgentVerificationRecorder.class);
+        AgentRunExecutionLeaseService.ExecutionLease lease = new AgentRunExecutionLeaseService.ExecutionLease(
+                71L, "instance-a", 2L, LocalDateTime.now().plusMinutes(1));
+
+        CommandApproval approval = approval("consumed");
+        AgentRunInteraction interaction = new AgentRunInteraction();
+        interaction.setInteractionId("network-71");
+        interaction.setTaskId(71L);
+        interaction.setStudentId(7);
+        interaction.setProjectId(12);
+        interaction.setInteractionType("network");
+        interaction.setStatus("approved");
+        AgentRunInteraction executing = new AgentRunInteraction();
+        executing.setInteractionId("network-71");
+        executing.setTaskId(71L);
+        executing.setStudentId(7);
+        executing.setProjectId(12);
+        executing.setInteractionType("network");
+        executing.setStatus("executing");
+        NetworkAccessService.OfflineRetryDescriptor descriptor = new NetworkAccessService.OfflineRetryDescriptor(
+                "approval-71", "tool-71", "run_tests", "mvn test", "digest-network-71");
+        AgentTask task = new AgentTask();
+        task.setTaskId(71L);
+        task.setStudentId(7);
+        task.setProjectId(12);
+        task.setStatus("waiting_approval");
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        ProcessExecutionResult processResult = new ProcessExecutionResult(
+                ExecutionStatus.SUCCEEDED, 0, 25L, "BUILD SUCCESS", false);
+
+        when(network.offlineRetryDescriptor(interaction)).thenReturn(descriptor);
+        when(network.digest("mvn test")).thenReturn("digest-network-71");
+        when(network.claimOfflineRetry(interaction)).thenReturn(
+                new AgentRunInteractionService.NetworkRetryClaim(executing, true));
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
+        when(projects.getOwnedProject(7, 12)).thenReturn(project);
+        when(leases.acquire(71L)).thenReturn(lease);
+        when(executor.executeNetworkRetry(eq(approval), eq(project), any(CancellationToken.class),
+                any(ProcessExecutionObserver.class))).thenReturn(processResult);
+        when(resumeScheduler.resumeIfWaiting(approval)).thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(
+                approvals, audit, executor, projects, lifecycle, metadataRefresh, resumeScheduler,
+                network, toolCalls, transcript, cancellations, tasks);
+        orchestrator.setCommandExecutionLeaseServices(leases, heartbeats);
+        orchestrator.setVerificationRecorder(verifications);
+
+        boolean resumed = orchestrator.resumeOfflineNetworkRetry(interaction);
+
+        org.assertj.core.api.Assertions.assertThat(resumed).isTrue();
+        verify(executor).executeNetworkRetry(eq(approval), eq(project), any(CancellationToken.class),
+                any(ProcessExecutionObserver.class));
+        verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
+                org.mockito.ArgumentMatchers.contains("BUILD SUCCESS"));
+        verify(toolCalls).completedExisting(eq(71L), eq("tool-71"),
+                org.mockito.ArgumentMatchers.contains("BUILD SUCCESS"));
+        verify(network).completeOfflineRetry(eq(interaction), any());
+        verify(leases).release(lease);
+        verify(resumeScheduler).resumeIfWaiting(approval);
+        verify(lifecycle).appendEvent(eq(71L), eq("NETWORK_RETRY_EXECUTION_STARTED"), any(), any());
+        verify(lifecycle).appendEvent(eq(71L), eq("NETWORK_RETRY_EXECUTION_COMPLETED"), any(), any());
+        verify(verifications).recordProcessResult(
+                eq(71L), eq(7), eq(12), eq("mvn test"), eq("network_retry"), same(processResult));
+    }
+
+    @Test
+    void rejectedOfflineNetworkRetryResolvesOriginalToolCallWithoutExecution() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        CommandApproval approval = approval("consumed");
+        AgentRunInteraction interaction = networkInteraction("rejected");
+        AgentTask task = waitingTask();
+        NetworkAccessService.OfflineRetryDescriptor descriptor = retryDescriptor();
+        when(network.offlineRetryDescriptor(interaction)).thenReturn(descriptor);
+        when(network.digest("mvn test")).thenReturn("digest-network-71");
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
+        when(resumeScheduler.resumeIfWaiting(approval))
+                .thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(
+                approvals, mock(CommandAuditService.class), executor, mock(StudentProjectService.class),
+                lifecycle, mock(AgentProjectMetadataRefreshScheduler.class), resumeScheduler, network,
+                toolCalls, transcript, mock(AgentCancellationRegistry.class), tasks);
+
+        boolean resumed = orchestrator.resumeOfflineNetworkRetry(interaction);
+
+        org.assertj.core.api.Assertions.assertThat(resumed).isTrue();
+        verify(executor, never()).executeNetworkRetry(any(), any(), any(), any());
+        verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
+                org.mockito.ArgumentMatchers.contains("network_approval=rejected"));
+        verify(toolCalls).completedExisting(eq(71L), eq("tool-71"),
+                org.mockito.ArgumentMatchers.contains("network_approval=rejected"));
+        verify(resumeScheduler).resumeIfWaiting(approval);
+    }
+
+    @Test
+    void consumedOfflineNetworkRetryOnlyResumesAndNeverExecutesAgain() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        CommandApproval approval = approval("consumed");
+        AgentRunInteraction interaction = networkInteraction("approved");
+        AgentRunInteraction consumed = networkInteraction("consumed");
+        when(network.offlineRetryDescriptor(interaction)).thenReturn(retryDescriptor());
+        when(network.digest("mvn test")).thenReturn("digest-network-71");
+        when(network.claimOfflineRetry(interaction)).thenReturn(
+                new AgentRunInteractionService.NetworkRetryClaim(consumed, false));
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(waitingTask());
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        StudentProjectService projects = mock(StudentProjectService.class);
+        when(projects.getOwnedProject(7, 12)).thenReturn(project);
+        when(resumeScheduler.resumeIfWaiting(approval))
+                .thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(
+                approvals, mock(CommandAuditService.class), executor, projects,
+                mock(AgentRunLifecycleService.class), mock(AgentProjectMetadataRefreshScheduler.class),
+                resumeScheduler, network, mock(AgentToolCallJournalService.class),
+                mock(AgentRunTranscriptService.class), mock(AgentCancellationRegistry.class), tasks);
+
+        boolean resumed = orchestrator.resumeOfflineNetworkRetry(interaction);
+
+        org.assertj.core.api.Assertions.assertThat(resumed).isTrue();
+        verify(executor, never()).executeNetworkRetry(any(), any(), any(), any());
+        verify(resumeScheduler).resumeIfWaiting(approval);
+    }
+
+    @Test
+    void protocolMismatchFailsThroughTheLifecycleOwner() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        AgentRunInteraction interaction = networkInteraction("approved");
+        when(network.offlineRetryDescriptor(interaction)).thenReturn(retryDescriptor());
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(null);
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(
+                approvals, mock(CommandAuditService.class), mock(AgentApprovedCommandExecutor.class),
+                mock(StudentProjectService.class), lifecycle, mock(AgentProjectMetadataRefreshScheduler.class),
+                mock(CommandApprovalResumeScheduler.class), network, mock(AgentToolCallJournalService.class),
+                mock(AgentRunTranscriptService.class), mock(AgentCancellationRegistry.class),
+                mock(AgentTaskService.class));
+
+        boolean resumed = orchestrator.resumeOfflineNetworkRetry(interaction);
+
+        org.assertj.core.api.Assertions.assertThat(resumed).isFalse();
+        verify(lifecycle).transition(eq(71L), eq(AgentRunState.FAILED),
+                eq("NETWORK_RETRY_PROTOCOL_FAILED"), any(), any(), any(), any());
+    }
+
+    @Test
+    void canResumeOfflineNetworkRetryOnlyWhenACommandApprovalMatches() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        CommandApproval approval = approval("consumed");
+        AgentRunInteraction interaction = networkInteraction("approved");
+        when(network.offlineRetryDescriptor(interaction)).thenReturn(retryDescriptor());
+        when(network.digest("mvn test")).thenReturn("digest-network-71");
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(
+                approvals, mock(CommandAuditService.class), mock(AgentApprovedCommandExecutor.class),
+                mock(StudentProjectService.class), mock(AgentRunLifecycleService.class),
+                mock(AgentProjectMetadataRefreshScheduler.class), mock(CommandApprovalResumeScheduler.class),
+                network, mock(AgentToolCallJournalService.class), mock(AgentRunTranscriptService.class),
+                mock(AgentCancellationRegistry.class), mock(AgentTaskService.class));
+
+        org.assertj.core.api.Assertions.assertThat(orchestrator.canResumeOfflineNetworkRetry(interaction)).isTrue();
+    }
+
+    @Test
+    void canResumeOfflineNetworkRetryIsReadOnlyAndFalseWithoutAnApproval() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        AgentRunInteraction interaction = networkInteraction("approved");
+        when(network.offlineRetryDescriptor(interaction)).thenReturn(retryDescriptor());
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(null);
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(
+                approvals, mock(CommandAuditService.class), mock(AgentApprovedCommandExecutor.class),
+                mock(StudentProjectService.class), lifecycle, mock(AgentProjectMetadataRefreshScheduler.class),
+                mock(CommandApprovalResumeScheduler.class), network, mock(AgentToolCallJournalService.class),
+                mock(AgentRunTranscriptService.class), mock(AgentCancellationRegistry.class),
+                mock(AgentTaskService.class));
+
+        org.assertj.core.api.Assertions.assertThat(orchestrator.canResumeOfflineNetworkRetry(interaction)).isFalse();
+        verify(lifecycle, never()).transition(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void timedOutOfflineNetworkRetryResolvesTheToolCallWithoutExecution() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        NetworkAccessService network = mock(NetworkAccessService.class);
+        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        CommandApproval approval = approval("consumed");
+        AgentRunInteraction interaction = networkInteraction("timed_out");
+        AgentTask task = waitingTask();
+        when(network.offlineRetryDescriptor(interaction)).thenReturn(retryDescriptor());
+        when(network.digest("mvn test")).thenReturn("digest-network-71");
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(tasks.getOwnedTask(7, 12, 71L)).thenReturn(task);
+        when(resumeScheduler.resumeIfWaiting(approval))
+                .thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(
+                approvals, mock(CommandAuditService.class), mock(AgentApprovedCommandExecutor.class),
+                mock(StudentProjectService.class), lifecycle, mock(AgentProjectMetadataRefreshScheduler.class),
+                resumeScheduler, network, toolCalls, transcript, mock(AgentCancellationRegistry.class), tasks);
+
+        boolean resumed = orchestrator.resumeOfflineNetworkRetry(interaction);
+
+        org.assertj.core.api.Assertions.assertThat(resumed).isTrue();
+        verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
+                org.mockito.ArgumentMatchers.contains("network_approval=timed_out"));
+        verify(toolCalls).completedExisting(eq(71L), eq("tool-71"),
+                org.mockito.ArgumentMatchers.contains("network_approval=timed_out"));
+        verify(resumeScheduler).resumeIfWaiting(approval);
+    }
+
+    private AgentRunInteraction networkInteraction(String status) {
+        AgentRunInteraction interaction = new AgentRunInteraction();
+        interaction.setInteractionId("network-71");
+        interaction.setTaskId(71L);
+        interaction.setStudentId(7);
+        interaction.setProjectId(12);
+        interaction.setInteractionType("network");
+        interaction.setStatus(status);
+        return interaction;
+    }
+
+    private AgentTask waitingTask() {
+        AgentTask task = new AgentTask();
+        task.setTaskId(71L);
+        task.setStudentId(7);
+        task.setProjectId(12);
+        task.setStatus("waiting_approval");
+        return task;
+    }
+
+    private NetworkAccessService.OfflineRetryDescriptor retryDescriptor() {
+        return new NetworkAccessService.OfflineRetryDescriptor(
+                "approval-71", "tool-71", "run_tests", "mvn test", "digest-network-71");
+    }
+
     private CommandApproval approval(String status) {
         CommandApproval approval = new CommandApproval();
         approval.setApprovalId("approval-71");
@@ -297,7 +623,11 @@ class CommandApprovalOrchestratorTest {
         approval.setInvocationId("invoke-71");
         approval.setToolCallId("tool-71");
         approval.setCommandDigest("digest-71");
-        approval.setDisplayCommand("npm test --token=<redacted>");
+        approval.setCanonicalCommand("mvn test");
+        approval.setDisplayCommand("mvn test");
+        approval.setWorkingDirectory(".");
+        approval.setShell("direct");
+        approval.setCommandOptions("timeout=120");
         approval.setClassification("REQUIRE_APPROVAL");
         approval.setPolicyVersion("policy-v1");
         approval.setStatus(status);

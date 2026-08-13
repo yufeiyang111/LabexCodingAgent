@@ -70,20 +70,20 @@ class BashToolTest {
     }
 
     @Test
-    void riskyCommandRequiresApprovalWithoutCallingWorker() throws Exception {
+    void riskyCommandMustBeApprovedByRuntimeBeforeToolDelegation() throws Exception {
         SandboxWorker worker = mock(SandboxWorker.class);
         String command = "rm -rf foo";
 
         ToolResult result = new BashTool(worker).execute(context("session-4", 4L), commandArgs(command));
 
         assertFalse(result.isSuccess());
-        assertTrue(result.isApprovalRequired());
-        assertEquals(command, result.getApprovalCommand());
+        assertFalse(result.isApprovalRequired());
+        assertTrue(result.getContent().contains("runtime_protocol_error=command_approval_not_persisted"));
         verifyNoInteractions(worker);
     }
 
     @Test
-    void riskyCommandWithDangerousFlagStillRequiresApprovalAndDoesNotCallWorker() throws Exception {
+    void dangerousFlagCannotBypassRuntimeApprovalOwnership() throws Exception {
         SandboxWorker worker = mock(SandboxWorker.class);
         String command = "rm -rf foo";
         JsonObject args = commandArgs(command);
@@ -92,8 +92,8 @@ class BashToolTest {
         ToolResult result = new BashTool(worker).execute(context("session-5", 5L), args);
 
         assertFalse(result.isSuccess());
-        assertTrue(result.isApprovalRequired());
-        assertEquals(command, result.getApprovalCommand());
+        assertFalse(result.isApprovalRequired());
+        assertTrue(result.getContent().contains("runtime_protocol_error=command_approval_not_persisted"));
         verifyNoInteractions(worker);
     }
 
@@ -223,16 +223,20 @@ class BashToolTest {
     }
 
     @Test
-    void shellOperatorFailureExplainsHowToRecover() throws Exception {
+    void shellOperatorRunsAsOneRealShellPayload() throws Exception {
         SandboxWorker worker = mock(SandboxWorker.class);
+        when(worker.usesLinuxShell()).thenReturn(true);
+        when(worker.execute(any(), any(), any())).thenReturn(new ProcessExecutionResult(
+                ExecutionStatus.SUCCEEDED, 0, 1, "one", false));
         AgentContext context = context("session-shell-policy", 15L);
 
         ToolResult result = new RunCommandTool(worker).execute(context, commandArgs("echo one | cat"));
 
-        assertFalse(result.isSuccess());
-        assertTrue(result.getContent().contains("reason=shell_operator"));
-        assertTrue(result.getContent().contains("\u8bf7\u62c6\u5206\u4e3a\u591a\u4e2a\u72ec\u7acb\u5de5\u5177\u8c03\u7528"));
-        verifyNoInteractions(worker);
+        assertTrue(result.isSuccess());
+        ArgumentCaptor<ProcessExecutionRequest> request = ArgumentCaptor.forClass(ProcessExecutionRequest.class);
+        verify(worker).execute(any(), request.capture(), any());
+        assertEquals(List.of("/bin/bash", "--noprofile", "--norc", "-lc", "echo one | cat"),
+                request.getValue().command());
     }
 
     private SandboxWorker successfulWorker() {

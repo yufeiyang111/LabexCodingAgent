@@ -110,6 +110,27 @@ async function taskEvents(taskId) {
   return events
 }
 
+function sessionLogPaths(events) {
+  return [...new Set((events || [])
+    .filter(event => event?.type === 'SESSION')
+    .map(event => String(event?.data?.logPath || '').replaceAll('\\', '/'))
+    .filter(Boolean))]
+}
+
+function assertNoSyntheticResumeUserMessage(taskProjection, label) {
+  const synthetic = (taskProjection?.runMessages || []).filter(message => {
+    if (!String(message?.messageKey || '').startsWith('provider:')
+        || String(message?.role || '').toLowerCase() !== 'user') return false
+    const content = String(message?.content || '')
+    return content.includes('Original user objective (continue this exact task):')
+      || content.includes('Durable continuation context:')
+      || content.includes('Command approval decision:')
+  })
+  if (synthetic.length > 0) {
+    throw new Error(`${label} persisted scheduler metadata as another Provider user turn: ${JSON.stringify(synthetic)}`)
+  }
+}
+
 function chromeCandidates() {
   return [
     process.env.ACCEPTANCE_CHROME_PATH,
@@ -851,7 +872,25 @@ async function runScenario() {
       || !replayedPlanDisplay.text.includes('Finish durable plan recovery')) {
     throw new Error(`Refreshed durable plan projection mismatch: ${JSON.stringify(replayedPlanDisplay)}`)
   }
+  const refreshedTimelineOrder = await client.evaluate(`(() => {
+    const tool = document.querySelector('.tc-card[data-tool-call-id="acceptance-browser-plan-create"]')
+    const body = tool?.closest('.ai-msg-body')
+    if (!body) return null
+    return [...body.children]
+      .filter(element => element.matches('.ai-thinking-block, .tc-card'))
+      .map(element => element.classList.contains('ai-thinking-block')
+        ? 'thinking'
+        : 'tool:' + (element.getAttribute('data-tool-call-id') || ''))
+  })()`)
+  const firstThinkingIndex = refreshedTimelineOrder?.indexOf('thinking') ?? -1
+  const firstToolIndex = refreshedTimelineOrder?.findIndex(item => String(item).startsWith('tool:')) ?? -1
+  const thinkingAfterTool = firstToolIndex >= 0
+    && refreshedTimelineOrder.slice(firstToolIndex + 1).includes('thinking')
+  if (firstThinkingIndex < 0 || firstToolIndex < 0 || firstThinkingIndex > firstToolIndex || !thinkingAfterTool) {
+    throw new Error(`Refreshed thinking/tool timeline order mismatch: ${JSON.stringify(refreshedTimelineOrder)}`)
+  }
   const durablePlanRefreshReplay = true
+  const refreshThinkingToolOrderVerified = true
 
   await createNewConversation()
   await sendMessage('[acceptance:question]')
@@ -1036,6 +1075,10 @@ async function runScenario() {
     return Boolean(commandApprovalTask?.taskId)
   }, 'durable command approval task')
   const commandApprovalProjection = await api(`/student/projects/${projectId}/agent/tasks/${commandApprovalTask.taskId}`)
+  const commandApprovalInitialLogPaths = sessionLogPaths(await taskEvents(commandApprovalTask.taskId))
+  if (commandApprovalInitialLogPaths.length !== 1) {
+    throw new Error(`Command approval did not start with one durable run log: ${JSON.stringify(commandApprovalInitialLogPaths)}`)
+  }
   const commandApprovalStatuses = Object.fromEntries((commandApprovalProjection?.toolCalls || [])
     .filter(call => [commandApprovalToolCallId, commandApprovalSkippedToolCallId].includes(call.toolCallId))
     .map(call => [call.toolCallId, call.status]))
@@ -1098,6 +1141,130 @@ async function runScenario() {
   if (createdCommandApprovalTasks.length !== 1
       || Number(createdCommandApprovalTasks[0].taskId) !== Number(commandApprovalTask.taskId)) {
     throw new Error(`Command approval resume created another task: ${JSON.stringify(createdCommandApprovalTasks)}`)
+  }
+  const completedCommandApprovalProjection = await api(
+    `/student/projects/${projectId}/agent/tasks/${commandApprovalTask.taskId}`
+  )
+  assertNoSyntheticResumeUserMessage(completedCommandApprovalProjection, 'Command approval resume')
+  const commandApprovalFinalLogPaths = sessionLogPaths(await taskEvents(commandApprovalTask.taskId))
+  if (commandApprovalFinalLogPaths.length !== 1
+      || commandApprovalFinalLogPaths[0] !== commandApprovalInitialLogPaths[0]) {
+    throw new Error(`Command approval continuation switched run logs: ${JSON.stringify({
+      before: commandApprovalInitialLogPaths,
+      after: commandApprovalFinalLogPaths
+    })}`)
+  }
+  const commandApprovalTurns = durableHistoryTurns(
+    commandApprovalHistoryProjection,
+    'command approval history continuity'
+  ).filter(turn => Number(turn.taskId) === Number(commandApprovalTask.taskId))
+  if (commandApprovalTurns.length !== 1
+      || commandApprovalTurns[0].userContent !== '[acceptance:approval]') {
+    throw new Error(`Command approval continuation created another visible user turn: ${JSON.stringify(commandApprovalTurns)}`)
+  }
+
+  await createNewConversation()
+  const tasksBeforeNetworkRetry = await api(`/student/projects/${projectId}/agent/tasks`)
+  const networkRetryPriorTaskIds = new Set(tasksBeforeNetworkRetry.map(task => Number(task.taskId)))
+  await sendMessage('[acceptance:network-retry]')
+  const networkRetryToolCallId = 'acceptance-network-retry-shell'
+  const networkRetryCardRoot = `.tc-card[data-tool-call-id="${networkRetryToolCallId}"]`
+  const networkRetryCommandApproval = `${networkRetryCardRoot} .tc-approval:not(.tc-network-approval)`
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector(${JSON.stringify(networkRetryCommandApproval)}))`),
+    'network retry initial command approval'
+  )
+  let networkRetryTask = null
+  await waitFor(async () => {
+    const tasks = await api(`/student/projects/${projectId}/agent/tasks`)
+    networkRetryTask = [...tasks]
+      .sort((left, right) => Number(right.taskId) - Number(left.taskId))
+      .find(task => task.status === 'waiting_approval' && !networkRetryPriorTaskIds.has(Number(task.taskId)))
+    return Boolean(networkRetryTask?.taskId)
+  }, 'network retry durable task')
+  const initialNetworkRetryProjection = await api(`/student/projects/${projectId}/agent/tasks/${networkRetryTask.taskId}`)
+  const networkRetryInitialLogPaths = sessionLogPaths(await taskEvents(networkRetryTask.taskId))
+  if (networkRetryInitialLogPaths.length !== 1) {
+    throw new Error(`Approved command did not start with one durable run log: ${JSON.stringify(networkRetryInitialLogPaths)}`)
+  }
+  if (initialNetworkRetryProjection?.commandApproval?.toolCallId !== networkRetryToolCallId
+      || initialNetworkRetryProjection?.commandApproval?.status !== 'pending') {
+    throw new Error(`Network retry command approval identity mismatch: ${JSON.stringify(initialNetworkRetryProjection)}`)
+  }
+  await clickElement(`${networkRetryCommandApproval} .tc-approval-btn.primary`, {
+    containsText: '\u6279\u51c6\u4e00\u6b21', label: 'approve network retry command', native: true
+  })
+  const liveNetworkApprovalSelector = `${networkRetryCardRoot} .tc-network-approval`
+  await waitFor(
+    () => client.evaluate(`Boolean(document.querySelector(${JSON.stringify(liveNetworkApprovalSelector)}))`),
+    'live network approval without refresh'
+  )
+  const liveApprovalCount = await client.evaluate(
+    `document.querySelectorAll(${JSON.stringify(`${networkRetryCardRoot} .tc-approval`)}).length`
+  )
+  if (Number(liveApprovalCount) !== 1) {
+    throw new Error(`Network retry rendered duplicate approval components: count=${liveApprovalCount}`)
+  }
+  const liveNetworkApprovalText = await client.evaluate(
+    `document.querySelector(${JSON.stringify(liveNetworkApprovalSelector)})?.innerText || ''`
+  )
+  if (!String(liveNetworkApprovalText).includes('Agent \u8bf7\u6c42\u4f7f\u7528\u7f51\u7edc')
+      || !String(liveNetworkApprovalText).includes('\u53ea\u4f1a\u91cd\u8bd5\u5f53\u524d\u547d\u4ee4\u4e00\u6b21')) {
+    throw new Error(`Live network approval content is incomplete: ${liveNetworkApprovalText}`)
+  }
+  let waitingNetworkProjection = null
+  await waitFor(async () => {
+    waitingNetworkProjection = await api(`/student/projects/${projectId}/agent/tasks/${networkRetryTask.taskId}`)
+    return waitingNetworkProjection?.status === 'waiting_approval'
+      && waitingNetworkProjection?.pendingInteraction?.interactionType === 'network'
+      && waitingNetworkProjection?.pendingInteraction?.toolCallId === networkRetryToolCallId
+  }, 'durable network retry interaction')
+  if (waitingNetworkProjection.pendingInteraction.approvalId
+      !== initialNetworkRetryProjection.commandApproval.approvalId) {
+    throw new Error(`Network retry lost the original command approval identity: ${JSON.stringify(waitingNetworkProjection.pendingInteraction)}`)
+  }
+  await clickElement(`${liveNetworkApprovalSelector} .tc-approval-btn.primary`, {
+    containsText: '\u5141\u8bb8\u4e00\u6b21', label: 'approve exact network retry', native: true
+  })
+  await waitFor(
+    () => bodyIncludes('server-owned exact network retry completed'),
+    'server-owned network retry final reply'
+  )
+  await waitForAgentIdle('network retry same-task terminal state')
+  const completedNetworkRetryTask = await api(`/student/projects/${projectId}/agent/tasks/${networkRetryTask.taskId}`)
+  if (completedNetworkRetryTask?.status !== 'completed') {
+    throw new Error(`Network retry task did not complete: ${JSON.stringify(completedNetworkRetryTask)}`)
+  }
+  const networkRetryParts = (completedNetworkRetryTask.parts || [])
+    .filter(part => part.toolCallId === networkRetryToolCallId && String(part.partKey || '').startsWith('provider:'))
+  const networkRetryCalls = networkRetryParts.filter(part => part.partType === 'tool_call')
+  const networkRetryResults = networkRetryParts.filter(part => part.partType === 'tool_result')
+  if (networkRetryCalls.length !== 1 || networkRetryResults.length !== 1
+      || networkRetryCalls[0].status !== 'completed' || networkRetryResults[0].status !== 'completed') {
+    throw new Error(`Network retry did not close the original Provider tool part exactly once: ${JSON.stringify(networkRetryParts)}`)
+  }
+  const networkRetryEvents = await taskEvents(networkRetryTask.taskId)
+  const networkRetryEventTypes = networkRetryEvents.map(event => event.type)
+  for (const requiredType of ['NETWORK_ACCESS_ASK', 'NETWORK_RETRY_EXECUTION_STARTED', 'NETWORK_RETRY_EXECUTION_COMPLETED']) {
+    if (!networkRetryEventTypes.includes(requiredType)) {
+      throw new Error(`Network retry event ${requiredType} is missing: ${JSON.stringify(networkRetryEventTypes)}`)
+    }
+  }
+  const tasksAfterNetworkRetry = await api(`/student/projects/${projectId}/agent/tasks`)
+  const createdNetworkRetryTasks = tasksAfterNetworkRetry
+    .filter(task => !networkRetryPriorTaskIds.has(Number(task.taskId)))
+  if (createdNetworkRetryTasks.length !== 1
+      || Number(createdNetworkRetryTasks[0].taskId) !== Number(networkRetryTask.taskId)) {
+    throw new Error(`Network approval created another task: ${JSON.stringify(createdNetworkRetryTasks)}`)
+  }
+  assertNoSyntheticResumeUserMessage(completedNetworkRetryTask, 'Approved command and network continuation')
+  const networkRetryFinalLogPaths = sessionLogPaths(networkRetryEvents)
+  if (networkRetryFinalLogPaths.length !== 1
+      || networkRetryFinalLogPaths[0] !== networkRetryInitialLogPaths[0]) {
+    throw new Error(`Approved command continuation switched run logs: ${JSON.stringify({
+      before: networkRetryInitialLogPaths,
+      after: networkRetryFinalLogPaths
+    })}`)
   }
 
   await createNewConversation()
@@ -1598,6 +1765,7 @@ async function runScenario() {
     reasoningBoundaryTaskId: reasoningBoundaryTask.taskId,
     durableCacheTelemetryProjection: true,
     durablePlanRefreshReplay,
+    refreshThinkingToolOrderVerified,
     durablePlanTaskId: browserPlanTask.taskId,
     durablePlanRevision: Number(browserPlanFinalEvent.data.planRevision),
     questionReplyComponent: true,
@@ -1605,6 +1773,9 @@ async function runScenario() {
     permissionApprovalRefreshRecovery: true,
     multiToolPermissionBatchProtocolComplete: true,
     commandApprovalStableToolIdentity: true,
+    liveNetworkApprovalWithoutRefresh: true,
+    serverOwnedExactNetworkRetry: true,
+    networkRetryTaskId: networkRetryTask.taskId,
     durableHistoryProjection: DURABLE_HISTORY_PROJECTION_VERSION,
     durableProviderMessages: providerMessages.length,
     durableProviderParts: providerParts.length,

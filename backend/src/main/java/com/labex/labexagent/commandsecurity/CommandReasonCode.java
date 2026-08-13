@@ -3,6 +3,7 @@ package com.labex.labexagent.commandsecurity;
 /** Stable reason codes suitable for audit records and client-safe policy messages. */
 public enum CommandReasonCode {
     SAFE_DIRECT_COMMAND,
+    SAFE_SHELL_COMMAND,
     MUTATING_COMMAND,
     EMPTY_COMMAND,
     PROMPT_INJECTION,
@@ -19,6 +20,7 @@ public enum CommandReasonCode {
     QUOTE_SPLIT_EXECUTABLE,
     NETWORK_COMMAND,
     NETWORK_URL,
+    UNRECOGNIZED_COMMAND,
     UNKNOWN_CONTROL_CHARACTER,
     UNSUPPORTED_SYNTAX
 }

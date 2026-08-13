@@ -23,6 +23,14 @@ public class ToolResult {
     private String interactionRequestId;
     private String interactionType;
     private Map<String, Object> interactionPayload;
+    private String executionStatus;
+    private Integer executionExitCode;
+    private Long executionDurationMs;
+    private boolean executionOutputTruncated;
+    private Long executionOutputChars;
+    private String executionOutputPath;
+    private String executionShell;
+    private String executionWorkdir;
 
     public ToolResult() {
     }
@@ -46,15 +54,59 @@ public class ToolResult {
     }
 
     public static ToolResult fromProcessExecution(ProcessExecutionResult execution) {
+        return fromProcessExecution(execution, null, null, null);
+    }
+
+    public static ToolResult fromProcessExecution(ProcessExecutionResult execution, String shell, String workdir) {
+        return fromProcessExecution(execution, shell, workdir,
+                execution == null ? null : execution.outputPath());
+    }
+
+    /**
+     * 将执行结果转换为可写入 durable Part/SSE 的结构化 ToolResult。
+     * displayOutputPath 只向模型暴露 workspace 相对 artifact 路径。
+     */
+    public static ToolResult fromProcessExecution(
+            ProcessExecutionResult execution, String shell, String workdir, String displayOutputPath) {
+        if (execution == null) {
+            return ToolResult.failed("Process execution result is unavailable");
+        }
+        String status = execution.status().name().toLowerCase(java.util.Locale.ROOT);
+        String safeOutputPath = displayOutputPath == null || displayOutputPath.isBlank()
+                ? null : displayOutputPath;
+        String visibleOutput = execution.output();
+        if (execution.outputPath() != null && !execution.outputPath().isBlank()) {
+            visibleOutput = visibleOutput.replace(execution.outputPath(),
+                    safeOutputPath == null ? "<workspace-artifact>" : safeOutputPath);
+        }
         StringBuilder content = new StringBuilder();
         content.append("exit=").append(execution.exitCode() == null ? "none" : execution.exitCode()).append('\n');
-        content.append("status=").append(execution.status().name().toLowerCase(java.util.Locale.ROOT)).append('\n');
+        content.append("status=").append(status).append('\n');
         content.append("duration_ms=").append(execution.durationMs()).append('\n');
-        content.append("truncated=").append(execution.truncated());
-        if (!execution.output().isBlank()) {
-            content.append('\n').append(execution.output());
+        content.append("truncated=").append(execution.truncated()).append('\n');
+        content.append("output_chars=").append(execution.outputChars());
+        if (safeOutputPath != null) {
+            content.append('\n').append("output_path=").append(safeOutputPath);
         }
-        return execution.succeeded() ? ToolResult.ok(content.toString()) : ToolResult.failed(content.toString());
+        if (shell != null && !shell.isBlank()) {
+            content.append('\n').append("shell=").append(shell);
+        }
+        if (workdir != null && !workdir.isBlank()) {
+            content.append('\n').append("workdir=").append(workdir);
+        }
+        if (!visibleOutput.isBlank()) {
+            content.append('\n').append(visibleOutput);
+        }
+        ToolResult result = execution.succeeded() ? ToolResult.ok(content.toString()) : ToolResult.failed(content.toString());
+        result.executionStatus = status;
+        result.executionExitCode = execution.exitCode();
+        result.executionDurationMs = execution.durationMs();
+        result.executionOutputTruncated = execution.truncated();
+        result.executionOutputChars = execution.outputChars();
+        result.executionOutputPath = safeOutputPath;
+        result.executionShell = shell;
+        result.executionWorkdir = workdir;
+        return result;
     }
 
     public static ToolResult approvalRequired(String content, String command) {
@@ -159,6 +211,38 @@ public class ToolResult {
         return this.interactionPayload;
     }
 
+    public String getExecutionStatus() {
+        return this.executionStatus;
+    }
+
+    public Integer getExecutionExitCode() {
+        return this.executionExitCode;
+    }
+
+    public Long getExecutionDurationMs() {
+        return this.executionDurationMs;
+    }
+
+    public boolean isExecutionOutputTruncated() {
+        return this.executionOutputTruncated;
+    }
+
+    public Long getExecutionOutputChars() {
+        return this.executionOutputChars;
+    }
+
+    public String getExecutionOutputPath() {
+        return this.executionOutputPath;
+    }
+
+    public String getExecutionShell() {
+        return this.executionShell;
+    }
+
+    public String getExecutionWorkdir() {
+        return this.executionWorkdir;
+    }
+
     public void setSuccess(boolean success) {
         this.success = success;
     }
@@ -213,6 +297,38 @@ public class ToolResult {
 
     public void setInteractionType(String interactionType) {
         this.interactionType = interactionType;
+    }
+
+    public void setExecutionStatus(String executionStatus) {
+        this.executionStatus = executionStatus;
+    }
+
+    public void setExecutionExitCode(Integer executionExitCode) {
+        this.executionExitCode = executionExitCode;
+    }
+
+    public void setExecutionDurationMs(Long executionDurationMs) {
+        this.executionDurationMs = executionDurationMs;
+    }
+
+    public void setExecutionOutputTruncated(boolean executionOutputTruncated) {
+        this.executionOutputTruncated = executionOutputTruncated;
+    }
+
+    public void setExecutionOutputChars(Long executionOutputChars) {
+        this.executionOutputChars = executionOutputChars;
+    }
+
+    public void setExecutionOutputPath(String executionOutputPath) {
+        this.executionOutputPath = executionOutputPath;
+    }
+
+    public void setExecutionShell(String executionShell) {
+        this.executionShell = executionShell;
+    }
+
+    public void setExecutionWorkdir(String executionWorkdir) {
+        this.executionWorkdir = executionWorkdir;
     }
 
     public boolean equals(Object o) {

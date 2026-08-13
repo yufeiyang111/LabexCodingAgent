@@ -7,15 +7,16 @@ import java.util.Locale;
 import org.springframework.stereotype.Service;
 
 /**
- * Versioned canonicalization for command-approval binding. It normalizes presentation-only
- * whitespace but preserves every execution-affecting request field in the SHA-256 input.
+ * Versioned canonicalization for command-approval binding.
+ * Direct-command compatibility keeps its historical whitespace normalization; real Shell payloads
+ * preserve spaces, quotes and operators because those characters change Bash/PowerShell semantics.
  */
 @Service
 public final class CommandNormalizer {
     public static final String VERSION = "command-normalizer-v1";
 
     public NormalizedCommand normalize(CommandRequest request) {
-        String canonicalCommand = canonicalCommand(request.command());
+        String canonicalCommand = canonicalCommand(request.command(), request.shell());
         String canonicalWorkingDirectory = canonicalWorkingDirectory(request.workingDirectory());
         String canonical = String.join("\n",
                 "version=" + VERSION,
@@ -34,8 +35,17 @@ public final class CommandNormalizer {
                 sha256(canonical));
     }
 
-    private String canonicalCommand(String command) {
-        return command == null ? "" : command.trim().replaceAll("[ \\t]+", " ");
+    private String canonicalCommand(String command, String shell) {
+        String value = command == null ? "" : command;
+        if (isDirectShell(shell)) {
+            return value.trim().replaceAll("[ \t]+", " ");
+        }
+        // Preserve complete multi-line shell text; only make Windows line endings stable for digesting.
+        return value.replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    private boolean isDirectShell(String shell) {
+        return shell == null || shell.isBlank() || "direct".equalsIgnoreCase(shell.trim());
     }
 
     private String canonicalWorkingDirectory(String workingDirectory) {
@@ -68,7 +78,7 @@ public final class CommandNormalizer {
         if (value == null) {
             return "";
         }
-        return value.trim().toLowerCase(Locale.ROOT).replaceAll("[ \\t]+", " ");
+        return value.trim().toLowerCase(Locale.ROOT).replaceAll("[ \t]+", " ");
     }
 
     private String redactForDisplay(String command) {

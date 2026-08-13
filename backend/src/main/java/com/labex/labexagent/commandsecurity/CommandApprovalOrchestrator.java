@@ -1,14 +1,18 @@
 package com.labex.labexagent.commandsecurity;
 
+import com.labex.entity.AgentRunInteraction;
+import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.AgentRunInteractionService;
 import com.labex.labexagent.run.AgentRunLeaseHeartbeatService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.run.AgentToolCallJournalService;
+import com.labex.labexagent.run.AgentVerificationRecorder;
 import com.labex.labexagent.run.CommandFailureGuard;
 import com.labex.labexagent.run.EnvironmentBlockerClassifier;
 import com.labex.labexagent.tool.ToolResult;
@@ -17,6 +21,7 @@ import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.service.StudentProjectService;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -46,6 +51,7 @@ public class CommandApprovalOrchestrator {
     private final NetworkAccessService networkAccessService;
     private AgentRunExecutionLeaseService executionLeaseService;
     private AgentRunLeaseHeartbeatService leaseHeartbeatService;
+    private AgentVerificationRecorder verificationRecorder;
 
     @org.springframework.beans.factory.annotation.Autowired
     public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
@@ -87,6 +93,11 @@ public class CommandApprovalOrchestrator {
                                           AgentRunLeaseHeartbeatService leaseHeartbeatService) {
         this.executionLeaseService = executionLeaseService;
         this.leaseHeartbeatService = leaseHeartbeatService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setVerificationRecorder(AgentVerificationRecorder verificationRecorder) {
+        this.verificationRecorder = verificationRecorder;
     }
 
     public DecisionResult decide(Integer studentId, Integer projectId, String approvalId,
@@ -165,6 +176,7 @@ public class CommandApprovalOrchestrator {
                         processDurationMs, orchestrationDurationMs, requestStartedNanos);
             }
             auditService.recordExecutionOutcome(approval, result, processDurationMs);
+            recordVerificationOutcome(approval, result, "approved_command");
             boolean succeeded = result.succeeded();
             if (!succeeded && shouldRequestNetworkRetry(approval, result)) {
                 NetworkAccessService.NetworkAccessRequest network = createNetworkRetry(approval, result);
@@ -241,6 +253,216 @@ public class CommandApprovalOrchestrator {
         }
     }
 
+    /**
+     * 网络批准后由服务端精确重试已持久化的原命令，并把结果写回原 toolCallId。
+     */
+    public boolean resumeOfflineNetworkRetry(AgentRunInteraction interaction) {
+        NetworkAccessService.OfflineRetryDescriptor retry = networkAccessService == null
+                ? null : networkAccessService.offlineRetryDescriptor(interaction);
+        if (retry == null) return false;
+        CommandApproval approval = offlineNetworkRetryApproval(interaction, retry);
+        if (approval == null) {
+            failNetworkRetryProtocol(interaction, "The persisted network retry no longer matches its original command approval");
+            return false;
+        }
+        AgentTask task = taskService.getOwnedTask(
+                interaction.getStudentId(), interaction.getProjectId(), interaction.getTaskId());
+        if (task == null) return false;
+        if (!"waiting_approval".equals(task.getStatus())) {
+            return "recovering".equals(task.getStatus()) || "preparing".equals(task.getStatus())
+                    || "running".equals(task.getStatus()) || "completed".equals(task.getStatus());
+        }
+        if ("rejected".equals(interaction.getStatus()) || "timed_out".equals(interaction.getStatus())) {
+            String detail = "status=failed\nnetwork_approval=" + interaction.getStatus()
+                    + "\nThe command was not retried.";
+            lifecycleService.appendEvent(approval.getTaskId(), "NETWORK_RETRY_REJECTED",
+                    publicPayload(approval, Map.of("interactionId", interaction.getInteractionId(),
+                            "resumeAgentLoop", true)), lifecycleKey(approval, "network-retry-rejected"));
+            resolveApprovedToolCall(approval, detail);
+            resumeAgentLoop(approval, "network_" + interaction.getStatus(), null);
+            return true;
+        }
+        if (!"approved".equals(interaction.getStatus())) return false;
+
+        StudentProject project = projectService.getOwnedProject(interaction.getStudentId(), interaction.getProjectId());
+        if (project == null) {
+            failNetworkRetryProtocol(interaction, "The project for the approved network retry is unavailable");
+            return false;
+        }
+        AgentRunExecutionLeaseService.ExecutionLease executionLease = acquireExecutionLease(approval);
+        if (executionLeaseService != null && executionLease == null) {
+            return true;
+        }
+        AgentRunInteractionService.NetworkRetryClaim claim;
+        try {
+            claim = networkAccessService.claimOfflineRetry(interaction);
+        } catch (RuntimeException failure) {
+            releaseExecutionLease(executionLease);
+            log.error("NETWORK_RETRY_CLAIM_FAILED taskId={} interactionId={}",
+                    interaction.getTaskId(), interaction.getInteractionId(), failure);
+            return false;
+        }
+        if (!claim.claimed()) {
+            releaseExecutionLease(executionLease);
+            String status = claim.interaction() == null ? "" : String.valueOf(claim.interaction().getStatus());
+            if ("consumed".equals(status)) {
+                resumeAgentLoop(approval, "network_retry_completed", null);
+                return true;
+            }
+            return "executing".equals(status);
+        }
+
+        AgentCancellationRegistry.ActiveRun activeRun = null;
+        try {
+            if (leaseHeartbeatService != null && executionLease != null) {
+                leaseHeartbeatService.track(executionLease, approval.getSessionId());
+            }
+            activeRun = cancellationRegistry.register(
+                    approval.getSessionId(), approval.getStudentId(), approval.getProjectId(), approval.getTaskId());
+            lifecycleService.appendEvent(approval.getTaskId(), "NETWORK_RETRY_EXECUTION_STARTED",
+                    publicPayload(approval, Map.of("interactionId", interaction.getInteractionId(),
+                            "requestDigest", retry.requestDigest(), "resumeAgentLoop", false)),
+                    lifecycleKey(approval, "network-retry-started"));
+            long startedNanos = System.nanoTime();
+            ProcessExecutionResult result = executor.executeNetworkRetry(
+                    approval, project, activeRun, identity -> recordExecutionProcessBound(approval, identity));
+            auditService.recordExecutionOutcome(approval, result, result.durationMs());
+            recordVerificationOutcome(approval, result, "network_retry");
+            String executionStatus = result.succeeded() ? "completed" : "failed";
+            lifecycleService.appendEvent(approval.getTaskId(),
+                    result.succeeded() ? "NETWORK_RETRY_EXECUTION_COMPLETED" : "NETWORK_RETRY_EXECUTION_FAILED",
+                    publicPayload(approval, Map.of(
+                            "interactionId", interaction.getInteractionId(),
+                            "executionStatus", executionStatus,
+                            "exitCode", result.exitCode() == null ? "" : result.exitCode(),
+                            "durationMs", result.durationMs(),
+                            "resumeAgentLoop", true)),
+                    lifecycleKey(approval, "network-retry-outcome:" + executionStatus));
+            if (result.status() == ExecutionStatus.CANCELLED) {
+                networkAccessService.completeOfflineRetry(interaction, Map.of(
+                        "executionStatus", "cancelled", "durationMs", result.durationMs()));
+                completeCancelledExecution(approval, result, approval.getStudentId(), approval.getProjectId(),
+                        result.durationMs(), elapsedMs(startedNanos), startedNanos);
+                return true;
+            }
+            closeApprovedToolCall(approval, result.succeeded(), result);
+            networkAccessService.completeOfflineRetry(interaction, Map.of(
+                    "executionStatus", executionStatus,
+                    "exitCode", result.exitCode() == null ? "" : result.exitCode(),
+                    "durationMs", result.durationMs()));
+            releaseExecutionLease(executionLease);
+            executionLease = null;
+            resumeAgentLoop(approval, "network_retry_" + executionStatus, result);
+            metadataRefreshScheduler.schedule(
+                    approval.getStudentId(), approval.getProjectId(), "network_command_retry");
+            return true;
+        } catch (Exception failure) {
+            String message = failure.getMessage() == null || failure.getMessage().isBlank()
+                    ? failure.getClass().getSimpleName() : failure.getMessage();
+            ProcessExecutionResult result = new ProcessExecutionResult(
+                    ExecutionStatus.INFRASTRUCTURE_ERROR, null, 0L,
+                    "Network-approved command retry failed before a terminal process result: " + message, false);
+            try {
+                recordVerificationOutcome(approval, result, "network_retry");
+                lifecycleService.appendEvent(approval.getTaskId(), "NETWORK_RETRY_EXECUTION_FAILED",
+                        publicPayload(approval, Map.of("interactionId", interaction.getInteractionId(),
+                                "executionStatus", "infrastructure_error", "resumeAgentLoop", true)),
+                        lifecycleKey(approval, "network-retry-outcome:infrastructure_error"));
+                closeApprovedToolCall(approval, false, result);
+                networkAccessService.completeOfflineRetry(interaction, Map.of(
+                        "executionStatus", "infrastructure_error", "error", message));
+            } catch (Exception projectionFailure) {
+                failure.addSuppressed(projectionFailure);
+            }
+            releaseExecutionLease(executionLease);
+            executionLease = null;
+            resumeAgentLoop(approval, "network_retry_infrastructure_error", result);
+            log.error("NETWORK_RETRY_EXECUTION_FAILED taskId={} interactionId={}",
+                    interaction.getTaskId(), interaction.getInteractionId(), failure);
+            return true;
+        } finally {
+            cancellationRegistry.complete(activeRun);
+            releaseExecutionLease(executionLease);
+        }
+    }
+
+    /** JVM 重启后只恢复已有结果；副作用未知的执行绝不自动重放，而是将 Tool Part 标记为 interrupted。 */
+    @org.springframework.scheduling.annotation.Scheduled(
+            fixedDelayString = "${labex-agent.network-retry-recovery-poll-interval-ms:1000}")
+    public void recoverClaimedOfflineNetworkRetries() {
+        if (networkAccessService == null || executionLeaseService == null) return;
+        LocalDateTime now = LocalDateTime.now();
+        for (AgentRunInteraction interaction : networkAccessService.claimedOfflineRetries(100)) {
+            NetworkAccessService.OfflineRetryDescriptor retry = networkAccessService.offlineRetryDescriptor(interaction);
+            CommandApproval approval = retry == null ? null : offlineNetworkRetryApproval(interaction, retry);
+            if (approval == null) continue;
+            AgentTask task = taskService.getOwnedTask(
+                    interaction.getStudentId(), interaction.getProjectId(), interaction.getTaskId());
+            if (task == null || executionLeaseService.hasActiveLease(task, now)) continue;
+            if (transcriptService.hasPersistedToolResult(approval.getTaskId(), approval.getToolCallId())) {
+                networkAccessService.completeOfflineRetry(interaction, Map.of("executionStatus", "recovered"));
+                resumeAgentLoop(approval, "network_retry_recovered", null);
+                continue;
+            }
+            LocalDateTime updated = interaction.getUpdateTime();
+            if (updated != null && updated.plusNanos(executionLeaseService.leaseDurationMs() * 1_000_000L).isAfter(now)) {
+                continue;
+            }
+            String detail = "status=interrupted\nnetwork_retry=unknown_after_restart\n"
+                    + "The command will not be replayed because its side effects are unknown.";
+            transcriptService.appendDeferredToolResult(
+                    approval.getTaskId(), approval.getToolCallId(), "", detail);
+            toolCallJournalService.interruptedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
+            networkAccessService.completeOfflineRetry(interaction, Map.of(
+                    "executionStatus", "interrupted", "reason", "unknown_after_restart"));
+            lifecycleService.appendEvent(approval.getTaskId(), "NETWORK_RETRY_EXECUTION_INTERRUPTED",
+                    publicPayload(approval, Map.of("interactionId", interaction.getInteractionId(),
+                            "resumeAgentLoop", true)), lifecycleKey(approval, "network-retry-interrupted"));
+            resumeAgentLoop(approval, "network_retry_interrupted", null);
+        }
+    }
+
+    /**
+     * 只读判定：该 offline retry 是否关联了合法的命令审批（只有这种才能服务端精确重放）。
+     * 无审批关联的 offline retry（如 run_tests 自动批准的 verification 命令失败后创建的重试审批）
+     * 应走通用交互恢复，由模型消费已批准的 grant 重新发起命令，而不是在这里触发协议失败。
+     */
+    public boolean canResumeOfflineNetworkRetry(AgentRunInteraction interaction) {
+        if (networkAccessService == null) {
+            return false;
+        }
+        NetworkAccessService.OfflineRetryDescriptor retry = networkAccessService.offlineRetryDescriptor(interaction);
+        return retry != null && offlineNetworkRetryApproval(interaction, retry) != null;
+    }
+
+    private CommandApproval offlineNetworkRetryApproval(
+            AgentRunInteraction interaction, NetworkAccessService.OfflineRetryDescriptor retry) {
+        CommandApproval approval = retry.approvalId() == null || retry.approvalId().isBlank()
+                ? approvalService.findLatestForTask(
+                        interaction.getStudentId(), interaction.getProjectId(), interaction.getTaskId())
+                : approvalService.findOwned(
+                        interaction.getStudentId(), interaction.getProjectId(), retry.approvalId());
+        if (approval == null || !"agent_shell".equals(approval.getSource())
+                || !"consumed".equals(approval.getStatus())
+                || !Objects.equals(approval.getTaskId(), interaction.getTaskId())
+                || !Objects.equals(approval.getToolCallId(), retry.toolCallId())
+                || !Objects.equals(approval.getCanonicalCommand(), retry.command())
+                || !Objects.equals(networkAccessService.digest(approval.getCanonicalCommand()), retry.requestDigest())) {
+            return null;
+        }
+        return approval;
+    }
+
+    private void failNetworkRetryProtocol(AgentRunInteraction interaction, String detail) {
+        if (interaction == null || interaction.getTaskId() == null) return;
+        lifecycleService.transition(
+                interaction.getTaskId(), AgentRunState.FAILED, "NETWORK_RETRY_PROTOCOL_FAILED",
+                Map.of("interactionId", String.valueOf(interaction.getInteractionId()),
+                        "detail", detail, "resumeAgentLoop", false),
+                "Unable to resume approved network command", detail,
+                "network-retry-protocol-failed-" + interaction.getInteractionId());
+    }
+
     private ExecutionResult completeCancelledExecution(CommandApproval approval, ProcessExecutionResult result,
                                                        Integer studentId, Integer projectId,
                                                        long processDurationMs, long orchestrationDurationMs,
@@ -312,6 +534,16 @@ public class CommandApprovalOrchestrator {
         }
         currentFailure.addSuppressed(exception);
         return currentFailure;
+    }
+
+    private void recordVerificationOutcome(CommandApproval approval, ProcessExecutionResult result, String strategy) {
+        if (approval == null || result == null || verificationRecorder == null
+                || !"run_tests".equals(approvalToolName(approval.getCanonicalCommand()))) {
+            return;
+        }
+        verificationRecorder.recordProcessResult(
+                approval.getTaskId(), approval.getStudentId(), approval.getProjectId(),
+                approval.getDisplayCommand(), strategy, result);
     }
 
     private String approvalToolName(String command) {
@@ -400,7 +632,8 @@ public class CommandApprovalOrchestrator {
         if (networkAccessService == null || approval == null || result == null
                 || networkEnabled(approval.getCommandOptions()) || result.succeeded()) return false;
         String command = approval.getCanonicalCommand();
-        return looksLikeNetworkFailure(result.output())
+        return EnvironmentBlockerClassifier.isNetworkRetryCandidate(
+                approvalToolName(command), ToolResult.fromProcessExecution(result))
                 && !networkAccessService.hasOfflineRetryAttempt(approval.getTaskId(), command);
     }
 
@@ -410,10 +643,11 @@ public class CommandApprovalOrchestrator {
             String output = result.output() == null ? "" : result.output().replaceAll("\\s+", " ");
             String summary = "\u68c0\u6d4b\u5230\u547d\u4ee4\u5728\u79bb\u7ebf\u7f51\u7edc\u73af\u5883\u4e0b\u5931\u8d25\uff1b\u5141\u8bb8\u540e\u5c06\u4ec5\u91cd\u8bd5\u5f53\u524d\u547d\u4ee4\u4e00\u6b21\u3002\n\u5931\u8d25\u6458\u8981\uff1a"
                     + (output.length() <= 500 ? output : output.substring(0, 500));
-            return networkAccessService.begin(approval.getStudentId(), approval.getProjectId(), approval.getTaskId(),
+            return networkAccessService.beginOfflineCommandRetry(
+                    approval.getStudentId(), approval.getProjectId(), approval.getTaskId(),
                     approval.getConversationId(), approval.getSessionId(), approvalToolName(approval.getCanonicalCommand()),
-                    approval.getCanonicalCommand(), summary, "offline_failure_retry", true, approval.getToolCallId(),
-                    java.util.List.of());
+                    approval.getCanonicalCommand(), summary, approval.getToolCallId(), approval.getToolCallId(),
+                    approval.getApprovalId(), java.util.List.of());
         } catch (RuntimeException exception) {
             log.warn("Unable to create network retry approval taskId={} approvalId={}: {}",
                     approval.getTaskId(), approval.getApprovalId(), exception.getMessage());
@@ -424,17 +658,6 @@ public class CommandApprovalOrchestrator {
     private boolean networkEnabled(String options) {
         return options != null && java.util.Arrays.stream(options.split(";"))
                 .anyMatch(part -> "network=true".equalsIgnoreCase(part.trim()));
-    }
-
-    private boolean looksLikeNetworkFailure(String output) {
-        String lower = output == null ? "" : output.toLowerCase(java.util.Locale.ROOT);
-        String[] markers = {"could not resolve", "temporary failure in name resolution", "name resolution",
-                "unknown host", "no such host", "getaddrinfo", "network is unreachable",
-                "connection timed out", "connect timed out", "failed to connect", "connection reset",
-                "unable to access", "failed to download", "could not download", "download failed",
-                "proxy connect", "tls handshake timeout", "network is disabled", "internet is disabled"};
-        for (String marker : markers) if (lower.contains(marker)) return true;
-        return false;
     }
 
     private void closeApprovedToolCall(CommandApproval approval, boolean succeeded, ProcessExecutionResult result) {

@@ -13,6 +13,7 @@ public final class CommandRedactor {
         }
         String redacted = value
                 .replaceAll("(?i)(bearer\\s+)[^\\s]+", "$1<redacted>")
+                .replaceAll("(?i)(-D(?:token|password|secret|api[-_]?key)=)[^\\s]+", "$1<redacted>")
                 .replaceAll("(?i)(--?(?:token|password|secret|api[-_]?key)|authorization)(?:=|\\s+)[^\\s]+", "$1=<redacted>")
                 .replaceAll("(?i)(\"(?:token|password|secret|api[-_]?key)\"\\s*:\\s*\")[^\"]+(\")", "$1<redacted>$2")
                 .replaceAll("(?i)(sk-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9]{8,})", "<redacted>")

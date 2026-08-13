@@ -165,7 +165,7 @@ public class LspTool implements AgentTool {
 
     private ToolResult unavailable(String message) {
         return ToolResult.failed("Real LSP unavailable: " + message
-                + "\nRun scripts/setup-lsp.ps1, then restart backend.");
+                + "\nCheck the configured language-server command inside the active worker; after changing it, restart the backend.");
     }
 
     private Path resolveFile(AgentContext context, String pathArg) {

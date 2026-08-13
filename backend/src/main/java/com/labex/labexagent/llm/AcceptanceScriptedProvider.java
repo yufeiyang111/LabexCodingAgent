@@ -31,13 +31,35 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             const marker = '.acceptance-environment-recovered';
             if (!fs.existsSync(marker)) {
               fs.writeFileSync(marker, 'ready');
-              console.error('Non-resolvable parent POM for acceptance fixture');
+              console.error('failure_code=environment_blocked; simulated toolchain environment unavailable');
               process.exit(1);
             }
             console.log('environment restored');
             """;
     private static final String ENVIRONMENT_TEST_PACKAGE =
             "{\"name\":\"acceptance-environment\",\"scripts\":{\"test\":\"node acceptance-environment-test.cjs\"}}";
+    private static final String NETWORK_RETRY_POM = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <project xmlns="http://maven.apache.org/POM/4.0.0"
+                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                     xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.labex.acceptance</groupId>
+              <artifactId>network-retry</artifactId>
+              <version>1.0.0</version>
+              <dependencyManagement>
+                <dependencies>
+                  <dependency>
+                    <groupId>org.junit</groupId>
+                    <artifactId>junit-bom</artifactId>
+                    <version>5.10.2</version>
+                    <type>pom</type>
+                    <scope>import</scope>
+                  </dependency>
+                </dependencies>
+              </dependencyManagement>
+            </project>
+            """;
     private static final Map<String, Object> USAGE = Map.of(
             "prompt_tokens", 64,
             "completion_tokens", 32,
@@ -273,19 +295,33 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 && !prompt.contains("[Tool write_file result]")) {
             emitToolBatch(onChunk, List.of(
                     new ScriptedToolCall("write_file",
-                            writeFileArguments("acceptance-environment-test.cjs", ENVIRONMENT_TEST_SCRIPT),
+                            writeFileArguments("acceptance-environment/acceptance-environment-test.cjs", ENVIRONMENT_TEST_SCRIPT),
                             "acceptance-environment-script"),
                     new ScriptedToolCall("write_file",
-                            writeFileArguments("package.json", ENVIRONMENT_TEST_PACKAGE),
+                            writeFileArguments("acceptance-environment/package.json", ENVIRONMENT_TEST_PACKAGE),
                             "acceptance-environment-package")));
             return;
         }
         if (prompt.contains("[acceptance:environment-wait]")
                 && countOccurrences(prompt, "[Tool run_tests result]") < 2) {
-            emitTool(onChunk, "run_tests", "{\"strategy\":\"test\"}",
+            emitTool(onChunk, "run_tests",
+                    "{\"strategy\":\"test\",\"target_path\":\"acceptance-environment/package.json\"}",
                     countOccurrences(prompt, "[Tool run_tests result]") == 0
                             ? "acceptance-environment-first-test"
                             : "acceptance-environment-retry-test");
+            return;
+        }
+        if (prompt.contains("[acceptance:network-retry]")
+                && !prompt.contains("[Tool write_file result]")) {
+            emitTool(onChunk, "write_file", writeFileArguments("pom.xml", NETWORK_RETRY_POM),
+                    "acceptance-network-retry-pom");
+            return;
+        }
+        if (prompt.contains("[acceptance:network-retry]")
+                && !prompt.contains("[Tool shell result]")) {
+            emitTool(onChunk, "shell",
+                    "{\"command\":\"mvn validate\",\"timeout_seconds\":60}",
+                    "acceptance-network-retry-shell");
             return;
         }
         if (prompt.contains("[acceptance:unverified]") && !prompt.contains("[Tool write_file result]")) {
@@ -313,7 +349,9 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                 && prompt.contains("[Tool read_file result]")
                 && prompt.contains("package.json")
                 && !prompt.contains("[Tool run_tests result]")) {
-            emitTool(onChunk, "run_tests", "{\"strategy\":\"test\"}", "acceptance-evidence-test");
+            emitTool(onChunk, "run_tests",
+                    "{\"strategy\":\"test\",\"target_path\":\"package.json\"}",
+                    "acceptance-evidence-test");
             return;
         }
         if (prompt.contains("[acceptance:question]") && !hasResumedInteraction(prompt, "waiting_user")) {
@@ -326,13 +364,14 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         if (prompt.contains("[acceptance:approval-cancel]")
                 && !hasResumedInteraction(prompt, "waiting_approval")) {
             emitTool(onChunk, "shell",
-                    "{\"command\":\"node .labex-acceptance-command-hold.cjs\",\"timeout_seconds\":40}",
+                    "{\"command\":\"rm -f .labex-acceptance-command-hold.marker && node .labex-acceptance-command-hold.cjs\",\"timeout_seconds\":40}",
                     "acceptance-approved-command-cancel-shell");
             return;
         }
         if (prompt.contains("[acceptance:approval]") && !hasResumedInteraction(prompt, "waiting_approval")) {
             emitToolBatch(onChunk, List.of(
-                    new ScriptedToolCall("shell", "{\"command\":\"git add .\",\"timeout_seconds\":10}",
+                    new ScriptedToolCall("shell",
+                            "{\"command\":\"rm -f .labex-acceptance-command-approval.marker\",\"timeout_seconds\":10}",
                             "acceptance-command-approval-shell"),
                     new ScriptedToolCall("list_files", "{\"path\":\"\"}",
                             "acceptance-command-approval-list")));
@@ -437,17 +476,33 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
     private boolean hasResumedInteraction(String prompt, String checkpointState) {
         String lower = prompt.toLowerCase(Locale.ROOT);
         return lower.contains(checkpointState)
+                || hasDurableInteractionToolResult(lower)
                 || lower.contains("interaction resumed")
                 || lower.contains("user answered")
                 || lower.contains("approval granted")
                 || lower.contains("approval rejected")
+                || lower.contains("command approval was rejected")
+                || lower.contains("command approval was expired")
                 || lower.contains("command approval decision")
+                || (lower.contains("[acceptance:approval") && lower.contains("[tool shell result]"))
                 || lower.contains("resolution status: answered")
                 || lower.contains("resolution status: approved")
                 || lower.contains("resolution status: rejected")
                 || lower.contains("resolution status: cancelled")
                 || lower.contains("resolution status: failed")
                 || lower.contains("persisted user response is ready");
+    }
+
+    private boolean hasDurableInteractionToolResult(String lowerPrompt) {
+        if (!lowerPrompt.contains("\"interactiontype\":")) {
+            return false;
+        }
+        return lowerPrompt.contains("\"status\":\"approved\"")
+                || lowerPrompt.contains("\"status\":\"rejected\"")
+                || lowerPrompt.contains("\"status\":\"answered\"")
+                || lowerPrompt.contains("\"status\":\"cancelled\"")
+                || lowerPrompt.contains("\"status\":\"expired\"")
+                || lowerPrompt.contains("\"status\":\"timed_out\"");
     }
 
     private boolean hasExpectedDurableProgressProjection(String prompt) {
@@ -513,6 +568,11 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
                     + "**Verification**\n- The checkpoint state changed from waiting_user and the final SSE reply completed without creating another task.\n"
                     + "**Risk**\n- The scripted provider is available only outside the production profile.";
         }
+        if (prompt.contains("[acceptance:network-retry]")) {
+            return "## Summary\n**Completed**\n- The server-owned exact network retry completed the original Maven command without creating a new task.\n"
+                    + "**Verification**\n- The live network approval, original toolCallId, and durable command result stayed on one task and conversation.\n"
+                    + "**Risk**\n- The dependency download is confined to the disposable acceptance workspace cache.";
+        }
         if (prompt.contains("[acceptance:approval]")) {
             String decision = prompt.toLowerCase(Locale.ROOT).contains("rejected") ? "rejected" : "approved";
             return "## Summary\n**Completed**\n- The one-time command approval decision was " + decision
@@ -559,7 +619,15 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
             }
             Object content = message.get("content");
             if (content != null) {
-                out.append(content).append('\n');
+                String text = String.valueOf(content);
+                if ("tool".equalsIgnoreCase(String.valueOf(message.get("role")))
+                        && !text.startsWith("[Tool ")) {
+                    String toolName = String.valueOf(message.getOrDefault("name", "")).trim();
+                    if (!toolName.isBlank()) {
+                        out.append("[Tool ").append(toolName).append(" result]\n");
+                    }
+                }
+                out.append(text).append('\n');
             }
         }
         return out.toString();

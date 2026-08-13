@@ -65,6 +65,41 @@ public final class ToolSupport {
         return new SecureWorkspacePath(context.getWorkspaceRoot());
     }
 
+    /**
+     * 为 workspace 内的 Shell 输出分配确定性的 artifact 路径，使用 task/toolCallId 隔离。
+     * 完整 stdout/stderr 写入 artifact，普通结果只返回摘要。
+     */
+    public static ProcessOutputArtifact processOutputArtifact(
+            AgentContext context, String toolName, String toolCallId) {
+        SecureWorkspacePath paths = workspacePaths(context);
+        String taskSegment = context.getTaskId() == null
+                ? "session-" + artifactSegment(context.getSessionId(), "unknown")
+                : "task-" + context.getTaskId();
+        String toolSegment = artifactSegment(toolName, "tool");
+        String callSegment = artifactSegment(toolCallId, "standalone");
+        String relativePath = ".labex-agent/artifacts/" + taskSegment + "/"
+                + toolSegment + "-" + callSegment + ".log";
+        return new ProcessOutputArtifact(relativePath, paths.resolveForCreate(relativePath));
+    }
+
+    private static String artifactSegment(String value, String fallback) {
+        String normalized = value == null ? "" : value.trim().replaceAll("[^A-Za-z0-9._-]+", "-");
+        normalized = normalized.replaceAll("^-+|-+$", "");
+        if (normalized.isBlank() || ".".equals(normalized) || "..".equals(normalized)) {
+            return fallback;
+        }
+        return normalized.length() <= 96 ? normalized : normalized.substring(0, 96);
+    }
+
+    public record ProcessOutputArtifact(String relativePath, Path absolutePath) {
+        public ProcessOutputArtifact {
+            if (relativePath == null || relativePath.isBlank() || absolutePath == null) {
+                throw new IllegalArgumentException("process output artifact path is required");
+            }
+            absolutePath = absolutePath.toAbsolutePath().normalize();
+        }
+    }
+
     public static boolean isSafeExistingWorkspaceEntry(AgentContext context, Path entry) {
         if (entry == null) {
             return false;

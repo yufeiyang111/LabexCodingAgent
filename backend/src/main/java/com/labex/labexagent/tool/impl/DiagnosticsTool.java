@@ -44,7 +44,7 @@ public class DiagnosticsTool implements AgentTool {
         LspSessionManager.LspDiagnosticsResult result = lspSessionManager.diagnostics(context.getWorkspaceRoot(), file);
         if (!result.available()) {
             return ToolResult.failed("Real LSP unavailable: " + result.message()
-                    + "\nRun scripts/setup-lsp.ps1, then restart backend.");
+                    + "\nCheck the configured language-server command inside the active worker; after changing it, restart the backend.");
         }
         if (result.diagnostics().isEmpty()) {
             return ToolResult.ok("LSP diagnostics clean for " + pathArg + " (" + result.languageId() + ")");

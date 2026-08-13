@@ -6,13 +6,13 @@ import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 
 /**
- * Pure fail-closed policy for a deliberately small direct-command grammar. It never parses or
- * executes shell grammar: unsupported executables, quoting, escaping, control characters, and
- * shell syntax are blocked rather than guessed at.
+ * Command classification is a control-plane decision only; execution remains inside SandboxWorker.
+ * The explicit direct/safe profile retains the legacy small grammar. The default OpenCode profile
+ * accepts complete Bash/PowerShell syntax and only blocks control-plane escape or host-danger intent.
  */
 @Service
 public final class CommandClassifier {
-    public static final String POLICY_VERSION = "command-policy-v1";
+    public static final String POLICY_VERSION = "command-policy-v2";
     private static final Pattern CONTROL_CHARACTER = Pattern.compile("[\\p{Cntrl}]");
     private static final Pattern WINDOWS_VARIABLE = Pattern.compile("%[^%\\s]+%", Pattern.CASE_INSENSITIVE);
     private static final Pattern URL = Pattern.compile("(?i)\\b(?:https?|ftp|ssh)://");
@@ -22,6 +22,10 @@ public final class CommandClassifier {
     private static final Pattern POWERSHELL_ENCODED = Pattern.compile("(?i)(?:^|\\s)-(?:enc|encodedcommand)(?:\\s|$)");
     private static final Pattern QUOTING_OR_ESCAPING = Pattern.compile("['\"\\\\^]");
     private static final Pattern UNSAFE_ARGUMENT = Pattern.compile("[|;<>`$&(){}\\[\\]*?!~]");
+    private static final Pattern DESTRUCTIVE_SHELL_SEGMENT = Pattern.compile(
+            "(?is)(?:^|&&|\\|\\||[;\\n])\\s*(?:sudo\\s+)?(?:rm|del|rmdir|rd|truncate|drop|delete|flushall|flushdb)\\b");
+    private static final Pattern DESTRUCTIVE_GIT_SEGMENT = Pattern.compile(
+            "(?is)(?:^|&&|\\|\\||[;\\n])\\s*git\\s+(?:reset\\s+--hard|clean\\b|checkout\\s+--|rm\\b|stash\\s+drop)");
     private static final Set<String> NETWORK_EXECUTABLES = Set.of(
             "curl", "wget", "invoke-webrequest", "invoke-restmethod", "scp", "sftp", "rsync",
             "ssh", "ftp", "telnet", "nc", "ncat", "netcat", "ping", "tracert", "traceroute",
@@ -30,10 +34,16 @@ public final class CommandClassifier {
             "shutdown", "reboot", "mkfs", "diskpart", "format", "cipher");
     private static final Set<String> READ_ONLY_EXECUTABLES = Set.of(
             "cat", "echo", "type", "dir", "findstr", "git", "grep", "ls", "pwd", "where", "which");
-    private static final Set<String> MUTATING_EXECUTABLES = Set.of(
-            "rm", "del", "rmdir", "rd", "touch", "mkdir", "mv", "move", "cp", "copy",
-            "chmod", "chown", "sed", "perl", "python", "python3", "node", "java", "docker", "npm",
-            "pip", "mvn", "./gradlew", "gradle", "pytest", "git", "drop", "truncate", "delete", "flushall", "flushdb");
+    private static final Set<String> WORKSPACE_EXECUTABLES = Set.of(
+            "touch", "mkdir", "mv", "move", "cp", "copy", "chmod", "chown", "sed", "perl",
+            "python", "python3", "node", "java", "npm", "pip", "mvn", "./gradlew", "gradle",
+            "pytest", "git");
+    private static final Set<String> DESTRUCTIVE_EXECUTABLES = Set.of(
+            "rm", "del", "rmdir", "rd", "truncate", "drop", "delete", "flushall", "flushdb", "clear");
+    /** 构建工具可能联网拉取依赖：opencode profile 下必须离线优先，先审批后执行。 */
+    private static final Set<String> NETWORK_CAPABLE_BUILD_TOOLS = Set.of(
+            "mvn", "mvnw", "./mvnw", "npm", "npx", "pnpm", "yarn", "pip", "pip3",
+            "gradle", "./gradlew", "cargo", "go");
 
     private final CommandNormalizer normalizer;
 
@@ -49,15 +59,50 @@ public final class CommandClassifier {
         NormalizedCommand normalized = normalizer.normalize(request);
         String command = normalized.canonicalCommand();
         String lower = command.toLowerCase(Locale.ROOT);
-        if (command.isEmpty()) {
+        boolean realShell = isRealShellRequest(request);
+        if (command.isBlank()) {
             return result(CommandDecision.BLOCK, CommandReasonCode.EMPTY_COMMAND, CommandRiskClass.BLOCKED, normalized);
         }
-        if (CONTROL_CHARACTER.matcher(command).find()) {
+        if (hasForbiddenControlCharacter(command, realShell)) {
             return result(CommandDecision.BLOCK, CommandReasonCode.UNKNOWN_CONTROL_CHARACTER, CommandRiskClass.BLOCKED, normalized);
         }
         if (isPromptInjection(lower)) {
             return result(CommandDecision.BLOCK, CommandReasonCode.PROMPT_INJECTION, CommandRiskClass.BLOCKED, normalized);
         }
+        if (realShell) {
+            return classifyRealShell(request, normalized, command, lower);
+        }
+        return classifyDirect(request, normalized, command, lower);
+    }
+
+    private CommandClassification classifyRealShell(
+            CommandRequest request, NormalizedCommand normalized, String command, String lower) {
+        if (POWERSHELL_ENCODED.matcher(command).find()) {
+            return result(CommandDecision.BLOCK, CommandReasonCode.POWERSHELL_ENCODED_COMMAND,
+                    CommandRiskClass.BLOCKED, normalized);
+        }
+        if (containsHostDanger(lower)) {
+            return result(CommandDecision.BLOCK, CommandReasonCode.HARD_BLOCKED_COMMAND,
+                    CommandRiskClass.BLOCKED, normalized);
+        }
+        if (isDestructiveShell(lower)) {
+            return result(CommandDecision.REQUIRE_APPROVAL, CommandReasonCode.MUTATING_COMMAND,
+                    CommandRiskClass.MUTATING, normalized);
+        }
+        // OpenCode profile：网络能力命令必须先走一次性命令审批，审批后默认离线执行；
+        // 离线失败再走 NETWORK_ACCESS_ASK 的一次性网络重试，不能直接带网执行。
+        String executable = firstToken(lower);
+        if (NETWORK_EXECUTABLES.contains(executable) || request.networkRequested()
+                || isNetworkCapableCommand(executable, lower) || NETWORK_CAPABLE_BUILD_TOOLS.contains(executable)) {
+            return result(CommandDecision.REQUIRE_APPROVAL, CommandReasonCode.NETWORK_COMMAND,
+                    CommandRiskClass.MUTATING, normalized);
+        }
+        // 其余普通 shell 命令由隔离 Worker 直接执行，不再做语法策略失败。
+        return result(CommandDecision.ALLOW, CommandReasonCode.SAFE_SHELL_COMMAND, CommandRiskClass.SAFE, normalized);
+    }
+
+    private CommandClassification classifyDirect(
+            CommandRequest request, NormalizedCommand normalized, String command, String lower) {
         if (containsShellOperator(command)) {
             return result(CommandDecision.BLOCK, CommandReasonCode.SHELL_OPERATOR, CommandRiskClass.BLOCKED, normalized);
         }
@@ -96,24 +141,46 @@ public final class CommandClassifier {
             return result(CommandDecision.BLOCK, CommandReasonCode.UNSUPPORTED_SYNTAX, CommandRiskClass.BLOCKED, normalized);
         }
         if (URL.matcher(command).find()) {
-            return result(CommandDecision.BLOCK, CommandReasonCode.NETWORK_URL, CommandRiskClass.BLOCKED, normalized);
+            return result(CommandDecision.REQUIRE_APPROVAL, CommandReasonCode.NETWORK_URL, CommandRiskClass.MUTATING, normalized);
         }
-
         if (NETWORK_EXECUTABLES.contains(executable) || request.networkRequested() || isNetworkCapableCommand(executable, lower)) {
-            return result(CommandDecision.BLOCK, CommandReasonCode.NETWORK_COMMAND, CommandRiskClass.BLOCKED, normalized);
+            return result(CommandDecision.REQUIRE_APPROVAL, CommandReasonCode.NETWORK_COMMAND, CommandRiskClass.MUTATING, normalized);
         }
-        if (HARD_BLOCKED_EXECUTABLES.contains(executable) || lower.contains("/etc/passwd") || lower.contains("/etc/shadow")
-                || lower.contains(".ssh") || lower.contains(".aws/credentials") || lower.contains("169.254.169.254")
-                || lower.contains("metadata.google.internal")) {
+        if (HARD_BLOCKED_EXECUTABLES.contains(executable) || containsHostDanger(lower)) {
             return result(CommandDecision.BLOCK, CommandReasonCode.HARD_BLOCKED_COMMAND, CommandRiskClass.BLOCKED, normalized);
         }
-        if (isMutating(executable, lower)) {
+        if (isDestructive(executable, lower)) {
             return result(CommandDecision.REQUIRE_APPROVAL, CommandReasonCode.MUTATING_COMMAND, CommandRiskClass.MUTATING, normalized);
         }
-        if (isReadOnly(executable, lower)) {
+        if (isReadOnly(executable, lower) || WORKSPACE_EXECUTABLES.contains(executable)) {
             return result(CommandDecision.ALLOW, CommandReasonCode.SAFE_DIRECT_COMMAND, CommandRiskClass.SAFE, normalized);
         }
-        return result(CommandDecision.BLOCK, CommandReasonCode.UNSUPPORTED_SYNTAX, CommandRiskClass.BLOCKED, normalized);
+        return result(CommandDecision.REQUIRE_APPROVAL, CommandReasonCode.UNRECOGNIZED_COMMAND, CommandRiskClass.MUTATING, normalized);
+    }
+
+    private boolean isRealShellRequest(CommandRequest request) {
+        if (request == null || "safe".equalsIgnoreCase(request.sandboxProfile())) {
+            return false;
+        }
+        String shell = request.shell();
+        return shell != null && !shell.isBlank() && !"direct".equalsIgnoreCase(shell);
+    }
+
+    private boolean hasForbiddenControlCharacter(String command, boolean realShell) {
+        return realShell ? command.indexOf('\0') >= 0 : CONTROL_CHARACTER.matcher(command).find();
+    }
+
+    private boolean containsHostDanger(String command) {
+        return command.contains("/etc/passwd") || command.contains("/etc/shadow")
+                || command.contains(".ssh") || command.contains(".aws/credentials")
+                || command.contains("169.254.169.254") || command.contains("metadata.google.internal")
+                || HARD_BLOCKED_EXECUTABLES.contains(firstToken(command));
+    }
+
+    private boolean isDestructiveShell(String command) {
+        return DESTRUCTIVE_SHELL_SEGMENT.matcher(command).find()
+                || DESTRUCTIVE_GIT_SEGMENT.matcher(command).find()
+                || command.matches("(?is).*?(?:^|&&|\\|\\||[;\\n])\\s*docker\\b.*");
     }
 
     private boolean isPromptInjection(String command) {
@@ -126,8 +193,9 @@ public final class CommandClassifier {
     }
 
     private String firstToken(String command) {
-        int separator = command.indexOf(' ');
-        return separator < 0 ? command : command.substring(0, separator);
+        String trimmed = command == null ? "" : command.trim();
+        int separator = trimmed.indexOf(' ');
+        return separator < 0 ? trimmed : trimmed.substring(0, separator);
     }
 
     private boolean isNetworkCapableCommand(String executable, String command) {
@@ -138,27 +206,15 @@ public final class CommandClassifier {
                 || ("mvn".equals(executable) && (command.startsWith("mvn deploy") || command.contains("dependency:get")));
     }
 
-    private boolean isMutating(String executable, String command) {
-        if ("npm".equals(executable)) {
-            return command.equals("npm test") || command.startsWith("npm test ")
-                    || command.equals("npm run build") || command.startsWith("npm run build ");
+    private boolean isDestructive(String executable, String command) {
+        if ("git".equals(executable)) {
+            return command.startsWith("git reset --hard")
+                    || command.startsWith("git clean ")
+                    || command.startsWith("git checkout --")
+                    || command.startsWith("git rm ")
+                    || command.startsWith("git stash drop");
         }
-        if ("mvn".equals(executable)) {
-            return command.equals("mvn test") || command.startsWith("mvn test ")
-                    || command.equals("mvn compile") || command.startsWith("mvn compile ")
-                    || command.equals("mvn package -DskipTests") || command.startsWith("mvn package ")
-                    || command.equals("mvn -o test") || command.startsWith("mvn -o test ");
-        }
-        if ("./gradlew".equals(executable) || "gradle".equals(executable)) {
-            return command.equals(executable + " test") || command.startsWith(executable + " test ");
-        }
-        if ("pytest".equals(executable)) {
-            return true;
-        }
-        if ("python".equals(executable) || "python3".equals(executable)) {
-            return MUTATING_EXECUTABLES.contains(executable);
-        }
-        return MUTATING_EXECUTABLES.contains(executable) && !isReadOnly(executable, command);
+        return DESTRUCTIVE_EXECUTABLES.contains(executable) || "docker".equals(executable);
     }
 
     private boolean isReadOnly(String executable, String command) {
@@ -175,7 +231,9 @@ public final class CommandClassifier {
         return true;
     }
 
-    private CommandClassification result(CommandDecision decision, CommandReasonCode reason, CommandRiskClass risk, NormalizedCommand normalized) {
-        return new CommandClassification(decision, reason, risk, POLICY_VERSION, normalized.normalizerVersion(), normalized);
+    private CommandClassification result(CommandDecision decision, CommandReasonCode reason,
+                                         CommandRiskClass risk, NormalizedCommand normalized) {
+        return new CommandClassification(decision, reason, risk, POLICY_VERSION,
+                normalized.normalizerVersion(), normalized);
     }
 }

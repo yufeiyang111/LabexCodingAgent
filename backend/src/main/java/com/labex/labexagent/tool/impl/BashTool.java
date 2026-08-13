@@ -44,7 +44,8 @@ implements AgentTool {
         CommandClassification classification = commandClassifier.classify(new CommandRequest(command));
         if (classification.decision() != CommandDecision.ALLOW) {
             if (classification.requiresApproval()) {
-                return ToolResult.approvalRequired("command requires a server-owned one-time approval", command);
+                return ToolResult.failed("runtime_protocol_error=command_approval_not_persisted\n"
+                        + "Command approval must be created by the Agent runtime before tool delegation.");
             }
             return ToolResult.failed("command blocked by restricted command policy\n"
                     + "reason=" + classification.reasonCode().name().toLowerCase() + "\n"

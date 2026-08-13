@@ -17,6 +17,7 @@ import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.tool.AgentTool;
+import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.worker.SandboxWorker;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,7 +43,10 @@ class CommandToolWorkerTest {
 
         assertSuccessful(new RunCommandTool(worker), context, commandArgs("echo worker"));
         assertSuccessful(new BashTool(worker), context, commandArgs("echo worker"));
-        assertApprovalRequired(new RunTestsTool(worker), context, new JsonObject());
+        // run_tests 的服务端验证命令（mvn）需要 runtime 持久化审批后才能执行，工具直连必须拒绝。
+        ToolResult verification = new RunTestsTool(worker).execute(context, new JsonObject());
+        assertFalse(verification.isSuccess());
+        assertTrue(verification.getContent().contains("runtime_protocol_error=command_approval_not_persisted"));
         assertSuccessful(new ExecuteCodeTool(worker), context, codeArgs());
 
         verify(worker, times(3)).execute(any(), any(), any());
@@ -62,7 +66,8 @@ class CommandToolWorkerTest {
 
         ArgumentCaptor<ProcessExecutionRequest> request = ArgumentCaptor.forClass(ProcessExecutionRequest.class);
         verify(worker).execute(any(), request.capture(), any());
-        assertEquals(java.util.List.of("echo", "worker"), request.getValue().command());
+        assertEquals(java.util.List.of("/bin/bash", "--noprofile", "--norc", "-lc", "echo worker"),
+                request.getValue().command());
     }
 
     @Test
@@ -80,7 +85,9 @@ class CommandToolWorkerTest {
 
         assertSuccessful(new RunCommandTool(worker), context, commandArgs("echo worker"));
         assertSuccessful(new BashTool(worker), context, commandArgs("echo worker"));
-        assertApprovalRequired(new RunTestsTool(worker), context, new JsonObject());
+        // run_tests 的服务端验证命令需要 runtime 审批；未经审批的工具直连必须拒绝且不得转发 token。
+        ToolResult verification = new RunTestsTool(worker).execute(context, new JsonObject());
+        assertFalse(verification.isSuccess());
         assertSuccessful(new ExecuteCodeTool(worker), context, codeArgs());
 
         ArgumentCaptor<CancellationToken> tokenCaptor = ArgumentCaptor.forClass(CancellationToken.class);
@@ -97,17 +104,15 @@ class CommandToolWorkerTest {
         JsonObject args = commandArgs("rm -rf unsafe");
         args.addProperty("allow_dangerous", true);
 
-        assertFalse(new RunCommandTool(worker).execute(context, args).isSuccess());
-        assertTrue(new RunCommandTool(worker).execute(context, args).isApprovalRequired());
+        ToolResult result = new RunCommandTool(worker).execute(context, args);
+        assertFalse(result.isSuccess());
+        assertFalse(result.isApprovalRequired());
+        assertTrue(result.getContent().contains("runtime_protocol_error=command_approval_not_persisted"));
         verify(worker, times(0)).execute(any(), any(), any());
     }
 
     private void assertSuccessful(AgentTool tool, AgentContext context, JsonObject args) throws Exception {
         assertTrue(tool.execute(context, args).isSuccess());
-    }
-
-    private void assertApprovalRequired(AgentTool tool, AgentContext context, JsonObject args) throws Exception {
-        assertTrue(tool.execute(context, args).isApprovalRequired());
     }
 
     private JsonObject commandArgs(String command) {

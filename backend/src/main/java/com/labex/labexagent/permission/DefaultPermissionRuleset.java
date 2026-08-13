@@ -26,6 +26,12 @@ public class DefaultPermissionRuleset {
             new PermissionRule("bash", "git push*", PermissionAction.ASK)
     );
 
+    /** Explicit unsafe-local opt-in. Project checkout and external-directory boundaries remain elsewhere. */
+    private static final List<PermissionRule> FULL_ACCESS_BUILD_RULES = List.of(
+            new PermissionRule("*", "*", PermissionAction.ALLOW),
+            new PermissionRule("repo_clone", "*", PermissionAction.DENY)
+    );
+
     public static final Map<String, List<PermissionRule>> AGENT_RULES = Map.of(
             "build", BUILD_RULES,
             "agent", BUILD_RULES,
@@ -84,6 +90,14 @@ public class DefaultPermissionRuleset {
     );
 
     public static List<PermissionRule> getRulesForAgent(String mode) {
+        return getRulesForAgent(mode, "opencode");
+    }
+
+    /** Profile only changes unrestricted build/agent policy; plan and explore remain capability-restricted. */
+    public static List<PermissionRule> getRulesForAgent(String mode, String permissionProfile) {
+        if (("build".equals(mode) || "agent".equals(mode)) && "full_access".equalsIgnoreCase(permissionProfile)) {
+            return FULL_ACCESS_BUILD_RULES;
+        }
         return AGENT_RULES.getOrDefault(mode, DENY_ALL_RULES);
     }
 }

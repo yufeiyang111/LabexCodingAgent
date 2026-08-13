@@ -32,7 +32,7 @@ $h2PortProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $h2PortProbe.Start()
 $h2ServerPort = ([Net.IPEndPoint]$h2PortProbe.LocalEndpoint).Port
 $h2PortProbe.Stop()
-$h2JdbcUrl = "jdbc:h2:tcp://127.0.0.1:$h2ServerPort/./labex-agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_ON_EXIT=FALSE"
+$h2JdbcUrl = "jdbc:h2:tcp://127.0.0.1:$h2ServerPort/$($databaseRoot.Replace('\', '/'))/labex-agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_ON_EXIT=FALSE"
 New-Item -ItemType Directory -Force -Path $databaseRoot | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $backendArchive = [IO.Compression.ZipFile]::OpenRead($JarPath)
@@ -142,6 +142,7 @@ function Start-AcceptanceDatabase {
     $stdout = Join-Path $logRoot 'h2-server-out.log'
     $stderr = Join-Path $logRoot 'h2-server-err.log'
     $arguments = @(
+        '-Xms64m', '-Xmx256m', '-XX:MaxMetaspaceSize=96m', '-XX:ReservedCodeCacheSize=32m',
         '-cp', $h2JarPath, 'org.h2.tools.Server', '-tcp', '-tcpPort', [string]$h2ServerPort,
         '-baseDir', $databaseRoot, '-ifNotExists'
     )
@@ -162,13 +163,28 @@ function Invoke-AcceptanceSql {
     $previousErrorAction = $ErrorActionPreference
     try {
         # Windows PowerShell 5 会把 Java 的普通 stderr 提示包装成 ErrorRecord；真实成败只看进程退出码。
+        # H2 Shell 对 SQL 错误仍返回 exit 0，只打印 "Error:" 行；必须扫描输出，否则失败的 DELETE/INSERT 会被静默吞掉。
         $ErrorActionPreference = 'Continue'
-        $output = @(& java -cp $h2JarPath org.h2.tools.Shell -url $h2JdbcUrl -user sa -sql $Sql 2>&1)
-        $exitCode = $LASTEXITCODE
+        $attempt = 0
+        $maxAttempts = 6
+        while ($true) {
+            $attempt++
+            $output = @(& java -cp $h2JarPath org.h2.tools.Shell -url $h2JdbcUrl -user sa -sql $Sql 2>&1)
+            $exitCode = $LASTEXITCODE
+            $errorLines = @($output | Where-Object { $_ -match '^\s*Error:' })
+            if ($exitCode -eq 0 -and $errorLines.Count -eq 0) { break }
+            $errorText = ($errorLines -join "`n")
+            $lockRetryable = $errorText -match 'Timeout trying to lock|LockTimeoutException|deadlock|TimeoutException|Concurrent update|concurrent update'
+            if ($lockRetryable -and $attempt -lt $maxAttempts) {
+                Start-Sleep -Milliseconds 800
+                continue
+            }
+            break
+        }
     } finally {
         $ErrorActionPreference = $previousErrorAction
     }
-    if ($exitCode -ne 0) {
+    if ($exitCode -ne 0 -or $errorLines.Count -gt 0) {
         throw "Acceptance SQL failed with exitCode=$exitCode`n$($output -join "`n")"
     }
     return $output
@@ -214,6 +230,7 @@ function Start-AcceptanceBackend {
     $stdout = Join-Path $logRoot "$Profile-out.log"
     $stderr = Join-Path $logRoot "$Profile-err.log"
     $arguments = @(
+        '-Xms64m', '-Xmx512m', '-XX:MaxMetaspaceSize=256m', '-XX:ReservedCodeCacheSize=128m',
         '-Dfile.encoding=UTF-8',
         '-Dlabex.acceptance.hold.ms=12000',
         '-Dlabex.acceptance.compaction.hold.ms=12000',
@@ -375,7 +392,7 @@ function Invoke-AgentStream {
 function Get-NextContextPreviewSectionContent {
     param(
         [Parameter(Mandatory)][string]$ConversationId,
-        [string]$Key = 'compactedContext'
+        [string]$Key = 'conversationMemory'
     )
     $preview = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$ConversationId/context-preview" -Method POST -Body @{
         modelConfigId = $script:configId
@@ -1758,11 +1775,18 @@ WHERE compaction_id = (
     $legacyHistorySourceHitsBefore = Get-AcceptanceSqlScalar -Sql (
         "SELECT COALESCE((SELECT source_item_hit_count FROM t_agent_legacy_migration_gate " +
         "WHERE reader_key = 'legacy_history'), 0)")
-    $legacyHistory = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$legacyConversationId/messages?limit=20"
+    $legacyRowProbe = (Invoke-AcceptanceSql -Sql (
+        "SELECT conversation_id, student_id, project_id, status, history_projection_version " +
+        "FROM t_agent_conversation WHERE conversation_id = '$legacyConversationId'") | Out-String)
+    try {
+        $legacyHistory = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$legacyConversationId/messages?limit=20"
+    } catch {
+        throw "Legacy first read failed with row probe: $legacyRowProbe"
+    }
     $legacyTurns = @($legacyHistory.turns)
     if ([string]$legacyHistory.projectionVersion -ne 'durable-task-history-v1' -or
         -not [bool]$legacyHistory.legacyMigrated -or $legacyTurns.Count -ne 1) {
-        throw "Legacy history did not migrate into one durable task turn: $($legacyHistory | ConvertTo-Json -Depth 20 -Compress)"
+        throw "Legacy history did not migrate into one durable task turn: probe=$legacyRowProbe response=$($legacyHistory | ConvertTo-Json -Depth 20 -Compress)"
     }
     $legacyTurn = $legacyTurns[0]
     $legacyTaskId = [long]$legacyTurn.taskId
@@ -1809,7 +1833,21 @@ WHERE compaction_id = (
     $evidence.legacyHistoryReaderHitOnce = $true
     $evidence.legacyHistoryMigrationTaskId = $legacyTaskId
 
-    Invoke-AcceptanceSql -Sql "DELETE FROM t_agent_message WHERE conversation_id = '$legacyConversationId'" | Out-Null
+    # 删除 legacy 行并验证：H2 Shell 对 0 行 DELETE 仍返回 exit 0 且无错误，必须用 Update count 核对，
+    # 否则偶发的锁/可见性抖动会把失败的清理静默吞掉，后续重启断言拿到 rows=3。
+    $legacyRowsBeforeDelete = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$legacyConversationId'"
+    $legacyDeleteOutput = @()
+    $legacyDeleteAttempt = 0
+    $legacyRowsRemaining = $legacyRowsBeforeDelete
+    while ($legacyRowsRemaining -ne 0 -and $legacyDeleteAttempt -lt 4) {
+        $legacyDeleteAttempt++
+        $legacyDeleteOutput = @(Invoke-AcceptanceSql -Sql "DELETE FROM t_agent_message WHERE conversation_id = '$legacyConversationId'")
+        $legacyRowsRemaining = Get-AcceptanceSqlScalar -Sql "SELECT COUNT(*) FROM t_agent_message WHERE conversation_id = '$legacyConversationId'"
+        if ($legacyRowsRemaining -ne 0) { Start-Sleep -Milliseconds 600 }
+    }
+    if ($legacyRowsRemaining -ne 0) {
+        throw "Legacy message cleanup did not remove the rows: before=$legacyRowsBeforeDelete remaining=$legacyRowsRemaining attempts=$legacyDeleteAttempt deleteOutput=$($legacyDeleteOutput -join ' | ')"
+    }
     Restart-AcceptanceBackend
     $legacyAfterRestart = Invoke-ApiData -Path "/student/projects/$projectId/agent/conversations/$legacyConversationId/messages?limit=20"
     $legacyRestartTurns = @($legacyAfterRestart.turns)
@@ -1827,7 +1865,7 @@ WHERE compaction_id = (
         $legacyHistoryHitAfterRestart -ne $legacyHistoryHitAfterFirstRead -or
         -not $legacyRestartJson.Contains('legacy-final-visible') -or
         $legacyRestartJson.Contains('legacy-private-reasoning')) {
-        throw "Migrated history did not survive legacy-row deletion/JVM restart or re-hit the reader: $legacyRestartJson"
+        throw "Migrated history did not survive legacy-row deletion/JVM restart or re-hit the reader: rows=$legacyRowsAfterDelete turns=$($legacyRestartTurns.Count) tasks=$legacyTasksAfterRestart events=$legacyEventsAfterRestart hitBefore=$legacyHistoryHitAfterFirstRead hitAfterRestart=$legacyHistoryHitAfterRestart json=$legacyRestartJson"
     }
     $evidence.legacyHistoryMigrationRestart = $true
 
@@ -1933,6 +1971,7 @@ WHERE compaction_id = (
     }
 
     $evidence | ConvertTo-Json -Depth 10
+    $script:evidenceReported = $true
 } finally {
     try {
         if ($backendProcess -and -not $backendProcess.HasExited -and $token) {
@@ -1950,5 +1989,16 @@ WHERE compaction_id = (
     }
     try { Stop-AcceptanceBackend } catch { Write-Warning $_.Exception.Message }
     try { Stop-AcceptanceDatabase } catch { Write-Warning "Acceptance database shutdown failed: $($_.Exception.Message)" }
+    if (-not $script:evidenceReported -and $databaseRoot -and (Test-Path -LiteralPath $databaseRoot)) {
+        # 失败时保留数据库现场供事后排查（偶发 legacy 清理竞态）。
+        $preserveRoot = Join-Path ([IO.Path]::GetTempPath()) "labex-agent-db-preserve-$runId"
+        try {
+            New-Item -ItemType Directory -Force -Path $preserveRoot | Out-Null
+            Copy-Item -Path (Join-Path $databaseRoot '*') -Destination $preserveRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "[preserve] acceptance database copied to $preserveRoot"
+        } catch {
+            Write-Warning "Acceptance database preservation failed: $($_.Exception.Message)"
+        }
+    }
     try { Remove-OwnedWorkspace } catch { Write-Warning "Acceptance workspace cleanup failed: $($_.Exception.Message)" }
 }

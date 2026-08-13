@@ -68,6 +68,7 @@ function Start-AcceptanceDatabase {
     $stdout = Join-Path $logRoot 'h2-server-out.log'
     $stderr = Join-Path $logRoot 'h2-server-err.log'
     $arguments = @(
+        '-Xms64m', '-Xmx256m', '-XX:MaxMetaspaceSize=96m', '-XX:ReservedCodeCacheSize=32m',
         '-cp', $h2JarPath, 'org.h2.tools.Server', '-tcp', '-tcpPort', [string]$h2ServerPort,
         '-baseDir', $databaseRoot, '-ifNotExists'
     )
@@ -138,7 +139,7 @@ $backendArguments = @(
     "--labex-agent.project-base-path=$workspaceRoot",
     "--labex-agent.instance-id=browser-acceptance-$runId",
     '--spring.datasource.driver-class-name=org.h2.Driver',
-    "--spring.datasource.url=jdbc:h2:tcp://127.0.0.1:$h2ServerPort/./labex-agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_ON_EXIT=FALSE",
+    "--spring.datasource.url=jdbc:h2:tcp://127.0.0.1:$h2ServerPort/$($databaseRoot.Replace('\', '/'))/labex-agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_ON_EXIT=FALSE",
     '--spring.datasource.username=sa',
     '--spring.datasource.password=',
     "--spring.sql.init.schema-locations=file:$($h2SchemaPath.Replace('\', '/'))"

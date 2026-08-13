@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.labex.entity.CommandApproval;
+import com.labex.entity.CommandAuditEvent;
 import com.labex.mapper.CommandApprovalMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -162,6 +163,49 @@ class CommandApprovalServiceTest {
 
         assertTrue(service.consume(consumeRequest()));
         assertFalse(service.consume(consumeRequest()));
+    }
+
+    @Test
+    void pendingExecutionIsTrueWhileApprovedButNotYetExecuted() {
+        CommandApprovalMapper mapper = mock(CommandApprovalMapper.class);
+        when(mapper.selectOne(any())).thenReturn(persisted("approved"));
+        CommandApprovalService service = new CommandApprovalService(mapper);
+
+        assertTrue(service.hasPendingExecution(71L));
+    }
+
+    @Test
+    void pendingExecutionIsTrueWhileConsumedButStillRunning() {
+        CommandApprovalMapper mapper = mock(CommandApprovalMapper.class);
+        when(mapper.selectOne(any())).thenReturn(persisted("consumed"));
+        CommandAuditService auditService = mock(CommandAuditService.class);
+        when(auditService.findLatestExecutionOutcome("approval-71")).thenReturn(null);
+        CommandApprovalService service = new CommandApprovalService(mapper, auditService);
+
+        assertTrue(service.hasPendingExecution(71L));
+    }
+
+    @Test
+    void pendingExecutionIsFalseAfterConsumedExecutionFinished() {
+        CommandApprovalMapper mapper = mock(CommandApprovalMapper.class);
+        when(mapper.selectOne(any())).thenReturn(persisted("consumed"));
+        CommandAuditService auditService = mock(CommandAuditService.class);
+        CommandAuditEvent outcome = new CommandAuditEvent();
+        outcome.setExecutionStatus("completed");
+        when(auditService.findLatestExecutionOutcome("approval-71")).thenReturn(outcome);
+        CommandApprovalService service = new CommandApprovalService(mapper, auditService);
+
+        assertFalse(service.hasPendingExecution(71L));
+    }
+
+    @Test
+    void pendingExecutionIsFalseWithoutAnyApproval() {
+        CommandApprovalMapper mapper = mock(CommandApprovalMapper.class);
+        when(mapper.selectOne(any())).thenReturn(null);
+        CommandApprovalService service = new CommandApprovalService(mapper);
+
+        assertFalse(service.hasPendingExecution(71L));
+        assertFalse(service.hasPendingExecution(null));
     }
 
     private ArgumentCaptor<UpdateWrapper<CommandApproval>> updateCaptor() {

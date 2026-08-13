@@ -43,7 +43,7 @@ public class LspSymbolsTool implements AgentTool {
         LspSessionManager.LspSymbolsResult result = lspSessionManager.documentSymbols(context.getWorkspaceRoot(), file);
         if (!result.available()) {
             return ToolResult.failed("Real LSP unavailable: " + result.message()
-                    + "\nRun scripts/setup-lsp.ps1, then restart backend.");
+                    + "\nCheck the configured language-server command inside the active worker; after changing it, restart the backend.");
         }
         int max = Math.min(300, Math.max(1, ToolSupport.intArg(args, "max_symbols", 120)));
         var symbols = result.symbols().stream().limit(max).toList();

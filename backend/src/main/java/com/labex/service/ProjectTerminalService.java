@@ -6,6 +6,8 @@ import com.labex.labexagent.commandsecurity.StatefulCommandRedactor;
 import com.labex.labexagent.commandsecurity.DirectCommandTokenizer;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.execution.WorkerShellExecutor;
+import com.labex.labexagent.runtime.AgentExecutionProperties;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.worker.SandboxWorker;
 import com.labex.labexagent.worker.WorkerRunSpec;
@@ -30,11 +32,21 @@ import org.springframework.stereotype.Service;
 @Service
 public class ProjectTerminalService {
     private static final Logger log = LoggerFactory.getLogger(ProjectTerminalService.class);
+    private static final int MAX_OUTPUT_CHARS = 60_000;
+
     private final SandboxWorker sandboxWorker;
+    private final AgentExecutionProperties executionProperties;
     private final Map<String, TerminalSession> sessions = new ConcurrentHashMap<>();
 
+    /** Compatibility constructor: managed terminal uses the OpenCode-first Shell profile. */
     public ProjectTerminalService(SandboxWorker sandboxWorker) {
+        this(sandboxWorker, new AgentExecutionProperties());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProjectTerminalService(SandboxWorker sandboxWorker, AgentExecutionProperties executionProperties) {
         this.sandboxWorker = sandboxWorker;
+        this.executionProperties = executionProperties == null ? new AgentExecutionProperties() : executionProperties;
     }
 
     public List<TerminalSession> list(Integer studentId, Integer projectId) {
@@ -80,23 +92,43 @@ public class ProjectTerminalService {
         session.lastCommand = command;
         session.exitCode = null;
         session.running = true;
+        session.executionStartedAtMillis = System.currentTimeMillis();
+        session.outputCharCount = 0L;
         session.append("\n$ " + command + "\n");
-        List<String> cmd = DirectCommandTokenizer.tokenize(command);
         int timeout = Math.min(600, Math.max(1, timeoutSeconds));
         WorkerRunSpec run = WorkerRunSpec.forWorkspace("terminal-" + session.sessionId,
-                workspacePaths(project).workspaceRoot());
-        ProcessExecutionRequest request = new ProcessExecutionRequest(
-                cmd, cwd, Duration.ofSeconds(timeout), 60_000);
+                workspacePaths(project).workspaceRoot(), executionProperties.isNetworkDefaultEnabled());
+        ProcessExecutionRequest request;
+        WorkerShellExecutor shellExecutor = null;
+        WorkerShellExecutor.PreparedExecution prepared = null;
+        String shell;
+        if (executionProperties.isSafeProfile()) {
+            request = new ProcessExecutionRequest(
+                    DirectCommandTokenizer.tokenize(command), cwd, Duration.ofSeconds(timeout), MAX_OUTPUT_CHARS);
+            shell = "direct";
+        } else {
+            shellExecutor = new WorkerShellExecutor(sandboxWorker);
+            prepared = shellExecutor.prepare(run, command, cwd, Duration.ofSeconds(timeout), MAX_OUTPUT_CHARS, null);
+            request = prepared.request();
+            shell = prepared.descriptor().shellName();
+        }
+        String workdir = relativeWorkingDirectory(project, cwd);
         if (!longRunning) {
-            ProcessExecutionResult result = sandboxWorker.execute(run, request, CancellationToken.none());
+            ProcessExecutionResult result = shellExecutor == null
+                    ? sandboxWorker.execute(run, request, CancellationToken.none())
+                    : shellExecutor.execute(run, prepared, CancellationToken.none());
             session.running = false;
             session.exitCode = result.exitCode();
+            session.lastExecution = TerminalExecution.from(result, shell, workdir, timeout);
             if (!result.output().isBlank()) {
                 session.append(result.output());
             }
-            return new TerminalRunResult(false, session.exitCode, session.snapshot(), session);
+            return new TerminalRunResult(false, session.exitCode, session.snapshot(), session, session.lastExecution);
         }
-        SandboxWorker.WorkerProcess process = sandboxWorker.startProcess(run, request);
+        SandboxWorker.WorkerProcess process = shellExecutor == null
+                ? sandboxWorker.startProcess(run, request)
+                : shellExecutor.start(run, prepared);
+        session.lastExecution = TerminalExecution.running(shell, workdir, timeout);
         session.process = process;
         this.startOutputReader(session, process);
         if (longRunning) {
@@ -106,12 +138,22 @@ public class ProjectTerminalService {
     }
 
     public void stop(TerminalSession session) {
+        boolean wasRunning = session.running || (session.process != null && session.process.isAlive());
+        if (!wasRunning) {
+            return;
+        }
+        // 先把会话标记为 cancelled，再终止进程；输出 reader 的收敛逻辑只会覆盖 running 状态。
+        session.running = false;
+        session.exitCode = -1;
+        if (session.lastExecution != null && "running".equals(session.lastExecution.status())) {
+            session.lastExecution = new TerminalExecution("cancelled", session.lastExecution.shell(),
+                    session.lastExecution.workdir(), -1, currentExecutionDurationMs(session), false,
+                    session.outputCharCount, session.lastExecution.timeoutSeconds());
+        }
+        session.append("\n[Stopped]\n");
         if (session.process != null && session.process.isAlive()) {
             session.process.terminate();
         }
-        session.running = false;
-        session.exitCode = -1;
-        session.append("\n[Stopped]\n");
     }
 
     public void remove(TerminalSession session) {
@@ -135,6 +177,13 @@ public class ProjectTerminalService {
                     Integer exitCode = process.exitCode();
                     if (exitCode != null) {
                         session.exitCode = exitCode;
+                        if (session.lastExecution != null && "running".equals(session.lastExecution.status())) {
+                            session.lastExecution = new TerminalExecution(
+                                    Integer.valueOf(0).equals(exitCode) ? "succeeded" : "failed",
+                                    session.lastExecution.shell(), session.lastExecution.workdir(), exitCode,
+                                    currentExecutionDurationMs(session), false, session.outputCharCount,
+                                    session.lastExecution.timeoutSeconds());
+                        }
                         session.append("\nexit=" + session.exitCode + "\n");
                     }
                 }
@@ -142,6 +191,14 @@ public class ProjectTerminalService {
         }, "project-terminal-reader-" + session.sessionId);
         thread.setDaemon(true);
         thread.start();
+    }
+
+    private long currentExecutionDurationMs(TerminalSession session) {
+        long startedAt = session.executionStartedAtMillis;
+        if (startedAt <= 0L) {
+            return 0L;
+        }
+        return Math.max(0L, System.currentTimeMillis() - startedAt);
     }
 
     private Path resolveCwd(StudentProject project, String path) {
@@ -194,6 +251,16 @@ public class ProjectTerminalService {
         }
     }
 
+    private String relativeWorkingDirectory(StudentProject project, Path workingDirectory) {
+        Path root = workspacePaths(project).workspaceRoot();
+        Path normalized = workingDirectory.toAbsolutePath().normalize();
+        if (!normalized.startsWith(root)) {
+            return ".";
+        }
+        String relative = root.relativize(normalized).toString().replace('\\', '/');
+        return relative.isBlank() ? "." : relative;
+    }
+
     private SecureWorkspacePath workspacePaths(StudentProject project) {
         if (project == null || project.getWorkspacePath() == null || project.getWorkspacePath().isBlank()) {
             throw new IllegalArgumentException("Project workspace is unavailable");
@@ -208,10 +275,13 @@ public class ProjectTerminalService {
         public String name;
         public String cwd;
         public String lastCommand;
-        public Integer exitCode;
-        public boolean running;
+        public volatile Integer exitCode;
+        public volatile boolean running;
         public LocalDateTime createdAt;
         public SandboxWorker.WorkerProcess process;
+        public volatile TerminalExecution lastExecution;
+        public long executionStartedAtMillis;
+        public volatile long outputCharCount;
         public List<String> output = new java.util.ArrayList<>();
         private final StatefulCommandRedactor outputRedactor = new StatefulCommandRedactor();
 
@@ -220,6 +290,7 @@ public class ProjectTerminalService {
         }
 
         public synchronized void appendOutputChunk(String chunk) {
+            outputCharCount += chunk.length();
             String redacted = outputRedactor.append(chunk);
             if (!redacted.isEmpty()) {
                 output.add(redacted);
@@ -238,20 +309,49 @@ public class ProjectTerminalService {
         }
     }
 
+    public record TerminalExecution(
+            String status,
+            String shell,
+            String workdir,
+            Integer exitCode,
+            long durationMs,
+            boolean truncated,
+            long outputChars,
+            int timeoutSeconds) {
+        static TerminalExecution from(ProcessExecutionResult result, String shell, String workdir, int timeoutSeconds) {
+            return new TerminalExecution(result.status().name().toLowerCase(java.util.Locale.ROOT), shell, workdir,
+                    result.exitCode(), result.durationMs(), result.truncated(), result.outputChars(), timeoutSeconds);
+        }
+
+        static TerminalExecution running(String shell, String workdir, int timeoutSeconds) {
+            return new TerminalExecution("running", shell, workdir, null, 0L, false, 0L, timeoutSeconds);
+        }
+    }
+
     public static class TerminalRunResult {
         private final boolean running;
         private final Integer exitCode;
         private final String output;
         private final TerminalSession session;
+        private final TerminalExecution execution;
         TerminalRunResult(boolean running, Integer exitCode, String output) {
-            this.running = running; this.exitCode = exitCode; this.output = output; this.session = null;
+            this(running, exitCode, output, null, null);
         }
         TerminalRunResult(boolean running, Integer exitCode, String output, TerminalSession session) {
-            this.running = running; this.exitCode = exitCode; this.output = output; this.session = session;
+            this(running, exitCode, output, session, session == null ? null : session.lastExecution);
+        }
+        TerminalRunResult(boolean running, Integer exitCode, String output, TerminalSession session,
+                          TerminalExecution execution) {
+            this.running = running;
+            this.exitCode = exitCode;
+            this.output = output;
+            this.session = session;
+            this.execution = execution;
         }
         public boolean running() { return running; }
         public Integer exitCode() { return exitCode; }
         public String output() { return output; }
         public TerminalSession session() { return session; }
+        public TerminalExecution execution() { return execution; }
     }
 }

@@ -1,0 +1,11 @@
+{
+  "name": "opencode-shell-fixture-frontend",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "is-number": "7.0.0"
+  },
+  "scripts": {
+    "build": "node build.mjs"
+  }
+}

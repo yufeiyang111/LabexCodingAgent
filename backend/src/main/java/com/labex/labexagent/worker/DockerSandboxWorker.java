@@ -4,6 +4,7 @@ import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.execution.WorkerShellDescriptor;
 import com.labex.labexagent.execution.ProcessExecutor;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.terminal.TerminalSession;
@@ -35,16 +36,22 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
     private final String configuredImage;
     private final Environment environment;
     private final ProcessExecutor processExecutor;
+    private final java.util.concurrent.Semaphore containerSlots;
+    private final boolean wslWorkspaceMapping;
 
     @Autowired
     public DockerSandboxWorker(
             ProcessExecutor processExecutor,
             @Value("${labex-agent.worker.docker.image:${LABEX_AGENT_WORKER_DOCKER_IMAGE:}}") String configuredImage,
+            @Value("${labex-agent.worker.docker.max-concurrent-containers:8}") int maxConcurrentContainers,
+            @Value("${labex-agent.worker.docker.wsl-workspace-mapping:false}") boolean wslWorkspaceMapping,
             Environment environment) {
         super(processExecutor);
         this.processExecutor = processExecutor;
         this.configuredImage = configuredImage == null ? "" : configuredImage.trim();
         this.environment = environment;
+        this.containerSlots = new java.util.concurrent.Semaphore(Math.max(1, maxConcurrentContainers));
+        this.wslWorkspaceMapping = wslWorkspaceMapping;
     }
 
     public DockerSandboxWorker(ProcessExecutor processExecutor) {
@@ -52,6 +59,13 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
         this.processExecutor = processExecutor;
         this.configuredImage = "";
         this.environment = null;
+        this.containerSlots = new java.util.concurrent.Semaphore(8);
+        this.wslWorkspaceMapping = false;
+    }
+
+    /** 兼容测试与旧调用方的三参构造器；Spring 通过五参 @Autowired 构造器注入。 */
+    public DockerSandboxWorker(ProcessExecutor processExecutor, String configuredImage, Environment environment) {
+        this(processExecutor, configuredImage, 8, false, environment);
     }
 
     @PostConstruct
@@ -74,6 +88,21 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
     public ProcessExecutionResult execute(
             WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken,
             ProcessExecutionObserver observer) {
+        if (!containerSlots.tryAcquire()) {
+            return new ProcessExecutionResult(
+                    ExecutionStatus.INFRASTRUCTURE_ERROR, null, 0,
+                    "docker worker concurrency limit reached; retry after active containers finish", false);
+        }
+        try {
+            return executeWithContainerSlot(run, request, cancellationToken, observer);
+        } finally {
+            containerSlots.release();
+        }
+    }
+
+    private ProcessExecutionResult executeWithContainerSlot(
+            WorkerRunSpec run, ProcessExecutionRequest request, CancellationToken cancellationToken,
+            ProcessExecutionObserver observer) {
         try {
             prepare(run);
             requireWorkspacePath(run, request.workingDirectory());
@@ -85,7 +114,8 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
                         run.workspaceRoot(),
                         request.timeout(),
                         request.maxOutputChars(),
-                        run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));
+                        run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()),
+                        request.outputArtifactPath());
                 return processExecutor.execute(
                         dockerRequest, cancellationToken, chunk -> { },
                         identity -> observer.onStarted(identity.withWorkerContext("docker", run.runId())));
@@ -124,6 +154,12 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
     @Override
     public boolean usesLinuxShell() {
         return true;
+    }
+
+    @Override
+    public WorkerShellDescriptor shellDescriptor(WorkerRunSpec run) {
+        return WorkerShellDescriptor.bash(
+                "linux-docker", "/bin/bash", "/workspace", run != null && run.policy().networkEnabled());
     }
 
     @Override
@@ -233,7 +269,7 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
         command.add("--cpus");
         command.add(String.format(java.util.Locale.ROOT, "%.3f", policy.cpuMillis() / 1000.0));
         command.add("--mount");
-        command.add("type=bind,src=" + run.workspaceRoot() + ",dst=/workspace");
+        command.add("type=bind,src=" + daemonWorkspacePath(run.workspaceRoot()) + ",dst=/workspace");
         command.add("--workdir");
         command.add(toContainerPath(run, request.workingDirectory()));
         appendRuntimeEnvironment(command);
@@ -242,6 +278,19 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
         command.add(configuredImage.isBlank() ? policy.containerImage() : configuredImage);
         command.addAll(toContainerCommand(run, request.command()));
         return List.copyOf(command);
+    }
+
+    /**
+     * Windows 控制面把 docker daemon 运行在 WSL 里时，daemon 只认识 /mnt/&lt;drive&gt; 路径；
+     * 开启 wsl-workspace-mapping 后把 D:\foo 转成 /mnt/d/foo。Linux 控制面不受影响。
+     */
+    private String daemonWorkspacePath(Path workspaceRoot) {
+        String path = workspaceRoot.toString();
+        if (!wslWorkspaceMapping || path.length() < 2 || path.charAt(1) != ':') {
+            return path;
+        }
+        char drive = Character.toLowerCase(path.charAt(0));
+        return "/mnt/" + drive + path.substring(2).replace('\\', '/');
     }
 
     private List<String> buildDockerProcessCommand(
@@ -279,7 +328,7 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
         command.add("--cpus");
         command.add(String.format(java.util.Locale.ROOT, "%.3f", policy.cpuMillis() / 1000.0));
         command.add("--mount");
-        command.add("type=bind,src=" + run.workspaceRoot() + ",dst=/workspace");
+        command.add("type=bind,src=" + daemonWorkspacePath(run.workspaceRoot()) + ",dst=/workspace");
         command.add("--workdir");
         command.add(toContainerPath(run, terminal.workingDirectory()));
         appendRuntimeEnvironment(command);

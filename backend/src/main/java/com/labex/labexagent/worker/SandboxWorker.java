@@ -1,6 +1,7 @@
 package com.labex.labexagent.worker;
 
 import com.labex.labexagent.execution.ProcessExecutionObserver;
+import com.labex.labexagent.execution.WorkerShellDescriptor;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.runtime.CancellationToken;
@@ -37,6 +38,19 @@ public interface SandboxWorker {
 
     default boolean usesLinuxShell() {
         return false;
+    }
+
+    /**
+     * 返回当前 Worker 的实际 Shell 能力。WSL/Docker 覆盖为 Bash，unsafe-local 按宿主平台选择。
+     * 该 descriptor 只描述执行环境，不承担权限或审批决策。
+     */
+    default WorkerShellDescriptor shellDescriptor(WorkerRunSpec run) {
+        boolean networkEnabled = run != null && run.policy().networkEnabled();
+        if (usesLinuxShell()) {
+            return WorkerShellDescriptor.bash("linux", "/bin/bash", "/workspace", networkEnabled);
+        }
+        String workspaceRoot = run == null ? "." : run.workspaceRoot().toString();
+        return WorkerShellDescriptor.powerShell("windows", "powershell.exe", workspaceRoot, networkEnabled);
     }
 
     default String workspaceUri(WorkerRunSpec run, Path path) {

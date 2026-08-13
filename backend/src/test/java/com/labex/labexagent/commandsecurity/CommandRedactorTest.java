@@ -8,13 +8,14 @@ class CommandRedactorTest {
 
     @Test
     void removesCommonSecretFormsBeforePublicSerialization() {
-        String source = "curl --token=top-secret Authorization Bearer abc123 "
+        String source = "curl --token=top-secret -Dtoken=jvm-secret Authorization Bearer abc123 "
                 + "\"apiKey\": \"json-secret\" ghp_abcdefgh";
 
         String redacted = CommandRedactor.redact(source);
 
         assertThat(redacted)
                 .doesNotContain("top-secret")
+                .doesNotContain("jvm-secret")
                 .doesNotContain("abc123")
                 .doesNotContain("json-secret")
                 .doesNotContain("ghp_abcdefgh")

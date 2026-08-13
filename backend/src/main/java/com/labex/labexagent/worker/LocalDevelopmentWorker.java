@@ -5,6 +5,7 @@ import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.ProcessCommandResolver;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.execution.WorkerShellDescriptor;
 import com.labex.labexagent.execution.ProcessExecutor;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.terminal.TerminalSession;
@@ -34,6 +35,16 @@ public class LocalDevelopmentWorker implements SandboxWorker {
     }
 
     @Override
+    public WorkerShellDescriptor shellDescriptor(WorkerRunSpec run) {
+        boolean networkEnabled = run != null && run.policy().networkEnabled();
+        String workspaceRoot = run == null ? "." : run.workspaceRoot().toString();
+        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")) {
+            return WorkerShellDescriptor.powerShell("windows", "powershell.exe", workspaceRoot, networkEnabled);
+        }
+        return WorkerShellDescriptor.bash("linux-local", "/bin/bash", workspaceRoot, networkEnabled);
+    }
+
+    @Override
     public WorkspaceVersion prepare(WorkerRunSpec run) throws IOException {
         SecureWorkspacePath paths = workspacePaths(run);
         Files.createDirectories(paths.resolveForCreate(".labex-agent/worker-tmp"));
@@ -58,7 +69,8 @@ public class LocalDevelopmentWorker implements SandboxWorker {
                     request.workingDirectory(),
                     request.timeout(),
                     request.maxOutputChars(),
-                    run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));
+                    run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()),
+                    request.outputArtifactPath());
             return processExecutor.execute(
                         safeRequest, cancellationToken, chunk -> { },
                         identity -> observer.onStarted(identity.withWorkerContext("local", run.runId())));

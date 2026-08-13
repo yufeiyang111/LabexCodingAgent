@@ -127,7 +127,7 @@ public class PermissionService {
             runInteractionService.createWaiting(new AgentRunInteractionService.WaitingInteraction(
                     request.getRequestId(), taskId, conversationId, sessionId, studentId, projectId,
                     "permission", payload, "permission-" + request.getRequestId(),
-                    LocalDateTime.now().plusMinutes(10)));
+                    LocalDateTime.now().plusMinutes(1)));
             return request;
         } catch (RuntimeException e) {
             pendingApprovals.remove(request.getRequestId());

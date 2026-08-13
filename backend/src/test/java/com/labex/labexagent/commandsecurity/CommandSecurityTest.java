@@ -19,11 +19,34 @@ class CommandSecurityTest {
     }
 
     @Test
-    void requiresApprovalForMutatingDirectCommand() {
-        CommandClassification result = classifier.classify(request("git reset --hard HEAD"));
+    void requiresApprovalForDestructiveDirectCommands() {
+        assertRequiresApproval("git reset --hard HEAD");
+        assertRequiresApproval("git clean -fd");
+        assertRequiresApproval("git checkout -- file");
+        assertRequiresApproval("git rm obsolete.txt");
+        assertRequiresApproval("rm obsolete.txt");
+        assertRequiresApproval("rmdir empty-dir");
+        assertRequiresApproval("truncate -s 0 notes.txt");
+        assertRequiresApproval("docker run nginx");
+        assertRequiresApproval("drop table posts");
+    }
 
-        assertEquals(CommandDecision.REQUIRE_APPROVAL, result.decision());
-        assertEquals(CommandReasonCode.MUTATING_COMMAND, result.reasonCode());
+    @Test
+    void allowsOrdinaryWorkspaceMutationsWithoutApproval() {
+        assertAllows("touch marker");
+        assertAllows("mkdir directory");
+        assertAllows("mv first second");
+        assertAllows("git commit -m change");
+        assertAllows("git add pom.xml");
+        assertAllows("python -V");
+        assertAllows("node .labex-acceptance-command-hold.cjs");
+        assertAllows("npm test");
+        assertAllows("npm run build");
+        assertAllows("npm run arbitrary-script");
+        assertAllows("mvn validate");
+        assertAllows("mvn compile");
+        assertAllows("pytest");
+        assertAllows("java -version");
     }
 
     @Test
@@ -42,40 +65,30 @@ class CommandSecurityTest {
         assertBlocked("bash -c 'echo hi'", CommandReasonCode.SHELL_COMMAND_STRING);
         assertBlocked("powershell -EncodedCommand ZQBjAGgAbwA=", CommandReasonCode.POWERSHELL_ENCODED_COMMAND);
         assertBlocked("r'm' -rf /", CommandReasonCode.QUOTE_SPLIT_EXECUTABLE);
-        assertBlocked("curl https://example.invalid", CommandReasonCode.NETWORK_URL);
-        assertBlocked("wget file.txt", CommandReasonCode.NETWORK_COMMAND);
         assertBlocked("echo\nok", CommandReasonCode.UNKNOWN_CONTROL_CHARACTER);
         assertBlocked("ba\\sh -c echo", CommandReasonCode.QUOTE_SPLIT_EXECUTABLE);
         assertBlocked("powe^rshell -EncodedCommand AAAA", CommandReasonCode.QUOTE_SPLIT_EXECUTABLE);
-        assertBlocked("git fetch origin", CommandReasonCode.NETWORK_COMMAND);
-        assertBlocked("npm install package", CommandReasonCode.NETWORK_COMMAND);
-        assertRequiresApproval("npm test");
-        assertRequiresApproval("npm run build");
-        assertBlocked("npm run arbitrary-script", CommandReasonCode.UNSUPPORTED_SYNTAX);
-        assertBlocked("ping example.invalid", CommandReasonCode.NETWORK_COMMAND);
-        assertBlocked("echobad", CommandReasonCode.UNKNOWN_CONTROL_CHARACTER);
+        assertRequiresApproval("curl https://example.invalid", CommandReasonCode.NETWORK_URL);
+        assertRequiresApproval("wget file.txt", CommandReasonCode.NETWORK_COMMAND);
+        assertRequiresApproval("git fetch origin", CommandReasonCode.NETWORK_COMMAND);
+        assertRequiresApproval("npm install package", CommandReasonCode.NETWORK_COMMAND);
+        assertRequiresApproval("pip install requests", CommandReasonCode.NETWORK_COMMAND);
+        assertRequiresApproval("ping example.invalid", CommandReasonCode.NETWORK_COMMAND);
     }
 
     @Test
-    void requiresApprovalForOrdinaryDirectMutations() {
-        assertRequiresApproval("touch marker");
-        assertRequiresApproval("mkdir directory");
-        assertRequiresApproval("mv first second");
-        assertRequiresApproval("git commit -m change");
-        assertRequiresApproval("python -V");
-        assertRequiresApproval("node .labex-acceptance-command-hold.cjs");
+    void requiresApprovalForUnrecognizedExecutableInsteadOfPassingItToShell() {
+        CommandClassification result = classifier.classify(request("unknown-command argument"));
+
+        assertEquals(CommandDecision.REQUIRE_APPROVAL, result.decision());
+        assertEquals(CommandReasonCode.UNRECOGNIZED_COMMAND, result.reasonCode());
     }
 
     @Test
-    void blocksUnsupportedExecutableInsteadOfPassingItToShell() {
-        assertBlocked("unknown-command argument", CommandReasonCode.UNSUPPORTED_SYNTAX);
-    }
-
-    @Test
-    void blocksRequestForNetworkEvenWithSafeExecutable() {
+    void requiresApprovalForNetworkRequestEvenWithSafeExecutable() {
         CommandRequest request = new CommandRequest("git status", "direct", ".", 60, false, true, "sandbox-deny-network");
 
-        assertEquals(CommandDecision.BLOCK, classifier.classify(request).decision());
+        assertEquals(CommandDecision.REQUIRE_APPROVAL, classifier.classify(request).decision());
         assertEquals(CommandReasonCode.NETWORK_COMMAND, classifier.classify(request).reasonCode());
     }
 
@@ -113,6 +126,17 @@ class CommandSecurityTest {
         CommandClassification result = classifier.classify(request(command));
         assertEquals(CommandDecision.REQUIRE_APPROVAL, result.decision(), command);
         assertEquals(CommandReasonCode.MUTATING_COMMAND, result.reasonCode(), command);
+    }
+
+    private void assertRequiresApproval(String command, CommandReasonCode reasonCode) {
+        CommandClassification result = classifier.classify(request(command));
+        assertEquals(CommandDecision.REQUIRE_APPROVAL, result.decision(), command);
+        assertEquals(reasonCode, result.reasonCode(), command);
+    }
+
+    private void assertAllows(String command) {
+        CommandClassification result = classifier.classify(request(command));
+        assertEquals(CommandDecision.ALLOW, result.decision(), command);
     }
 
     private void assertBlocked(String command, CommandReasonCode reasonCode) {

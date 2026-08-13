@@ -1,0 +1,9 @@
+﻿{
+  "name": "opencode-shell-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test.mjs",
+    "build": "node frontend/build.mjs"
+  }
+}
