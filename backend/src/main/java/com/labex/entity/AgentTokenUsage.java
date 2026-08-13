@@ -20,6 +20,8 @@ public class AgentTokenUsage {
     private Integer totalTokens;
     private Integer cachedTokens;
     private Integer cacheWriteTokens;
+    private Integer cacheHitTokens;
+    private Integer cacheMissTokens;
     private String cacheStatus;
     private Integer iteration;
     private String toolName;
@@ -71,6 +73,10 @@ public class AgentTokenUsage {
     public void setCachedTokens(Integer cachedTokens) { this.cachedTokens = cachedTokens; }
     public Integer getCacheWriteTokens() { return cacheWriteTokens; }
     public void setCacheWriteTokens(Integer cacheWriteTokens) { this.cacheWriteTokens = cacheWriteTokens; }
+    public Integer getCacheHitTokens() { return cacheHitTokens; }
+    public void setCacheHitTokens(Integer cacheHitTokens) { this.cacheHitTokens = cacheHitTokens; }
+    public Integer getCacheMissTokens() { return cacheMissTokens; }
+    public void setCacheMissTokens(Integer cacheMissTokens) { this.cacheMissTokens = cacheMissTokens; }
     public String getCacheStatus() { return cacheStatus; }
     public void setCacheStatus(String cacheStatus) { this.cacheStatus = cacheStatus; }
     public Integer getIteration() { return iteration; }

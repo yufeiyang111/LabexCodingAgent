@@ -1,6 +1,7 @@
 package com.labex.labexagent.runtime;
 
 import com.google.gson.Gson;
+import com.labex.labexagent.context.AgentRequestTokenEstimator;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,6 +19,8 @@ public class ContextUsageEstimator {
     private static final Pattern BEARER = Pattern.compile("(?i)\\bbearer\\s+[a-z0-9._~-]{10,}");
     private static final Pattern NAMED_SECRET = Pattern.compile(
             "(?i)\\b(api[_ -]?key|authorization|token|password|secret)\\s*[:=]\\s*([^\\s,;\\]}]+)");
+
+    private final AgentRequestTokenEstimator requestTokenEstimator = new AgentRequestTokenEstimator();
 
     public ContextUsageSnapshot estimate(String conversationId, String sessionId, String provider, String model,
                                          Integer contextWindowTokens, String systemPrompt, Object tools,
@@ -88,7 +91,7 @@ public class ContextUsageEstimator {
     }
 
     public int estimateTokens(String text) {
-        return text == null || text.isBlank() ? 0 : Math.max(1, text.length() / 3);
+        return requestTokenEstimator.estimateValue(text);
     }
 
     private boolean isCompactionSummary(String text) {

@@ -42,6 +42,9 @@ export function createTokenUsageState() {
     conversationTotal: 0,
     cachedTokens: 0,
     cacheWriteTokens: 0,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    missAwareReported: false,
     cacheStatus: 'not_reported',
     cacheTelemetryReported: false,
     cacheTelemetryCallCount: 0,
@@ -56,6 +59,8 @@ export function applyTokenUsageEvent(target, data = {}) {
   const promptTokens = finiteNumber(data.promptTokens)
   const cachedTokens = finiteNumber(data.cachedTokens)
   const cacheWriteTokens = finiteNumber(data.cacheWriteTokens)
+  const cacheHitTokens = finiteNumber(data.cacheHitTokens)
+  const cacheMissTokens = finiteNumber(data.cacheMissTokens)
   const incomingStatus = normalizeStatus(data.cacheStatus)
   const telemetryReported = data.cacheTelemetryReported === true || REPORTED_CACHE_STATUSES.has(incomingStatus)
 
@@ -68,6 +73,9 @@ export function applyTokenUsageEvent(target, data = {}) {
     : finiteNumber(data.conversationTotal, target.totalTokens)
   target.cachedTokens = finiteNumber(target.cachedTokens) + cachedTokens
   target.cacheWriteTokens = finiteNumber(target.cacheWriteTokens) + cacheWriteTokens
+  target.cacheHitTokens = finiteNumber(target.cacheHitTokens) + cacheHitTokens
+  target.cacheMissTokens = finiteNumber(target.cacheMissTokens) + cacheMissTokens
+  if (data.cacheMissTokens != null || data.cacheHitTokens != null) target.missAwareReported = true
   target.cacheTelemetryCallCount = finiteNumber(target.cacheTelemetryCallCount) + (telemetryReported ? 1 : 0)
   target.cacheReportedPromptTokens = finiteNumber(target.cacheReportedPromptTokens) + (telemetryReported ? promptTokens : 0)
   target.cacheTelemetryReported = target.cacheTelemetryCallCount > 0
@@ -76,9 +84,14 @@ export function applyTokenUsageEvent(target, data = {}) {
     target.cacheStatus = target.cachedTokens > 0
       ? 'hit'
       : target.cacheWriteTokens > 0 ? 'write_only' : 'miss'
-    target.cacheHitRate = target.cacheReportedPromptTokens > 0
-      ? Math.round(target.cachedTokens * 10000 / target.cacheReportedPromptTokens) / 100
-      : null
+    const missAwareDenominator = target.cachedTokens + target.cacheMissTokens
+    target.cacheHitRate = target.missAwareReported
+      ? (missAwareDenominator > 0
+        ? Math.round(target.cachedTokens * 10000 / missAwareDenominator) / 100
+        : null)
+      : (target.cacheReportedPromptTokens > 0
+        ? Math.round(target.cachedTokens * 10000 / target.cacheReportedPromptTokens) / 100
+        : null)
   } else {
     target.cacheStatus = incomingStatus
     target.cacheHitRate = null
@@ -97,6 +110,14 @@ export function resolveCacheTelemetryView(stats = null, live = null) {
     status,
     ...STATUS_META[status],
     hitRate,
-    showHitRate: REPORTED_CACHE_STATUSES.has(status) && hitRate !== null
+    showHitRate: REPORTED_CACHE_STATUSES.has(status) && hitRate !== null,
+    ledger: {
+      cacheReadTokens: finiteNumber(source.cachedTokens ?? source.totalCachedTokens),
+      cacheWriteTokens: finiteNumber(source.cacheWriteTokens ?? source.totalCacheWriteTokens),
+      nonCachedInputTokens: Math.max(0,
+        finiteNumber(source.promptTokens ?? source.totalPromptTokens)
+        - finiteNumber(source.cachedTokens ?? source.totalCachedTokens))
+    },
+    sessionScoped: true
   }
 }

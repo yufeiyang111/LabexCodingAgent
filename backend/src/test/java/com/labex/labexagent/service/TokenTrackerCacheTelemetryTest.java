@@ -11,6 +11,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.labex.entity.AgentTokenUsage;
 import com.labex.labexagent.llm.CacheTelemetryStatus;
 import com.labex.mapper.AgentTokenUsageMapper;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,25 @@ class TokenTrackerCacheTelemetryTest {
         assertEquals(60, stats.get("totalCacheWriteTokens"));
         assertEquals("hit", stats.get("cacheStatus"));
         assertEquals(40.0, stats.get("cacheHitRate"));
+    }
+
+    @Test
+    void exposesDailyCacheHitRateForTheStudentSummary() {
+        AgentTokenUsageMapper mapper = mock(AgentTokenUsageMapper.class);
+        AgentTokenUsage hit = usage(100, 40, CacheTelemetryStatus.HIT);
+        AgentTokenUsage miss = usage(100, 0, CacheTelemetryStatus.MISS);
+        hit.setCreateTime(LocalDateTime.of(2026, 8, 5, 10, 0));
+        miss.setCreateTime(LocalDateTime.of(2026, 8, 5, 11, 0));
+        when(mapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(hit, miss));
+        TokenTracker tracker = new TokenTracker(mapper);
+
+        Map<String, Object> stats = tracker.getStudentStats(1);
+
+        Map<?, ?> cacheByDay = (Map<?, ?>) stats.get("cacheByDay");
+        Map<?, ?> daily = (Map<?, ?>) cacheByDay.get("2026-08-05");
+        assertEquals(20.0, daily.get("cacheHitRate"));
+        assertEquals("hit", daily.get("cacheStatus"));
+        assertEquals(2, daily.get("cacheTelemetryCallCount"));
     }
 
     private AgentTokenUsage usage(int promptTokens, int cachedTokens, CacheTelemetryStatus status) {

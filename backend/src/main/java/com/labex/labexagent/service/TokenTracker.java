@@ -38,10 +38,22 @@ public class TokenTracker {
                        String provider, String model, int promptTokens, int completionTokens,
                        int totalTokens, int cachedTokens, int cacheWriteTokens,
                        CacheTelemetryStatus cacheStatus, int iteration, String toolName) {
+        record(conversationId, sessionId, studentId, projectId, provider, model,
+                promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, 0, 0,
+                cacheStatus, iteration, toolName);
+    }
+
+    public void record(String conversationId, String sessionId, Integer studentId, Integer projectId,
+                       String provider, String model, int promptTokens, int completionTokens,
+                       int totalTokens, int cachedTokens, int cacheWriteTokens,
+                       int cacheHitTokens, int cacheMissTokens,
+                       CacheTelemetryStatus cacheStatus, int iteration, String toolName) {
         AgentTokenUsage usage = new AgentTokenUsage(conversationId, sessionId, studentId, projectId,
                 provider, model, promptTokens, completionTokens, totalTokens, iteration, toolName);
         usage.setCachedTokens(cachedTokens);
         usage.setCacheWriteTokens(cacheWriteTokens);
+        usage.setCacheHitTokens(cacheHitTokens);
+        usage.setCacheMissTokens(cacheMissTokens);
         usage.setCacheStatus((cacheStatus == null ? CacheTelemetryStatus.NOT_REPORTED : cacheStatus).value());
         mapper.insert(usage);
     }
@@ -62,10 +74,15 @@ public class TokenTracker {
         int total = getInt(usageMap, "total_tokens");
         int cached = getInt(usageMap, "cached_tokens");
         int cacheWrite = getInt(usageMap, "cache_write_tokens");
+        int cacheHit = getInt(usageMap, "cache_hit_tokens");
+        int cacheMiss = getInt(usageMap, "cache_miss_tokens");
+        if (cacheHit == 0) cacheHit = cached;
+        if (cacheMiss == 0) cacheMiss = cacheWrite;
         if (total == 0) total = prompt + completion;
         if (total > 0) {
             record(conversationId, sessionId, studentId, projectId, provider, model,
-                    prompt, completion, total, cached, cacheWrite, cacheStatus, iteration, toolName);
+                    prompt, completion, total, cached, cacheWrite, cacheHit, cacheMiss,
+                    cacheStatus, iteration, toolName);
         }
     }
 
@@ -93,6 +110,8 @@ public class TokenTracker {
         int totalTokens = list.stream().mapToInt(u -> value(u.getTotalTokens())).sum();
         int totalCached = list.stream().mapToInt(u -> value(u.getCachedTokens())).sum();
         int totalCacheWrite = list.stream().mapToInt(u -> value(u.getCacheWriteTokens())).sum();
+        int totalCacheHit = list.stream().mapToInt(u -> value(u.getCacheHitTokens())).sum();
+        int totalCacheMiss = list.stream().mapToInt(u -> value(u.getCacheMissTokens())).sum();
         CacheAggregate cache = aggregateCache(list);
 
         Map<String, Integer> byTool = list.stream()
@@ -109,6 +128,8 @@ public class TokenTracker {
                     m.put("totalTokens", value(u.getTotalTokens()));
                     m.put("cachedTokens", value(u.getCachedTokens()));
                     m.put("cacheWriteTokens", value(u.getCacheWriteTokens()));
+                    m.put("cacheHitTokens", value(u.getCacheHitTokens()));
+                    m.put("cacheMissTokens", value(u.getCacheMissTokens()));
                     m.put("cacheStatus", statusOf(u).value());
                     m.put("toolName", u.getToolName());
                     m.put("time", u.getCreateTime() != null ? u.getCreateTime().toString() : null);
@@ -123,6 +144,8 @@ public class TokenTracker {
         stats.put("totalTokens", totalTokens);
         stats.put("totalCachedTokens", totalCached);
         stats.put("totalCacheWriteTokens", totalCacheWrite);
+        stats.put("totalCacheHitTokens", totalCacheHit);
+        stats.put("totalCacheMissTokens", totalCacheMiss);
         stats.put("cacheStatus", cache.status().value());
         stats.put("cacheTelemetryCallCount", cache.reportedCallCount());
         stats.put("cacheHitRate", cache.hitRate());
@@ -142,17 +165,32 @@ public class TokenTracker {
         int totalTokens = list.stream().mapToInt(u -> value(u.getTotalTokens())).sum();
         int totalCached = list.stream().mapToInt(u -> value(u.getCachedTokens())).sum();
         int totalCacheWrite = list.stream().mapToInt(u -> value(u.getCacheWriteTokens())).sum();
+        int totalCacheHit = list.stream().mapToInt(u -> value(u.getCacheHitTokens())).sum();
+        int totalCacheMiss = list.stream().mapToInt(u -> value(u.getCacheMissTokens())).sum();
         CacheAggregate cache = aggregateCache(list);
         Map<String, Integer> byModel = list.stream()
                 .filter(u -> u.getModel() != null)
                 .collect(Collectors.groupingBy(AgentTokenUsage::getModel,
                         Collectors.summingInt(u -> value(u.getTotalTokens()))));
 
-        Map<String, Integer> byDay = list.stream()
+        Map<String, List<AgentTokenUsage>> usagesByDay = list.stream()
                 .filter(u -> u.getCreateTime() != null)
                 .collect(Collectors.groupingBy(
                         u -> u.getCreateTime().toLocalDate().toString(),
-                        Collectors.summingInt(u -> value(u.getTotalTokens()))));
+                        TreeMap::new,
+                        Collectors.toList()));
+        Map<String, Integer> byDay = new TreeMap<>();
+        Map<String, Object> cacheByDay = new TreeMap<>();
+        usagesByDay.forEach((date, dayUsages) -> {
+            byDay.put(date, dayUsages.stream().mapToInt(u -> value(u.getTotalTokens())).sum());
+            CacheAggregate dailyCache = aggregateCache(dayUsages);
+            if (dailyCache.reportedCallCount() == 0) return;
+            Map<String, Object> dailyCacheStats = new LinkedHashMap<>();
+            dailyCacheStats.put("cacheStatus", dailyCache.status().value());
+            dailyCacheStats.put("cacheTelemetryCallCount", dailyCache.reportedCallCount());
+            dailyCacheStats.put("cacheHitRate", dailyCache.hitRate());
+            cacheByDay.put(date, dailyCacheStats);
+        });
 
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("studentId", studentId);
@@ -161,12 +199,15 @@ public class TokenTracker {
         stats.put("totalTokens", totalTokens);
         stats.put("totalCachedTokens", totalCached);
         stats.put("totalCacheWriteTokens", totalCacheWrite);
+        stats.put("totalCacheHitTokens", totalCacheHit);
+        stats.put("totalCacheMissTokens", totalCacheMiss);
         stats.put("cacheStatus", cache.status().value());
         stats.put("cacheTelemetryCallCount", cache.reportedCallCount());
         stats.put("cacheHitRate", cache.hitRate());
         stats.put("callCount", list.size());
         stats.put("byModel", byModel);
         stats.put("byDay", byDay);
+        stats.put("cacheByDay", cacheByDay);
         return stats;
     }
 

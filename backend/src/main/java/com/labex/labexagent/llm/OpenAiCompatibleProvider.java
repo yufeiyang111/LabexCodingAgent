@@ -472,6 +472,8 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     || hasNestedField(usage, "input_token_details", "cache_read")
                     || hasField(usage, "cache_read_input_tokens")
                     || hasField(usage, "cached_tokens")
+                    || hasField(usage, "prompt_cache_hit_tokens")
+                    || hasField(usage, "prompt_cache_miss_tokens")
                     || hasNestedField(usage, "input_token_details", "cache_creation")
                     || hasField(usage, "cache_creation_input_tokens")
                     || hasNestedField(usage, "cache_creation", "ephemeral_5m_input_tokens")
@@ -480,14 +482,17 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     nestedInt(usage, "prompt_tokens_details", "cached_tokens"),
                     nestedInt(usage, "input_token_details", "cache_read"),
                     intValue(usage, "cache_read_input_tokens"),
-                    intValue(usage, "cached_tokens")
+                    intValue(usage, "cached_tokens"),
+                    intValue(usage, "prompt_cache_hit_tokens")
             );
-            int cacheWrite = firstPositive(
+            int explicitCacheWrite = firstPositive(
                     nestedInt(usage, "input_token_details", "cache_creation"),
                     intValue(usage, "cache_creation_input_tokens"),
                     nestedInt(usage, "cache_creation", "ephemeral_5m_input_tokens")
                             + nestedInt(usage, "cache_creation", "ephemeral_1h_input_tokens")
             );
+            int deepSeekMiss = firstPositive(intValue(usage, "prompt_cache_miss_tokens"), 0);
+            int cacheWrite = explicitCacheWrite > 0 ? explicitCacheWrite : deepSeekMiss;
             int prompt = intValue(usage, "prompt_tokens");
             if (prompt == 0) {
                 prompt = intValue(usage, "input_tokens") + cached + cacheWrite;
@@ -510,6 +515,8 @@ public class OpenAiCompatibleProvider implements LlmProvider {
             result.put("total_tokens", total);
             result.put("cached_tokens", cached);
             result.put("cache_write_tokens", cacheWrite);
+            result.put("cache_hit_tokens", intValue(usage, "prompt_cache_hit_tokens"));
+            result.put("cache_miss_tokens", deepSeekMiss);
             result.put("cache_usage_reported", cacheUsageReported);
             return result;
         } catch (Exception e) {

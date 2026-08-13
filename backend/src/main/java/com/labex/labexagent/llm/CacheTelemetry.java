@@ -20,9 +20,12 @@ public final class CacheTelemetry {
         CacheTelemetryStatus status = status(cacheEnabled, usage);
         if (status == CacheTelemetryStatus.DISABLED || status == CacheTelemetryStatus.NOT_REPORTED) return null;
         int promptTokens = intValue(usage, "prompt_tokens");
-        if (promptTokens <= 0) return null;
         int cachedTokens = intValue(usage, "cached_tokens");
-        return Math.round(cachedTokens * 10000.0 / promptTokens) / 100.0;
+        int missTokens = intValue(usage, "cache_miss_tokens");
+        boolean missAware = usage.containsKey("cache_miss_tokens") || usage.containsKey("cache_hit_tokens");
+        int denominator = missAware ? cachedTokens + missTokens : promptTokens;
+        if (denominator <= 0) return null;
+        return Math.round(cachedTokens * 10000.0 / denominator) / 100.0;
     }
 
     private static int intValue(Map<String, Object> usage, String key) {

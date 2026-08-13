@@ -68,3 +68,40 @@ test('aggregates provider-reported cache reads and writes across durable events'
   assert.equal(usage.cacheHitRate, 12.5)
   assert.equal(resolveCacheTelemetryView(null, usage).label, '已命中')
 })
+
+test('uses miss-aware official denominator when deepseek hit/miss fields are reported', () => {
+  const usage = createTokenUsageState()
+
+  applyTokenUsageEvent(usage, {
+    promptTokens: 1000,
+    completionTokens: 120,
+    totalTokens: 1120,
+    cacheStatus: 'hit',
+    cacheTelemetryReported: true,
+    cachedTokens: 550,
+    cacheWriteTokens: 450,
+    cacheHitTokens: 550,
+    cacheMissTokens: 450
+  })
+  applyTokenUsageEvent(usage, {
+    promptTokens: 800,
+    completionTokens: 90,
+    totalTokens: 890,
+    cacheStatus: 'write_only',
+    cacheTelemetryReported: true,
+    cachedTokens: 0,
+    cacheWriteTokens: 800,
+    cacheHitTokens: 0,
+    cacheMissTokens: 800
+  })
+
+  assert.equal(usage.cachedTokens, 550)
+  assert.equal(usage.cacheMissTokens, 1250)
+  assert.equal(usage.cacheStatus, 'hit')
+  // 550 / (550 + 1250) = 30.56 — 与 DeepSeek 官方 hit/(hit+miss) 口径一致
+  assert.equal(usage.cacheHitRate, 30.56)
+  const view = resolveCacheTelemetryView(null, usage)
+  assert.equal(view.ledger.cacheReadTokens, 550)
+  assert.equal(view.ledger.cacheWriteTokens, 1250)
+  assert.equal(view.sessionScoped, true)
+})
