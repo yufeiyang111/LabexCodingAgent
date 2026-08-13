@@ -85,6 +85,7 @@ sandbox/windows-helper/**/*.lib
 docs/iterations/*
 !docs/iterations/2026-08-12-iteration-82-opencode-shell-baseline.md
 !docs/iterations/2026-08-14-iteration-83-context-token-cache-phase0-unified-ledger.md
+!docs/iterations/2026-08-14-iteration-84-context-slimming-phase1.md
 
 # AI agent scratch and dev-server artifacts
 .codex-tmp/
