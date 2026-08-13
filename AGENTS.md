@@ -94,6 +94,45 @@ Provider 请求、预算、压缩选择和恢复必须以 `AgentRunMessage` / `A
 - 前端 reducer 只消费持久化事件/Part，不以连接生命周期猜测状态。
 
 任何新增运行时状态字段、事件类型、工具 Part 类型或 API 恢复参数，都必须同步更新对应的 DTO、持久化层、reducer、测试和文档。
+
+### 7. OpenCode 源码参考规则（强制，不可跳过）
+
+本仓库的 Agent 运行时大量能力是对 OpenCode 的复刻。任何人在（AI 或人）动手实现**任何迭代任务或架构问题**之前，必须先确认自己是否真的理解该能力的成熟实现形态；**只要对某个模块的设计、协议、不变量或交互流程不熟悉，就必须先读 OpenCode 源码，看它怎么实现，再动手**。
+
+- **本地参考快照**：`D:\opencode\opencode-dev`（固定参考 `packages/opencode/package.json` 版本 `1.17.4`）。OpenCode 快照可能更新，引用时以本地快照为准，不凭空引用网上记忆。
+- **必查范围**：Agent 主循环（`packages/opencode/src/session/prompt.ts`、`processor.ts`）、上下文与压缩（`session/compaction.ts`、`session/llm/request.ts`、`session/message-v2.ts`、`session/system.ts`、`session/instruction.ts`）、工具（`tool/*.ts`、`tool/truncate.ts`）、权限（`permission/`）、LLM 与缓存（`session/llm.ts`、`session/session.ts` getUsage、`provider/transform.ts` applyCaching、`packages/llm/src/cache-policy.ts`）、文件快照（`snapshot/`）、子代理（`tool/task.ts`）、前端事件 reducer（`packages/app/src/context/global-sync/event-reducer.ts`）。
+- **记录义务**：迭代文档/提交说明必须写明——参考了哪个文件哪一段、复刻了哪些不变量、哪些地方按 LabexAgent（Spring Boot + 多用户 Web + durable transcript）做了适配、是否复制了实质代码。
+- **禁止行为**：
+  - 不读源码，凭"我猜 opencode 大概是这样做的"直接写实现；
+  - 把记忆里的 API 名称当作事实（必须回到本地快照核对行号和签名）；
+  - 未理解差异就逐行机械翻译 TypeScript；
+  - 把 OpenCode 的单机进程假设直接套到多用户 Web 控制面。
+- **License**：OpenCode 快照为 MIT。仅复刻设计思想时在迭代文档注明即可；复制实质代码必须维护 `THIRD_PARTY_NOTICES.md` 并保留版权与 MIT 文本。
+- 计划文档中的模块映射表（如 `docs/superpowers/plans/**/spec.md` 第 6 节）是本规则的落地形式；计划未列出的模块也要遵守本规则。
+
+### 8. 代码卫生纪律：禁止 mock、配置集中管理、复用优先
+
+**8.1 业务代码禁止 mock 数据**
+
+- 生产业务路径（controller / service / tool / loop / provider / worker / 前端页面与 store）禁止硬编码假数据、假响应、假文件、假时间等任何 mock / fake / stub 内容；测试替身只允许出现在测试代码（`backend/src/test`、前端 `*.test.*`）里，并用标准测试框架显式声明。
+- 验收/诊断专用实现（如 `AcceptanceScriptedProvider`）只能通过显式选择（provider id / profile / 开关）进入，不得成为默认调用路径；新增此类实现必须写明启用条件，并在生产 profile 下验证不可用。
+- 不得用 mock 数据"先把界面跑通"后留着不管；临时桩必须随真实功能完成而删除。
+
+**8.2 可调参数集中管理，禁止散落魔法数字**
+
+- 所有可调参数（`max_tokens`、上下文窗口、超时、重试次数、预算、大小上限、阈值等）必须集中到配置类，不得在各业务类里散落 `static final` 魔法数字或内联字面量。既有模式是带默认值的 `@ConfigurationProperties` 类（如 `runtime/AgentLoopProperties`、`runtime/AgentExecutionProperties`、`run/AgentRecoveryProperties`、`websearch/WebSearchProperties`、`worker/WorkerResourceDefaults`）：默认值写在字段初始化处，用户可通过 `application.yml` / `labex-agent.*` 环境变量覆盖。
+- 新增配置按域归入已有 properties 类，或在域包内新建一个；禁止建一个包罗万象的 `Constants` 类。新增环境变量必须同步更新 README 对应表格和 `.env.example`。
+- 纯协议常量（JWT claim、事件类型、状态枚举值、命名空间字符串等不需要用户调参的）留在所属模块内且只定义一次，全仓库引用，不得复制。
+- 前端同理：可调常量集中到一个 constants 模块，禁止在组件里内联魔法数字。
+- 已知待收敛点（改动到这些文件时必须顺手收敛，不得新增同类硬编码）：`LlmProviderFactory.buildConfig` 的 `32768`、`OpenAiCompatibleProvider` 的 `8192`、`CompactionAgent` 的 `128 / 1_200 / 1_800`、`MiniMaxChat` / `OllamaChat` 的 `8192 / 4096`、`AgentModelConfigService.DEFAULT_MAX_TOKENS`，以及 `ProjectTerminalService` 与 `AgentApprovedCommandExecutor` 重复的 `MAX_OUTPUT_CHARS = 60_000`。
+
+**8.3 复用优先，禁止复制粘贴**
+
+- 新建方法、变量、常量、工具函数前，先在仓库里搜索是否有等价实现；已有可复用的必须复用或扩展原实现，禁止复制出第二份。
+- 已有实现不满足需求时优先改造旧实现并保持调用方兼容；只有改造会破坏权威契约（本文件第 1、2 节）时才允许新增路径，且必须写明兼容期与删除条件（第 5 节）。
+- 前端同理：先查 `components/`、`stores/`、`api/index.js` 和已有 composable 是否有等价物，再决定新增。
+- 禁止新增无人认领的 `utils` / `helper` 垃圾堆；复用归属按域划分。
+
 ## Build & run
 
 ### Backend (Spring Boot, Java 17, Maven)
