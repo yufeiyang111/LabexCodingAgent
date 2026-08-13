@@ -35,10 +35,20 @@ yarn-error.log*
 /local-recovery-debug-archive/
 
 # Local agent and session artifacts
-.labex-agent/
+.labex*/*
 .superpowers/
 .claude/
-.labex*/
+
+# .labex-agent project configuration: only the non-secret project/ subtree is version-visible.
+# Ignore the contents first, then re-include exactly the allowed non-secret project config paths.
+!.labex-agent/project/
+.labex-agent/project/*
+!.labex-agent/project/agent.json
+!.labex-agent/project/agents/
+!.labex-agent/project/tools/
+!.labex-agent/project/mcp/
+!.labex-agent/project/skills/
+!.labex-agent/project/environment.json
 
 # Personal private docs
 docs/个人资料/
@@ -46,14 +56,34 @@ docs/个人资料/
 # Project documentation (keep in repo separately)
 LabexAgent.md
 CLAUDE.md
-AGENTS.md
-docs/
+
+# docs: keep personal/private documentation ignored; only the agent-self-configuration package is version-visible
+docs/*
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/agent-self-configuration/
 
 # 架构治理规则与执行计划必须进入版本控制
-!AGENTS.md
-!docs/
-!docs/coding-agent-industrialization/
-!docs/coding-agent-industrialization/opencode-alignment-status.md
-!docs/superpowers/
+
+# Native Windows sandbox helper: keep build output and generated binaries ignored; helper source, contract and test fixtures stay visible
+sandbox/windows-helper/build*/
+sandbox/windows-helper/**/*.exe
+sandbox/windows-helper/**/*.dll
+sandbox/windows-helper/**/*.pdb
+sandbox/windows-helper/**/*.obj
+sandbox/windows-helper/**/*.lib
+
+# OpenCode-first agent usability iteration plan (versioned)
 !docs/superpowers/plans/
-!docs/superpowers/plans/2026-07-29-agent-runtime-state-convergence.md
+!docs/superpowers/plans/2026-08-12-opencode-first-agent-usability/
+!docs/superpowers/plans/2026-08-12-opencode-first-agent-usability/*.md
+
+# OpenCode-first iteration evidence (versioned)
+!docs/iterations/
+docs/iterations/*
+!docs/iterations/2026-08-12-iteration-82-opencode-shell-baseline.md
+!docs/iterations/2026-08-14-iteration-83-context-token-cache-phase0-unified-ledger.md
+
+# AI agent scratch and dev-server artifacts
+.codex-tmp/
+vite.config.js.timestamp-*
