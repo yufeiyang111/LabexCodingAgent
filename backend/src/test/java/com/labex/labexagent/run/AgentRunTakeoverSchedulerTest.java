@@ -106,6 +106,55 @@ class AgentRunTakeoverSchedulerTest {
         verify(leases).release(any(AgentRunExecutionLeaseService.ExecutionLease.class));
     }
 
+    @Test
+    void reclaimsAStrandedRecoveringRunWithOneNewEpochAndOneIdempotentDispatch() {
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        AgentTask task = task();
+        task.setStatus("recovering");
+        task.setExecutionEpoch(4L);
+        when(leases.instanceId()).thenReturn("instance-new");
+        when(leases.leaseDurationMs()).thenReturn(30_000L);
+        when(lifecycle.claimDispatch(eq(71L), eq(AgentRunState.RECOVERING), eq(AgentRunState.PREPARING),
+                eq("RUN_RECOVERY_TAKEOVER"), any(), any(), any(), eq("recovery-takeover-71-5"),
+                eq("instance-new"), eq(30_000L)))
+                .thenReturn(new AgentRunLifecycleService.DispatchClaim(
+                                new AgentRunExecutionLeaseService.ExecutionLease(
+                                        71L, "instance-new", 5L, LocalDateTime.now().plusSeconds(30))),
+                        null);
+        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine, existingProjectService());
+
+        assertTrue(scheduler.takeover(task));
+        assertFalse(scheduler.takeover(task));
+
+        // 两个调度实例都尝试领取，只有一次成功入队；失败的实例不得再 enqueue
+        verify(lifecycle, times(2)).claimDispatch(eq(71L), eq(AgentRunState.RECOVERING), eq(AgentRunState.PREPARING),
+                eq("RUN_RECOVERY_TAKEOVER"), any(), any(), any(), eq("recovery-takeover-71-5"),
+                eq("instance-new"), eq(30_000L));
+        verify(engine, times(1)).resume(eq(7), eq(12), any(), eq(71L), eq(true),
+                any(AgentRunExecutionLeaseService.ExecutionLease.class));
+        verify(lifecycle, never()).claimRecovery(anyLong(), any(), anyString(), anyLong());
+    }
+
+    @Test
+    void leavesALiveOwnerUntouchedWhenTheRecoveryClaimIsRejected() {
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        AgentTask task = task();
+        when(leases.instanceId()).thenReturn("instance-new");
+        when(leases.leaseDurationMs()).thenReturn(30_000L);
+        when(lifecycle.claimRecovery(71L, AgentRunState.RUNNING, "instance-new", 30_000L)).thenReturn(null);
+        AgentRunTakeoverScheduler scheduler = new AgentRunTakeoverScheduler(leases, lifecycle, engine, existingProjectService());
+
+        assertFalse(scheduler.takeover(task));
+
+        verify(engine, never()).resume(any(), any(), any(), any(), anyBoolean(), any(AgentRunExecutionLeaseService.ExecutionLease.class));
+        verify(lifecycle, never()).transition(anyLong(), any(), any(), any(), any(), any(), anyString());
+        verify(leases, never()).release(any(AgentRunExecutionLeaseService.ExecutionLease.class));
+    }
+
     private StudentProjectService existingProjectService() {
         StudentProjectService service = mock(StudentProjectService.class);
         when(service.getOwnedProject(7, 12)).thenReturn(new StudentProject());

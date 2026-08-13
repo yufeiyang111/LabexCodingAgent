@@ -8,12 +8,14 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
 
 import com.labex.entity.AgentRunInteraction;
 import com.labex.mapper.AgentRunInteractionMapper;
 import java.time.LocalDateTime;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DuplicateKeyException;
 
 class AgentRunInteractionServiceTest {
 
@@ -176,6 +178,77 @@ class AgentRunInteractionServiceTest {
                 service.hasApprovedNetworkGrant(71L, "digest-1", "offline_failure_retry"));
         org.junit.jupiter.api.Assertions.assertFalse(
                 service.hasApprovedNetworkGrant(71L, "digest-1", "explicit_command"));
+    }
+
+    @Test
+    void claimsAnApprovedNetworkRetryAsExecuting() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction approved = waitingInteraction();
+        approved.setInteractionType("network");
+        approved.setStatus("approved");
+        when(mapper.selectById("request-71")).thenReturn(approved);
+        when(mapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        AgentRunInteractionService.NetworkRetryClaim claim =
+                service.claimApprovedNetworkRetry(7, 12, "request-71");
+
+        org.junit.jupiter.api.Assertions.assertTrue(claim.claimed());
+        assertEquals("executing", claim.interaction().getStatus());
+        verify(mapper).update(org.mockito.ArgumentMatchers.isNull(), any());
+    }
+
+    @Test
+    void acceptsDuplicateApprovedResponseAfterNetworkRetryWasClaimed() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction executing = waitingInteraction();
+        executing.setInteractionType("network");
+        executing.setStatus("executing");
+        when(mapper.selectById("request-71")).thenReturn(executing);
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        AgentRunInteraction replayed = service.respond(
+                7, 12, "request-71", "approved", Map.of("action", "allow_once"));
+
+        assertEquals(executing, replayed);
+        verify(mapper, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+    }
+
+    @Test
+    void completesAnExecutingNetworkRetryIdempotently() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction consumed = waitingInteraction();
+        consumed.setInteractionType("network");
+        consumed.setStatus("consumed");
+        when(mapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(mapper.selectById("request-71")).thenReturn(consumed);
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        AgentRunInteraction completed = service.completeClaimedNetworkRetry(
+                7, 12, "request-71", Map.of("executionStatus", "completed"));
+
+        assertEquals("consumed", completed.getStatus());
+        verify(mapper).update(org.mockito.ArgumentMatchers.isNull(), any());
+    }
+
+    @Test
+    void concurrentIdempotentCreateReturnsTheWinningPersistedInteraction() {
+        AgentRunInteractionMapper mapper = mock(AgentRunInteractionMapper.class);
+        AgentRunInteraction winner = waitingInteraction();
+        winner.setInteractionId("request-winner-71");
+        when(mapper.selectById("request-71")).thenReturn(null);
+        when(mapper.selectOne(any())).thenReturn(null, winner);
+        doThrow(new DuplicateKeyException("duplicate idempotency key"))
+                .when(mapper).insert(any(AgentRunInteraction.class));
+        AgentRunInteractionService service = new AgentRunInteractionService(mapper);
+
+        AgentRunInteraction interaction = service.createWaiting(
+                new AgentRunInteractionService.WaitingInteraction(
+                        "request-71", 71L, "conversation-1", "session-1", 7, 12,
+                        "network", Map.of("request", "mvn test"), "network-request-71",
+                        LocalDateTime.now().plusMinutes(10)));
+
+        assertEquals("request-winner-71", interaction.getInteractionId());
     }
 
     private AgentRunInteraction waitingInteraction() {

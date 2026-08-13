@@ -71,6 +71,21 @@ public final class ProjectScanPolicy {
         return name != null && IGNORED_DIRECTORY_NAMES.contains(name.toLowerCase(Locale.ROOT));
     }
 
+    public static boolean isInternalRuntimeEntry(Path workspaceRoot, Path entry) {
+        if (workspaceRoot == null || entry == null) {
+            return false;
+        }
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        Path normalized = entry.toAbsolutePath().normalize();
+        if (!normalized.startsWith(root)) {
+            return false;
+        }
+        Path relative = root.relativize(normalized);
+        return relative.getNameCount() >= 2
+                && ".labex-agent".equalsIgnoreCase(relative.getName(0).toString())
+                && "runtime".equalsIgnoreCase(relative.getName(1).toString());
+    }
+
     public static boolean isIgnoredRelativePath(String relativePath) {
         if (relativePath == null || relativePath.isBlank()) {
             return false;

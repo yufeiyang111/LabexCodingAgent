@@ -1,7 +1,10 @@
 package com.labex.labexagent.run;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -9,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentRunEvent;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -149,6 +153,40 @@ class AgentTaskEventSubscriptionServiceTest {
 
         verify(emitter, times(3)).send(any(SseEmitter.SseEventBuilder.class));
         verify(emitter).complete();
+    }
+
+    @Test
+    void queuesTransientProjectionInsteadOfBlockingTheAgentThread() throws Exception {
+        AgentRunEventReplayService replay = mock(AgentRunEventReplayService.class);
+        when(replay.eventsAfter(7, 12, 71L, 0L)).thenReturn(List.of());
+        SseEmitter emitter = mock(SseEmitter.class);
+        List<Runnable> queued = new ArrayList<>();
+        AgentTaskEventSubscriptionService subscriptions =
+                new AgentTaskEventSubscriptionService(replay, 750L, queued::add);
+        subscriptions.subscribe(7, 12, 71L, 0L, emitter);
+
+        subscriptions.publishTransient(71L, "FINAL_DELTA", java.util.Map.of("delta", "live"));
+
+        assertEquals(1, queued.size());
+        verify(emitter, never()).send(any(SseEmitter.SseEventBuilder.class));
+        queued.remove(0).run();
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+
+    @Test
+    void completedEmitterHeartbeatIsRemovedWithoutEscapingTheScheduler() throws Exception {
+        AgentRunEventReplayService replay = mock(AgentRunEventReplayService.class);
+        when(replay.eventsAfter(7, 12, 71L, 0L)).thenReturn(List.of());
+        SseEmitter emitter = mock(SseEmitter.class);
+        doThrow(new IllegalStateException("ResponseBodyEmitter has already completed"))
+                .when(emitter).send(any(SseEmitter.SseEventBuilder.class));
+        AgentTaskEventSubscriptionService subscriptions = new AgentTaskEventSubscriptionService(replay);
+        subscriptions.subscribe(7, 12, 71L, 0L, emitter);
+
+        assertDoesNotThrow(subscriptions::sendHeartbeats);
+        subscriptions.publishTransient(71L, "FINAL_DELTA", java.util.Map.of("delta", "ignored"));
+
+        verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
     }
 
     @Test

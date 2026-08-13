@@ -2,6 +2,7 @@ package com.labex.labexagent.run;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.CommandAuditEvent;
@@ -399,6 +401,50 @@ class AgentRunRecoveryServiceTest {
         verify(partService, never()).interruptOpenParts(anyLong(), anyString());
         verify(messageService, never()).markOpenMessages(anyLong(), anyString(), anyString());
         verify(taskMapper, never()).updateById(any(AgentTask.class));
+    }
+
+    @Test
+    void reclaimsAStrandedRecoveringRunInsteadOfFailingIt() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunTakeoverScheduler takeoverScheduler = mock(AgentRunTakeoverScheduler.class);
+        AgentTask task = task(71L, AgentRunState.RECOVERING);
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+        when(takeoverScheduler.takeover(task)).thenReturn(true);
+        AgentRunRecoveryService service = newRecoveryService(taskMapper, lifecycle, takeoverScheduler);
+
+        int recovered = service.recoverInterruptedRuns();
+
+        assertEquals(1, recovered);
+        verify(takeoverScheduler).takeover(task);
+        verify(lifecycle, never()).transition(
+                eq(71L), eq(AgentRunState.FAILED), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void periodicReconcilerPreservesWaitingEnvironmentTaskWithoutEnqueueing() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask task = task(71L, AgentRunState.WAITING_ENVIRONMENT);
+        when(taskMapper.selectExpiredLeaseCandidates(any(), anyInt())).thenReturn(List.of(task));
+        when(taskMapper.selectById(71L)).thenReturn(task);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        when(lifecycle.appendEventIfCurrent(
+                eq(71L), eq(AgentRunState.WAITING_ENVIRONMENT), eq("RUN_RECOVERY_WAITING"), any(), anyString()))
+                .thenReturn(new AgentRunEvent());
+        AgentRunTakeoverScheduler takeover = mock(AgentRunTakeoverScheduler.class);
+        AgentRunRecoveryService service = new AgentRunRecoveryService(taskMapper, lifecycle,
+                mock(AgentRunExecutionLeaseService.class), takeover,
+                mock(AgentRunPartService.class), mock(AgentRunMessageService.class),
+                mock(AgentCompactionService.class));
+
+        int reclaimed = service.reconcileExpiredExecutionLeases();
+
+        assertEquals(1, reclaimed);
+        verify(lifecycle).appendEventIfCurrent(eq(71L), eq(AgentRunState.WAITING_ENVIRONMENT),
+                eq("RUN_RECOVERY_WAITING"), any(), eq("recovery-71-waiting"));
+        verify(takeover, never()).takeover(any());
+        verify(lifecycle, never()).transition(
+                eq(71L), eq(AgentRunState.COMPLETED), any(), any(), any(), any(), any());
     }
 
     private AgentTask task(Long taskId, AgentRunState state) {

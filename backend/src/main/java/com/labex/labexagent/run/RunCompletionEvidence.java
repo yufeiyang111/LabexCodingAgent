@@ -10,6 +10,7 @@ public record RunCompletionEvidence(
         List<String> changedFiles,
         List<String> successfulVerifications,
         List<String> failedVerifications,
+        List<String> environmentVerifications,
         List<String> unresolvedRisks,
         List<Criterion> criteria,
         boolean satisfied,
@@ -22,6 +23,7 @@ public record RunCompletionEvidence(
         changedFiles = bounded(changedFiles);
         successfulVerifications = bounded(successfulVerifications);
         failedVerifications = bounded(failedVerifications);
+        environmentVerifications = bounded(environmentVerifications);
         unresolvedRisks = bounded(unresolvedRisks);
         criteria = List.copyOf(criteria == null ? List.of() : criteria.stream().limit(MAX_ITEMS).toList());
         generatedAt = generatedAt == null ? LocalDateTime.now() : generatedAt;
@@ -33,6 +35,7 @@ public record RunCompletionEvidence(
         payload.put("changedFiles", changedFiles);
         payload.put("successfulVerifications", successfulVerifications);
         payload.put("failedVerifications", failedVerifications);
+        payload.put("environmentVerifications", environmentVerifications);
         payload.put("unresolvedRisks", unresolvedRisks);
         payload.put("criteria", criteria.stream().map(Criterion::toPayload).toList());
         payload.put("satisfied", satisfied);

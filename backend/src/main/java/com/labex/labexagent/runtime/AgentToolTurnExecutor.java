@@ -1,9 +1,12 @@
 package com.labex.labexagent.runtime;
 
 import com.google.gson.JsonObject;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolRegistry;
 import com.labex.labexagent.tool.ToolResult;
+import java.time.LocalDateTime;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -18,11 +21,42 @@ public final class AgentToolTurnExecutor {
             0, 32, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64),
             runnable -> { Thread thread = new Thread(runnable, "labex-agent-tool-turn"); thread.setDaemon(true); return thread; },
             new ThreadPoolExecutor.AbortPolicy());
+    /**
+     * 当前工具执行线程的 toolCallId 绑定。工具在池线程内执行，因此绑定必须在提交的
+     * 任务里于执行线程上设置/清理；工具（如 propose_project_config）从该绑定读取
+     * 自己的 toolCallId provenance，绝不接受用户输入提供的 toolCallId。
+     */
+    private static final ThreadLocal<String> CURRENT_TOOL_CALL_ID = new ThreadLocal<>();
     private final ToolRegistry registry;
     private final ToolArgumentSchemaValidator argumentSchemaValidator = new ToolArgumentSchemaValidator();
+    private AgentRunExecutionLeaseService executionLeaseService;
 
     public AgentToolTurnExecutor(ToolRegistry registry) {
         this.registry = registry;
+    }
+
+    /** 绑定当前执行线程的 toolCallId；调用方负责在 finally 中清理。 */
+    public static void bindCurrentToolCallId(String toolCallId) {
+        CURRENT_TOOL_CALL_ID.set(toolCallId == null || toolCallId.isBlank() ? null : toolCallId);
+    }
+
+    /** 读取当前执行线程的 toolCallId 绑定；未绑定时返回 null。 */
+    public static String currentToolCallId() {
+        return CURRENT_TOOL_CALL_ID.get();
+    }
+
+    /** 清理当前执行线程的 toolCallId 绑定，防止跨轮泄漏。 */
+    public static void clearCurrentToolCallId() {
+        CURRENT_TOOL_CALL_ID.remove();
+    }
+
+    /**
+     * 可选注入 lease authority：完整应用上下文始终提供该 bean；测试切片或降级上下文缺省时
+     * 退化为 fence 存在性门禁（active 校验仍由各 fenced writer 执行）。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setExecutionLeaseService(AgentRunExecutionLeaseService executionLeaseService) {
+        this.executionLeaseService = executionLeaseService;
     }
 
     public ToolResolution resolve(AgentContext context, String toolName, String language) {
@@ -86,8 +120,16 @@ public final class AgentToolTurnExecutor {
     }
 
     public ToolResult execute(AgentTool tool, AgentContext context, JsonObject arguments, String toolName) throws Exception {
+        this.requireActiveExecutionFence(context);
         long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments);
-        Future<ToolResult> future = EXECUTOR.submit(() -> tool.execute(context, arguments));
+        Future<ToolResult> future = EXECUTOR.submit(() -> {
+            clearCurrentToolCallId();
+            try {
+                return tool.execute(context, arguments);
+            } finally {
+                clearCurrentToolCallId();
+            }
+        });
         try {
             return future.get(budgetMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException timeout) {
@@ -99,6 +141,48 @@ public final class AgentToolTurnExecutor {
             Throwable cause = failure.getCause();
             if (cause instanceof Exception exception) throw exception;
             throw new IllegalStateException(cause);
+        }
+    }
+
+    /**
+     * 带 toolCallId 的执行 overload：在执行线程上绑定 toolCallId 后再调用工具，使
+     * 工具能读取自己的调用 ID 作为 provenance；finally 中清理，绝不跨轮泄漏。
+     */
+    public ToolResult execute(AgentTool tool, AgentContext context, JsonObject arguments, String toolName,
+                              String toolCallId) throws Exception {
+        this.requireActiveExecutionFence(context);
+        long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments);
+        Future<ToolResult> future = EXECUTOR.submit(() -> {
+            bindCurrentToolCallId(toolCallId);
+            try {
+                return tool.execute(context, arguments);
+            } finally {
+                clearCurrentToolCallId();
+            }
+        });
+        try {
+            return future.get(budgetMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException timeout) {
+            future.cancel(true);
+            throw new ToolTimedOutException(toolName, budgetMs);
+        } catch (InterruptedException interrupted) {
+            future.cancel(true); Thread.currentThread().interrupt(); throw interrupted;
+        } catch (ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof Exception exception) throw exception;
+            throw new IllegalStateException(cause);
+        }
+    }
+
+    /** 执行门禁：context 必须携带执行者从 lease authority 取得的 fence；stale fence 拒绝执行。 */
+    private void requireActiveExecutionFence(AgentContext context) {
+        ExecutionFence fence = context == null ? null : context.getExecutionFence();
+        if (fence == null) {
+            throw new AgentRunExecutionLeaseService.StaleExecutionFenceException(
+                    AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.INVALID_FENCE);
+        }
+        if (this.executionLeaseService != null) {
+            this.executionLeaseService.requireActiveFence(fence, LocalDateTime.now());
         }
     }
 

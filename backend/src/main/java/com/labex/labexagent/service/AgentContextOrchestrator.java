@@ -2,6 +2,7 @@ package com.labex.labexagent.service;
 
 import com.google.gson.JsonObject;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.context.AgentRequestTokenEstimator;
 import com.labex.labexagent.lsp.LspSessionManager;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.run.AgentRunExecutionProgressReducer;
@@ -32,6 +33,7 @@ public class AgentContextOrchestrator {
     private final LspSessionManager lspSessionManager;
     private final ProjectCodeMapService projectCodeMapService;
     private final AgentRunExecutionProgressReducer progressReducer;
+    private final AgentRequestTokenEstimator requestTokenEstimator = new AgentRequestTokenEstimator();
 
     public AgentContextOrchestrator(AgentContextManager contextManager,
                                     ProjectIndexService projectIndexService,
@@ -86,7 +88,7 @@ public class AgentContextOrchestrator {
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("stage", stage);
         stats.put("contextChars", context.length());
-        stats.put("estimatedTokens", Math.max(1, context.length() / 3));
+        stats.put("estimatedTokens", requestTokenEstimator.estimateValue(context.toString()));
         stats.put("activePath", activePath == null ? "" : activePath);
         stats.put("projectContextHash", hash(adaptiveIndex));
         stats.put("repoMapHash", hash(repoMap));

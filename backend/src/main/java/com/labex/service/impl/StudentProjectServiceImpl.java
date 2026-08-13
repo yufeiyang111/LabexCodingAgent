@@ -693,7 +693,10 @@ implements StudentProjectService {
         Files.walkFileTree(workspacePath, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                    if (!isSafeWorkspaceEntry(paths, dir) || attrs.isSymbolicLink() || attrs.isOther()) {
+                    if (ProjectScanPolicy.isInternalRuntimeEntry(paths.workspaceRoot(), dir)
+                            || !isSafeWorkspaceEntry(paths, dir)
+                            || attrs.isSymbolicLink()
+                            || attrs.isOther()) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
                     return FileVisitResult.CONTINUE;
@@ -701,12 +704,24 @@ implements StudentProjectService {
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    if (!isSafeWorkspaceEntry(paths, file) || attrs.isSymbolicLink() || attrs.isOther()) {
+                    if (ProjectScanPolicy.isInternalRuntimeEntry(paths.workspaceRoot(), file)
+                            || !isSafeWorkspaceEntry(paths, file)
+                            || attrs.isSymbolicLink()
+                            || attrs.isOther()) {
                         return FileVisitResult.CONTINUE;
                     }
                     stats.fileCount++;
                     stats.totalSize += attrs.size();
                     return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException error) throws IOException {
+                    if (ProjectScanPolicy.isInternalRuntimeEntry(paths.workspaceRoot(), file)) {
+                        log.debug("Skipping unreadable internal runtime path {}: {}", file, error.getMessage());
+                        return FileVisitResult.CONTINUE;
+                    }
+                    throw error;
                 }
             });
         return stats;

@@ -116,6 +116,14 @@ class AgentLoopEngineNextPreviewTest {
         assertEquals(Boolean.TRUE, metadata.get("nextUserMessageIncluded"));
         assertTrue(((List<?>) payload.get("previewSections")).size() > 0);
         assertFalse(((List<?>) payload.get("previewSections")).isEmpty());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> sections = (List<Map<String, Object>>) payload.get("previewSections");
+        Map<String, Object> conversationMemory = sections.stream()
+                .filter(section -> "conversationMemory".equals(section.get("key")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("durable memory", conversationMemory.get("content"));
+        assertFalse(sections.stream().anyMatch(section -> "compactedContext".equals(section.get("key"))));
         assertFalse(payload.toString().contains("FOREIGN_RUN_LOG_SENTINEL"));
         assertFalse(payload.toString().contains("FOREIGN_CHECKPOINT_SENTINEL"));
         verify(conversations, never()).touchActivity(any(AgentConversation.class));

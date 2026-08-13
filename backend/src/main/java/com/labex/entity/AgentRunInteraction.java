@@ -7,6 +7,13 @@ import java.time.LocalDateTime;
 
 @TableName("t_agent_run_interaction")
 public class AgentRunInteraction {
+    /** 阻塞任务等待配置 proposal 决策的交互类型；proposal 表仍为权威事实。 */
+    public static final String TYPE_CONFIG_PROPOSAL = "config_proposal";
+    /** config_proposal 的合法已解决状态：owner 批准。 */
+    public static final String STATUS_APPROVED = "approved";
+    /** config_proposal 的合法已解决状态：owner 拒绝（或 proposal 以非成功终态结束）。 */
+    public static final String STATUS_REJECTED = "rejected";
+
     @TableId("interaction_id")
     private String interactionId;
     @TableField("task_id")
@@ -31,6 +38,14 @@ public class AgentRunInteraction {
     private String idempotencyKey;
     @TableField("expires_time")
     private LocalDateTime expiresTime;
+    @TableField("resume_claim_id")
+    private String resumeClaimId;
+    @TableField("resume_claim_epoch")
+    private Long resumeClaimEpoch;
+    @TableField("resume_claimed_at")
+    private LocalDateTime resumeClaimedAt;
+    @TableField("resume_consumed_at")
+    private LocalDateTime resumeConsumedAt;
     @TableField("create_time")
     private LocalDateTime createTime;
     @TableField("update_time")
@@ -60,6 +75,14 @@ public class AgentRunInteraction {
     public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
     public LocalDateTime getExpiresTime() { return expiresTime; }
     public void setExpiresTime(LocalDateTime expiresTime) { this.expiresTime = expiresTime; }
+    public String getResumeClaimId() { return resumeClaimId; }
+    public void setResumeClaimId(String resumeClaimId) { this.resumeClaimId = resumeClaimId; }
+    public Long getResumeClaimEpoch() { return resumeClaimEpoch; }
+    public void setResumeClaimEpoch(Long resumeClaimEpoch) { this.resumeClaimEpoch = resumeClaimEpoch; }
+    public LocalDateTime getResumeClaimedAt() { return resumeClaimedAt; }
+    public void setResumeClaimedAt(LocalDateTime resumeClaimedAt) { this.resumeClaimedAt = resumeClaimedAt; }
+    public LocalDateTime getResumeConsumedAt() { return resumeConsumedAt; }
+    public void setResumeConsumedAt(LocalDateTime resumeConsumedAt) { this.resumeConsumedAt = resumeConsumedAt; }
     public LocalDateTime getCreateTime() { return createTime; }
     public void setCreateTime(LocalDateTime createTime) { this.createTime = createTime; }
     public LocalDateTime getUpdateTime() { return updateTime; }

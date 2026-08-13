@@ -12,8 +12,11 @@ import static org.mockito.Mockito.when;
 import com.google.gson.Gson;
 import com.labex.entity.AgentFileChange;
 import com.labex.entity.AgentRunArtifact;
+import com.labex.entity.AgentTask;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService.StaleExecutionFenceException;
 import com.labex.entity.AgentVerification;
 import com.labex.mapper.AgentFileChangeMapper;
+import com.labex.mapper.AgentTaskMapper;
 import com.labex.mapper.AgentVerificationMapper;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -135,6 +138,51 @@ class RunCompletionEvidenceServiceTest {
     }
 
     @Test
+    void environmentBlockedVerificationIsSeparatedFromCodeFailure() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentFileChange change = new AgentFileChange();
+        change.setRelativePath("src/App.vue"); change.setStatus("pending");
+        AgentVerification timedOut = new AgentVerification();
+        timedOut.setVerificationId(21L);
+        timedOut.setCommand("mvn test"); timedOut.setStatus("timed_out"); timedOut.setExitCode(null);
+        when(changes.selectList(any())).thenReturn(List.of(change));
+        when(verifications.selectList(any())).thenReturn(List.of(timedOut));
+
+        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts)
+                .evaluateAndPersist(9L, 7, 3, false, "running");
+
+        assertFalse(evidence.satisfied());
+        assertTrue(evidence.failedVerifications().isEmpty());
+        assertTrue(evidence.environmentVerifications().contains("mvn test (status=timed_out)"));
+        assertTrue(evidence.unresolvedRisks().stream()
+                .anyMatch(risk -> risk.contains("环境受阻") && risk.contains("mvn test")));
+    }
+
+    @Test
+    void codeFailureAndEnvironmentBlockKeepDistinctLabels() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentVerification failed = new AgentVerification();
+        failed.setVerificationId(31L);
+        failed.setCommand("mvn test"); failed.setStatus("failed"); failed.setExitCode(1);
+        AgentVerification infra = new AgentVerification();
+        infra.setVerificationId(32L);
+        infra.setCommand("mvn test -Pintegration"); infra.setStatus("infrastructure_error"); infra.setExitCode(null);
+        when(changes.selectList(any())).thenReturn(List.of());
+        when(verifications.selectList(any())).thenReturn(List.of(failed, infra));
+
+        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts)
+                .evaluateAndPersist(9L, 7, 3, false, "running");
+
+        assertFalse(evidence.satisfied());
+        assertTrue(evidence.failedVerifications().contains("mvn test (exit 1)"));
+        assertTrue(evidence.environmentVerifications().contains("mvn test -Pintegration (status=infrastructure_error)"));
+    }
+
+    @Test
     void readsPersistedGeneratedAtWithoutReflectingIntoJavaTime() {
         AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
         AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
@@ -155,6 +203,137 @@ class RunCompletionEvidenceServiceTest {
         assertEquals("2026-07-27T14:23:28.123", evidence.generatedAt().toString());
         assertEquals(List.of("src/App.vue"), evidence.changedFiles());
         assertTrue(evidence.satisfied());
+    }
+
+    @Test
+    void fencedCompletionEvidenceRejectsStaleOwnerBeforeWritingArtifact() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(9L)).thenReturn(fencedTask("instance-b", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        RunCompletionEvidenceService service = new RunCompletionEvidenceService(changes, verifications, artifacts,
+                new AgentRunExecutionLeaseService(tasks, "instance-a", 30_000L));
+        StaleExecutionFenceException error = org.junit.jupiter.api.Assertions.assertThrows(
+                StaleExecutionFenceException.class,
+                () -> service.evaluateAndPersist(new ExecutionFence(9L, "instance-a", 4L),
+                        9L, 7, 3, false, "running"));
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                StaleExecutionFenceException.Reason.STALE_OWNER, error.reason());
+        verify(artifacts, never()).recordDeterministic(any(), any(), any(), any());
+        verify(artifacts, never()).recordDeterministic(any(ExecutionFence.class), any(), any(), any(), any());
+    }
+
+    @Test
+    void fencedCompletionEvidenceRejectsStaleEpochBeforeWritingArtifact() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(9L)).thenReturn(fencedTask("instance-a", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        RunCompletionEvidenceService service = new RunCompletionEvidenceService(changes, verifications, artifacts,
+                new AgentRunExecutionLeaseService(tasks, "instance-a", 30_000L));
+        StaleExecutionFenceException error = org.junit.jupiter.api.Assertions.assertThrows(
+                StaleExecutionFenceException.class,
+                () -> service.evaluateAndPersist(new ExecutionFence(9L, "instance-a", 3L),
+                        9L, 7, 3, false, "running"));
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                StaleExecutionFenceException.Reason.STALE_EPOCH, error.reason());
+        verify(artifacts, never()).recordDeterministic(any(), any(), any(), any());
+        verify(artifacts, never()).recordDeterministic(any(ExecutionFence.class), any(), any(), any(), any());
+    }
+
+    @Test
+    void fencedCompletionEvidenceRejectsExpiredLeaseBeforeWritingArtifact() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(9L)).thenReturn(fencedTask("instance-a", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 9, 59, 59)));
+
+        RunCompletionEvidenceService service = new RunCompletionEvidenceService(changes, verifications, artifacts,
+                new AgentRunExecutionLeaseService(tasks, "instance-a", 30_000L));
+        StaleExecutionFenceException error = org.junit.jupiter.api.Assertions.assertThrows(
+                StaleExecutionFenceException.class,
+                () -> service.evaluateAndPersist(new ExecutionFence(9L, "instance-a", 4L),
+                        9L, 7, 3, false, "running"));
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                StaleExecutionFenceException.Reason.EXPIRED_LEASE, error.reason());
+        verify(artifacts, never()).recordDeterministic(any(), any(), any(), any());
+        verify(artifacts, never()).recordDeterministic(any(ExecutionFence.class), any(), any(), any(), any());
+    }
+
+    @Test
+    void fencedCompletionEvidencePersistsArtifactWhenTheFenceIsActive() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        AgentFileChange change = new AgentFileChange();
+        change.setRelativePath("src/App.vue"); change.setStatus("pending");
+        AgentVerification verification = new AgentVerification();
+        verification.setCommand("npm run build"); verification.setStatus("passed");
+        when(tasks.selectCount(any())).thenReturn(1L);
+        when(changes.selectList(any())).thenReturn(List.of(change));
+        when(verifications.selectList(any())).thenReturn(List.of(verification));
+
+        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts,
+                new AgentRunExecutionLeaseService(tasks, "instance-a", 30_000L))
+                .evaluateAndPersist(new ExecutionFence(9L, "instance-a", 4L),
+                        9L, 7, 3, false, "running");
+
+        assertTrue(evidence.satisfied());
+        assertTrue(evidence.changedFiles().contains("src/App.vue"));
+        // completion 写入发生在任务终态迁移之前、lease 仍由 executor 持有的窗口内。
+        verify(artifacts).recordDeterministic(any(ExecutionFence.class),
+                eq(9L), eq("completion_evidence"), eq("task-9"), any());
+    }
+
+    @Test
+    void rejectedFencedCompletionEvidenceLeaksNoSentinelIntoArtifactOrErrorPayload() {
+        String sentinel = "SENTINEL-SECRET-5d6e7f";
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(9L)).thenReturn(fencedTask("instance-b", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+        AgentVerification verification = new AgentVerification();
+        verification.setCommand("npm run build --token=" + sentinel); verification.setStatus("passed");
+        when(changes.selectList(any())).thenReturn(List.of());
+        when(verifications.selectList(any())).thenReturn(List.of(verification));
+
+        RunCompletionEvidenceService service = new RunCompletionEvidenceService(changes, verifications, artifacts,
+                new AgentRunExecutionLeaseService(tasks, "instance-a", 30_000L));
+        StaleExecutionFenceException error = org.junit.jupiter.api.Assertions.assertThrows(
+                StaleExecutionFenceException.class,
+                () -> service.evaluateAndPersist(new ExecutionFence(9L, "instance-a", 4L),
+                        9L, 7, 3, false, "running"));
+
+        assertFalse(error.getMessage().contains(sentinel));
+        verify(artifacts, never()).recordDeterministic(any(), any(), any(), any());
+        verify(artifacts, never()).recordDeterministic(any(ExecutionFence.class), any(), any(), any(), any());
+    }
+
+    private AgentTask fencedTask(String owner, long epoch, java.time.LocalDateTime leaseExpiresAt) {
+        AgentTask task = new AgentTask();
+        task.setTaskId(9L);
+        task.setExecutionOwner(owner);
+        task.setExecutionEpoch(epoch);
+        task.setExecutionLeaseExpiresAt(leaseExpiresAt);
+        return task;
     }
 
     @Test

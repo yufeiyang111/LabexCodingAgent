@@ -1,17 +1,21 @@
 package com.labex.labexagent.run;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService.StaleExecutionFenceException;
 import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.List;
@@ -178,6 +182,140 @@ class AgentRunPartServiceTest {
                 "status", "completed",
                 "iteration", 3L,
                 "detail", "Tests passed"));
+    }
+
+    @Test
+    void fencedToolCallRejectsStaleOwnerBeforeWritingPartOrMessage() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-b", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunPartService service = new AgentRunPartService(parts, tasks, messages);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.upsertToolCall(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, "call-1", "running", "run_tests", Map.of("strategy", "test"), 3, ""));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_OWNER, error.reason());
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+        verify(messages, never()).upsertAssistantTurn(anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void fencedToolCallRejectsStaleEpochBeforeWritingPartOrMessage() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-a", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunPartService service = new AgentRunPartService(parts, tasks, messages);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.upsertToolCall(new ExecutionFence(7L, "instance-a", 3L),
+                        7L, "call-1", "running", "run_tests", Map.of("strategy", "test"), 3, ""));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_EPOCH, error.reason());
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+    }
+
+    @Test
+    void fencedToolCallRejectsExpiredLeaseBeforeWritingPartOrMessage() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-a", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 9, 59, 59)));
+
+        AgentRunPartService service = new AgentRunPartService(parts, tasks, messages);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.upsertToolCall(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, "call-1", "running", "run_tests", Map.of("strategy", "test"), 3, ""));
+
+        assertEquals(StaleExecutionFenceException.Reason.EXPIRED_LEASE, error.reason());
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+    }
+
+    @Test
+    void fencedToolCallPersistsPartWhenTheFenceIsActive() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(41L);
+        when(tasks.selectCount(any())).thenReturn(1L);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.upsertAssistantTurn(7L, 3, "streaming")).thenReturn(message);
+        when(parts.insert(any(AgentRunPart.class))).thenAnswer(invocation -> {
+            AgentRunPart part = invocation.getArgument(0);
+            part.setPartId(95L);
+            return 1;
+        });
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messages)
+                .upsertToolCall(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, "call-1", "running", "run_tests", Map.of("strategy", "test"), 3, "");
+
+        assertThat(result.getPartId()).isEqualTo(95L);
+        assertThat(result.getPartKey()).isEqualTo("tool:call-1");
+        verify(parts).insert(any(AgentRunPart.class));
+    }
+
+    @Test
+    void fencedExistingToolCallRejectsStaleFenceBeforeWritingPart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-b", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunPartService service = new AgentRunPartService(parts, tasks, messages);
+        assertThrows(StaleExecutionFenceException.class,
+                () -> service.resolveExistingToolCall(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, "call-1", "interrupted", "status=interrupted"));
+
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+        verify(messages, never()).upsertAssistantTurn(anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void rejectedFencedToolCallLeaksNoSentinelIntoPartMessageOrErrorPayload() {
+        String sentinel = "SENTINEL-SECRET-e4c27a";
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-b", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunPartService service = new AgentRunPartService(parts, tasks, messages);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.upsertToolCall(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, "call-1", "running", "run_tests",
+                        Map.of("strategy", sentinel), 3, sentinel));
+
+        assertThat(error.getMessage()).doesNotContain(sentinel);
+        // 失败发生在任何写入之前：Part 表、transcript message、事件/outbox（SSE 投影源）均无 sentinel。
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+        verify(messages, never()).upsertAssistantTurn(anyLong(), anyLong(), anyString());
+        verify(messages, never()).recordEventMessage(anyLong(), anyString(), any(), anyLong());
+    }
+
+    private AgentTask fencedTask(String owner, long epoch, java.time.LocalDateTime leaseExpiresAt) {
+        AgentTask task = task();
+        task.setExecutionOwner(owner);
+        task.setExecutionEpoch(epoch);
+        task.setExecutionLeaseExpiresAt(leaseExpiresAt);
+        return task;
     }
 
     private AgentTask task() {

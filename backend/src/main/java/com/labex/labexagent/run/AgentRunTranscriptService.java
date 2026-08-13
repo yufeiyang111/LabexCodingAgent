@@ -40,13 +40,24 @@ public class AgentRunTranscriptService {
     private final AgentRunMessageMapper messageMapper;
     private final AgentRunPartMapper partMapper;
     private final AgentTaskMapper taskMapper;
+    private final AgentRunExecutionLeaseService leaseService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentRunTranscriptService(AgentRunMessageMapper messageMapper,
+                                     AgentRunPartMapper partMapper,
+                                     AgentTaskMapper taskMapper,
+                                     AgentRunExecutionLeaseService leaseService) {
+        this.messageMapper = messageMapper;
+        this.partMapper = partMapper;
+        this.taskMapper = taskMapper;
+        this.leaseService = leaseService;
+    }
 
     public AgentRunTranscriptService(AgentRunMessageMapper messageMapper,
                                      AgentRunPartMapper partMapper,
                                      AgentTaskMapper taskMapper) {
-        this.messageMapper = messageMapper;
-        this.partMapper = partMapper;
-        this.taskMapper = taskMapper;
+        this(messageMapper, partMapper, taskMapper,
+                new AgentRunExecutionLeaseService(taskMapper, "legacy-instance", 30_000L));
     }
 
     /** 以稳定序号追加一条 Provider message；重复恢复只更新同一个 key。 */
@@ -69,25 +80,40 @@ public class AgentRunTranscriptService {
         }
     }
 
+    /**
+     * Executor-fenced Provider transcript 追加：先验证 {@link ExecutionFence}（owner + 精确 epoch +
+     * 未过期 lease），stale fence 抛出 typed failure，transcript Message/Part 均不被写入。
+     * 该预检在写入事务内、任何 INSERT/UPDATE 之前执行；lifecycle/plan 的 fenced 写入另将
+     * owner/epoch/active-lease 嵌入 UPDATE 谓词。
+     * 当调用方传入的 executionEpoch 与 fence 的 epoch 不一致时同样 fail closed，不写入任何事实。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void appendMessage(ExecutionFence fence, Long taskId, long executionEpoch, long sequence,
+                              Map<String, Object> providerMessage) {
+        requireFence(fence);
+        if (fence.epoch() != executionEpoch) {
+            throw new AgentRunExecutionLeaseService.StaleExecutionFenceException(
+                    AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.STALE_FENCE);
+        }
+        appendMessage(taskId, executionEpoch, sequence, providerMessage);
+    }
+
     /** 将当前持久化 transcript 按 Provider 协议重建。 */
     public List<Map<String, Object>> loadProjectableTranscript(Long taskId) {
         return loadProjectableTranscriptAfter(taskId, -1L);
     }
 
-    /** 持久化运行时边界说明。 */
+    /** 只投影 sequenceExclusive 之后追加的持久化 Provider 消息，用于恢复和 compaction 边界续读。 */
     public List<Map<String, Object>> loadProjectableTranscriptAfter(Long taskId, long sequenceExclusive) {
         return loadProjectableTranscriptAfter(taskId, sequenceExclusive, false);
     }
 
-    /**
-      * 持久化运行时边界说明。
-      * 持久化运行时边界说明。
-     */
+    /** 为交互恢复保留打开中的 tool batch，返回可续写的持久化投影。 */
     public List<Map<String, Object>> loadProjectableTranscriptForInteractionResume(Long taskId) {
         return loadProjectableTranscriptAfter(taskId, -1L, true);
     }
 
-    /** 持久化运行时边界说明。 */
+    /** 从指定序号之后为交互恢复重建可续写投影（保留未完成 batch）。 */
     public List<Map<String, Object>> loadProjectableTranscriptForInteractionResumeAfter(
             Long taskId, long sequenceExclusive) {
         return loadProjectableTranscriptAfter(taskId, sequenceExclusive, true);
@@ -113,7 +139,7 @@ public class AgentRunTranscriptService {
         List<Map<String, Object>> result = new ArrayList<>();
         for (AgentRunMessage message : messages) {
             long sequence = message.getSequenceNumber() == null ? -1L : message.getSequenceNumber();
-            // 持久化运行时边界说明。
+            // 位于 compaction 边界（sequenceExclusive）之前的旧消息在加载时跳过。
             if (sequence <= sequenceExclusive) {
                 continue;
             }
@@ -130,8 +156,7 @@ public class AgentRunTranscriptService {
     }
 
     /**
-      * 持久化运行时边界说明。
-      * 持久化运行时边界说明。
+     * 将已解决的交互投影为对应 tool_call 的协议 tool result；交互记录缺失对应 tool call 时 fail closed。
      */
     public Map<String, Object> resolvedInteractionToolResult(
             AgentRunInteraction interaction, List<Map<String, Object>> transcript) {
@@ -247,7 +272,7 @@ public class AgentRunTranscriptService {
                 synthetic.put("status", status);
                 synthetic.put("reason", "not_executed_after_interaction_pause");
                 synthetic.put("detail", part.getOutputText() == null ? "" : part.getOutputText());
-                content = limit(GSON.toJson(synthetic), 8_000);
+                content = GSON.toJson(synthetic);
             }
             LinkedHashMap<String, Object> result = new LinkedHashMap<>();
             result.put("role", "tool");
@@ -340,7 +365,7 @@ public class AgentRunTranscriptService {
                 cursor++;
             }
             if (!pendingToolCalls.isEmpty()) {
-                // 持久化运行时边界说明。
+                // 未完成的 tool batch 在此截断，恢复后从持久化 Part 继续。
                 return List.copyOf(projected);
             }
             index = cursor;
@@ -390,7 +415,14 @@ public class AgentRunTranscriptService {
         result.put("status", stringValue(interaction.getStatus()));
         result.put("request", parseObject(interaction.getRequestPayload()));
         result.put("response", parseObject(interaction.getResponsePayload()));
-        return limit(GSON.toJson(result), 8_000);
+        // opencode 语义：把"如何继续"的指令放进工具结果本身（对齐 opencode question 工具输出
+        // "User has answered your questions: ... You can now continue with the user's answers in mind."），
+        // 恢复后模型从工具结果即可知道要继续执行且不应重复发起相同提问。
+        boolean answered = "answered".equalsIgnoreCase(stringValue(interaction.getStatus()));
+        result.put("note", answered
+                ? "用户已回答你的提问。请把回答作为新的信息继续执行原任务；不要重复发起相同的提问工具调用，除非出现新的待确认事项。"
+                : "用户取消了本次提问。请基于当前进度选择最安全的下一步，或直接结束任务。");
+        return GSON.toJson(result);
     }
 
     private record UnresolvedToolCall(String id, String name) {
@@ -461,6 +493,16 @@ public class AgentRunTranscriptService {
         appendMessage(taskId, epoch, nextSequence(taskId), providerResult);
         log.debug("DEFERRED_TOOL_RESULT_APPENDED taskId={} toolCallId={}", taskId, toolCallId);
         return true;
+    }
+
+    /**
+     * Executor-fenced deferred tool result 追加：先验证 {@link ExecutionFence}，stale fence 抛出 typed failure。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean appendDeferredToolResult(ExecutionFence fence, Long taskId, String toolCallId,
+                                            String toolName, String content) {
+        requireFence(fence);
+        return appendDeferredToolResult(taskId, toolCallId, toolName, content);
     }
 
     /** 只有已覆盖等待占位内容的最终 tool result 才能触发 Provider 续跑。 */
@@ -551,7 +593,9 @@ public class AgentRunTranscriptService {
         message.setSequenceNumber(sequence);
         message.setRole(role);
         message.setStatus("tool".equalsIgnoreCase(role) ? "completed" : "durable");
-        message.setContent(limit(content, 12_000));
+        // opencode 语义：durable transcript 保存完整事实，任何内容截断都必须在请求构建期
+        // 由上下文准入/压缩策略显式处理，而不是在持久化层静默丢字（否则跨轮会话记忆会被切断）。
+        message.setContent(content == null ? "" : content);
         message.setMetadata(GSON.toJson(metadata));
         message.setUpdateTime(LocalDateTime.now());
         if (message.getRunMessageId() == null) {
@@ -756,5 +800,12 @@ public class AgentRunTranscriptService {
     private String limit(String value, int max) {
         if (value == null) return "";
         return value.length() <= max ? value : value.substring(0, max) + "\n...truncated...";
+    }
+
+    private void requireFence(ExecutionFence fence) {
+        if (fence == null) {
+            throw new IllegalStateException("ExecutionFence is required for executor-originated writes");
+        }
+        leaseService.requireActiveFence(fence, LocalDateTime.now());
     }
 }

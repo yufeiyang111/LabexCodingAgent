@@ -28,6 +28,14 @@ class AgentLoopEngineContextBudgetTest {
         assertFalse(AgentLoopEngine.hasContextCompactionProgress(1_200, 1_200));
         assertFalse(AgentLoopEngine.hasContextCompactionProgress(1_200, 1_240));
     }
+
+    @Test
+    void doesNotAppendResumeDispatchMetadataAsANewProviderUserTurn() {
+        assertTrue(AgentLoopEngine.shouldAppendRequestMessageToTranscript(false, false));
+        assertTrue(AgentLoopEngine.shouldAppendRequestMessageToTranscript(true, false));
+        assertFalse(AgentLoopEngine.shouldAppendRequestMessageToTranscript(true, true));
+        assertFalse(AgentLoopEngine.shouldAppendRequestMessageToTranscript(false, true));
+    }
     @Test
     void usesTheDurableProviderProjectionForBudgetAndAdmissionInputs() throws Exception {
         AgentLoopEngine engine = newEngine();

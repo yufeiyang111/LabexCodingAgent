@@ -30,10 +30,20 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
+    void consumesOnlyThePreclaimedInteractionContinuationWithoutRebuildingItFromRequestIds() {
+        assertTrue(source.contains("AgentRunInteraction preclaimedInteraction"));
+        assertTrue(source.contains("resolvedInteractionToolResults(preclaimedInteraction, persistedMessages)"));
+        assertTrue(source.contains("markDispatchClaimConsumed("));
+        assertFalse(source.contains("findById(request.getResumeInteractionId())"));
+        assertFalse(source.contains("runInteractionService.findById("));
+    }
+
+    @Test
     void providerRequestsUseDurableTranscriptAsTheOnlyInputSource() {
         assertTrue(source.contains("providerMessagesForBudget("));
         assertTrue(source.contains("requireTranscriptProjectionService().loadProviderMessages(taskId)"));
-        assertTrue(source.contains("sysPrompt, providerMessages, tools, llmProvider"));
+        assertTrue(source.contains("sysPrompt, providerMessages, tools, llmProvider")
+                || source.contains("sysPrompt, modelTurnMessages, tools, llmProvider"));
         assertFalse(source.contains("projectProviderMessages("));
         assertFalse(source.contains("projectForProvider(taskId, inMemoryMessages).messages()"));
         assertFalse(source.contains("return this.providerMessageProjector.project(inMemoryMessages);"));
@@ -43,10 +53,21 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
+    void maxStepsSentinelIsDerivedReadOnlyAndNeverWrittenToTheTranscript() {
+        assertTrue(source.contains("withMaxStepsSentinel(providerMessages)"));
+        assertTrue(source.contains("Map.of(\"role\", \"assistant\", \"content\", MAX_STEPS_SENTINEL)"));
+        assertTrue(source.contains("List.copyOf(result)"));
+        assertFalse(source.contains("this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of(\"role\", \"assistant\", \"content\", MAX_STEPS_SENTINEL"));
+        assertFalse(source.contains("MAX_STEPS_SENTINEL\"));"));
+    }
+
+    @Test
     void consumesAnApprovedOfflineRetryWithoutAskingForTheSameCommandAgain() {
+        // opencode Shell 在隔离 Worker 内默认允许依赖网络；offline-retry grant 消费只用于非 opencode 命令路径。
         assertTrue(source.contains("hasApprovedOfflineRetryGrant(ctx.getTaskId(), guardedCommand)"));
         assertTrue(source.contains("&& !approvedOfflineRetry"));
-        assertTrue(source.contains("boolean networkRequested = this.networkRequested(args) || approvedOfflineRetry;"));
+        assertTrue(source.contains("boolean networkRequested = !opencodeShell && (this.networkRequested(args) || approvedOfflineRetry);"));
+        assertTrue(source.contains("networkAccessService.hasApprovedOfflineRetryGrant("));
     }
 
     @Test
@@ -56,6 +77,29 @@ class AgentLoopEngineStreamingContractTest {
         int publish = source.indexOf("this.publishUserQuestion(sse, conv, res);", pause);
         assertTrue(pause >= 0);
         assertTrue(publish > pause);
+    }
+
+    @Test
+    void doesNotNarrateWaitingInteractionAsFailureBeforePausing() {
+        // opencode 语义：等待用户输入时没有工具结果，OBSERVE/结果叙述必须发生在
+        // isInteractionRequired 暂停分支（含 return）之后，不能把暂停叙述成失败。
+        String marker = "if (res.isInteractionRequired()) {";
+        int firstPauseBranch = source.indexOf(marker);
+        assertTrue(firstPauseBranch >= 0);
+        int secondPauseBranch = source.indexOf(marker, firstPauseBranch + marker.length());
+        assertTrue(secondPauseBranch > firstPauseBranch);
+        int nativeObserve = source.indexOf("this.sendObserve(sse, conv, i, tn, res, task.getTaskId(), toolCallId);");
+        int recoveredObserve = source.indexOf("this.sendObserve(sse, conv, i, invTool, res, task.getTaskId(), recoveredToolCallId);");
+        assertTrue(nativeObserve > firstPauseBranch);
+        assertTrue(recoveredObserve > secondPauseBranch);
+    }
+
+    @Test
+    void projectsResolvedInteractionAsCompletedToolResultOnResume() {
+        assertTrue(source.contains("projectResolvedInteraction(sse, conv, task, executionFence, preclaimedInteraction, visibleLanguage)"));
+        assertTrue(source.contains("toolCallJournalService.completed(executionFence, task.getTaskId(), toolCallId, \"question\""));
+        assertTrue(source.contains("toolCallJournalService.interrupted(executionFence, task.getTaskId(), toolCallId, \"question\""));
+        assertTrue(source.contains("sendObservePayload(sse, conv, task.getTaskId(), toolCallId, resultText, true)"));
     }
 
     @Test
@@ -103,7 +147,7 @@ class AgentLoopEngineStreamingContractTest {
 
     @Test
     void projectsTransactionallyPersistedPlanEventBeforeLaterToolLifecycleEvents() {
-        int delegate = source.indexOf("ToolResult result = this.toolTurnExecutor.execute(t, ctx, args, name);");
+        int delegate = source.indexOf("ToolResult result = this.toolTurnExecutor.execute(t, ctx, args, name, toolCallId);");
         int projection = source.indexOf("this.projectPersistedPlanUpdate(sse, ctx);", delegate);
         int laterToolPhase = source.indexOf("phase = \"post_edit_hook\";", delegate);
 

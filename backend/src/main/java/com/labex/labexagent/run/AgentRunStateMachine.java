@@ -32,6 +32,7 @@ public final class AgentRunStateMachine {
         transitions.put(AgentRunState.PREPARING, EnumSet.of(
                 AgentRunState.RUNNING,
                 AgentRunState.RECOVERING,
+                AgentRunState.WAITING_ENVIRONMENT,
                 AgentRunState.CANCELLING,
                 AgentRunState.FAILED,
                 AgentRunState.WAITING_WORKSPACE));
@@ -59,7 +60,11 @@ public final class AgentRunStateMachine {
         transitions.put(AgentRunState.WAITING_ENVIRONMENT, EnumSet.of(
                 AgentRunState.QUEUED, AgentRunState.CANCELLING, AgentRunState.FAILED));
         transitions.put(AgentRunState.RECOVERING, EnumSet.of(
-                AgentRunState.RUNNING, AgentRunState.WAITING_WORKSPACE, AgentRunState.CANCELLING, AgentRunState.FAILED));
+                AgentRunState.PREPARING,
+                AgentRunState.RUNNING,
+                AgentRunState.WAITING_WORKSPACE,
+                AgentRunState.CANCELLING,
+                AgentRunState.FAILED));
         transitions.put(AgentRunState.RETRYING, EnumSet.of(
                 AgentRunState.RUNNING,
                 AgentRunState.RECOVERING,

@@ -9,6 +9,7 @@ import com.labex.entity.CommandApproval;
 import com.labex.entity.AgentRunEvent;
 import com.labex.labexagent.diff.DiffService;
 import com.labex.labexagent.diff.PendingChange;
+import com.labex.labexagent.dto.AgentStreamHttpRequest;
 import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.dto.PromptOptimizationRequest;
 import com.labex.labexagent.run.AgentRunEventReplayService;
@@ -175,8 +176,9 @@ public class StudentAgentController {
     }
 
     @PostMapping(value={"/stream"}, produces={"text/event-stream"})
-    public SseEmitter stream(@PathVariable Integer projectId, @RequestBody AgentStreamRequest request, Authentication auth) {
+    public SseEmitter stream(@PathVariable Integer projectId, @RequestBody AgentStreamHttpRequest httpRequest, Authentication auth) {
         Integer studentId = this.getStudentId(auth);
+        AgentStreamRequest request = httpRequest.toInternalRequest();
         this.commandService.prepareAgentStreamRequest(studentId, projectId, request);
         return this.agentLoopEngine.start(studentId, projectId, request);
     }

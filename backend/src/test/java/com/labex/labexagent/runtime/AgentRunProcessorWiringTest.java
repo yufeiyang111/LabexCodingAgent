@@ -3,6 +3,7 @@ package com.labex.labexagent.runtime;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
+import com.labex.labexagent.projectconfig.AgentRunConfigSnapshotService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.tool.ToolRegistry;
 import com.labex.labexagent.tool.ToolSelectionPolicy;
@@ -15,6 +16,7 @@ class AgentRunProcessorWiringTest {
         new ApplicationContextRunner()
                 .withBean(ToolRegistry.class, () -> mock(ToolRegistry.class))
                 .withBean(AgentTaskService.class, () -> mock(AgentTaskService.class))
+                .withBean(AgentRunConfigSnapshotService.class, () -> mock(AgentRunConfigSnapshotService.class))
                 .withBean(AgentModelTurnExecutor.class)
                 .withBean(AgentToolTurnExecutor.class)
                 .withBean(AgentToolCallBatchProtocol.class)
@@ -33,5 +35,13 @@ class AgentRunProcessorWiringTest {
                     assertThat(context).hasSingleBean(ContextAdmissionGate.class);
                     assertThat(context).hasSingleBean(AgentInteractionPauser.class);
                 });
+    }
+
+    @Test
+    void exposesTheTaskEpochSnapshotServiceInjectionPoints() throws Exception {
+        assertThat(AgentTaskService.class.getDeclaredMethod(
+                "setRunConfigSnapshotService", AgentRunConfigSnapshotService.class)).isNotNull();
+        assertThat(AgentLoopEngine.class.getDeclaredMethod(
+                "setRunConfigSnapshotService", AgentRunConfigSnapshotService.class)).isNotNull();
     }
 }

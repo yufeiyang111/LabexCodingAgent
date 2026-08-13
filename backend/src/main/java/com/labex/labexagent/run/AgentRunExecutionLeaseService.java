@@ -1,5 +1,6 @@
 package com.labex.labexagent.run;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentTaskMapper;
@@ -9,7 +10,14 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Fences concurrent agent workers with a durable owner, epoch, and expiring lease. */
+/**
+ * Fences concurrent agent workers with a durable owner, epoch, and expiring lease.
+ *
+ * <p>Control-plane lifecycle APIs (queue initialization, transactional dispatch claims,
+ * interaction expiry, cancellation and scheduler takeover) are deliberately NOT fenced by
+ * {@link #requireActiveFence}: they remain separately named and validate their own
+ * ownership/CAS contract. The fence is the executor-side proof for durable fact writes only.
+ */
 @Service
 public class AgentRunExecutionLeaseService {
     private final AgentTaskMapper taskMapper;
@@ -111,6 +119,58 @@ public class AgentRunExecutionLeaseService {
         return task.getExecutionLeaseExpiresAt().isAfter(effectiveNow);
     }
 
+    /**
+     * Requires an active execution fence: the durable task row must be owned by
+     * {@code fence.owner()}, must run at exactly {@code fence.epoch()} and must hold an
+     * unexpired execution lease. The check is a single database predicate.
+     *
+     * <p>This is a read/verify-only contract: it never writes and can never cause partial
+     * persistence. When the predicate fails, a typed {@link StaleExecutionFenceException}
+     * is thrown whose {@link StaleExecutionFenceException.Reason} distinguishes a stale
+     * owner, a stale epoch and an expired lease without leaking row internals.
+     *
+     * <p>Control-plane lifecycle APIs (queue initialization, transactional dispatch
+     * claims, interaction expiry, cancellation and scheduler takeover) are deliberately
+     * NOT fenced by this predicate; they remain separately named and validate their own
+     * ownership/CAS contract.
+     *
+     * @param fence the immutable owner/epoch/task identity the executor claims to hold
+     * @param now   the reference time used for lease-expiry comparison
+     * @throws StaleExecutionFenceException when the executor no longer holds the active lease
+     */
+    public void requireActiveFence(ExecutionFence fence, LocalDateTime now) {
+        LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
+        if (fence == null || fence.taskId() == null || fence.owner() == null || fence.owner().isBlank()) {
+            throw new StaleExecutionFenceException(StaleExecutionFenceException.Reason.INVALID_FENCE);
+        }
+        Long active = taskMapper.selectCount(new QueryWrapper<AgentTask>()
+                .eq("task_id", fence.taskId())
+                .eq("execution_owner", fence.owner())
+                .eq("execution_epoch", fence.epoch())
+                .gt("execution_lease_expires_at", effectiveNow));
+        if (active != null && active == 1L) {
+            return;
+        }
+        throw new StaleExecutionFenceException(reasonOf(fence, effectiveNow));
+    }
+
+    private StaleExecutionFenceException.Reason reasonOf(ExecutionFence fence, LocalDateTime now) {
+        AgentTask task = taskMapper.selectById(fence.taskId());
+        if (task == null) {
+            return StaleExecutionFenceException.Reason.TASK_NOT_FOUND;
+        }
+        if (task.getExecutionOwner() == null || !task.getExecutionOwner().equals(fence.owner())) {
+            return StaleExecutionFenceException.Reason.STALE_OWNER;
+        }
+        if (task.getExecutionEpoch() == null || task.getExecutionEpoch() != fence.epoch()) {
+            return StaleExecutionFenceException.Reason.STALE_EPOCH;
+        }
+        if (task.getExecutionLeaseExpiresAt() == null || !task.getExecutionLeaseExpiresAt().isAfter(now)) {
+            return StaleExecutionFenceException.Reason.EXPIRED_LEASE;
+        }
+        return StaleExecutionFenceException.Reason.STALE_FENCE;
+    }
+
     public String instanceId() { return instanceId; }
     public long leaseDurationMs() { return leaseDurationMs; }
 
@@ -124,5 +184,42 @@ public class AgentRunExecutionLeaseService {
     }
 
     public record ExecutionLease(Long taskId, String owner, long epoch, LocalDateTime expiresAt) {
+    }
+
+    /**
+     * Typed failure raised when an executor no longer holds the active lease its fence
+     * claims. Read/verify-only: no persistence happens inside this failure path.
+     */
+    public static final class StaleExecutionFenceException extends RuntimeException {
+        private final Reason reason;
+
+        public StaleExecutionFenceException(Reason reason) {
+            super("Stale execution fence: " + reason.code());
+            this.reason = reason;
+        }
+
+        public Reason reason() {
+            return reason;
+        }
+
+        /** Safe, stable reason codes distinguishing the failing fence dimension. */
+        public enum Reason {
+            TASK_NOT_FOUND("task-not-found"),
+            STALE_OWNER("stale-owner"),
+            STALE_EPOCH("stale-epoch"),
+            EXPIRED_LEASE("expired-lease"),
+            STALE_FENCE("stale-fence"),
+            INVALID_FENCE("invalid-fence");
+
+            private final String code;
+
+            Reason(String code) {
+                this.code = code;
+            }
+
+            public String code() {
+                return code;
+            }
+        }
     }
 }

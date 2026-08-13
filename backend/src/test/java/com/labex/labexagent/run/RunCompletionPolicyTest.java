@@ -39,6 +39,31 @@ class RunCompletionPolicyTest {
         assertFalse(policy.evaluate(input).satisfied());
     }
 
+    @Test void environmentBlockedVerificationCannotCountAsPass() {
+        RunCompletionPolicy.Input input = new RunCompletionPolicy.Input(9L,
+                List.of("src/App.vue"), List.of(), List.of(), List.of("mvn test (status=timed_out)"),
+                false, "running", List.of());
+
+        RunCompletionEvidence evidence = policy.evaluate(input);
+
+        assertFalse(evidence.satisfied());
+        assertTrue(evidence.unresolvedRisks().stream().anyMatch(risk -> risk.contains("环境受阻")));
+        assertTrue(evidence.criteria().stream().anyMatch(criterion ->
+                "environment_verifications".equals(criterion.code()) && !criterion.satisfied()));
+    }
+
+    @Test void codeFailureStaysAFailedVerificationCriterion() {
+        RunCompletionPolicy.Input input = new RunCompletionPolicy.Input(9L,
+                List.of("src/App.vue"), List.of(), List.of("mvn test (exit 1)"), List.of(),
+                false, "running", List.of());
+
+        RunCompletionEvidence evidence = policy.evaluate(input);
+
+        assertFalse(evidence.satisfied());
+        assertTrue(evidence.criteria().stream().anyMatch(criterion ->
+                "verification_failures".equals(criterion.code()) && !criterion.satisfied()));
+    }
+
     private RunCompletionPolicy.Input input(List<String> changed, List<String> passed, List<String> failed,
                                              boolean manualVerified, String state) {
         return new RunCompletionPolicy.Input(9L, changed, passed, failed, manualVerified, state);

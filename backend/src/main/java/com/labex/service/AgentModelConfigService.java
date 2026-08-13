@@ -44,6 +44,21 @@ public class AgentModelConfigService extends ServiceImpl<AgentModelConfigMapper,
                 .one();
     }
 
+    /**
+     * 恢复路径的精确解析：只接受 task 持久化选定的、仍归属该用户且启用的配置。
+     * 缺失、禁用或未持久化一律返回 null，调用方必须 fail closed，绝不能回退到当前默认配置。
+     */
+    public AgentModelConfig resolveOwnedEnabled(Integer studentId, Integer configId) {
+        if (configId == null) {
+            return null;
+        }
+        AgentModelConfig config = this.getOwned(studentId, configId);
+        if (config == null || !Integer.valueOf(1).equals(config.getStatus())) {
+            return null;
+        }
+        return config;
+    }
+
     public AgentModelConfig create(Integer studentId, String configName, String provider,
                                      String modelName, String apiKey, String baseUrl,
                                      Integer maxTokens, Double temperature, boolean makeDefault) {
@@ -345,12 +360,11 @@ public class AgentModelConfigService extends ServiceImpl<AgentModelConfigMapper,
 
     public AgentModelConfig resolveForStudent(Integer studentId, Integer configId) {
         if (configId != null) {
-            AgentModelConfig config = this.getOwned(studentId, configId);
-            if (config != null) return config;
+            // 显式选定的配置必须精确解析：删除/缺失时 fail closed，不能静默回退到当前默认。
+            return this.getOwned(studentId, configId);
         }
         AgentModelConfig defaultConfig = this.getDefault(studentId);
-        if (defaultConfig != null) return defaultConfig;
-        return null;
+        return defaultConfig != null ? defaultConfig : null;
     }
 
     @Transactional

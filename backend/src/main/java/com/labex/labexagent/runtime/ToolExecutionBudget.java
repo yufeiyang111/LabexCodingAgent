@@ -1,13 +1,13 @@
 package com.labex.labexagent.runtime;
 
 import com.google.gson.JsonObject;
+import com.labex.labexagent.execution.ShellCommandTimeouts;
 import com.labex.labexagent.tool.ToolSupport;
 import java.util.Locale;
 
 /**
- * Central watchdog policy for Agent tools. Command tools keep their own explicit
- * timeout_seconds value; this policy only adds a bounded cleanup margin so that
- * one tool cannot block the Agent loop indefinitely.
+ * Agent 工具 watchdog 的预算计算。
+ * 普通命令使用默认 timeout，Shell 根据命令类别为安装、构建、测试设置更长预算。
  */
 public final class ToolExecutionBudget {
     private static final long READ_ONLY_MS = 30_000L;
@@ -23,14 +23,36 @@ public final class ToolExecutionBudget {
     public static long timeoutMs(String toolName, JsonObject arguments) {
         String normalized = toolName == null ? "" : toolName.toLowerCase(Locale.ROOT);
         if (isCommandTool(normalized)) {
-            int defaultSeconds = "run_tests".equals(normalized) ? 120 : 60;
-            int seconds = Math.min(600, Math.max(1, ToolSupport.intArg(arguments, "timeout_seconds", defaultSeconds)));
-            return Math.min(MAX_COMMAND_MS, seconds * 1_000L + COMMAND_MARGIN_MS);
+            long requestedMs = commandTimeoutMs(normalized, arguments);
+            return Math.min(MAX_COMMAND_MS, requestedMs + COMMAND_MARGIN_MS);
         }
         if (isReadOnlyTool(normalized)) return READ_ONLY_MS;
         if (isRemoteOrLspTool(normalized)) return REMOTE_OR_LSP_MS;
         if ("repo_clone".equals(normalized) || "repo_map".equals(normalized)) return REPOSITORY_OPERATION_MS;
         return DEFAULT_MS;
+    }
+
+    private static long commandTimeoutMs(String toolName, JsonObject arguments) {
+        int defaultSeconds = "run_tests".equals(toolName) ? 120 : 60;
+        boolean shellTool = "shell".equals(toolName) || "bash".equals(toolName);
+        if (shellTool && hasValue(arguments, "timeout")) {
+            return Math.min(600_000L,
+                    Math.max(1L, ToolSupport.intArg(arguments, "timeout", defaultSeconds * 1_000)));
+        }
+        if (hasValue(arguments, "timeout_seconds")) {
+            int seconds = Math.min(600,
+                    Math.max(1, ToolSupport.intArg(arguments, "timeout_seconds", defaultSeconds)));
+            return seconds * 1_000L;
+        }
+        if (shellTool) {
+            String command = ToolSupport.stringArgMulti(arguments, "", "command", "cmd", "shell_command");
+            return ShellCommandTimeouts.defaultTimeoutMs(command);
+        }
+        return defaultSeconds * 1_000L;
+    }
+
+    private static boolean hasValue(JsonObject arguments, String field) {
+        return arguments != null && arguments.has(field) && !arguments.get(field).isJsonNull();
     }
 
     static boolean isCommandTool(String toolName) {

@@ -37,6 +37,16 @@ public final class EnvironmentBlockerClassifier {
         return Optional.empty();
     }
 
+    /** 仅把明确的 DNS、依赖下载或网络连接故障升级为一次性网络重试审批。 */
+    public static boolean isNetworkRetryCandidate(String toolName, ToolResult result) {
+        return classify(toolName, result)
+                .map(blocker -> switch (blocker.code()) {
+                    case "DNS_UNAVAILABLE", "DEPENDENCY_RESOLUTION_FAILED", "NETWORK_UNAVAILABLE" -> true;
+                    default -> false;
+                })
+                .orElse(false);
+    }
+
     private static boolean isDependencyExecutionTool(String toolName) {
         if (toolName == null) return false;
         return switch (toolName.trim().toLowerCase(Locale.ROOT)) {

@@ -7,8 +7,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
 import java.nio.charset.StandardCharsets;
@@ -24,6 +26,7 @@ public final class AgentLoopGuard {
     private final AgentLoopProperties properties;
     private final Deque<String> recentToolSignatures = new ArrayDeque<>();
     private final Set<String> challengedPatterns = new HashSet<>();
+    private final Map<String, Integer> failedToolSignatures = new HashMap<>();
     private int automaticStrategySwitches;
     private int nonProgressIterations;
 
@@ -58,10 +61,20 @@ public final class AgentLoopGuard {
     }
 
     public void recordToolResult(boolean success) {
+        recordToolResult("", success);
+    }
+
+    public void recordToolResult(String signature, boolean success) {
         if (success) {
             nonProgressIterations = 0;
+            if (signature != null && !signature.isBlank()) {
+                failedToolSignatures.remove(signature);
+            }
         } else {
             recordModelNoProgress();
+            if (signature != null && !signature.isBlank()) {
+                failedToolSignatures.merge(signature, 1, Integer::sum);
+            }
         }
     }
 
@@ -69,6 +82,11 @@ public final class AgentLoopGuard {
         String signature = canonicalSignature(toolName, arguments);
         recentToolSignatures.addLast(signature);
         trimHistory();
+
+        int failedAttempts = failedToolSignatures.getOrDefault(signature, 0);
+        if (failedAttempts >= Math.max(1, properties.getRepeatedToolCallThreshold() - 1)) {
+            return repeatedFailureDecision(signature, failedAttempts);
+        }
 
         LoopPattern loop = findRepeatedSuffix();
         if (loop == null) {
@@ -91,6 +109,27 @@ public final class AgentLoopGuard {
                 "The agent repeated a tool-call pattern after being told to change strategy.",
                 loop.cycleLength(),
                 loop.key());
+    }
+
+    private ToolDecision repeatedFailureDecision(String signature, int failedAttempts) {
+        String patternKey = "failed:" + signature;
+        boolean firstChallenge = challengedPatterns.add(patternKey);
+        if (firstChallenge && automaticStrategySwitches < properties.getMaxAutomaticStrategySwitches()) {
+            automaticStrategySwitches++;
+            return new ToolDecision(
+                    ToolAction.SWITCH_STRATEGY,
+                    signature,
+                    "Equivalent tool calls already failed " + failedAttempts
+                            + " times; inspect or modify the workspace before retrying.",
+                    1,
+                    patternKey);
+        }
+        return new ToolDecision(
+                ToolAction.REQUEST_USER,
+                signature,
+                "The agent retried an equivalent failed tool call after a required strategy change.",
+                1,
+                patternKey);
     }
 
     private void trimHistory() {

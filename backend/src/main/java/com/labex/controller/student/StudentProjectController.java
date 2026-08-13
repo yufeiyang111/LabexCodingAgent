@@ -10,6 +10,11 @@ import com.labex.labexagent.commandsecurity.CommandClassification;
 import com.labex.labexagent.commandsecurity.CommandClassifier;
 import com.labex.labexagent.commandsecurity.CommandDecision;
 import com.labex.labexagent.commandsecurity.CommandRequest;
+import com.labex.labexagent.execution.WorkerShellDescriptor;
+import com.labex.labexagent.execution.WorkerShellExecutor;
+import com.labex.labexagent.runtime.AgentExecutionProperties;
+import com.labex.labexagent.worker.SandboxWorker;
+import com.labex.labexagent.worker.WorkerRunSpec;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.service.ProjectTerminalService;
@@ -47,7 +52,6 @@ public class StudentProjectController {
     private static final String TERMINAL_SOURCE = "terminal_rest";
     private static final String TERMINAL_CONVERSATION = "terminal";
     private static final long TERMINAL_TASK_ID = 0L;
-    private static final String TERMINAL_SHELL = "direct";
     private static final String TERMINAL_PROFILE = "managed-terminal";
     private static final int APPROVAL_TTL_MINUTES = 10;
     @Autowired
@@ -56,6 +60,10 @@ public class StudentProjectController {
     private ProjectTerminalService projectTerminalService;
     @Autowired
     private CommandApprovalService commandApprovalService;
+    @Autowired
+    private SandboxWorker sandboxWorker;
+    @Autowired
+    private AgentExecutionProperties executionProperties;
     private final CommandClassifier commandClassifier = new CommandClassifier();
 
     @GetMapping
@@ -202,7 +210,15 @@ public class StudentProjectController {
         List<ProjectTerminalService.TerminalSession> sessions = this.projectTerminalService.list(studentId, projectId);
         List<Map<String, Object>> result = new java.util.ArrayList<>();
         for (ProjectTerminalService.TerminalSession s : sessions) {
-            result.add(Map.of("session", s.snapshot()));
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("session", s.snapshot());
+            if (s.lastExecution != null) {
+                item.put("status", s.lastExecution.status());
+                item.put("shell", s.lastExecution.shell());
+                item.put("workdir", s.lastExecution.workdir());
+                item.put("exitCode", s.lastExecution.exitCode() == null ? "" : s.lastExecution.exitCode());
+            }
+            result.add(item);
         }
         return Result.success(result);
     }
@@ -308,15 +324,20 @@ public class StudentProjectController {
                                                                  String command, String path, boolean longRunning,
                                                                  int timeout) throws Exception {
         String workingDirectory = terminalWorkingDirectory(project, session, path);
-        CommandClassification classification = commandClassifier.classify(new CommandRequest(command, TERMINAL_SHELL,
-                workingDirectory, timeout, longRunning, false, TERMINAL_PROFILE));
+        WorkerRunSpec workerRun = WorkerRunSpec.forWorkspace("terminal-" + session.sessionId,
+                ProjectWorkspace.paths(project).workspaceRoot(), executionProperties.isNetworkDefaultEnabled());
+        WorkerShellDescriptor descriptor = new WorkerShellExecutor(sandboxWorker).descriptor(workerRun);
+        String shell = executionProperties.isSafeProfile() ? "direct" : descriptor.shellName();
+        CommandClassification classification = commandClassifier.classify(new CommandRequest(command, shell,
+                workingDirectory, timeout, longRunning, false,
+                executionProperties.getPermissionProfile()));
         if (classification.decision() == CommandDecision.BLOCK) {
             return Result.success(Map.of("refused", true, "reasonCode", classification.reasonCode().name(),
                     "riskLevel", classification.riskClass().name(), "output", "Command blocked by policy"));
         }
         if (classification.requiresApproval()) {
             CommandApproval approval = createTerminalApproval(studentId, project.getProjectId(), session.sessionId,
-                    classification, timeout, longRunning);
+                    classification, shell, timeout, longRunning);
             return Result.success(Map.of("approvalRequired", true, "approvalId", approval.getApprovalId(),
                     "expiresTime", approval.getExpiresTime().toString(), "displayCommand", approval.getDisplayCommand(),
                     "riskLevel", classification.riskClass().name()));
@@ -329,14 +350,15 @@ public class StudentProjectController {
     }
 
     private CommandApproval createTerminalApproval(Integer studentId, Integer projectId, String sessionId,
-                                                    CommandClassification classification, int timeout, boolean longRunning) {
+                                                     CommandClassification classification, String shell,
+                                                     int timeout, boolean longRunning) {
         String invocationId = UUID.randomUUID().toString();
         return commandApprovalService.createOrGet(new CommandApprovalService.CreateRequest(
                 UUID.randomUUID().toString(), invocationId, studentId, projectId, TERMINAL_TASK_ID,
                 TERMINAL_CONVERSATION, sessionId, TERMINAL_SOURCE, invocationId, UUID.randomUUID().toString(),
                 classification.normalizedCommand().digest(), classification.normalizedCommand().canonicalCommand(),
                 classification.normalizedCommand().displayCommand(), classification.normalizedCommand().canonicalWorkingDirectory(),
-                TERMINAL_SHELL, terminalOptions(timeout, longRunning), classification.decision().name(),
+                shell, terminalOptions(timeout, longRunning), classification.decision().name(),
                 classification.policyVersion(), LocalDateTime.now().plusMinutes(APPROVAL_TTL_MINUTES)));
     }
 
@@ -357,6 +379,16 @@ public class StudentProjectController {
         info.put("sessionId", session.sessionId);
         info.put("name", session.name);
         info.put("output", session.snapshot());
+        ProjectTerminalService.TerminalExecution execution = result.execution();
+        if (execution != null) {
+            info.put("status", execution.status());
+            info.put("shell", execution.shell());
+            info.put("workdir", execution.workdir());
+            info.put("durationMs", execution.durationMs());
+            info.put("truncated", execution.truncated());
+            info.put("outputChars", execution.outputChars());
+            info.put("timeoutSeconds", execution.timeoutSeconds());
+        }
         return info;
     }
 
@@ -397,7 +429,26 @@ public class StudentProjectController {
     @GetMapping(value={"/{projectId}/terminal/sessions/{sessionId}"})
     public Result<Map<String, Object>> getTerminalSession(@PathVariable Integer projectId, @PathVariable String sessionId, Authentication auth) {
         ProjectTerminalService.TerminalSession session = this.projectTerminalService.getOwned(this.getStudentId(auth), projectId, sessionId);
-        return session != null ? Result.success(Map.of("session", session.snapshot())) : Result.error("Terminal session not found");
+        if (session == null) {
+            return Result.error("Terminal session not found");
+        }
+        return Result.success(terminalSessionInfo(session));
+    }
+
+    private Map<String, Object> terminalSessionInfo(ProjectTerminalService.TerminalSession session) {
+        Map<String, Object> info = new java.util.LinkedHashMap<>();
+        info.put("session", session.snapshot());
+        if (session.lastExecution != null) {
+            info.put("status", session.lastExecution.status());
+            info.put("shell", session.lastExecution.shell());
+            info.put("workdir", session.lastExecution.workdir());
+            info.put("exitCode", session.lastExecution.exitCode() == null ? "" : session.lastExecution.exitCode());
+            info.put("durationMs", session.lastExecution.durationMs());
+            info.put("truncated", session.lastExecution.truncated());
+            info.put("outputChars", session.lastExecution.outputChars());
+            info.put("timeoutSeconds", session.lastExecution.timeoutSeconds());
+        }
+        return info;
     }
 
     @PostMapping(value={"/{projectId}/terminal/sessions/{sessionId}/stop"})
@@ -407,7 +458,7 @@ public class StudentProjectController {
             return Result.error("Terminal session not found");
         }
         this.projectTerminalService.stop(session);
-        return Result.success(Map.of("session", session.snapshot()));
+        return Result.success(terminalSessionInfo(session));
     }
 
     @DeleteMapping(value={"/{projectId}/terminal/sessions/{sessionId}"})

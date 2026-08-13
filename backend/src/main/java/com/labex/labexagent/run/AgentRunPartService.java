@@ -30,13 +30,22 @@ public class AgentRunPartService {
     private final AgentRunPartMapper partMapper;
     private final AgentTaskMapper taskMapper;
     private final AgentRunMessageService messageService;
+    private final AgentRunExecutionLeaseService leaseService;
 
     @Autowired
     public AgentRunPartService(AgentRunPartMapper partMapper, AgentTaskMapper taskMapper,
-                               AgentRunMessageService messageService) {
+                               AgentRunMessageService messageService,
+                               AgentRunExecutionLeaseService leaseService) {
         this.partMapper = partMapper;
         this.taskMapper = taskMapper;
         this.messageService = messageService;
+        this.leaseService = leaseService;
+    }
+
+    public AgentRunPartService(AgentRunPartMapper partMapper, AgentTaskMapper taskMapper,
+                               AgentRunMessageService messageService) {
+        this(partMapper, taskMapper, messageService,
+                new AgentRunExecutionLeaseService(taskMapper, "legacy-instance", 30_000L));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -56,6 +65,19 @@ public class AgentRunPartService {
         return upsertPart(taskId, message.getRunMessageId(),
                 "tool:" + toolCallId.trim(), "tool", status, toolCallId,
                 toolName, arguments, detail, iteration);
+    }
+
+    /**
+     * Executor-fenced Tool Part 写入：先验证 {@link ExecutionFence}（owner + 精确 epoch + 未过期 lease），
+     * stale fence 抛出 typed failure，Part 与 transcript message 均不被写入。
+     * 该预检在写入事务内、任何 INSERT/UPDATE 之前执行；lifecycle/plan 的 fenced 写入另将
+     * owner/epoch/active-lease 嵌入 UPDATE 谓词。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunPart upsertToolCall(ExecutionFence fence, Long taskId, String toolCallId, String status,
+                                       String toolName, Object arguments, int iteration, String detail) {
+        requireFence(fence);
+        return upsertToolCall(taskId, toolCallId, status, toolName, arguments, iteration, detail);
     }
 
     /** 同步 Provider tool_call Part 的生命周期，保证等待交互在 JVM 重启后仍可恢复。 */
@@ -102,6 +124,16 @@ public class AgentRunPartService {
             messageService.upsertAssistantTurn(taskId, part.getSequenceNumber(), messageStatus);
         }
         return part;
+    }
+
+    /**
+     * Executor-fenced 已存在 Tool Part 更新：先验证 {@link ExecutionFence}，stale fence 抛出 typed failure。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunPart resolveExistingToolCall(ExecutionFence fence, Long taskId, String toolCallId,
+                                                String status, String detail) {
+        requireFence(fence);
+        return resolveExistingToolCall(taskId, toolCallId, status, detail);
     }
 
     @Transactional(propagation = Propagation.NESTED, rollbackFor = Exception.class)
@@ -155,6 +187,15 @@ public class AgentRunPartService {
             case "RUN_RECOVERY_TAKEOVER", "RUN_STATE_RECOVERING" ->
                     upsertPart(taskId, messageId, "recovery:" + sequence, "recovery",
                             "running", null, null, data, GSON.toJson(data), sequence);
+            case "CONFIG_PROPOSAL_CREATED" ->
+                    upsertPart(taskId, messageId, "config-proposal:" + sequence, "config_proposal",
+                            "waiting", null, null, data, GSON.toJson(data), sequence);
+            case "CONFIG_PROPOSAL_DECIDED", "CONFIG_REVISION_APPLIED" ->
+                    upsertPart(taskId, messageId, "config-proposal:" + sequence, "config_proposal",
+                            "completed", null, null, data, GSON.toJson(data), sequence);
+            case "CONFIG_PROPOSAL_FAILED" ->
+                    upsertPart(taskId, messageId, "config-proposal:" + sequence, "config_proposal",
+                            "error", null, null, data, GSON.toJson(data), sequence);
             case "DONE", "RUN_STATE_COMPLETED", "RUN_STATE_FAILED" ->
                     upsertPart(taskId, messageId, "lifecycle:" + sequence, "lifecycle",
                             eventType.endsWith("FAILED") ? "error" : "completed",
@@ -296,7 +337,9 @@ public class AgentRunPartService {
                  "COMMAND_EXECUTION_INTERRUPTED", "RUN_MODEL_RETRY_SCHEDULED",
                  "RUN_MODEL_RETRY_STARTED", "RUN_RECOVERY_TAKEOVER",
                  "RUN_STATE_RECOVERING", "RUN_PROGRESS_MIGRATED", "DONE", "RUN_STATE_COMPLETED",
-                 "RUN_STATE_FAILED" -> true;
+                 "RUN_STATE_FAILED",
+                 "CONFIG_PROPOSAL_CREATED", "CONFIG_PROPOSAL_DECIDED",
+                 "CONFIG_REVISION_APPLIED", "CONFIG_PROPOSAL_FAILED" -> true;
             default -> false;
         };
     }
@@ -366,5 +409,12 @@ public class AgentRunPartService {
     private String limit(String value) {
         if (value == null) return "";
         return value.length() <= 8_000 ? value : value.substring(0, 8_000) + "\n...truncated...";
+    }
+
+    private void requireFence(ExecutionFence fence) {
+        if (fence == null) {
+            throw new IllegalStateException("ExecutionFence is required for executor-originated writes");
+        }
+        leaseService.requireActiveFence(fence, LocalDateTime.now());
     }
 }

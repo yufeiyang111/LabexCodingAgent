@@ -18,6 +18,8 @@ import com.labex.filter.JwtAuthenticationFilter;
 
 import jakarta.servlet.DispatcherType;
 import java.util.Arrays;
+import java.util.List;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * 安全配置类
@@ -28,6 +30,9 @@ import java.util.Arrays;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    @Value("${labex-agent.cors.allowed-origins:}")
+    private String configuredAllowedOrigins;
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
@@ -41,7 +46,14 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(Arrays.asList("*"));
+        List<String> explicitOrigins = explicitOrigins();
+        if (explicitOrigins == null) {
+            // 本地开发历史行为：全 origin + credentials。
+            configuration.setAllowedOriginPatterns(Arrays.asList("*"));
+        } else {
+            // 生产：只允许显式配置的来源；ProductionStartupValidator 保证它们都是 HTTPS 域名。
+            configuration.setAllowedOrigins(explicitOrigins);
+        }
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
         configuration.setAllowCredentials(true);
@@ -50,6 +62,17 @@ public class SecurityConfig {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
+    }
+
+    private List<String> explicitOrigins() {
+        if (configuredAllowedOrigins == null || configuredAllowedOrigins.isBlank()) {
+            return null;
+        }
+        List<String> origins = Arrays.stream(configuredAllowedOrigins.split(","))
+                .map(String::trim)
+                .filter(origin -> !origin.isBlank())
+                .toList();
+        return origins.isEmpty() ? null : origins;
     }
 
     @Bean

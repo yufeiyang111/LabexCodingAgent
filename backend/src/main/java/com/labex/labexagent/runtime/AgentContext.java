@@ -1,6 +1,7 @@
 package com.labex.labexagent.runtime;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -17,6 +18,8 @@ public class AgentContext {
     private Long taskId;
     /** 当前 worker 从 AgentTask lease 获得的 execution epoch。 */
     private long executionEpoch;
+    /** 执行者从 lease authority 取得任务所有权后获得的不可变 fence；未取得租约时为 null。 */
+    private ExecutionFence executionFence;
     private Integer modelConfigId;
     private Path workspaceRoot;
     private List<PlanItem> plan;
@@ -118,6 +121,15 @@ public class AgentContext {
 
     public void setExecutionEpoch(long executionEpoch) {
         this.executionEpoch = Math.max(0L, executionEpoch);
+    }
+
+    public ExecutionFence getExecutionFence() {
+        return this.executionFence;
+    }
+
+    /** 只在执行者从 lease authority 取得任务所有权后设置；不得从请求 JSON 或过期任务对象推导。 */
+    public void setExecutionFence(ExecutionFence executionFence) {
+        this.executionFence = executionFence;
     }
 
     public long getPlanRevision() {

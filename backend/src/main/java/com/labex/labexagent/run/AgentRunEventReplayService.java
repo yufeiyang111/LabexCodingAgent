@@ -16,6 +16,10 @@ public class AgentRunEventReplayService {
     private static final long MAX_REPLAY_EVENTS = 1000L;
     private static final Gson GSON = new Gson();
 
+    private static final java.util.Set<String> CONFIG_PROPOSAL_EVENT_TYPES = java.util.Set.of(
+            "CONFIG_PROPOSAL_CREATED", "CONFIG_PROPOSAL_DECIDED",
+            "CONFIG_REVISION_APPLIED", "CONFIG_PROPOSAL_FAILED");
+
     private final AgentTaskMapper taskMapper;
     private final AgentRunEventMapper eventMapper;
 
@@ -42,6 +46,26 @@ public class AgentRunEventReplayService {
         }
         events.forEach(this::normalizeLegacyReasoningPayload);
         return events;
+    }
+
+    /**
+     * Task 2.3 的 durable 刷新/回放投影：只返回属于该任务（且归属该校学生/项目）的
+     * config proposal 事件。事件 payload 只含 ID/digest/状态，前端无需 SSE 即可重建
+     * 阻塞中的 proposal 等待。
+     */
+    public List<AgentRunEvent> configProposalEvents(Integer studentId, Integer projectId, Long taskId) {
+        AgentTask task = taskMapper.selectById(taskId);
+        if (task == null
+                || !Objects.equals(task.getStudentId(), studentId)
+                || !Objects.equals(task.getProjectId(), projectId)) {
+            throw new IllegalArgumentException("Agent run not found");
+        }
+        List<AgentRunEvent> events = eventMapper.selectList(new LambdaQueryWrapper<AgentRunEvent>()
+                .eq(AgentRunEvent::getTaskId, taskId)
+                .in(AgentRunEvent::getEventType, CONFIG_PROPOSAL_EVENT_TYPES)
+                .orderByAsc(AgentRunEvent::getSequenceNumber)
+                .last("LIMIT " + MAX_REPLAY_EVENTS));
+        return events == null || events.isEmpty() ? List.of() : List.copyOf(events);
     }
 
     private void normalizeLegacyReasoningPayload(AgentRunEvent event) {

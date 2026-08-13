@@ -29,18 +29,45 @@ public class RunCompletionEvidenceService {
     private final AgentFileChangeMapper fileChangeMapper;
     private final AgentVerificationMapper verificationMapper;
     private final AgentRunArtifactService artifactService;
+    private final AgentRunExecutionLeaseService leaseService;
     private final RunCompletionPolicy policy = new RunCompletionPolicy();
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RunCompletionEvidenceService(AgentFileChangeMapper fileChangeMapper,
+                                        AgentVerificationMapper verificationMapper,
+                                        AgentRunArtifactService artifactService,
+                                        AgentRunExecutionLeaseService leaseService) {
+        this.fileChangeMapper = fileChangeMapper;
+        this.verificationMapper = verificationMapper;
+        this.artifactService = artifactService;
+        this.leaseService = leaseService;
+    }
 
     public RunCompletionEvidenceService(AgentFileChangeMapper fileChangeMapper,
                                         AgentVerificationMapper verificationMapper,
                                         AgentRunArtifactService artifactService) {
-        this.fileChangeMapper = fileChangeMapper;
-        this.verificationMapper = verificationMapper;
-        this.artifactService = artifactService;
+        this(fileChangeMapper, verificationMapper, artifactService, null);
     }
 
     public RunCompletionEvidence evaluateAndPersist(Long taskId, Integer studentId, Integer projectId,
                                                      boolean manualFileVerification, String runState) {
+        return evaluateAndPersistInternal(null, taskId, studentId, projectId, manualFileVerification, runState);
+    }
+
+    /**
+     * Executor-fenced completion evidence 写入：先验证 {@link ExecutionFence}（owner + 精确 epoch +
+     * 未过期 lease），stale fence 抛出 typed failure；completion artifact 走 fenced 写入，不产生部分持久化。
+     */
+    public RunCompletionEvidence evaluateAndPersist(ExecutionFence fence, Long taskId, Integer studentId,
+                                                     Integer projectId, boolean manualFileVerification,
+                                                     String runState) {
+        requireFence(fence);
+        return evaluateAndPersistInternal(fence, taskId, studentId, projectId, manualFileVerification, runState);
+    }
+
+    private RunCompletionEvidence evaluateAndPersistInternal(ExecutionFence fence, Long taskId,
+                                                             Integer studentId, Integer projectId,
+                                                             boolean manualFileVerification, String runState) {
         List<AgentFileChange> changes = fileChangeMapper.selectList(new LambdaQueryWrapper<AgentFileChange>()
                 .eq(AgentFileChange::getTaskId, taskId)
                 .eq(AgentFileChange::getStudentId, studentId)
@@ -58,14 +85,20 @@ public class RunCompletionEvidenceService {
                 .filter(path -> path != null && !path.isBlank()).distinct().toList();
         List<String> passed = effectiveVerifications.stream().filter(this::passed)
                 .map(this::verificationLabel).toList();
-        List<String> failed = new ArrayList<>(effectiveVerifications.stream().filter(item -> !passed(item))
+        List<String> failed = new ArrayList<>(effectiveVerifications.stream()
+                .filter(item -> !passed(item) && !environmentBlocked(item))
                 .map(this::verificationLabel).toList());
+        // 环境受阻（超时/取消/基础设施）不是代码验证失败：单独记录，给模型可行动的环境恢复指引。
+        List<String> environmentVerifications = effectiveVerifications.stream()
+                .filter(item -> !passed(item) && environmentBlocked(item))
+                .map(this::verificationLabel).toList();
         List<String> unresolvedRisks = new ArrayList<>();
         boolean hasSuccessfulVerification = !passed.isEmpty();
         boolean hasHistoricalFailedVerification = verifications != null
                 && verifications.stream().anyMatch(item -> item != null && !passed(item));
         boolean runTestsFailureRecovered = hasSuccessfulVerification
                 && failed.isEmpty()
+                && environmentVerifications.isEmpty()
                 && hasHistoricalFailedVerification;
         for (AgentRunArtifact artifact : artifactService.list(taskId, "post_edit_verification")) {
             String content = artifact.getContent() == null ? "" : artifact.getContent();
@@ -88,13 +121,19 @@ public class RunCompletionEvidenceService {
             unresolvedRisks.add("unrecovered tool failure");
         }
         RunCompletionEvidence evidence = policy.evaluate(new RunCompletionPolicy.Input(
-                taskId, changedFiles, passed, failed, manualFileVerification, runState, unresolvedRisks));
+                taskId, changedFiles, passed, failed, environmentVerifications, manualFileVerification, runState,
+                unresolvedRisks));
         RunCompletionEvidence existing = latest(taskId);
         if (sameEvidenceVersion(existing, evidence)) {
             return existing;
         }
-        artifactService.recordDeterministic(taskId, "completion_evidence", "task-" + taskId,
-                GSON.toJson(evidence.toPayload()));
+        if (fence == null) {
+            artifactService.recordDeterministic(taskId, "completion_evidence", "task-" + taskId,
+                    GSON.toJson(evidence.toPayload()));
+        } else {
+            artifactService.recordDeterministic(fence, taskId, "completion_evidence", "task-" + taskId,
+                    GSON.toJson(evidence.toPayload()));
+        }
         return evidence;
     }
 
@@ -109,10 +148,16 @@ public class RunCompletionEvidenceService {
                 stringList(payload.getAsJsonArray("changedFiles")),
                 stringList(payload.getAsJsonArray("successfulVerifications")),
                 stringList(payload.getAsJsonArray("failedVerifications")),
+                optionalStringList(payload.get("environmentVerifications")),
                 stringList(payload.getAsJsonArray("unresolvedRisks")),
                 criteria(payload.getAsJsonArray("criteria")),
                 payload.has("satisfied") && payload.get("satisfied").getAsBoolean(),
                 parseGeneratedAt(payload.get("generatedAt")));
+    }
+
+    private List<String> optionalStringList(JsonElement value) {
+        if (value == null || !value.isJsonArray()) return List.of();
+        return stringList(value.getAsJsonArray());
     }
 
     private Long nullableLong(JsonElement value) {
@@ -157,6 +202,7 @@ public class RunCompletionEvidenceService {
                 && Objects.equals(left.changedFiles(), right.changedFiles())
                 && Objects.equals(left.successfulVerifications(), right.successfulVerifications())
                 && Objects.equals(left.failedVerifications(), right.failedVerifications())
+                && Objects.equals(left.environmentVerifications(), right.environmentVerifications())
                 && Objects.equals(left.unresolvedRisks(), right.unresolvedRisks())
                 && Objects.equals(left.criteria(), right.criteria())
                 && left.satisfied() == right.satisfied();
@@ -203,6 +249,12 @@ public class RunCompletionEvidenceService {
         return "passed".equals(status) || "manual_passed".equals(status);
     }
 
+    /** 超时/取消/基础设施受阻的验证不是代码失败：完成证据必须与真实测试失败分开记录。 */
+    private boolean environmentBlocked(AgentVerification verification) {
+        String status = verification.getStatus() == null ? "" : verification.getStatus().toLowerCase(Locale.ROOT);
+        return "timed_out".equals(status) || "cancelled".equals(status) || "infrastructure_error".equals(status);
+    }
+
     private String boundedLabel(String content) {
         String normalized = content.replaceAll("\\s+", " ").trim();
         return normalized.length() <= 180 ? normalized : normalized.substring(0, 180) + "...";
@@ -213,6 +265,23 @@ public class RunCompletionEvidenceService {
         if (command.isBlank()) command = "verification";
         command = SECRET.matcher(command).replaceAll("$1=[REDACTED]");
         if (command.length() > 240) command = command.substring(0, 240) + "...";
-        return command + (verification.getExitCode() == null ? "" : " (exit " + verification.getExitCode() + ")");
+        if (verification.getExitCode() != null) {
+            return command + " (exit " + verification.getExitCode() + ")";
+        }
+        String status = verification.getStatus() == null ? "" : verification.getStatus().toLowerCase(Locale.ROOT);
+        if (environmentBlocked(verification)) {
+            return command + " (status=" + status + ")";
+        }
+        return command;
+    }
+
+    private void requireFence(ExecutionFence fence) {
+        if (leaseService == null) {
+            throw new IllegalStateException("ExecutionFence support is not configured");
+        }
+        if (fence == null) {
+            throw new IllegalStateException("ExecutionFence is required for executor-originated writes");
+        }
+        leaseService.requireActiveFence(fence, LocalDateTime.now());
     }
 }

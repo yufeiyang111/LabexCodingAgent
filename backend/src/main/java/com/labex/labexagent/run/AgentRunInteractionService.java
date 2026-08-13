@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,10 +36,7 @@ public class AgentRunInteractionService {
 
         AgentRunInteraction existing = interactionMapper.selectById(request.interactionId());
         if (existing == null) {
-            existing = interactionMapper.selectOne(new QueryWrapper<AgentRunInteraction>()
-                    .eq("task_id", request.taskId())
-                    .eq("idempotency_key", request.idempotencyKey())
-                    .last("LIMIT 1"));
+            existing = findByIdempotencyKey(request.taskId(), request.idempotencyKey());
         }
         if (existing != null) {
             return existing;
@@ -59,19 +57,68 @@ public class AgentRunInteractionService {
         interaction.setExpiresTime(request.expiresTime());
         interaction.setCreateTime(now);
         interaction.setUpdateTime(now);
-        if (interactionMapper.insert(interaction) != 1) {
-            throw new IllegalStateException("Unable to persist agent run interaction");
+        try {
+            if (interactionMapper.insert(interaction) == 1) {
+                return interaction;
+            }
+        } catch (DuplicateKeyException duplicate) {
+            AgentRunInteraction winner = findByIdempotencyKey(request.taskId(), request.idempotencyKey());
+            if (winner != null) {
+                return winner;
+            }
+            throw duplicate;
         }
-        return interaction;
+        AgentRunInteraction winner = findByIdempotencyKey(request.taskId(), request.idempotencyKey());
+        if (winner != null) {
+            return winner;
+        }
+        throw new IllegalStateException("Unable to persist agent run interaction");
+    }
+
+    private AgentRunInteraction findByIdempotencyKey(Long taskId, String idempotencyKey) {
+        return interactionMapper.selectOne(new QueryWrapper<AgentRunInteraction>()
+                .eq("task_id", taskId)
+                .eq("idempotency_key", idempotencyKey)
+                .last("LIMIT 1"));
     }
 
     /** 查询当前任务是否已经针对同一网络请求获得一次性批准。 */
-    /** 持久化运行时边界说明。 */
     public AgentRunInteraction findById(String interactionId) {
         if (interactionId == null || interactionId.isBlank()) {
             return null;
         }
         return interactionMapper.selectById(interactionId);
+    }
+
+    /**
+     * 按 task + proposal 查找 config_proposal 等待投影。proposal 表是决策权威；
+     * interaction 只是等待投影，因此这里从 payload 里匹配 proposal ID 而不是新增列。
+     */
+    public AgentRunInteraction findConfigProposalInteraction(Integer projectId, Long taskId, Long proposalId) {
+        if (projectId == null || taskId == null || proposalId == null) {
+            return null;
+        }
+        List<AgentRunInteraction> interactions = interactionMapper.selectList(new QueryWrapper<AgentRunInteraction>()
+                .eq("task_id", taskId)
+                .eq("interaction_type", AgentRunInteraction.TYPE_CONFIG_PROPOSAL)
+                .orderByDesc("create_time")
+                .last("LIMIT 10"));
+        for (AgentRunInteraction interaction : interactions) {
+            if (interaction == null || interaction.getRequestPayload() == null
+                    || !java.util.Objects.equals(interaction.getProjectId(), projectId)) {
+                continue;
+            }
+            try {
+                Map<?, ?> payload = GSON.fromJson(interaction.getRequestPayload(), Map.class);
+                Object candidate = payload == null ? null : payload.get("proposalId");
+                if (candidate != null && proposalId.toString().equals(String.valueOf(candidate))) {
+                    return interaction;
+                }
+            } catch (RuntimeException ignored) {
+                // 损坏的历史 payload 不能阻塞 owner 决策。
+            }
+        }
+        return null;
     }
 
     public boolean hasApprovedNetworkGrant(Long taskId, String requestDigest) {
@@ -164,6 +211,90 @@ public class AgentRunInteractionService {
         return false;
     }
 
+    /** 将已批准的离线网络重试原子领取为 executing；并发调用最多一个成功。 */
+    @Transactional(rollbackFor = Exception.class)
+    public NetworkRetryClaim claimApprovedNetworkRetry(Integer studentId, Integer projectId, String interactionId) {
+        require(studentId, "studentId");
+        require(projectId, "projectId");
+        require(interactionId, "interactionId");
+        AgentRunInteraction interaction = interactionMapper.selectById(interactionId);
+        requireOwnedInteraction(interaction, studentId, projectId);
+        if (!"network".equals(interaction.getInteractionType())) {
+            throw new IllegalArgumentException("Agent interaction is not a network request");
+        }
+        if ("executing".equals(interaction.getStatus()) || "consumed".equals(interaction.getStatus())) {
+            return new NetworkRetryClaim(interaction, false);
+        }
+        if (!"approved".equals(interaction.getStatus())) {
+            return new NetworkRetryClaim(interaction, false);
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (interaction.getExpiresTime() != null && !interaction.getExpiresTime().isAfter(now)) {
+            interactionMapper.update(null, new UpdateWrapper<AgentRunInteraction>()
+                    .eq("interaction_id", interactionId)
+                    .eq("status", "approved")
+                    .set("status", "timed_out")
+                    .set("update_time", now));
+            interaction.setStatus("timed_out");
+            interaction.setUpdateTime(now);
+            return new NetworkRetryClaim(interaction, false);
+        }
+        int updated = interactionMapper.update(null, new UpdateWrapper<AgentRunInteraction>()
+                .eq("interaction_id", interactionId)
+                .eq("student_id", studentId)
+                .eq("project_id", projectId)
+                .eq("interaction_type", "network")
+                .eq("status", "approved")
+                .and(wrapper -> wrapper.isNull("expires_time").or().gt("expires_time", now))
+                .set("status", "executing")
+                .set("update_time", now));
+        if (updated == 1) {
+            interaction.setStatus("executing");
+            interaction.setUpdateTime(now);
+            return new NetworkRetryClaim(interaction, true);
+        }
+        AgentRunInteraction current = interactionMapper.selectById(interactionId);
+        requireOwnedInteraction(current, studentId, projectId);
+        return new NetworkRetryClaim(current, false);
+    }
+
+    /** 将已领取的网络重试原子完成为 consumed；重复完成保持幂等。 */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunInteraction completeClaimedNetworkRetry(Integer studentId, Integer projectId,
+                                                            String interactionId, Object responsePayload) {
+        require(studentId, "studentId");
+        require(projectId, "projectId");
+        require(interactionId, "interactionId");
+        LocalDateTime now = LocalDateTime.now();
+        String responseJson = GSON.toJson(responsePayload == null ? Map.of() : responsePayload);
+        int updated = interactionMapper.update(null, new UpdateWrapper<AgentRunInteraction>()
+                .eq("interaction_id", interactionId)
+                .eq("student_id", studentId)
+                .eq("project_id", projectId)
+                .eq("interaction_type", "network")
+                .eq("status", "executing")
+                .set("status", "consumed")
+                .set("response_payload", responseJson)
+                .set("update_time", now));
+        AgentRunInteraction current = interactionMapper.selectById(interactionId);
+        requireOwnedInteraction(current, studentId, projectId);
+        if (updated != 1 && !"consumed".equals(current.getStatus())) {
+            throw new IllegalStateException("Network retry interaction is not executing");
+        }
+        return current;
+    }
+
+    /** 查询遗留在 executing 的网络重试，供重启恢复协调器处理。 */
+    public List<AgentRunInteraction> findClaimedNetworkRetries(int limit) {
+        int effectiveLimit = Math.max(1, Math.min(limit, 500));
+        List<AgentRunInteraction> interactions = interactionMapper.selectList(new QueryWrapper<AgentRunInteraction>()
+                .eq("interaction_type", "network")
+                .eq("status", "executing")
+                .orderByAsc("update_time")
+                .last("LIMIT " + effectiveLimit));
+        return interactions == null || interactions.isEmpty() ? List.of() : List.copyOf(interactions);
+    }
+
     public AgentRunInteraction findWaitingForTask(Long taskId) {
         if (taskId == null) return null;
         return interactionMapper.selectOne(new QueryWrapper<AgentRunInteraction>()
@@ -234,6 +365,7 @@ public class AgentRunInteractionService {
         boolean valid = switch (String.valueOf(interaction.getInteractionType())) {
             case "question" -> "answered".equals(status) || "cancelled".equals(status);
             case "permission", "network" -> "approved".equals(status) || "rejected".equals(status);
+            case "config_proposal" -> "approved".equals(status) || "rejected".equals(status);
             default -> false;
         };
         if (!valid) {
@@ -243,6 +375,10 @@ public class AgentRunInteractionService {
 
     private AgentRunInteraction requireCompatibleReplay(AgentRunInteraction interaction, String requestedStatus) {
         if (Objects.equals(interaction.getStatus(), requestedStatus)) {
+            return interaction;
+        }
+        if ("approved".equals(requestedStatus)
+                && ("executing".equals(interaction.getStatus()) || "consumed".equals(interaction.getStatus()))) {
             return interaction;
         }
         throw new IllegalArgumentException(
@@ -277,6 +413,26 @@ public class AgentRunInteractionService {
         int effectiveLimit = Math.max(1, Math.min(limit, 500));
         List<AgentRunInteraction> interactions = interactionMapper.selectResolvedAwaitingResume(effectiveLimit);
         return interactions == null || interactions.isEmpty() ? List.of() : List.copyOf(interactions);
+    }
+
+    /**
+     * 由执行循环在消费预领取的 continuation 时调用：把该 claim 标记为已消费，释放重新 claim 的资格。
+     * 只允许匹配 interactionId + claimId 的幂等更新，其他 claim 或未 claim 的行不受影响。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean markDispatchClaimConsumed(String interactionId, String claimId) {
+        if (interactionId == null || interactionId.isBlank() || claimId == null || claimId.isBlank()) {
+            return false;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        int updated = interactionMapper.update(null, new UpdateWrapper<AgentRunInteraction>()
+                .eq("interaction_id", interactionId)
+                .eq("resume_claim_id", claimId)
+                .isNotNull("resume_claimed_at")
+                .isNull("resume_consumed_at")
+                .set("resume_consumed_at", now)
+                .set("update_time", now));
+        return updated == 1;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -318,6 +474,9 @@ public class AgentRunInteractionService {
         if (value == null || (value instanceof String text && text.isBlank())) {
             throw new IllegalArgumentException(name + " is required");
         }
+    }
+
+    public record NetworkRetryClaim(AgentRunInteraction interaction, boolean claimed) {
     }
 
     public record WaitingInteraction(

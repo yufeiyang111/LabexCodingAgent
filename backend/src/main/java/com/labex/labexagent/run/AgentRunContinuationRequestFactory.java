@@ -21,18 +21,20 @@ public final class AgentRunContinuationRequestFactory {
         request.setMode(nonBlank(text(payload.get("mode")), task.getMode()));
         request.setResumeTaskId(task.getTaskId());
         request.setActivePath(text(payload.get("activePath")));
-        request.setModelConfigId(integer(payload.get("modelConfigId")));
+        // 优先使用 durable 的 t_agent_task.model_config_id 列；payload 回退仅用于兼容旧任务与展示目的。
+        // 恢复路径的模型解析只读取 task.getModelConfigId()：两者都为 null 时解析层 fail closed，
+        // 绝不会静默回退到用户当前默认模型。
+        request.setModelConfigId(task.getModelConfigId() != null
+                ? task.getModelConfigId()
+                : integer(payload.get("modelConfigId")));
         String original = text(payload.get("message"));
+        String displayMessage = text(payload.get("displayMessage"));
         String resumeNote = continuation == null ? "" : continuation.strip();
-        if (original.isBlank()) {
-            request.setMessage(resumeNote.isBlank() ? "Continue the existing task from durable state."
-                    : "Continue the existing task from durable state.\n" + resumeNote);
-        } else if (resumeNote.isBlank()) {
-            request.setMessage(original);
-        } else {
-            request.setMessage("Original user objective (continue this exact task):\n" + original
-                    + "\n\nDurable continuation context:\n" + resumeNote);
-        }
+        request.setMessage(original.isBlank()
+                ? "Continue the existing task from durable state."
+                : original);
+        request.setDisplayMessage(displayMessage.isBlank() ? original : displayMessage);
+        request.setResumeNote(resumeNote);
         return request;
     }
 

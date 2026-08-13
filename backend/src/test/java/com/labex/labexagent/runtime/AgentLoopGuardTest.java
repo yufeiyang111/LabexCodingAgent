@@ -75,6 +75,33 @@ class AgentLoopGuardTest {
     }
 
     @Test
+    void escalatesRepeatedFailedCommandIdentityEvenWhenOtherStrategiesAreInterleaved() {
+        AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());
+        JsonObject build = new JsonObject();
+        build.addProperty("command", "npm run build");
+        build.addProperty("working_directory", "frontend");
+        JsonObject unavailable = new JsonObject();
+        unavailable.addProperty("strategy", "offline_test");
+        JsonObject shell = new JsonObject();
+        shell.addProperty("command", "npm run build");
+        shell.addProperty("working_directory", "frontend");
+
+        AgentLoopGuard.ToolDecision first = guard.beforeToolCall("run_tests", build);
+        guard.recordToolResult(first.signature(), false);
+        AgentLoopGuard.ToolDecision unrelated = guard.beforeToolCall("run_tests", unavailable);
+        guard.recordToolResult(unrelated.signature(), false);
+        AgentLoopGuard.ToolDecision second = guard.beforeToolCall("run_tests", build);
+        guard.recordToolResult(second.signature(), false);
+        AgentLoopGuard.ToolDecision otherTool = guard.beforeToolCall("shell", shell);
+        guard.recordToolResult(otherTool.signature(), false);
+
+        assertEquals(AgentLoopGuard.ToolAction.SWITCH_STRATEGY,
+                guard.beforeToolCall("run_tests", build).action());
+        assertEquals(AgentLoopGuard.ToolAction.REQUEST_USER,
+                guard.beforeToolCall("run_tests", build).action());
+    }
+
+    @Test
     void canonicalSignatureIgnoresJsonObjectInsertionOrder() {
         AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());
         JsonObject first = new JsonObject();

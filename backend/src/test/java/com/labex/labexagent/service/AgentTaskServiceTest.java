@@ -1,8 +1,14 @@
 package com.labex.labexagent.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -18,15 +24,19 @@ import com.labex.entity.StudentProject;
 import com.labex.mapper.AgentChangeSetMapper;
 import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.labexagent.projectconfig.AgentEffectiveProjectConfigService;
+import com.labex.labexagent.projectconfig.AgentRunConfigSnapshotService;
 import com.labex.labexagent.run.BackgroundRunWorktreeService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 class AgentTaskServiceTest {
 
@@ -110,11 +120,90 @@ class AgentTaskServiceTest {
         assertTrue(query.getParamNameValuePairs().containsValue("conflicted"));
     }
 
+    @Test
+    void passesOwnershipAndStableIdempotencyThroughToTheTransactionalInteractionClaim() {
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunExecutionLeaseService executionLeases = mock(AgentRunExecutionLeaseService.class);
+        when(executionLeases.instanceId()).thenReturn("instance-a");
+        when(executionLeases.leaseDurationMs()).thenReturn(30_000L);
+        AgentRunLifecycleService.InteractionClaimOutcome outcome =
+                AgentRunLifecycleService.InteractionClaimOutcome.rejected();
+        when(lifecycle.claimResolvedInteractionDispatch(
+                eq(72L), eq(7), eq(12), eq("interaction-72"), any(), any(), any(), any(), any(Long.class)))
+                .thenReturn(outcome);
+        AgentTaskService service = new AgentTaskService(
+                mock(AgentTaskMapper.class), mock(AgentChangeSetMapper.class), mock(AgentFileChangeMapper.class),
+                lifecycle, executionLeases, mock(BackgroundRunWorktreeService.class));
+
+        AgentRunLifecycleService.InteractionClaimOutcome result =
+                service.claimResolvedInteractionDispatch(7, 12, 72L, "interaction-72", "Resuming", "Ready");
+
+        assertSame(outcome, result);
+        ArgumentCaptor<String> idempotencyKey = ArgumentCaptor.forClass(String.class);
+        verify(lifecycle).claimResolvedInteractionDispatch(
+                eq(72L), eq(7), eq(12), eq("interaction-72"), eq("Resuming"), eq("Ready"),
+                idempotencyKey.capture(), eq("instance-a"), any(Long.class));
+        assertEquals(com.labex.labexagent.run.AgentRunTransitionKey.forInteractionResume(72L, "interaction-72"),
+                idempotencyKey.getValue());
+    }
+
+    @Test
+    void persistsTheEpochZeroSnapshotBeforeQueueingTheNewTask() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        when(taskMapper.insert(any(AgentTask.class))).thenAnswer(invocation -> {
+            AgentTask inserted = invocation.getArgument(0);
+            inserted.setTaskId(71L);
+            return 1;
+        });
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunConfigSnapshotService snapshotService = mock(AgentRunConfigSnapshotService.class);
+        AgentTaskService service = newTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class), lifecycle);
+        service.setRunConfigSnapshotService(snapshotService);
+        StudentProject project = new StudentProject();
+        project.setProjectId(3);
+
+        service.createTask(7, project, "conversation", "session", "build",
+                "message", "display", "src/App.vue", 17, false, LocalDateTime.now());
+
+        InOrder order = inOrder(snapshotService, lifecycle);
+        order.verify(snapshotService).createForNewTask(eq(7), eq(project), eq(71L), eq(17), eq("build"));
+        order.verify(lifecycle).initialize(any(AgentTask.class), any(), any());
+    }
+
+    @Test
+    void failsClosedWhenThePreQueueSnapshotCannotBeResolved() {
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunConfigSnapshotService snapshotService = mock(AgentRunConfigSnapshotService.class);
+        when(snapshotService.createForNewTask(any(), any(), any(), any(), any()))
+                .thenThrow(new AgentEffectiveProjectConfigService.EffectiveConfigException(
+                        "config-invalid", List.of()));
+        AgentTaskService service = newTaskService(mock(AgentTaskMapper.class),
+                mock(AgentChangeSetMapper.class), mock(AgentFileChangeMapper.class), lifecycle);
+        service.setRunConfigSnapshotService(snapshotService);
+        StudentProject project = new StudentProject();
+        project.setProjectId(3);
+
+        assertThrows(AgentEffectiveProjectConfigService.EffectiveConfigException.class,
+                () -> service.createTask(7, project, "conversation", "session", "build",
+                        "message", "display", "src/App.vue", 17, false, LocalDateTime.now()));
+        verify(lifecycle, never()).initialize(any(AgentTask.class), any(), any());
+    }
+
     private AgentTaskService newTaskService(AgentTaskMapper taskMapper,
                                             AgentChangeSetMapper changeSetMapper,
                                             AgentFileChangeMapper fileChangeMapper) {
         return new AgentTaskService(taskMapper, changeSetMapper, fileChangeMapper,
                 mock(AgentRunLifecycleService.class), mock(AgentRunExecutionLeaseService.class),
+                mock(BackgroundRunWorktreeService.class));
+    }
+
+    private AgentTaskService newTaskService(AgentTaskMapper taskMapper,
+                                            AgentChangeSetMapper changeSetMapper,
+                                            AgentFileChangeMapper fileChangeMapper,
+                                            AgentRunLifecycleService lifecycle) {
+        return new AgentTaskService(taskMapper, changeSetMapper, fileChangeMapper,
+                lifecycle, mock(AgentRunExecutionLeaseService.class),
                 mock(BackgroundRunWorktreeService.class));
     }
 }

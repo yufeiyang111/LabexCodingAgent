@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -17,6 +18,7 @@ import com.google.gson.JsonParser;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunOutbox;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService.StaleExecutionFenceException;
 import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentRunOutboxMapper;
 import com.labex.mapper.AgentTaskMapper;
@@ -27,6 +29,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class AgentRunLifecycleServiceTest {
+
+    private static final java.time.LocalDateTime FENCE_NOW = java.time.LocalDateTime.of(2026, 7, 23, 10, 0);
 
     @Test
     void initializesAQueuedRunWithItsFirstEventAndOutboxMessage() {
@@ -697,6 +701,275 @@ class AgentRunLifecycleServiceTest {
         verify(taskMapper, never()).updateById(any(AgentTask.class));
         verify(eventMapper, never()).insert(any(AgentRunEvent.class));
         verify(outboxMapper, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void fencedExecutorTransitionRejectsStaleOwnerBeforeWritingEventOutboxOrPart() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-b");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(task);
+
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, parts);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class, () -> service.transition(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, AgentRunState.WAITING_ENVIRONMENT,
+                "RUN_ENVIRONMENT_BLOCKED", Map.of("reason", "stale-owner"), "Waiting", "Stale owner", "fence-71-owner"));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_OWNER, error.reason());
+        verify(tasks, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(events, never()).insert(any(AgentRunEvent.class));
+        verify(outbox, never()).insert(any(AgentRunOutbox.class));
+        verify(parts, never()).recordEventPart(any(), any(), any(), anyLong());
+    }
+
+    @Test
+    void fencedExecutorTransitionRejectsStaleEpochBeforeWritingEventOutboxOrPart() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-a");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(task);
+
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, mock(AgentRunPartService.class));
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class, () -> service.transition(
+                new ExecutionFence(71L, "instance-a", 3L), 71L, AgentRunState.WAITING_ENVIRONMENT,
+                "RUN_ENVIRONMENT_BLOCKED", Map.of("reason", "stale-epoch"), "Waiting", "Stale epoch", "fence-71-epoch"));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_EPOCH, error.reason());
+        verify(tasks, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(events, never()).insert(any(AgentRunEvent.class));
+        verify(outbox, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void fencedExecutorTransitionRejectsExpiredLeaseBeforeWritingEventOutboxOrPart() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-a");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.minusSeconds(1));
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(task);
+
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, mock(AgentRunPartService.class));
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class, () -> service.transition(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, AgentRunState.WAITING_ENVIRONMENT,
+                "RUN_ENVIRONMENT_BLOCKED", Map.of("reason", "expired-lease"), "Waiting", "Expired lease", "fence-71-lease"));
+
+        assertEquals(StaleExecutionFenceException.Reason.EXPIRED_LEASE, error.reason());
+        verify(tasks, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(events, never()).insert(any(AgentRunEvent.class));
+        verify(outbox, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void fencedEventAppendRejectsStaleOwnerBeforeWritingEventOutboxOrPart() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-b");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(task);
+
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, parts);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class, () -> service.appendEvent(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, "TOOL_CALL_STATE",
+                Map.of("content", "leak"), "fence-71-append-owner"));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_OWNER, error.reason());
+        verify(tasks, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(events, never()).insert(any(AgentRunEvent.class));
+        verify(outbox, never()).insert(any(AgentRunOutbox.class));
+        verify(parts, never()).recordEventPart(any(), any(), any(), anyLong());
+    }
+
+    @Test
+    void fencedEventAppendRejectsStaleEpochBeforeWritingEventOutboxOrPart() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-a");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(task);
+
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, mock(AgentRunPartService.class));
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class, () -> service.appendEvent(
+                new ExecutionFence(71L, "instance-a", 3L), 71L, "TOOL_CALL_STATE",
+                Map.of("content", "leak"), "fence-71-append-epoch"));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_EPOCH, error.reason());
+        verify(tasks, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(events, never()).insert(any(AgentRunEvent.class));
+        verify(outbox, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void fencedEventAppendRejectsExpiredLeaseBeforeWritingEventOutboxOrPart() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-a");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.minusSeconds(1));
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(task);
+
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, mock(AgentRunPartService.class));
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class, () -> service.appendEvent(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, "TOOL_CALL_STATE",
+                Map.of("content", "leak"), "fence-71-append-lease"));
+
+        assertEquals(StaleExecutionFenceException.Reason.EXPIRED_LEASE, error.reason());
+        verify(tasks, never()).update(org.mockito.ArgumentMatchers.isNull(), any());
+        verify(events, never()).insert(any(AgentRunEvent.class));
+        verify(outbox, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void fencedTransitionPersistsEventAndOutboxWhenTheFenceIsActive() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-a");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectCount(any())).thenReturn(1L);
+        when(tasks.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(events.selectOne(any())).thenReturn(null);
+        when(tasks.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outbox.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(920L);
+            return 1;
+        }).when(events).insert(any(AgentRunEvent.class));
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, mock(AgentRunPartService.class));
+
+        AgentRunLifecycleService.TransitionResult result = service.transition(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, AgentRunState.WAITING_ENVIRONMENT,
+                "RUN_ENVIRONMENT_BLOCKED", Map.of("reason", "dependency_resolution_failed"),
+                "Waiting for environment", "Dependency resolution failed", "fence-71-active");
+
+        assertTrue(result.stateChanged());
+        assertEquals(920L, result.event().getEventId());
+        assertEquals("waiting_environment", task.getStatus());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<AgentTask>> update =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper.class);
+        verify(tasks).update(org.mockito.ArgumentMatchers.isNull(), update.capture());
+        assertTrue(update.getValue().getSqlSegment().contains("execution_owner"));
+        assertTrue(update.getValue().getSqlSegment().contains("execution_epoch"));
+        assertTrue(update.getValue().getSqlSegment().contains("execution_lease_expires_at"));
+        verify(outbox).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void fencedEventAppendPersistsEventAndOutboxWhenTheFenceIsActive() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-a");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectCount(any())).thenReturn(1L);
+        when(tasks.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(events.selectOne(any())).thenReturn(null);
+        when(tasks.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outbox.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(921L);
+            return 1;
+        }).when(events).insert(any(AgentRunEvent.class));
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, parts);
+
+        AgentRunEvent event = service.appendEvent(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, "THINK",
+                Map.of("content", "Inspecting"), "fence-71-append-active");
+
+        assertEquals(921L, event.getEventId());
+        assertEquals("THINK", event.getEventType());
+        verify(outbox).insert(any(AgentRunOutbox.class));
+        verify(parts).recordEventPart(eq(71L), eq("THINK"), any(), eq(1L));
+    }
+
+    @Test
+    void fencedTransitionWithZeroRowsUpdatedReturnsTypedStaleFenceFailureWithoutPartialPersistence() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-a");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectCount(any())).thenReturn(1L);
+        when(tasks.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(events.selectOne(any())).thenReturn(null);
+        when(tasks.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(0);
+
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, mock(AgentRunPartService.class));
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class, () -> service.transition(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, AgentRunState.WAITING_ENVIRONMENT,
+                "RUN_ENVIRONMENT_BLOCKED", Map.of("reason", "concurrent"), "Waiting", "Lost lease", "fence-71-lost"));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_FENCE, error.reason());
+        verify(events, never()).insert(any(AgentRunEvent.class));
+        verify(outbox, never()).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void rejectedFencedEventAppendLeaksNoSentinelIntoEventOutboxPartOrErrorPayload() {
+        String sentinel = "SENTINEL-SECRET-f3b81c";
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionEpoch(4L);
+        task.setExecutionOwner("instance-b");
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(task);
+
+        AgentRunLifecycleService service = fencedLifecycle(tasks, events, outbox, parts);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class, () -> service.appendEvent(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, "FINAL",
+                Map.of("content", sentinel), "fence-71-sentinel"));
+
+        assertFalse(error.getMessage().contains(sentinel));
+        // SSE 只投影已提交的持久化事件/Part；事件与 outbox 均未写入，sentinel 不会出现在任何投影或 SSE 载荷中。
+        verify(events, never()).insert(any(AgentRunEvent.class));
+        verify(outbox, never()).insert(any(AgentRunOutbox.class));
+        verify(parts, never()).recordEventPart(any(), any(), any(), anyLong());
+    }
+
+    private AgentRunLifecycleService fencedLifecycle(AgentTaskMapper tasks, AgentRunEventMapper events,
+                                                     AgentRunOutboxMapper outbox, AgentRunPartService parts) {
+        AgentRunLifecycleService service = new AgentRunLifecycleService(tasks, events, outbox, null,
+                new AgentRunExecutionLeaseService(tasks, "instance-a", 30_000L));
+        service.setPartService(parts);
+        return service;
     }
 
     private void assertTransitionAudit(JsonObject transition, String previousState, String nextState,

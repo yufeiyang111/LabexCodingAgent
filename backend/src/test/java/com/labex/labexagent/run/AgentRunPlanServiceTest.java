@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunPlanItem;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService.StaleExecutionFenceException;
 import com.labex.mapper.AgentRunPlanItemMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.List;
@@ -147,6 +148,109 @@ class AgentRunPlanServiceTest {
                 .containsExactly("completed", "in_progress");
         verify(plans).deleteByTaskId(71L);
         verify(plans, Mockito.times(2)).insertPlanItem(any(AgentRunPlanItem.class));
+    }
+
+    @Test
+    void fencedReplaceRejectsStaleOwnerBeforeChangingPlanRowsOrEvents() {
+        AgentRunPlanItemMapper plans = Mockito.mock(AgentRunPlanItemMapper.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = Mockito.mock(AgentRunLifecycleService.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(fencedTask(71L, 4L, "running", "instance-b",
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunPlanService service = new AgentRunPlanService(plans, tasks, lifecycle);
+        StaleExecutionFenceException error = org.junit.jupiter.api.Assertions.assertThrows(
+                StaleExecutionFenceException.class,
+                () -> service.replace(new ExecutionFence(71L, "instance-a", 4L), 71L, 4L,
+                        List.of(new AgentRunPlanService.PlanDraft("Inspect", "", false)), "create_plan"));
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                StaleExecutionFenceException.Reason.STALE_OWNER, error.reason());
+        verify(plans, never()).deleteByTaskId(any());
+        verify(plans, never()).insertPlanItem(any());
+        verify(lifecycle, never()).appendEvent(any(), any(), any(), any());
+        verify(lifecycle, never()).appendEvent(any(ExecutionFence.class), any(), any(), any(), any());
+    }
+
+    @Test
+    void fencedReplaceRejectsStaleEpochBeforeChangingPlanRowsOrEvents() {
+        AgentRunPlanItemMapper plans = Mockito.mock(AgentRunPlanItemMapper.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = Mockito.mock(AgentRunLifecycleService.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(fencedTask(71L, 4L, "running", "instance-a",
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunPlanService service = new AgentRunPlanService(plans, tasks, lifecycle);
+        StaleExecutionFenceException error = org.junit.jupiter.api.Assertions.assertThrows(
+                StaleExecutionFenceException.class,
+                () -> service.replace(new ExecutionFence(71L, "instance-a", 3L), 71L, 4L,
+                        List.of(new AgentRunPlanService.PlanDraft("Inspect", "", false)), "create_plan"));
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                StaleExecutionFenceException.Reason.STALE_EPOCH, error.reason());
+        verify(plans, never()).deleteByTaskId(any());
+        verify(plans, never()).insertPlanItem(any());
+        verify(lifecycle, never()).appendEvent(any(), any(), any(), any());
+    }
+
+    @Test
+    void fencedReplaceRejectsExpiredLeaseBeforeChangingPlanRowsOrEvents() {
+        AgentRunPlanItemMapper plans = Mockito.mock(AgentRunPlanItemMapper.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = Mockito.mock(AgentRunLifecycleService.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(71L)).thenReturn(fencedTask(71L, 4L, "running", "instance-a",
+                java.time.LocalDateTime.of(2026, 7, 23, 9, 59, 59)));
+
+        AgentRunPlanService service = new AgentRunPlanService(plans, tasks, lifecycle);
+        StaleExecutionFenceException error = org.junit.jupiter.api.Assertions.assertThrows(
+                StaleExecutionFenceException.class,
+                () -> service.replace(new ExecutionFence(71L, "instance-a", 4L), 71L, 4L,
+                        List.of(new AgentRunPlanService.PlanDraft("Inspect", "", false)), "create_plan"));
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                StaleExecutionFenceException.Reason.EXPIRED_LEASE, error.reason());
+        verify(plans, never()).deleteByTaskId(any());
+        verify(plans, never()).insertPlanItem(any());
+        verify(lifecycle, never()).appendEvent(any(), any(), any(), any());
+    }
+
+    @Test
+    void fencedReplacePersistsPlanRowsAndFencedPlanEventWhenTheFenceIsActive() {
+        AgentRunPlanItemMapper plans = Mockito.mock(AgentRunPlanItemMapper.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = Mockito.mock(AgentRunLifecycleService.class);
+        when(tasks.selectCount(any())).thenReturn(1L);
+        when(tasks.selectByTaskIdForUpdate(71L)).thenReturn(fencedTask(71L, 4L, "running", "instance-a",
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+        when(plans.selectByTaskIdOrderByPosition(71L)).thenReturn(List.of());
+        when(plans.insertPlanItem(any(AgentRunPlanItem.class))).thenReturn(1);
+        AgentRunEvent event = new AgentRunEvent();
+        event.setSequenceNumber(23L);
+        when(lifecycle.appendEvent(any(ExecutionFence.class), eq(71L), eq("PLAN_UPDATE"), any(),
+                eq("plan-update:71:1"))).thenReturn(event);
+
+        AgentRunPlanService.Projection projection = new AgentRunPlanService(plans, tasks, lifecycle).replace(
+                new ExecutionFence(71L, "instance-a", 4L), 71L, 4L,
+                List.of(new AgentRunPlanService.PlanDraft("Inspect", "Read the implementation", false)),
+                "create_plan");
+
+        assertThat(projection.revision()).isEqualTo(1L);
+        assertThat(projection.eventSequence()).isEqualTo(23L);
+        verify(plans).deleteByTaskId(71L);
+        verify(plans).insertPlanItem(any(AgentRunPlanItem.class));
+        verify(lifecycle).appendEvent(any(ExecutionFence.class), eq(71L), eq("PLAN_UPDATE"), any(),
+                eq("plan-update:71:1"));
+    }
+
+    private AgentTask fencedTask(long taskId, long epoch, String status, String owner,
+                                 java.time.LocalDateTime leaseExpiresAt) {
+        AgentTask task = task(taskId, epoch, status);
+        task.setExecutionOwner(owner);
+        task.setExecutionLeaseExpiresAt(leaseExpiresAt);
+        return task;
     }
 
     private AgentTask task(long taskId, long epoch, String status) {

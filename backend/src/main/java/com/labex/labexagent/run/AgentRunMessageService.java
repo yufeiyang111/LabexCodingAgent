@@ -21,16 +21,36 @@ public class AgentRunMessageService {
     private static final Gson GSON = new Gson();
     private final AgentRunMessageMapper messageMapper;
     private final AgentTaskMapper taskMapper;
+    private final AgentRunExecutionLeaseService leaseService;
 
-    public AgentRunMessageService(AgentRunMessageMapper messageMapper, AgentTaskMapper taskMapper) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentRunMessageService(AgentRunMessageMapper messageMapper, AgentTaskMapper taskMapper,
+                                  AgentRunExecutionLeaseService leaseService) {
         this.messageMapper = messageMapper;
         this.taskMapper = taskMapper;
+        this.leaseService = leaseService;
+    }
+
+    public AgentRunMessageService(AgentRunMessageMapper messageMapper, AgentTaskMapper taskMapper) {
+        this(messageMapper, taskMapper, new AgentRunExecutionLeaseService(taskMapper, "legacy-instance", 30_000L));
     }
 
     @Transactional(rollbackFor = Exception.class)
     public AgentRunMessage upsertAssistantTurn(Long taskId, long iteration, String status) {
         return upsert(taskId, "assistant:turn:" + iteration, iteration, "assistant", status,
                 "", Map.of("iteration", iteration));
+    }
+
+    /**
+     * Executor-fenced assistant turn 写入：先验证 {@link ExecutionFence}（owner + 精确 epoch + 未过期 lease），
+     * stale fence 抛出 typed failure，Message 行不被写入。
+     * 该预检在写入事务内、任何 INSERT/UPDATE 之前执行；lifecycle/plan 的 fenced 写入另将
+     * owner/epoch/active-lease 嵌入 UPDATE 谓词。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunMessage upsertAssistantTurn(ExecutionFence fence, Long taskId, long iteration, String status) {
+        requireFence(fence);
+        return upsertAssistantTurn(taskId, iteration, status);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -49,6 +69,16 @@ public class AgentRunMessageService {
         String status = eventType.equals("ERROR") || eventType.endsWith("FAILED") ? "error" : "completed";
         String content = stringValue(data, "content", "message", "summary");
         return upsert(taskId, key, sequence, role, status, content, data);
+    }
+
+    /**
+     * Executor-fenced 事件消息写入：先验证 {@link ExecutionFence}，stale fence 抛出 typed failure。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunMessage recordEventMessage(ExecutionFence fence, Long taskId, String eventType,
+                                              Object payload, long sequence) {
+        requireFence(fence);
+        return recordEventMessage(taskId, eventType, payload, sequence);
     }
 
     /** 为重启恢复封口未完成消息，避免刷新后永久显示 streaming。 */
@@ -124,7 +154,9 @@ public class AgentRunMessageService {
         message.setSequenceNumber(sequence);
         message.setRole(role);
         message.setStatus(status);
-        message.setContent(limit(content));
+        // opencode 语义：内容完整落库，不静默截断；模型输出由 Provider max tokens 约束，
+        // 请求预算由上下文准入/压缩在读取期管理，FINAL 长回答才能完整进入跨轮会话记忆。
+        message.setContent(content == null ? "" : content);
         message.setMetadata(GSON.toJson(metadata == null ? Map.of() : metadata));
         message.setUpdateTime(now);
         if (message.getRunMessageId() == null) {
@@ -189,8 +221,19 @@ public class AgentRunMessageService {
         return content;
     }
 
+    /**
+     * 只用于中断补白（markOpenMessages 为空消息填入原因）的防御性上限；
+     * 正常消息内容路径不做任何截断。
+     */
     private String limit(String value) {
         if (value == null) return "";
-        return value.length() <= 12_000 ? value : value.substring(0, 12_000) + "\n...truncated...";
+        return value.length() <= 64_000 ? value : value.substring(0, 64_000) + "\n...truncated...";
+    }
+
+    private void requireFence(ExecutionFence fence) {
+        if (fence == null) {
+            throw new IllegalStateException("ExecutionFence is required for executor-originated writes");
+        }
+        leaseService.requireActiveFence(fence, LocalDateTime.now());
     }
 }

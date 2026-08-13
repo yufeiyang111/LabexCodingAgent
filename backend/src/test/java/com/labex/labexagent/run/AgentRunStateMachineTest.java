@@ -23,6 +23,7 @@ class AgentRunStateMachineTest {
             transition(AgentRunState.QUEUED, AgentRunState.WAITING_WORKSPACE),
             transition(AgentRunState.PREPARING, AgentRunState.RUNNING),
             transition(AgentRunState.PREPARING, AgentRunState.RECOVERING),
+            transition(AgentRunState.PREPARING, AgentRunState.WAITING_ENVIRONMENT),
             transition(AgentRunState.PREPARING, AgentRunState.CANCELLING),
             transition(AgentRunState.PREPARING, AgentRunState.FAILED),
             transition(AgentRunState.PREPARING, AgentRunState.WAITING_WORKSPACE),
@@ -50,6 +51,7 @@ class AgentRunStateMachineTest {
             transition(AgentRunState.WAITING_ENVIRONMENT, AgentRunState.QUEUED),
             transition(AgentRunState.WAITING_ENVIRONMENT, AgentRunState.CANCELLING),
             transition(AgentRunState.WAITING_ENVIRONMENT, AgentRunState.FAILED),
+            transition(AgentRunState.RECOVERING, AgentRunState.PREPARING),
             transition(AgentRunState.RECOVERING, AgentRunState.RUNNING),
             transition(AgentRunState.RECOVERING, AgentRunState.WAITING_WORKSPACE),
             transition(AgentRunState.RECOVERING, AgentRunState.CANCELLING),
@@ -78,6 +80,22 @@ class AgentRunStateMachineTest {
     void legacyPendingStatusMapsToQueued() {
         assertTrue(AgentRunState.fromPersistedStatus("pending") == AgentRunState.QUEUED);
         assertTrue(AgentRunState.fromPersistedStatus("waiting_user") == AgentRunState.WAITING_USER);
+    }
+
+    @Test
+    void acceptsRecoveryThenPreparationForRestoredRuns() {
+        // SECURE TARGET: 恢复后的任务必须先重建 runtime projection（PREPARING）再进入 running
+        assertTrue(AgentRunStateMachine.canTransition(AgentRunState.RECOVERING, AgentRunState.PREPARING));
+        assertDoesNotThrow(() -> AgentRunStateMachine.requireTransition(
+                AgentRunState.RECOVERING, AgentRunState.PREPARING));
+    }
+
+    @Test
+    void acceptsPreparingBackToWaitingEnvironmentOnControlledRetry() {
+        // SECURE TARGET: PREPARING 阶段的可重试环境失败必须能回到 waiting_environment
+        assertTrue(AgentRunStateMachine.canTransition(AgentRunState.PREPARING, AgentRunState.WAITING_ENVIRONMENT));
+        assertDoesNotThrow(() -> AgentRunStateMachine.requireTransition(
+                AgentRunState.PREPARING, AgentRunState.WAITING_ENVIRONMENT));
     }
 
     private static Stream<Arguments> legalTransitions() {

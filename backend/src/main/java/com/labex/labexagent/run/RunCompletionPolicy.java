@@ -9,7 +9,7 @@ import java.util.Locale;
 public final class RunCompletionPolicy {
     public RunCompletionEvidence evaluate(Input input) {
         Input safe = input == null
-                ? new Input(null, List.of(), List.of(), List.of(), false, "unknown", List.of())
+                ? new Input(null, List.of(), List.of(), List.of(), List.of(), false, "unknown", List.of())
                 : input;
         List<String> risks = new ArrayList<>(safe.unresolvedRisks());
         String state = safe.runState() == null ? "unknown" : safe.runState().toLowerCase(Locale.ROOT);
@@ -17,34 +17,52 @@ public final class RunCompletionPolicy {
                 || "failed".equals(state) || "cancelling".equals(state);
         if (terminalBlocker) risks.add("运行状态不允许宣告完成：" + state);
         if (!safe.failedVerifications().isEmpty()) risks.add("存在失败的验证记录");
+        if (!safe.environmentVerifications().isEmpty()) {
+            risks.add("存在环境受阻的验证（超时/取消/基础设施故障），不能计入通过："
+                    + String.join("; ", safe.environmentVerifications()));
+        }
         boolean hasChanges = !safe.changedFiles().isEmpty();
         boolean verified = !safe.successfulVerifications().isEmpty() || safe.manualFileVerification();
         if (hasChanges && !verified) risks.add("存在文件改动，但没有成功验证证据");
 
         List<RunCompletionEvidence.Criterion> criteria = List.of(
                 new RunCompletionEvidence.Criterion("run_state", "运行状态允许完成", !terminalBlocker, state),
-                new RunCompletionEvidence.Criterion("verification_failures", "没有失败验证", safe.failedVerifications().isEmpty(),
+                new RunCompletionEvidence.Criterion("verification_failures", "没有代码验证失败", safe.failedVerifications().isEmpty(),
                         safe.failedVerifications().isEmpty() ? "none" : String.join(", ", safe.failedVerifications())),
+                new RunCompletionEvidence.Criterion("environment_verifications", "环境验证可用（没有超时/取消/基础设施受阻）",
+                        safe.environmentVerifications().isEmpty(),
+                        safe.environmentVerifications().isEmpty() ? "none" : String.join(", ", safe.environmentVerifications())),
                 new RunCompletionEvidence.Criterion("unresolved_risks", "没有未解决风险", safe.unresolvedRisks().isEmpty(),
                         safe.unresolvedRisks().isEmpty() ? "none" : String.join(", ", safe.unresolvedRisks())),
                 new RunCompletionEvidence.Criterion("changed_files_verified", "改动已验证", !hasChanges || verified,
                         hasChanges ? (verified ? "verified" : "missing verification") : "informational task"));
         return new RunCompletionEvidence(safe.taskId(), safe.changedFiles(), safe.successfulVerifications(),
-                safe.failedVerifications(), risks, criteria, risks.isEmpty(), LocalDateTime.now());
+                safe.failedVerifications(), safe.environmentVerifications(), risks, criteria, risks.isEmpty(),
+                LocalDateTime.now());
     }
 
     public record Input(Long taskId, List<String> changedFiles, List<String> successfulVerifications,
-                        List<String> failedVerifications, boolean manualFileVerification, String runState,
+                        List<String> failedVerifications, List<String> environmentVerifications,
+                        boolean manualFileVerification, String runState,
                         List<String> unresolvedRisks) {
         public Input(Long taskId, List<String> changedFiles, List<String> successfulVerifications,
                      List<String> failedVerifications, boolean manualFileVerification, String runState) {
-            this(taskId, changedFiles, successfulVerifications, failedVerifications, manualFileVerification, runState, List.of());
+            this(taskId, changedFiles, successfulVerifications, failedVerifications, List.of(),
+                    manualFileVerification, runState, List.of());
+        }
+
+        public Input(Long taskId, List<String> changedFiles, List<String> successfulVerifications,
+                     List<String> failedVerifications, boolean manualFileVerification, String runState,
+                     List<String> unresolvedRisks) {
+            this(taskId, changedFiles, successfulVerifications, failedVerifications, List.of(),
+                    manualFileVerification, runState, unresolvedRisks);
         }
 
         public Input {
             changedFiles = List.copyOf(changedFiles == null ? List.of() : changedFiles);
             successfulVerifications = List.copyOf(successfulVerifications == null ? List.of() : successfulVerifications);
             failedVerifications = List.copyOf(failedVerifications == null ? List.of() : failedVerifications);
+            environmentVerifications = List.copyOf(environmentVerifications == null ? List.of() : environmentVerifications);
             unresolvedRisks = List.copyOf(unresolvedRisks == null ? List.of() : unresolvedRisks);
         }
     }

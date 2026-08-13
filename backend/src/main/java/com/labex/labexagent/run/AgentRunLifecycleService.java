@@ -4,17 +4,23 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.google.gson.Gson;
 import com.labex.entity.AgentRunEvent;
+import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentRunOutbox;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.mapper.AgentRunEventMapper;
+import com.labex.mapper.AgentRunInteractionMapper;
 import com.labex.mapper.AgentRunOutboxMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,13 +33,33 @@ public class AgentRunLifecycleService {
     private final AgentTaskMapper taskMapper;
     private final AgentRunEventMapper eventMapper;
     private final AgentRunOutboxMapper outboxMapper;
+    private final AgentRunInteractionMapper interactionMapper;
+    private final AgentRunExecutionLeaseService leaseService;
     private AgentRunPartService partService;
 
+    @Autowired
     public AgentRunLifecycleService(AgentTaskMapper taskMapper, AgentRunEventMapper eventMapper,
-                                    AgentRunOutboxMapper outboxMapper) {
+                                    AgentRunOutboxMapper outboxMapper,
+                                    AgentRunInteractionMapper interactionMapper,
+                                    AgentRunExecutionLeaseService leaseService) {
         this.taskMapper = taskMapper;
         this.eventMapper = eventMapper;
         this.outboxMapper = outboxMapper;
+        this.interactionMapper = interactionMapper;
+        this.leaseService = Objects.requireNonNull(leaseService, "leaseService is required");
+    }
+
+    public AgentRunLifecycleService(AgentTaskMapper taskMapper, AgentRunEventMapper eventMapper,
+                                    AgentRunOutboxMapper outboxMapper,
+                                    AgentRunInteractionMapper interactionMapper) {
+        this(taskMapper, eventMapper, outboxMapper, interactionMapper,
+                new AgentRunExecutionLeaseService(taskMapper, "legacy-instance", 30_000L));
+    }
+
+    public AgentRunLifecycleService(AgentTaskMapper taskMapper, AgentRunEventMapper eventMapper,
+                                    AgentRunOutboxMapper outboxMapper) {
+        this(taskMapper, eventMapper, outboxMapper, null,
+                new AgentRunExecutionLeaseService(taskMapper, "legacy-instance", 30_000L));
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -66,13 +92,37 @@ public class AgentRunLifecycleService {
                 currentStep, summary, idempotencyKey) != null;
     }
 
+    /**
+     * Executor-fenced 状态迁移：写入前先验证 {@link ExecutionFence}（owner + 精确 epoch + 未过期 lease），
+     * 并把 fence 谓词并入任务行 UPDATE；零行更新返回 typed stale-fence failure，绝不产生部分持久化。
+     * 与仅靠事务内预检的 upsert 写入（transcript/message/part/artifact）不同，lifecycle/plan 的
+     * fenced 写入把 owner/epoch/active-lease 直接嵌入 UPDATE 谓词。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean transitionIfCurrent(ExecutionFence fence, Long taskId, AgentRunState expectedState,
+                                       AgentRunState targetState, String eventType, Object payload,
+                                       String currentStep, String summary, String idempotencyKey) {
+        return transitionIfCurrentResult(fence, taskId, expectedState, targetState, eventType, payload,
+                currentStep, summary, idempotencyKey) != null;
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public TransitionResult transitionIfCurrentResult(Long taskId, AgentRunState expectedState,
                                                       AgentRunState targetState, String eventType, Object payload,
                                                       String currentStep, String summary, String idempotencyKey) {
         require(expectedState, "expectedState");
         return transitionInternal(taskId, expectedState, targetState, eventType, payload, currentStep, summary,
-                idempotencyKey, Map.of());
+                idempotencyKey, Map.of(), null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public TransitionResult transitionIfCurrentResult(ExecutionFence fence, Long taskId, AgentRunState expectedState,
+                                                      AgentRunState targetState, String eventType, Object payload,
+                                                      String currentStep, String summary, String idempotencyKey) {
+        requireFence(fence);
+        require(expectedState, "expectedState");
+        return transitionInternal(taskId, expectedState, targetState, eventType, payload, currentStep, summary,
+                idempotencyKey, Map.of(), fence);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -80,7 +130,20 @@ public class AgentRunLifecycleService {
                                        Object payload, String currentStep, String summary,
                                        String idempotencyKey) {
         TransitionResult result = transitionInternal(taskId, null, targetState, eventType, payload, currentStep,
-                summary, idempotencyKey, Map.of());
+                summary, idempotencyKey, Map.of(), null);
+        if (result == null) {
+            throw new IllegalStateException("Agent run state changed concurrently; retry the transition with the same idempotency key");
+        }
+        return result;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public TransitionResult transition(ExecutionFence fence, Long taskId, AgentRunState targetState,
+                                       String eventType, Object payload, String currentStep, String summary,
+                                       String idempotencyKey) {
+        requireFence(fence);
+        TransitionResult result = transitionInternal(taskId, null, targetState, eventType, payload, currentStep,
+                summary, idempotencyKey, Map.of(), fence);
         if (result == null) {
             throw new IllegalStateException("Agent run state changed concurrently; retry the transition with the same idempotency key");
         }
@@ -241,6 +304,121 @@ public class AgentRunLifecycleService {
         }
         return new DispatchClaim(new AgentRunExecutionLeaseService.ExecutionLease(taskId, owner, epoch, expiresAt));
     }
+
+    /**
+     * 恢复交互的唯一事务性 claim 入口：在同一个事务里锁定任务和最新兼容交互，校验所有权、
+     * 任务等待态、交互已解决状态、过期、未消费 claim 和幂等键，记录服务端 claim，把任务迁移到
+     * RECOVERING 并递增 execution epoch（复用 {@link #claimDispatch} 的租约/事件/outbox 权威路径）。
+     * 永久性无效（非最新、已过期、已消费、重复 dispatch、所有权不符）返回 REJECTED，
+     * 仅租约忙等瞬时条件返回 DEFERRED；调用方不得凭用户可控 ID 自行重建 claim。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public InteractionClaimOutcome claimResolvedInteractionDispatch(Long taskId, Integer studentId,
+                                                                    Integer projectId, String interactionId,
+                                                                    String currentStep, String summary,
+                                                                    String idempotencyKey, String owner,
+                                                                    long leaseDurationMs) {
+        require(taskId, "taskId");
+        require(studentId, "studentId");
+        require(projectId, "projectId");
+        require(interactionId, "interactionId");
+        require(idempotencyKey, "idempotencyKey");
+        require(owner, "owner");
+        if (interactionMapper == null) {
+            throw new IllegalStateException("Agent interaction claim is unavailable");
+        }
+        AgentTask task = taskMapper.selectByTaskIdForUpdate(taskId);
+        if (task == null
+                || !Objects.equals(task.getStudentId(), studentId)
+                || !Objects.equals(task.getProjectId(), projectId)) {
+            return InteractionClaimOutcome.rejected();
+        }
+        AgentRunState current = AgentRunState.fromPersistedStatus(task.getStatus());
+        LocalDateTime now = LocalDateTime.now();
+        AgentRunInteraction interaction;
+        if (current == AgentRunState.WAITING_USER) {
+            interaction = interactionMapper.selectResolvedInteractionForUpdate(
+                    studentId, projectId, taskId, interactionId,
+                    List.of("question"), List.of("answered", "cancelled"), now);
+            if (interaction == null) {
+                // Task 2.3: config_proposal 是 proposal 权威的等待投影；只有决策路径
+                // （AgentProjectConfigProposalService + 本 claim）能恢复它，通用调度器扫描
+                // 永远看不到该类型。状态含 timed_out，与 permission/network 的过期语义一致。
+                interaction = interactionMapper.selectResolvedInteractionForUpdate(
+                        studentId, projectId, taskId, interactionId,
+                        List.of(AgentRunInteraction.TYPE_CONFIG_PROPOSAL),
+                        List.of(AgentRunInteraction.STATUS_APPROVED,
+                                AgentRunInteraction.STATUS_REJECTED, "timed_out"), now);
+            }
+        } else if (current == AgentRunState.WAITING_APPROVAL) {
+            interaction = interactionMapper.selectResolvedInteractionForUpdate(
+                    studentId, projectId, taskId, interactionId,
+                    List.of("permission", "network"), List.of("approved", "rejected", "timed_out"), now);
+        } else {
+            return InteractionClaimOutcome.rejected();
+        }
+        if (interaction == null) {
+            return InteractionClaimOutcome.rejected();
+        }
+        AgentRunEvent existing = findByIdempotencyKey(taskId, idempotencyKey);
+        if (existing != null) {
+            validateIdempotentReplay(existing, AgentRunState.RECOVERING, "RUN_INTERACTION_RESUME_QUEUED");
+            return InteractionClaimOutcome.rejected();
+        }
+        String claimId = UUID.randomUUID().toString();
+        long claimEpoch = valueOrZero(task.getExecutionEpoch()) + 1L;
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("interactionId", interactionId);
+        payload.put("claimId", claimId);
+        payload.put("claimEpoch", claimEpoch);
+        DispatchClaim dispatch = claimDispatch(taskId, current, AgentRunState.RECOVERING,
+                "RUN_INTERACTION_RESUME_QUEUED", payload, currentStep, summary, idempotencyKey, owner,
+                leaseDurationMs);
+        if (dispatch == null) {
+            // 旧 worker 租约仍有效：任务迁移未发生，交互行未被触碰，绝不留未消费 claim。
+            return InteractionClaimOutcome.deferred();
+        }
+        // 任务迁移成功后，同一事务内再写交互 claim，使 claim 与 dispatch 原子绑定；
+        // epoch 取 lifecycle 返回的权威租约值。CAS 失败必须回滚已提交的任务迁移，
+        // 不能留下"已 recovering 但无 claim"的搁浅状态。
+        int claimed = interactionMapper.update(null, new UpdateWrapper<AgentRunInteraction>()
+                .eq("interaction_id", interaction.getInteractionId())
+                .eq("student_id", studentId)
+                .eq("project_id", projectId)
+                .eq("task_id", taskId)
+                .and(wrapper -> wrapper.isNull("resume_claim_id").or().isNotNull("resume_consumed_at"))
+                .set("resume_claim_id", claimId)
+                .set("resume_claim_epoch", dispatch.lease().epoch())
+                .set("resume_claimed_at", now)
+                .set("resume_consumed_at", null)
+                .set("update_time", now));
+        if (claimed != 1) {
+            throw new IllegalStateException("Unable to bind interaction claim to dispatch");
+        }
+        interaction.setResumeClaimId(claimId);
+        interaction.setResumeClaimEpoch(dispatch.lease().epoch());
+        interaction.setResumeClaimedAt(now);
+        interaction.setResumeConsumedAt(null);
+        interaction.setUpdateTime(now);
+        return InteractionClaimOutcome.claimed(dispatch.lease(), interaction);
+    }
+
+    /**
+     * Task 2.3 决策路径专用的 config_proposal 恢复 claim：使用本实例的 lease identity
+     * 与默认租约时长，幂等键与通用交互恢复一致（同一交互重复 claim 命中同一历史事件）。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public InteractionClaimOutcome claimConfigProposalDispatch(Long taskId, Integer studentId,
+                                                               Integer projectId, String interactionId) {
+        require(taskId, "taskId");
+        require(studentId, "studentId");
+        require(projectId, "projectId");
+        require(interactionId, "interactionId");
+        return claimResolvedInteractionDispatch(taskId, studentId, projectId, interactionId,
+                "Resuming after config proposal decision", "A config proposal decision is ready",
+                AgentRunTransitionKey.forInteractionResume(taskId, interactionId),
+                leaseService.instanceId(), leaseService.leaseDurationMs());
+    }
     @Transactional(rollbackFor = Exception.class)
     public boolean beginRecovery(Long taskId, AgentRunState expectedState, Object payload, String idempotencyKey) {
         return transitionInternal(taskId, expectedState, AgentRunState.RECOVERING, "RUN_RECOVERY_TAKEOVER", payload,
@@ -268,7 +446,18 @@ public class AgentRunLifecycleService {
         require(nextRetryAt, "nextRetryAt");
         return transitionInternal(taskId, AgentRunState.RUNNING, AgentRunState.RETRYING,
                 "RUN_MODEL_RETRY_SCHEDULED", payload, currentStep, summary, idempotencyKey,
-                Map.of("retry_attempts", retryAttempt, "next_retry_at", nextRetryAt));
+                Map.of("retry_attempts", retryAttempt, "next_retry_at", nextRetryAt), null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public TransitionResult scheduleModelRetryResult(ExecutionFence fence, Long taskId, int retryAttempt,
+                                                     LocalDateTime nextRetryAt, Object payload, String currentStep,
+                                                     String summary, String idempotencyKey) {
+        requireFence(fence);
+        require(nextRetryAt, "nextRetryAt");
+        return transitionInternal(taskId, AgentRunState.RUNNING, AgentRunState.RETRYING,
+                "RUN_MODEL_RETRY_SCHEDULED", payload, currentStep, summary, idempotencyKey,
+                Map.of("retry_attempts", retryAttempt, "next_retry_at", nextRetryAt), fence);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -284,6 +473,14 @@ public class AgentRunLifecycleService {
     private TransitionResult transitionInternal(Long taskId, AgentRunState expectedState, AgentRunState targetState,
                                                  String eventType, Object payload, String currentStep, String summary,
                                                  String idempotencyKey, Map<String, Object> extraAssignments) {
+        return transitionInternal(taskId, expectedState, targetState, eventType, payload, currentStep, summary,
+                idempotencyKey, extraAssignments, null);
+    }
+
+    private TransitionResult transitionInternal(Long taskId, AgentRunState expectedState, AgentRunState targetState,
+                                                 String eventType, Object payload, String currentStep, String summary,
+                                                 String idempotencyKey, Map<String, Object> extraAssignments,
+                                                 ExecutionFence fence) {
         require(taskId, "taskId");
         require(targetState, "targetState");
         require(eventType, "eventType");
@@ -322,8 +519,13 @@ public class AgentRunLifecycleService {
         UpdateWrapper<AgentTask> update = new UpdateWrapper<AgentTask>()
                 .eq("task_id", task.getTaskId())
                 .eq("status", currentState.persistedStatus())
-                .eq("run_version", expectedVersion)
-                .set("status", targetState.persistedStatus())
+                .eq("run_version", expectedVersion);
+        if (fence != null) {
+            update.eq("execution_owner", fence.owner())
+                    .eq("execution_epoch", fence.epoch())
+                    .gt("execution_lease_expires_at", now);
+        }
+        update.set("status", targetState.persistedStatus())
                 .set("last_event_sequence", nextSequence)
                 .set("run_version", nextVersion)
                 .set("update_time", now);
@@ -337,6 +539,10 @@ public class AgentRunLifecycleService {
             extraAssignments.forEach(update::set);
         }
         if (taskMapper.update(null, update) != 1) {
+            if (fence != null) {
+                throw new AgentRunExecutionLeaseService.StaleExecutionFenceException(
+                        AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.STALE_FENCE);
+            }
             if (expectedState != null) {
                 return null;
             }
@@ -396,6 +602,13 @@ public class AgentRunLifecycleService {
     }
 
     @Transactional(rollbackFor = Exception.class)
+    public AgentRunEvent appendEvent(ExecutionFence fence, Long taskId, String eventType, Object payload,
+                                     String idempotencyKey) {
+        requireFence(fence);
+        return appendEventIfCurrentInternal(fence, taskId, null, eventType, payload, idempotencyKey);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public Integer recordRecoveryAttemptIfCurrent(Long taskId, AgentRunState expectedState) {
         require(taskId, "taskId");
         require(expectedState, "expectedState");
@@ -421,6 +634,25 @@ public class AgentRunLifecycleService {
     @Transactional(rollbackFor = Exception.class)
     public AgentRunEvent appendEventIfCurrent(Long taskId, AgentRunState expectedState,
                                               String eventType, Object payload, String idempotencyKey) {
+        return appendEventIfCurrentInternal(null, taskId, expectedState, eventType, payload, idempotencyKey);
+    }
+
+    /**
+     * Executor-fenced 事件追加：写入前验证 {@link ExecutionFence}，并把 owner/epoch/未过期 lease 谓词
+     * 并入任务行 UPDATE；零行更新返回 typed stale-fence failure。
+     * 与仅靠事务内预检的 upsert 写入（transcript/message/part/artifact）不同，lifecycle/plan 的
+     * fenced 写入把 owner/epoch/active-lease 直接嵌入 UPDATE 谓词。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunEvent appendEventIfCurrent(ExecutionFence fence, Long taskId, AgentRunState expectedState,
+                                              String eventType, Object payload, String idempotencyKey) {
+        requireFence(fence);
+        return appendEventIfCurrentInternal(fence, taskId, expectedState, eventType, payload, idempotencyKey);
+    }
+
+    private AgentRunEvent appendEventIfCurrentInternal(ExecutionFence fence, Long taskId,
+                                                       AgentRunState expectedState,
+                                                       String eventType, Object payload, String idempotencyKey) {
         require(taskId, "taskId");
         require(eventType, "eventType");
         require(idempotencyKey, "idempotencyKey");
@@ -444,11 +676,20 @@ public class AgentRunLifecycleService {
         UpdateWrapper<AgentTask> update = new UpdateWrapper<AgentTask>()
                 .eq("task_id", task.getTaskId())
                 .eq("status", state.persistedStatus())
-                .eq("run_version", expectedVersion)
-                .set("last_event_sequence", nextSequence)
+                .eq("run_version", expectedVersion);
+        if (fence != null) {
+            update.eq("execution_owner", fence.owner())
+                    .eq("execution_epoch", fence.epoch())
+                    .gt("execution_lease_expires_at", now);
+        }
+        update.set("last_event_sequence", nextSequence)
                 .set("run_version", nextVersion)
                 .set("update_time", now);
         if (taskMapper.update(null, update) != 1) {
+            if (fence != null) {
+                throw new AgentRunExecutionLeaseService.StaleExecutionFenceException(
+                        AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.STALE_FENCE);
+            }
             throw new IllegalStateException("Agent run changed concurrently; retry the event append with the same idempotency key");
         }
 
@@ -604,7 +845,42 @@ public class AgentRunLifecycleService {
         }
     }
 
+    private void requireFence(ExecutionFence fence) {
+        if (fence == null) {
+            throw new IllegalStateException("ExecutionFence is required for executor-originated writes");
+        }
+        leaseService.requireActiveFence(fence, LocalDateTime.now());
+    }
+
     public record DispatchClaim(AgentRunExecutionLeaseService.ExecutionLease lease) { }
+
+    /** 服务端拥有的交互恢复 claim 结果：CLAIMED 携带已验证交互和租约，DEFERRED 可稍后重试，REJECTED 永久失效。 */
+    public record InteractionClaimOutcome(Outcome outcome,
+                                          AgentRunExecutionLeaseService.ExecutionLease lease,
+                                          AgentRunInteraction interaction) {
+        public enum Outcome {
+            CLAIMED,
+            DEFERRED,
+            REJECTED
+        }
+
+        public static InteractionClaimOutcome claimed(AgentRunExecutionLeaseService.ExecutionLease lease,
+                                                      AgentRunInteraction interaction) {
+            return new InteractionClaimOutcome(Outcome.CLAIMED, lease, interaction);
+        }
+
+        public static InteractionClaimOutcome deferred() {
+            return new InteractionClaimOutcome(Outcome.DEFERRED, null, null);
+        }
+
+        public static InteractionClaimOutcome rejected() {
+            return new InteractionClaimOutcome(Outcome.REJECTED, null, null);
+        }
+
+        public boolean claimed() {
+            return outcome == Outcome.CLAIMED;
+        }
+    }
 
     public record RecoveryClaim(String owner, long epoch, LocalDateTime expiresAt) { }
 

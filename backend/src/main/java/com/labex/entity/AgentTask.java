@@ -22,6 +22,8 @@ public class AgentTask {
     private String title;
     @TableField(value="mode")
     private String mode;
+    @TableField(value="model_config_id")
+    private Integer modelConfigId;
     @TableField(value="status")
     private String status;
     @TableField(value="current_step")
@@ -99,6 +101,10 @@ public class AgentTask {
 
     public String getMode() {
         return this.mode;
+    }
+
+    public Integer getModelConfigId() {
+        return this.modelConfigId;
     }
 
     public String getStatus() {
@@ -227,6 +233,10 @@ public class AgentTask {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public void setModelConfigId(Integer modelConfigId) {
+        this.modelConfigId = modelConfigId;
     }
 
     public void setStatus(String status) {

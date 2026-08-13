@@ -9,6 +9,8 @@ import org.springframework.context.annotation.Configuration;
 public class AgentLoopProperties {
     /** 0 表示不设置任意总轮数上限，仅保留循环检测、取消、超时和上下文预算。 */
     private int hardMaxIterations;
+    /** 0 表示禁用软哨兵；超过该轮数后禁用工具并强制模型输出文本总结收尾。 */
+    private int softMaxIterations;
     private int repeatedToolCallThreshold = 3;
     private int maxCycleLength = 3;
     private int maxAutomaticStrategySwitches = 1;
@@ -20,6 +22,14 @@ public class AgentLoopProperties {
 
     public void setHardMaxIterations(int value) {
         hardMaxIterations = Math.max(0, Math.min(10_000, value));
+    }
+
+    public int getSoftMaxIterations() {
+        return softMaxIterations;
+    }
+
+    public void setSoftMaxIterations(int value) {
+        softMaxIterations = Math.max(0, Math.min(10_000, value));
     }
 
     public int getRepeatedToolCallThreshold() {

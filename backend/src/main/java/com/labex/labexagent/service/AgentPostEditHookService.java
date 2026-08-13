@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.labex.labexagent.lsp.LspSessionManager;
 import com.labex.labexagent.run.AgentRunArtifactService;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
@@ -134,7 +135,11 @@ public class AgentPostEditHookService {
             return;
         }
         try {
-            artifactService.record(context.getTaskId(), "post_edit_verification", "post-edit", report.content());
+            artifactService.record(context.getExecutionFence(), context.getTaskId(),
+                    "post_edit_verification", "post-edit", report.content());
+        } catch (AgentRunExecutionLeaseService.StaleExecutionFenceException staleFence) {
+            // 执行者已失去租约：不允许静默落盘验证证据，向执行循环暴露 typed failure。
+            throw staleFence;
         } catch (Exception ignored) {
             // 诊断记录失败不能覆盖实际编辑结果；工具结果仍会附带 hook 状态。
         }

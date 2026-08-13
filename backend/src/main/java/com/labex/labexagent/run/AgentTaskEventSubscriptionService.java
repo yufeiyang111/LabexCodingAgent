@@ -11,11 +11,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -34,16 +38,29 @@ public class AgentTaskEventSubscriptionService {
     private static final long DEFAULT_TERMINAL_DRAIN_MS = 750L;
 
     private final AgentRunEventReplayService replayService;
+    private final Executor transientEventExecutor;
     private final long terminalDrainNanos;
     private final ConcurrentHashMap<Long, CopyOnWriteArraySet<Subscription>> subscriptions = new ConcurrentHashMap<>();
 
-    @Autowired
     public AgentTaskEventSubscriptionService(AgentRunEventReplayService replayService) {
-        this(replayService, DEFAULT_TERMINAL_DRAIN_MS);
+        this(replayService, DEFAULT_TERMINAL_DRAIN_MS, Runnable::run);
+    }
+
+    @Autowired
+    public AgentTaskEventSubscriptionService(
+            AgentRunEventReplayService replayService,
+            @Qualifier(AgentRunExecutorConfiguration.TRANSIENT_EVENT_EXECUTOR) Executor transientEventExecutor) {
+        this(replayService, DEFAULT_TERMINAL_DRAIN_MS, transientEventExecutor);
     }
 
     AgentTaskEventSubscriptionService(AgentRunEventReplayService replayService, long terminalDrainMs) {
+        this(replayService, terminalDrainMs, Runnable::run);
+    }
+
+    AgentTaskEventSubscriptionService(AgentRunEventReplayService replayService, long terminalDrainMs,
+                                      Executor transientEventExecutor) {
         this.replayService = replayService;
+        this.transientEventExecutor = transientEventExecutor == null ? Runnable::run : transientEventExecutor;
         this.terminalDrainNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, terminalDrainMs));
     }
 
@@ -90,7 +107,7 @@ public class AgentTaskEventSubscriptionService {
         log.debug("TASK_EVENT_TRANSIENT_BROADCAST taskId={} eventType={} subscriberCount={}",
                 taskId, eventType, taskSubscriptions.size());
         for (Subscription subscription : taskSubscriptions) {
-            subscription.sendTransient(eventType, eventPayload);
+            subscription.enqueueTransient(eventType, eventPayload);
         }
     }
 
@@ -168,6 +185,11 @@ public class AgentTaskEventSubscriptionService {
                 || "cancelled".equalsIgnoreCase(state);
     }
 
+    private boolean isRegistered(Subscription subscription) {
+        CopyOnWriteArraySet<Subscription> taskSubscriptions = subscriptions.get(subscription.taskId);
+        return taskSubscriptions != null && taskSubscriptions.contains(subscription);
+    }
+
     private boolean remove(Subscription subscription, String reason) {
         CopyOnWriteArraySet<Subscription> taskSubscriptions = subscriptions.get(subscription.taskId);
         if (taskSubscriptions == null || !taskSubscriptions.remove(subscription)) {
@@ -189,6 +211,7 @@ public class AgentTaskEventSubscriptionService {
         private final SseEmitter emitter;
         private final AgentSsePublisher publisher;
         private final AtomicLong lastSequence;
+        private final AtomicBoolean transientSendInFlight = new AtomicBoolean();
         private long terminalObservedAtNanos;
         private long terminalSequence;
 
@@ -226,15 +249,36 @@ public class AgentTaskEventSubscriptionService {
         private void heartbeat() {
             try {
                 emitter.send(SseEmitter.event().comment("keepalive"));
-            } catch (IOException exception) {
+            } catch (IOException | RuntimeException exception) {
                 remove(this, "heartbeat_send_failed");
             }
         }
 
-        private void sendTransient(String eventType, Object eventPayload) {
+        /** 瞬时增量是可丢弃投影，慢连接不能反向阻塞 Provider 或 Agent 主循环。 */
+        private void enqueueTransient(String eventType, Object eventPayload) {
+            if (!transientSendInFlight.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                transientEventExecutor.execute(() -> {
+                    try {
+                        if (isRegistered(this)) {
+                            sendTransientNow(eventType, eventPayload);
+                        }
+                    } finally {
+                        transientSendInFlight.set(false);
+                    }
+                });
+            } catch (RejectedExecutionException exception) {
+                transientSendInFlight.set(false);
+                log.debug("TASK_EVENT_TRANSIENT_DROPPED taskId={} reason=executor_saturated", taskId);
+            }
+        }
+
+        private void sendTransientNow(String eventType, Object eventPayload) {
             try {
                 publisher.sendTransient(eventType, eventPayload == null ? Map.of() : eventPayload);
-            } catch (IOException exception) {
+            } catch (IOException | RuntimeException exception) {
                 remove(this, "transient_send_failed");
             }
         }
@@ -283,7 +327,7 @@ public class AgentTaskEventSubscriptionService {
                     terminalObservedAtNanos = System.nanoTime();
                 }
                 return true;
-            } catch (IOException exception) {
+            } catch (IOException | RuntimeException exception) {
                 remove(this, "durable_send_failed");
                 return false;
             }

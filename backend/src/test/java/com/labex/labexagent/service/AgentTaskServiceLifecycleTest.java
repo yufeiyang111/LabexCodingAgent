@@ -12,6 +12,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentRunEvent;
+import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
@@ -240,35 +241,52 @@ class AgentTaskServiceLifecycleTest {
     }
 
     @Test
-    void includesTheDurableInteractionIdentityInTheResumeEvent() {
+    void delegatesResolvedInteractionResumeToTheTransactionalLifecycleClaim() {
         AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
-        AgentTask waiting = new AgentTask();
-        waiting.setTaskId(72L);
-        waiting.setStatus("waiting_user");
-        when(taskMapper.selectById(72L)).thenReturn(waiting);
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         AgentRunExecutionLeaseService executionLeases = mock(AgentRunExecutionLeaseService.class);
         when(executionLeases.instanceId()).thenReturn("instance-a");
         when(executionLeases.leaseDurationMs()).thenReturn(30_000L);
         AgentRunExecutionLeaseService.ExecutionLease lease = new AgentRunExecutionLeaseService.ExecutionLease(
                 72L, "instance-a", 1L, java.time.LocalDateTime.now().plusSeconds(30));
-        when(lifecycle.claimDispatch(eq(72L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.RECOVERING),
-                eq("RUN_INTERACTION_RESUME_QUEUED"), any(), eq("Resuming"), eq("User response persisted"), any(),
-                eq("instance-a"), any(Long.class)))
-                .thenReturn(new AgentRunLifecycleService.DispatchClaim(lease));
+        AgentRunInteraction interaction = new AgentRunInteraction();
+        interaction.setInteractionId("interaction-72");
+        when(lifecycle.claimResolvedInteractionDispatch(
+                eq(72L), eq(7), eq(12), eq("interaction-72"), eq("Resuming"),
+                eq("User response persisted"), any(), eq("instance-a"), org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(AgentRunLifecycleService.InteractionClaimOutcome.claimed(lease, interaction));
         AgentTaskService service = newTaskService(taskMapper, mock(AgentChangeSetMapper.class),
                 mock(AgentFileChangeMapper.class), lifecycle, executionLeases);
 
-        org.junit.jupiter.api.Assertions.assertNotNull(service.claimInteractionResume(
-                72L, "interaction-72", "Resuming", "User response persisted"));
+        AgentRunLifecycleService.InteractionClaimOutcome outcome = service.claimResolvedInteractionDispatch(
+                7, 12, 72L, "interaction-72", "Resuming", "User response persisted");
 
-        @SuppressWarnings("rawtypes")
-        ArgumentCaptor<java.util.Map> payload = ArgumentCaptor.forClass(java.util.Map.class);
-        verify(lifecycle).claimDispatch(eq(72L), eq(AgentRunState.WAITING_USER), eq(AgentRunState.RECOVERING),
-                eq("RUN_INTERACTION_RESUME_QUEUED"), payload.capture(), eq("Resuming"),
-                eq("User response persisted"), eq(com.labex.labexagent.run.AgentRunTransitionKey.forInteractionResume(
-                        72L, "interaction-72")), eq("instance-a"), any(Long.class));
-        assertEquals("interaction-72", payload.getValue().get("interactionId"));
+        org.junit.jupiter.api.Assertions.assertTrue(outcome.claimed());
+        org.junit.jupiter.api.Assertions.assertSame(interaction, outcome.interaction());
+        org.junit.jupiter.api.Assertions.assertSame(lease, outcome.lease());
+        org.mockito.ArgumentCaptor<String> key = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(lifecycle).claimResolvedInteractionDispatch(
+                eq(72L), eq(7), eq(12), eq("interaction-72"), eq("Resuming"),
+                eq("User response persisted"), key.capture(), eq("instance-a"),
+                org.mockito.ArgumentMatchers.anyLong());
+        assertEquals(com.labex.labexagent.run.AgentRunTransitionKey.forInteractionResume(72L, "interaction-72"),
+                key.getValue());
+    }
+
+    @Test
+    void rejectsAnInteractionResumeWithoutOwnershipWithoutTouchingTheLifecycleAuthority() {
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentTaskService service = newTaskService(mock(AgentTaskMapper.class), mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class), lifecycle, mock(AgentRunExecutionLeaseService.class));
+
+        AgentRunLifecycleService.InteractionClaimOutcome outcome = service.claimResolvedInteractionDispatch(
+                null, 12, 72L, "interaction-72", "Resuming", "User response persisted");
+
+        org.junit.jupiter.api.Assertions.assertFalse(outcome.claimed());
+        org.junit.jupiter.api.Assertions.assertEquals(
+                AgentRunLifecycleService.InteractionClaimOutcome.Outcome.REJECTED, outcome.outcome());
+        verify(lifecycle, org.mockito.Mockito.never()).claimResolvedInteractionDispatch(
+                any(), any(), any(), any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
     }
 
     @Test

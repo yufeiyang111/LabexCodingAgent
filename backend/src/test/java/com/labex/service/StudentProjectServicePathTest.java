@@ -128,6 +128,24 @@ class StudentProjectServicePathTest {
 
 
     @Test
+    void projectMetadataExcludesInternalAgentRuntimeCachesFromUserFileCounts() throws Exception {
+        Files.writeString(workspace.resolve("pom.xml"), "<project />");
+        Path mavenCache = Files.createDirectories(workspace.resolve(".labex-agent/runtime/home/.m2/repository/org/apache/apache/31"));
+        Files.writeString(mavenCache.resolve("apache-31.pom.lastUpdated"), "cached");
+        StudentProject project = ownedProject();
+        StudentProjectServiceImpl service = spy(new StudentProjectServiceImpl());
+        doReturn(project).when(service).getOwnedProject(7, 12);
+        doReturn(true).when(service).updateById(project);
+
+        service.refreshProjectMetadata(7, 12);
+
+        assertEquals(1, project.getFileCount());
+        assertEquals(Files.size(workspace.resolve("pom.xml")), project.getTotalSize());
+        assertFalse(project.getStructureJson().contains(".labex-agent"));
+    }
+
+
+    @Test
     void agentStructureSummaryHonorsWorkspaceIgnoreWithoutChangingUserFileCount() throws Exception {
         Files.writeString(workspace.resolve("application.log"), "log");
         Files.writeString(workspace.resolve(".labex-agentignore"), "application.log\n");

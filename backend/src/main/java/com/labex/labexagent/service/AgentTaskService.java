@@ -15,6 +15,7 @@ import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.run.AgentRunTransitionKey;
 import com.labex.labexagent.run.BackgroundRunWorktreeService;
+import com.labex.labexagent.projectconfig.AgentRunConfigSnapshotService;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.mapper.AgentChangeSetMapper;
 import com.labex.mapper.AgentFileChangeMapper;
@@ -39,6 +40,7 @@ public class AgentTaskService {
     private final AgentRunLifecycleService lifecycleService;
     private final AgentRunExecutionLeaseService executionLeaseService;
     private final BackgroundRunWorktreeService backgroundWorktreeService;
+    private AgentRunConfigSnapshotService runConfigSnapshotService;
 
     @Autowired
     public AgentTaskService(AgentTaskMapper taskMapper, AgentChangeSetMapper changeSetMapper,
@@ -52,6 +54,17 @@ public class AgentTaskService {
         this.lifecycleService = lifecycleService;
         this.executionLeaseService = executionLeaseService;
         this.backgroundWorktreeService = backgroundWorktreeService;
+    }
+
+    /**
+     * Snapshot-service wiring (setter injection to keep the constructor stable for existing
+     * callers). Every new task gets its immutable epoch-zero {@code t_agent_run_config_snapshot}
+     * row BEFORE the task enters {@code queued}; a resolution failure aborts task creation
+     * (fail closed). This is a required runtime dependency in the Spring context.
+     */
+    @Autowired
+    public void setRunConfigSnapshotService(AgentRunConfigSnapshotService runConfigSnapshotService) {
+        this.runConfigSnapshotService = runConfigSnapshotService;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -95,6 +108,7 @@ public class AgentTaskService {
         task.setProjectId(project.getProjectId());
         task.setTitle(this.title(visibleMessage));
         task.setMode(mode);
+        task.setModelConfigId(modelConfigId);
         task.setStatus(AgentRunState.QUEUED.persistedStatus());
         task.setCurrentStep("\u5206\u6790\u4efb\u52a1");
         task.setSummary("");
@@ -122,8 +136,18 @@ public class AgentTaskService {
                 throw new IllegalStateException("background worktree allocation failed", e);
             }
         }
+        // 快照必须在任务进入 queued 之前落库：同事务内失败会整体回滚，杜绝无快照的 queued 任务。
+        this.createPreQueueSnapshot(studentId, project, task);
         this.lifecycleService.initialize(task, payload, "task-" + task.getTaskId() + "-queued");
         return task;
+    }
+
+    private void createPreQueueSnapshot(Integer studentId, StudentProject project, AgentTask task) {
+        if (this.runConfigSnapshotService == null) {
+            return;
+        }
+        this.runConfigSnapshotService.createForNewTask(studentId, project, task.getTaskId(),
+                task.getModelConfigId(), task.getMode());
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -226,25 +250,21 @@ public class AgentTaskService {
         return new CancellationFinalization(true, transition.event());
     }
 
-    /** 为已解决交互创建一次性的持久化 dispatch claim。 */
+    /**
+     * 为已解决交互创建一次性的持久化 dispatch claim。所有权、任务等待态、交互最新性/状态/过期、
+     * 幂等键都在 {@link AgentRunLifecycleService#claimResolvedInteractionDispatch} 的同一事务内校验；
+     * 本方法不按交互 ID 查询或重建 claim，仅传递调度器已扫描到的候选。
+     */
     @Transactional(rollbackFor = Exception.class)
-    public AgentRunLifecycleService.DispatchClaim claimInteractionResume(Long taskId, String interactionId,
-                                                                          String currentStep, String summary) {
-        if (taskId == null || interactionId == null || interactionId.isBlank()) return null;
-        AgentTask task = this.task(taskId);
-        if (task == null) return null;
-        AgentRunState current = this.runState(task.getStatus());
-        if (current != AgentRunState.WAITING_USER && current != AgentRunState.WAITING_APPROVAL) return null;
-        Map<String, Object> payload = new LinkedHashMap<>(this.taskUpdatePayload("recovering", currentStep, summary));
-        payload.put("interactionId", interactionId);
-        return lifecycleService.claimDispatch(
-                taskId,
-                current,
-                AgentRunState.RECOVERING,
-                "RUN_INTERACTION_RESUME_QUEUED",
-                payload,
-                currentStep,
-                summary,
+    public AgentRunLifecycleService.InteractionClaimOutcome claimResolvedInteractionDispatch(
+            Integer studentId, Integer projectId, Long taskId, String interactionId,
+            String currentStep, String summary) {
+        if (studentId == null || projectId == null || taskId == null
+                || interactionId == null || interactionId.isBlank()) {
+            return AgentRunLifecycleService.InteractionClaimOutcome.rejected();
+        }
+        return lifecycleService.claimResolvedInteractionDispatch(
+                taskId, studentId, projectId, interactionId, currentStep, summary,
                 AgentRunTransitionKey.forInteractionResume(taskId, interactionId),
                 executionLeaseService.instanceId(),
                 executionLeaseService.leaseDurationMs());

@@ -17,6 +17,7 @@ import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -27,10 +28,11 @@ public class AgentRunRecoveryService {
     private static final Logger log = LoggerFactory.getLogger(AgentRunRecoveryService.class);
     private static final int COMPACTION_RECOVERY_BATCH_SIZE = 200;
     private static final int COMMAND_PROCESS_RECOVERY_BATCH_SIZE = 100;
+    private static final int DEFAULT_LEASE_RECONCILIATION_BATCH_SIZE = 50;
     private static final String INTERRUPTED_COMPACTION_REASON =
             "Agent service restarted without the original compaction execution lease";
     private static final List<String> INTERRUPTED_STATES = List.of(
-            "queued", "preparing", "running", "waiting_approval", "waiting_user", "waiting_workspace",
+            "queued", "preparing", "running", "recovering", "waiting_approval", "waiting_user", "waiting_workspace",
             "waiting_environment", "retrying", "cancelling");
 
     private final AgentTaskMapper taskMapper;
@@ -45,6 +47,7 @@ public class AgentRunRecoveryService {
     private final CommandAuditService commandAuditService;
     private final CommandProcessRecoveryService commandProcessRecoveryService;
     private final CommandApprovalResumeScheduler commandApprovalResumeScheduler;
+    private int leaseReconciliationBatchSize;
 
     public AgentRunRecoveryService(AgentTaskMapper taskMapper, AgentRunLifecycleService lifecycleService,
                                    AgentRunExecutionLeaseService executionLeaseService,
@@ -187,6 +190,84 @@ public class AgentRunRecoveryService {
         recoverExpiredCommandProcesses();
     }
 
+    /**
+     * 周期 expired-lease reconciler：启动后按固定间隔运行（而不是只在 ApplicationReadyEvent 扫描一次），
+     * 回收 queued/preparing/running/recovering/waiting_workspace/waiting_environment 中租约已过期
+     * 且没有活动 owner 的任务。只回收非终态任务；等待态只保留等待原因并记录一次幂等观察事件，
+     * 绝不标记完成，也绝不入队交互未解决的任务；其余状态通过 takeover 领取一个新 epoch 并产生
+     * 一次幂等 dispatch 事件。每次扫描有界（LIMIT batchSize）。
+     */
+    @Scheduled(fixedDelayString = "${labex-agent.lease-reconciliation-interval-ms:30000}")
+    public int reconcileExpiredExecutionLeasesScheduled() {
+        return reconcileExpiredExecutionLeases();
+    }
+
+    public int reconcileExpiredExecutionLeases() {
+        List<AgentTask> candidates = taskMapper.selectExpiredLeaseCandidates(
+                LocalDateTime.now(), effectiveLeaseReconciliationBatchSize());
+        if (candidates == null || candidates.isEmpty()) {
+            return 0;
+        }
+        int reclaimed = 0;
+        for (AgentTask task : candidates) {
+            try {
+                if (reclaimExpiredLease(task)) {
+                    reclaimed++;
+                }
+            } catch (RuntimeException failure) {
+                log.warn("Unable to reclaim expired execution lease taskId={}",
+                        task == null ? null : task.getTaskId(), failure);
+            }
+        }
+        return reclaimed;
+    }
+
+    private boolean reclaimExpiredLease(AgentTask task) {
+        if (task == null || task.getTaskId() == null) {
+            return false;
+        }
+        // 用 claim 时刻的权威行状态派生幂等键：批量查询的快照可能滞后（double-death 竞态下会跨代），
+        // 重新读取当前行，使 takeover 从该行 epoch 派生的 key 与 claimDispatch 从锁定行分配的
+        // epoch 一致；快照被替换后旧快照不会参与 claim，也就不存在 key/epoch 漂移。
+        AgentTask current = taskMapper.selectById(task.getTaskId());
+        if (current == null || isTerminal(current.getStatus())) {
+            return false;
+        }
+        if (executionLeaseService.hasActiveLease(current, LocalDateTime.now())) {
+            return false;
+        }
+        AgentRunState state = AgentRunState.fromPersistedStatus(current.getStatus());
+        if (state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT
+                || state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER) {
+            return preserveWaitingState(current, state);
+        }
+        return takeoverScheduler.takeover(current);
+    }
+
+    /**
+     * 等待态只保留等待原因：幂等追加 RUN_RECOVERY_WAITING（固定键，只落一次），不改状态、
+     * 不标记完成、不入队。带租约等待态由各自的专属恢复路径（workspace admission / interaction
+     * / environment resume）在外部条件满足时通过 lifecycle 权威领取新 dispatch。
+     */
+    private boolean preserveWaitingState(AgentTask task, AgentRunState state) {
+        return lifecycleService.appendEventIfCurrent(
+                task.getTaskId(),
+                state,
+                "RUN_RECOVERY_WAITING",
+                Map.of("reason", "Execution lease expired while the task was waiting",
+                        "state", state.persistedStatus()),
+                "recovery-" + task.getTaskId() + "-waiting") != null;
+    }
+
+    @Value("${labex-agent.lease-reconciliation-batch-size:50}")
+    void setLeaseReconciliationBatchSize(int batchSize) {
+        this.leaseReconciliationBatchSize = batchSize;
+    }
+
+    private int effectiveLeaseReconciliationBatchSize() {
+        return leaseReconciliationBatchSize > 0 ? leaseReconciliationBatchSize : DEFAULT_LEASE_RECONCILIATION_BATCH_SIZE;
+    }
+
     public int recoverExpiredCommandProcesses() {
         if (commandApprovalService == null || transcriptService == null
                 || commandAuditService == null || commandProcessRecoveryService == null
@@ -260,7 +341,8 @@ public class AgentRunRecoveryService {
                     "recovery-" + task.getTaskId() + "-active-lease");
             return;
         }
-        if ((state == AgentRunState.QUEUED || state == AgentRunState.PREPARING || state == AgentRunState.RUNNING) && takeoverScheduler.takeover(task)) return;
+        if ((state == AgentRunState.QUEUED || state == AgentRunState.PREPARING || state == AgentRunState.RUNNING
+                || state == AgentRunState.RECOVERING) && takeoverScheduler.takeover(task)) return;
         Integer attemptsValue = lifecycleService.recordRecoveryAttemptIfCurrent(task.getTaskId(), state);
         if (attemptsValue == null) {
             return;

@@ -1,7 +1,10 @@
 package com.labex.labexagent.runtime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.google.gson.JsonObject;
+import com.labex.labexagent.dto.AgentStreamRequest;
 import com.labex.labexagent.tool.ToolResult;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -34,6 +37,52 @@ class AgentLoopEngineCommandIdentityTest {
                 .containsEntry("taskId", 71L)
                 .containsEntry("sessionId", "session-71");
     }
+    @Test
+    void rejectsApprovalProjectionWithoutPersistedApprovalId() {
+        ToolResult approval = ToolResult.approvalRequired("approval required", "mvn test");
+
+        assertThatThrownBy(() -> AgentLoopEngine.commandApprovalRequiredEvent(
+                71L, "session-71", "call-provider-71", "run_tests", approval, "mvn test"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("persisted approvalId");
+    }
+
+    @Test
+    void collapsesDifferentVerificationStrategiesWhenTheyResolveToTheSameCommand() {
+        JsonObject build = new JsonObject();
+        build.addProperty("strategy", "build");
+        JsonObject compile = new JsonObject();
+        compile.addProperty("strategy", "compile");
+
+        JsonObject normalizedBuild = AgentLoopEngine.commandLoopArguments(
+                "run_tests", build, "npm run build", "frontend", false);
+        JsonObject normalizedCompile = AgentLoopEngine.commandLoopArguments(
+                "run_tests", compile, "npm run build", "frontend", false);
+        AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());
+
+        assertThat(guard.beforeToolCall("run_tests", normalizedBuild).signature())
+                .isEqualTo(guard.beforeToolCall("run_tests", normalizedCompile).signature());
+    }
+
+    @Test
+    void recognizesAnExplicitLoopGuardRetryAnswerAsACommandFailureReset() {
+        assertThat(AgentLoopEngine.isCommandFailureResetRequest(
+                "User response payload: {\"answer\":\"允许重新尝试该调用\"}"))
+                .isTrue();
+        assertThat(AgentLoopEngine.isCommandFailureResetRequest(
+                "User response payload: {\"answer\":\"Allow this call to be retried\"}"))
+                .isTrue();
+    }
+
+    @Test
+    void recognizesEnvironmentRecoveryStoredInInternalResumeNoteWithoutChangingUserMessage() {
+        AgentStreamRequest request = new AgentStreamRequest();
+        request.setMessage("[acceptance:environment-wait]");
+        request.setResumeNote("Dependency environment is restored; retry the existing task");
+
+        assertThat(AgentLoopEngine.isCommandFailureResetRequest(request)).isTrue();
+    }
+
     @Test
     void derivesStableApprovalCreateIdempotencyFromToolCallIdentity() {
         AgentContext context = new AgentContext("session-71", 7, null, "conversation-71", 71L,

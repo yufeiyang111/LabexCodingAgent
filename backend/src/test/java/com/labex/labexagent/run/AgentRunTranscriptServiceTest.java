@@ -2,8 +2,12 @@ package com.labex.labexagent.run;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -11,6 +15,7 @@ import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService.StaleExecutionFenceException;
 import com.labex.mapper.AgentRunMessageMapper;
 import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
@@ -156,6 +161,51 @@ class AgentRunTranscriptServiceTest {
         assertThat(String.valueOf(result.get("content"))).contains("answered").contains("yes");
         assertThat(service.resolvedInteractionToolResult(interaction,
                 List.of(projection.get(0), projection.get(1), result))).isNull();
+    }
+
+    @Test
+    void putsAContinuationNoteIntoTheResolvedInteractionResult() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+
+        AgentRunMessage user = message(1L, "provider:3:message:0", 0L, "user", "start");
+        AgentRunMessage assistant = message(2L, "provider:3:message:1", 1L, "assistant", "");
+        AgentRunPart openCall = new AgentRunPart();
+        openCall.setPartId(11L);
+        openCall.setMessageId(2L);
+        openCall.setPartKey("provider:3:tool-call:1:0:call-question");
+        openCall.setPartType("tool_call");
+        openCall.setStatus("waiting_user");
+        openCall.setSequenceNumber(1000L);
+        openCall.setInputJson("{\"id\":\"call-question\",\"type\":\"function\",\"function\":{\"name\":\"question\",\"arguments\":\"{}\"}}");
+        when(messages.selectList(any())).thenReturn(List.of(user, assistant));
+        when(parts.selectList(any())).thenReturn(List.of(openCall));
+
+        AgentRunInteraction answered = new AgentRunInteraction();
+        answered.setInteractionId("question-answered");
+        answered.setInteractionType("question");
+        answered.setStatus("answered");
+        answered.setRequestPayload("{\"question\":\"Continue?\"}");
+        answered.setResponsePayload("{\"answer\":\"yes\"}");
+        AgentRunInteraction cancelled = new AgentRunInteraction();
+        cancelled.setInteractionId("question-cancelled");
+        cancelled.setInteractionType("question");
+        cancelled.setStatus("cancelled");
+        cancelled.setRequestPayload("{\"question\":\"Continue?\"}");
+        cancelled.setResponsePayload("{\"action\":\"cancel\",\"feedback\":\"\"}");
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        List<Map<String, Object>> projection = service.loadProjectableTranscriptForInteractionResume(7L);
+
+        Map<String, Object> answeredResult = service.resolvedInteractionToolResult(answered, projection);
+        assertThat(String.valueOf(answeredResult.get("content")))
+                .contains("answered").contains("yes")
+                .contains("用户已回答你的提问");
+
+        Map<String, Object> cancelledResult = service.resolvedInteractionToolResult(cancelled, projection);
+        assertThat(String.valueOf(cancelledResult.get("content")))
+                .contains("cancelled").contains("用户取消了本次提问");
     }
 
     @Test
@@ -328,6 +378,152 @@ class AgentRunTranscriptServiceTest {
         assertThat(ready).isFalse();
     }
 
+    @Test
+    void fencedAppendMessageRejectsStaleOwnerBeforeWritingTranscript() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-b", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.appendMessage(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, 3L, 2L, Map.of("role", "user", "content", "continue")));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_OWNER, error.reason());
+        verify(messages, never()).insert(any(AgentRunMessage.class));
+        verify(messages, never()).updateById(any(AgentRunMessage.class));
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+    }
+
+    @Test
+    void fencedAppendMessageRejectsStaleEpochBeforeWritingTranscript() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-a", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.appendMessage(new ExecutionFence(7L, "instance-a", 3L),
+                        7L, 3L, 2L, Map.of("role", "user", "content", "continue")));
+
+        assertEquals(StaleExecutionFenceException.Reason.STALE_EPOCH, error.reason());
+        verify(messages, never()).insert(any(AgentRunMessage.class));
+        verify(messages, never()).updateById(any(AgentRunMessage.class));
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+    }
+
+    @Test
+    void fencedAppendMessageRejectsEpochMismatchBeforeWritingTranscript() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(1L);
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.appendMessage(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, 3L, 2L, Map.of("role", "user", "content", "continue")));
+
+        // fence 本身有效（owner/epoch/lease 均匹配），但调用方声明的 executionEpoch 与 fence epoch 不一致。
+        assertEquals(StaleExecutionFenceException.Reason.STALE_FENCE, error.reason());
+        verify(messages, never()).insert(any(AgentRunMessage.class));
+        verify(messages, never()).updateById(any(AgentRunMessage.class));
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+    }
+
+    @Test
+    void fencedAppendMessageRejectsExpiredLeaseBeforeWritingTranscript() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-a", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 9, 59, 59)));
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.appendMessage(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, 3L, 2L, Map.of("role", "user", "content", "continue")));
+
+        assertEquals(StaleExecutionFenceException.Reason.EXPIRED_LEASE, error.reason());
+        verify(messages, never()).insert(any(AgentRunMessage.class));
+        verify(messages, never()).updateById(any(AgentRunMessage.class));
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+    }
+
+    @Test
+    void fencedAppendMessagePersistsMessageAndPartWhenTheFenceIsActive() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(1L);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(51L);
+            return 1;
+        });
+        when(parts.insert(any(AgentRunPart.class))).thenAnswer(invocation -> {
+            AgentRunPart part = invocation.getArgument(0);
+            part.setPartId(96L);
+            return 1;
+        });
+
+        Map<String, Object> function = Map.of("name", "run_tests", "arguments", "{}");
+        Map<String, Object> call = Map.of("id", "call-1", "type", "function", "function", function);
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        service.appendMessage(new ExecutionFence(7L, "instance-a", 4L), 7L, 4L, 2L,
+                Map.of("role", "assistant", "content", "", "tool_calls", List.of(call)));
+
+        assertThat(capturedMessage(messages).getMessageKey()).isEqualTo("provider:4:message:2");
+        assertThat(capturedPart(parts).getPartType()).isEqualTo("tool_call");
+    }
+
+    @Test
+    void rejectedFencedTranscriptWriteLeaksNoSentinelIntoMessagePartOrErrorPayload() {
+        String sentinel = "SENTINEL-SECRET-71ab09";
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(tasks.selectCount(any())).thenReturn(0L);
+        when(tasks.selectById(7L)).thenReturn(fencedTask("instance-b", 4L,
+                java.time.LocalDateTime.of(2026, 7, 23, 10, 1)));
+
+        AgentRunTranscriptService service = new AgentRunTranscriptService(messages, parts, tasks);
+        StaleExecutionFenceException error = assertThrows(StaleExecutionFenceException.class,
+                () -> service.appendMessage(new ExecutionFence(7L, "instance-a", 4L),
+                        7L, 3L, 2L, Map.of("role", "assistant", "content", sentinel,
+                                "tool_calls", List.of(Map.of("id", "call-1", "type", "function",
+                                        "function", Map.of("name", "run_tests", "arguments", "{}"))))));
+
+        assertFalse(error.getMessage().contains(sentinel));
+        // transcript message 与 Part 均未写入；事件/outbox 由 lifecycle 单独签发，此处无任何投影源。
+        verify(messages, never()).insert(any(AgentRunMessage.class));
+        verify(messages, never()).updateById(any(AgentRunMessage.class));
+        verify(parts, never()).insert(any(AgentRunPart.class));
+        verify(parts, never()).updateById(any(AgentRunPart.class));
+    }
+
+    private AgentTask fencedTask(String owner, long epoch, java.time.LocalDateTime leaseExpiresAt) {
+        AgentTask task = task();
+        task.setExecutionOwner(owner);
+        task.setExecutionEpoch(epoch);
+        task.setExecutionLeaseExpiresAt(leaseExpiresAt);
+        return task;
+    }
+
     private AgentRunPart toolCallPart(Long partId, Long messageId, String toolCallId,
                                               String toolName, String status, Long sequence) {
         AgentRunPart part = new AgentRunPart();
@@ -376,6 +572,52 @@ class AgentRunTranscriptServiceTest {
         org.mockito.Mockito.verify(mapper).insert(captor.capture());
         return captor.getValue();
     }
+    @Test
+    void persistsComposedProviderContextMessagesWithoutSilentTruncation() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(41L);
+            return 1;
+        });
+
+        // 首条上下文消息由多区段组装，最坏约 139k 字符；12k 硬截断会把会话记忆整段切掉。
+        String composedContext = "x".repeat(150_000);
+        new AgentRunTranscriptService(messages, parts, tasks)
+                .appendMessage(7L, 1L, 0L, Map.of("role", "user", "content", composedContext));
+
+        assertThat(capturedMessage(messages).getContent())
+                .hasSize(150_000)
+                .doesNotContain("...truncated...");
+    }
+
+    @Test
+    void persistsProviderMessagesOfAnySizeWithoutTruncation() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(41L);
+            return 1;
+        });
+
+        // 超过任何历史硬上限（12k/200k）的内容也必须完整落库；截断只属于请求构建期的准入/压缩策略。
+        String oversized = "y".repeat(250_000);
+        new AgentRunTranscriptService(messages, parts, tasks)
+                .appendMessage(7L, 1L, 0L, Map.of("role", "user", "content", oversized));
+
+        assertThat(capturedMessage(messages).getContent())
+                .hasSize(250_000)
+                .doesNotContain("...truncated...");
+    }
+
     @Test
     void loadsOnlyProtocolSafeFactsAppendedAfterCompactionBoundary() {
         AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);

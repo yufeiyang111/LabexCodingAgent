@@ -1,5 +1,6 @@
 package com.labex.labexagent.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.LocalDateTime;
 
 public class AgentStreamRequest {
@@ -10,9 +11,22 @@ public class AgentStreamRequest {
     private String displayMessage;
     private String activePath;
     private Integer modelConfigId;
+    /**
+     * 调度器/continuation 专用恢复标识，不能从公共 HTTP 请求体绑定。
+     */
+    @JsonIgnore
     private Long resumeTaskId;
-    /** 持久化运行时边界说明。 */
+    /**
+     * 持久化运行时边界说明，只能由 scheduler/continuation 填充。
+     */
+    @JsonIgnore
     private String resumeInteractionId;
+    /**
+     * 仅限 scheduler/continuation 使用；不能进入 HTTP 请求协议，也不能进入持久化 transcript
+     * （只允许在 Provider 调用边界的只读派生投影中附加）。
+     */
+    @JsonIgnore
+    private String resumeNote;
     private boolean backgroundRun;
     private LocalDateTime submittedAt;
 
@@ -74,16 +88,29 @@ public class AgentStreamRequest {
         return this.modelConfigId;
     }
 
+    @JsonIgnore
     public Long getResumeTaskId() {
         return this.resumeTaskId;
     }
 
+    @JsonIgnore
     public String getResumeInteractionId() {
         return this.resumeInteractionId;
     }
 
+    @JsonIgnore
     public void setResumeInteractionId(String resumeInteractionId) {
         this.resumeInteractionId = resumeInteractionId;
+    }
+
+    @JsonIgnore
+    public String getResumeNote() {
+        return this.resumeNote;
+    }
+
+    @JsonIgnore
+    public void setResumeNote(String resumeNote) {
+        this.resumeNote = resumeNote;
     }
 
     public boolean isBackgroundRun() {
@@ -98,6 +125,7 @@ public class AgentStreamRequest {
         this.modelConfigId = modelConfigId;
     }
 
+    @JsonIgnore
     public void setResumeTaskId(Long resumeTaskId) {
         this.resumeTaskId = resumeTaskId;
     }

@@ -35,13 +35,24 @@ public class AgentRunPlanService {
     private final AgentRunPlanItemMapper planMapper;
     private final AgentTaskMapper taskMapper;
     private final AgentRunLifecycleService lifecycleService;
+    private final AgentRunExecutionLeaseService leaseService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentRunPlanService(AgentRunPlanItemMapper planMapper,
+                               AgentTaskMapper taskMapper,
+                               AgentRunLifecycleService lifecycleService,
+                               AgentRunExecutionLeaseService leaseService) {
+        this.planMapper = planMapper;
+        this.taskMapper = taskMapper;
+        this.lifecycleService = lifecycleService;
+        this.leaseService = leaseService;
+    }
 
     public AgentRunPlanService(AgentRunPlanItemMapper planMapper,
                                AgentTaskMapper taskMapper,
                                AgentRunLifecycleService lifecycleService) {
-        this.planMapper = planMapper;
-        this.taskMapper = taskMapper;
-        this.lifecycleService = lifecycleService;
+        this(planMapper, taskMapper, lifecycleService,
+                new AgentRunExecutionLeaseService(taskMapper, "legacy-instance", 30_000L));
     }
 
     public Projection load(Long taskId) {
@@ -72,15 +83,48 @@ public class AgentRunPlanService {
     @Transactional(rollbackFor = Exception.class)
     public Projection replace(Long taskId, long expectedExecutionEpoch,
                               List<PlanDraft> drafts, String source) {
+        return replaceInternal(null, taskId, expectedExecutionEpoch, drafts, source);
+    }
+
+    /**
+     * Executor-fenced 计划替换：先验证 {@link ExecutionFence}（owner + 精确 epoch + 未过期 lease），
+     * stale fence 抛出 typed failure；PLAN_UPDATE 事件走 lifecycle 的 fenced 追加，任何失败回滚整批计划行。
+     * 与仅靠事务内预检的 upsert 写入（transcript/message/part/artifact）不同，plan 的 fenced 写入
+     * 通过 fenced PLAN_UPDATE 追加把 owner/epoch/active-lease 嵌入任务行 UPDATE 谓词。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Projection replace(ExecutionFence fence, Long taskId, long expectedExecutionEpoch,
+                              List<PlanDraft> drafts, String source) {
+        requireFence(fence);
+        return replaceInternal(fence, taskId, expectedExecutionEpoch, drafts, source);
+    }
+
+    private Projection replaceInternal(ExecutionFence fence, Long taskId, long expectedExecutionEpoch,
+                                       List<PlanDraft> drafts, String source) {
         AgentTask task = lockWritableTask(taskId, expectedExecutionEpoch);
         List<AgentRunPlanItem> existing = orderedRows(taskId);
         long nextRevision = nextRevision(existing);
         List<PlanDraft> normalized = normalizeDrafts(drafts);
-        return replaceLocked(task, expectedExecutionEpoch, nextRevision, normalized, source);
+        return replaceLocked(task, expectedExecutionEpoch, nextRevision, normalized, source, fence);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public Projection complete(Long taskId, long expectedExecutionEpoch, int index, String source) {
+        return completeInternal(null, taskId, expectedExecutionEpoch, index, source);
+    }
+
+    /**
+     * Executor-fenced 计划项完成：先验证 {@link ExecutionFence}，stale fence 抛出 typed failure。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Projection complete(ExecutionFence fence, Long taskId, long expectedExecutionEpoch,
+                               int index, String source) {
+        requireFence(fence);
+        return completeInternal(fence, taskId, expectedExecutionEpoch, index, source);
+    }
+
+    private Projection completeInternal(ExecutionFence fence, Long taskId, long expectedExecutionEpoch,
+                                        int index, String source) {
         AgentTask task = lockWritableTask(taskId, expectedExecutionEpoch);
         List<AgentRunPlanItem> existing = requireExistingPlan(taskId);
         if (index < 0 || index >= existing.size()) {
@@ -92,12 +136,27 @@ public class AgentRunPlanService {
                 .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
         PlanDraft current = drafts.get(index);
         drafts.set(index, new PlanDraft(current.title(), current.description(), true));
-        return replaceLocked(task, expectedExecutionEpoch, nextRevision(existing), drafts, source);
+        return replaceLocked(task, expectedExecutionEpoch, nextRevision(existing), drafts, source, fence);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public Projection update(Long taskId, long expectedExecutionEpoch, int index,
                              String title, String description, String source) {
+        return updateInternal(null, taskId, expectedExecutionEpoch, index, title, description, source);
+    }
+
+    /**
+     * Executor-fenced 计划项更新：先验证 {@link ExecutionFence}，stale fence 抛出 typed failure。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Projection update(ExecutionFence fence, Long taskId, long expectedExecutionEpoch, int index,
+                             String title, String description, String source) {
+        requireFence(fence);
+        return updateInternal(fence, taskId, expectedExecutionEpoch, index, title, description, source);
+    }
+
+    private Projection updateInternal(ExecutionFence fence, Long taskId, long expectedExecutionEpoch, int index,
+                                      String title, String description, String source) {
         AgentTask task = lockWritableTask(taskId, expectedExecutionEpoch);
         List<AgentRunPlanItem> existing = requireExistingPlan(taskId);
         if (index < 0 || index >= existing.size()) {
@@ -110,11 +169,16 @@ public class AgentRunPlanService {
         PlanDraft current = drafts.get(index);
         drafts.set(index, new PlanDraft(title, description == null ? current.description() : description,
                 current.completed()));
-        return replaceLocked(task, expectedExecutionEpoch, nextRevision(existing), normalizeDrafts(drafts), source);
+        return replaceLocked(task, expectedExecutionEpoch, nextRevision(existing), normalizeDrafts(drafts), source, fence);
     }
 
     private Projection replaceLocked(AgentTask task, long executionEpoch, long revision,
                                      List<PlanDraft> drafts, String source) {
+        return replaceLocked(task, executionEpoch, revision, drafts, source, null);
+    }
+
+    private Projection replaceLocked(AgentTask task, long executionEpoch, long revision,
+                                     List<PlanDraft> drafts, String source, ExecutionFence fence) {
         List<PlanDraft> normalized = normalizeDrafts(drafts);
         LocalDateTime now = LocalDateTime.now();
         int currentIndex = firstIncomplete(normalized);
@@ -139,8 +203,11 @@ public class AgentRunPlanService {
             stored.add(row);
         }
         Projection pendingEvent = project(task.getTaskId(), stored, 0L, safeSource(source));
-        AgentRunEvent event = lifecycleService.appendEvent(task.getTaskId(), "PLAN_UPDATE",
-                pendingEvent.eventPayload(), eventIdempotencyKey(task.getTaskId(), revision));
+        AgentRunEvent event = fence == null
+                ? lifecycleService.appendEvent(task.getTaskId(), "PLAN_UPDATE",
+                        pendingEvent.eventPayload(), eventIdempotencyKey(task.getTaskId(), revision))
+                : lifecycleService.appendEvent(fence, task.getTaskId(), "PLAN_UPDATE",
+                        pendingEvent.eventPayload(), eventIdempotencyKey(task.getTaskId(), revision));
         if (event == null || event.getSequenceNumber() == null) {
             throw new IllegalStateException("Unable to persist PLAN_UPDATE for plan revision " + revision);
         }
@@ -266,6 +333,13 @@ public class AgentRunPlanService {
         if (taskId == null || taskId <= 0L) {
             throw new IllegalArgumentException("A positive Agent task ID is required");
         }
+    }
+
+    private void requireFence(ExecutionFence fence) {
+        if (fence == null) {
+            throw new IllegalStateException("ExecutionFence is required for executor-originated writes");
+        }
+        leaseService.requireActiveFence(fence, LocalDateTime.now());
     }
 
     private static String safe(String value) {

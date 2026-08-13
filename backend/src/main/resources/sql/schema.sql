@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS t_agent_task (
     project_id INT NOT NULL,
     title VARCHAR(500) DEFAULT NULL,
     mode VARCHAR(32) DEFAULT 'agent',
+    model_config_id INT DEFAULT NULL,
     status VARCHAR(32) DEFAULT 'pending',
     current_step VARCHAR(500) DEFAULT NULL,
     summary TEXT DEFAULT NULL,
@@ -328,6 +329,8 @@ CREATE TABLE IF NOT EXISTS t_agent_token_usage (
     total_tokens INT DEFAULT 0,
     cached_tokens INT DEFAULT 0,
     cache_write_tokens INT DEFAULT 0,
+    cache_hit_tokens INT DEFAULT 0,
+    cache_miss_tokens INT DEFAULT 0,
     cache_status VARCHAR(24) NOT NULL DEFAULT 'not_reported',
     iteration INT DEFAULT 0,
     tool_name VARCHAR(64) DEFAULT NULL,
@@ -483,11 +486,18 @@ CREATE TABLE IF NOT EXISTS t_agent_run_interaction (
     response_payload LONGTEXT DEFAULT NULL,
     idempotency_key VARCHAR(128) NOT NULL,
     expires_time DATETIME DEFAULT NULL,
+    resume_claim_id VARCHAR(64) DEFAULT NULL,
+    resume_claim_epoch BIGINT DEFAULT NULL,
+    resume_claimed_at DATETIME(3) DEFAULT NULL,
+    resume_consumed_at DATETIME(3) DEFAULT NULL,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_agent_run_interaction_idempotency (task_id, idempotency_key),
     INDEX idx_agent_run_interaction_task_status (task_id, status),
-    INDEX idx_agent_run_interaction_owner (student_id, project_id, status)
+    INDEX idx_agent_run_interaction_task_type (task_id, interaction_type),
+    INDEX idx_agent_run_interaction_owner (student_id, project_id, status),
+    INDEX idx_agent_run_interaction_resume_claim (task_id, resume_claim_id),
+    INDEX idx_agent_run_interaction_resume_scan (student_id, project_id, status, resume_claimed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_command_approval (
@@ -558,4 +568,134 @@ CREATE TABLE IF NOT EXISTS t_command_audit_event (
     INDEX idx_command_audit_task (task_id, event_id),
     INDEX idx_command_audit_owner (student_id, project_id, create_time),
     INDEX idx_command_audit_approval_type (approval_id, event_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_agent_project_config_revision (
+    revision_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    student_id INT NOT NULL,
+    project_id INT NOT NULL,
+    revision BIGINT NOT NULL,
+    config_digest VARCHAR(64) NOT NULL,
+    tree_reference VARCHAR(2048) DEFAULT NULL,
+    schema_version VARCHAR(32) NOT NULL DEFAULT '1',
+    normalized_config LONGTEXT NOT NULL,
+    validation_status VARCHAR(32) DEFAULT NULL,
+    source_actor VARCHAR(128) DEFAULT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_project_config_revision (project_id, revision),
+    INDEX idx_agent_project_config_revision_owner (student_id, project_id, revision),
+    INDEX idx_agent_project_config_revision_digest (project_id, config_digest)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_agent_run_config_snapshot (
+    snapshot_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    execution_epoch BIGINT NOT NULL,
+    project_id INT NOT NULL,
+    project_config_revision BIGINT DEFAULT NULL,
+    project_config_digest VARCHAR(64) DEFAULT NULL,
+    effective_config_json LONGTEXT NOT NULL,
+    effective_config_digest VARCHAR(64) NOT NULL,
+    model_fingerprint VARCHAR(256) DEFAULT NULL,
+    capability_digest VARCHAR(64) DEFAULT NULL,
+    resource_digest VARCHAR(64) DEFAULT NULL,
+    runtime_profile VARCHAR(64) DEFAULT NULL,
+    network_policy_json LONGTEXT DEFAULT NULL,
+    verification_policy_json LONGTEXT DEFAULT NULL,
+    environment_operation_ref VARCHAR(64) DEFAULT NULL,
+    secret_aliases_json LONGTEXT DEFAULT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_run_config_snapshot_epoch (task_id, execution_epoch),
+    INDEX idx_agent_run_config_snapshot_task_project (task_id, project_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_agent_project_config_external_change (
+    external_change_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    student_id INT NOT NULL,
+    project_id INT NOT NULL,
+    base_revision BIGINT NOT NULL,
+    observed_tree_digest VARCHAR(64) NOT NULL,
+    changed_path_summary TEXT DEFAULT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'external_change_pending',
+    proposal_id BIGINT DEFAULT NULL,
+    detected_at DATETIME(3) DEFAULT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_external_change_pending (project_id, base_revision, observed_tree_digest, status),
+    INDEX idx_agent_external_change_owner (student_id, project_id, status, detected_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_agent_project_config_proposal (
+    proposal_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    student_id INT NOT NULL,
+    project_id INT NOT NULL,
+    proposal_key VARCHAR(192) NOT NULL,
+    base_revision BIGINT NOT NULL,
+    candidate_config_digest VARCHAR(64) NOT NULL,
+    patch_reference VARCHAR(2048) DEFAULT NULL,
+    changed_path_summary TEXT DEFAULT NULL,
+    reason VARCHAR(2048) DEFAULT NULL,
+    origin_task_id BIGINT DEFAULT NULL,
+    origin_execution_epoch BIGINT DEFAULT NULL,
+    origin_tool_call_id VARCHAR(128) DEFAULT NULL,
+    source VARCHAR(64) NOT NULL DEFAULT 'agent',
+    creator VARCHAR(128) DEFAULT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    expires_time DATETIME NOT NULL,
+    decision_idempotency_key VARCHAR(128) DEFAULT NULL,
+    decision_actor VARCHAR(128) DEFAULT NULL,
+    decision_time DATETIME(3) DEFAULT NULL,
+    applied_revision BIGINT DEFAULT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_project_config_proposal_key (project_id, proposal_key),
+    UNIQUE KEY uk_agent_project_config_proposal_decision (project_id, decision_idempotency_key),
+    INDEX idx_agent_project_config_proposal_owner (student_id, project_id, status, create_time),
+    INDEX idx_agent_project_config_proposal_expiry (status, expires_time),
+    CHECK (expires_time <= TIMESTAMPADD(MINUTE, 1, create_time))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_agent_project_config_audit_event (
+    event_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    student_id INT NOT NULL,
+    project_id INT NOT NULL,
+    event_type VARCHAR(48) NOT NULL,
+    actor VARCHAR(128) DEFAULT NULL,
+    reason VARCHAR(2048) DEFAULT NULL,
+    previous_status VARCHAR(32) DEFAULT NULL,
+    next_status VARCHAR(32) DEFAULT NULL,
+    before_digest VARCHAR(64) DEFAULT NULL,
+    after_digest VARCHAR(64) DEFAULT NULL,
+    changed_path_summary TEXT DEFAULT NULL,
+    task_id BIGINT DEFAULT NULL,
+    execution_epoch BIGINT DEFAULT NULL,
+    idempotency_key VARCHAR(192) NOT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_project_config_audit_idempotency (project_id, idempotency_key),
+    INDEX idx_agent_project_config_audit_owner (student_id, project_id, create_time),
+    INDEX idx_agent_project_config_audit_proposal (project_id, event_type, create_time),
+    INDEX idx_agent_project_config_audit_task (task_id, execution_epoch)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_agent_project_secret_binding (
+    binding_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    student_id INT NOT NULL,
+    project_id INT NOT NULL,
+    proposal_id BIGINT NOT NULL,
+    field_id VARCHAR(128) NOT NULL,
+    alias VARCHAR(128) NOT NULL,
+    encrypted_value VARCHAR(2048) NOT NULL,
+    key_version VARCHAR(64) NOT NULL,
+    ttl_seconds INT NOT NULL,
+    expires_at DATETIME(3) NOT NULL,
+    idempotency_key VARCHAR(192) NOT NULL,
+    configured TINYINT NOT NULL DEFAULT 1,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_project_secret_binding_key (project_id, idempotency_key),
+    UNIQUE KEY uk_agent_project_secret_binding_alias (project_id, alias),
+    INDEX idx_agent_project_secret_binding_owner (student_id, project_id, field_id),
+    INDEX idx_agent_project_secret_binding_expiry (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

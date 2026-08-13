@@ -205,6 +205,38 @@ class AdditiveSchemaMigratorTimingTest {
     }
 
     @Test
+    void addsCacheTelemetryTokenColumnsToExistingUsageTable() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+        ResultSet present = mock(ResultSet.class);
+        ResultSet missing = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.getMetaData()).thenReturn(metadata);
+        when(connection.getCatalog()).thenReturn("labex");
+        when(present.next()).thenReturn(true);
+        when(missing.next()).thenReturn(false);
+        when(metadata.getTables(any(), isNull(), anyString(), any())).thenReturn(present);
+        when(metadata.getColumns(any(), isNull(), anyString(), anyString())).thenAnswer(invocation -> {
+            String table = invocation.getArgument(2, String.class);
+            String column = invocation.getArgument(3, String.class);
+            return "t_agent_token_usage".equalsIgnoreCase(table)
+                    && List.of("cache_hit_tokens", "cache_miss_tokens").contains(column.toLowerCase())
+                    ? missing : present;
+        });
+
+        new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate, org.mockito.Mockito.atLeast(2)).execute(sql.capture());
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_token_usage ADD COLUMN cache_hit_tokens INT NOT NULL DEFAULT 0"));
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_token_usage ADD COLUMN cache_miss_tokens INT NOT NULL DEFAULT 0"));
+    }
+
+    @Test
     void addsDurableConversationProjectionColumnsAndForkIndex() throws Exception {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         DataSource dataSource = mock(DataSource.class);
