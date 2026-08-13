@@ -1,0 +1,21 @@
+# 密钥与环境文件永不进入任何镜像构建上下文
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+
+# 运行时数据与依赖目录
+workspaces
+uploads
+**/node_modules
+**/target
+**/dist
+.labex
+.codex-tmp
+
+# VCS 与 IDE
+.git
+.idea
+.vscode
+*.iml
