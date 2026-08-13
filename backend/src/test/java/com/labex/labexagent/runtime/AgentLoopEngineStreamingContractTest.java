@@ -62,12 +62,12 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
-    void consumesAnApprovedOfflineRetryWithoutAskingForTheSameCommandAgain() {
-        // opencode Shell 在隔离 Worker 内默认允许依赖网络；offline-retry grant 消费只用于非 opencode 命令路径。
-        assertTrue(source.contains("hasApprovedOfflineRetryGrant(ctx.getTaskId(), guardedCommand)"));
-        assertTrue(source.contains("&& !approvedOfflineRetry"));
-        assertTrue(source.contains("boolean networkRequested = !opencodeShell && (this.networkRequested(args) || approvedOfflineRetry);"));
-        assertTrue(source.contains("networkAccessService.hasApprovedOfflineRetryGrant("));
+    void networkCommandsExecuteDirectlyWithoutOfflineRetryGrants() {
+        // 网络访问默认开启：命令策略路径不再计算 offline-retry grant，也不存在离线优先执行。
+        assertFalse(source.contains("hasApprovedOfflineRetryGrant("));
+        assertFalse(source.contains("boolean networkRequested = !opencodeShell && (this.networkRequested(args) || approvedOfflineRetry);"));
+        assertFalse(source.contains("approvedOfflineRetry"));
+        assertTrue(source.contains("// 网络访问默认开启：不再为网络命令创建一次性审批"));
     }
 
     @Test
@@ -141,8 +141,13 @@ class AgentLoopEngineStreamingContractTest {
         assertFalse(source.contains("sendEvent(sse, conv, \"RETRY_SCHEDULED\""));
         assertFalse(source.contains("Thread.sleep(delay)"));
         assertTrue(source.contains("message == null || isModelTimeoutError(message)"));
-        assertTrue(source.contains("limitForContext(memoryContext, 16000)"));
-        assertTrue(source.contains("limitForContext(sessionContext, 60000)"));
+        assertTrue(source.contains("limitForContext(projectRules, 10_000)"));
+        assertTrue(source.contains("limitForContext(leanMemory, 2_000)"));
+        assertTrue(source.contains("limitForContext(recentRunLog, 12_000)"));
+        assertTrue(source.contains("limitForContext(checkpoint, 12_000)"));
+        assertFalse(source.contains("limitForContext(sessionContext, 60000)"));
+        assertFalse(source.contains("limitForContext(globalSkills, 16000)"));
+        assertFalse(source.contains("limitForContext(mcpContext, 12000)"));
     }
 
     @Test

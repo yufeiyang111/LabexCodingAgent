@@ -221,6 +221,18 @@ public class AgentContextOrchestrator {
         return text.length() <= max ? text : text.substring(0, max) + "\n...context trimmed by orchestrator...";
     }
 
+    /**
+     * 瘦身工作区记忆（对齐 opencode：workspace memory 只保留明确的持久事实并随首条消息注入，
+     * 上限 2000 字符；项目文件、结构、符号与诊断一律由工具按需拉取）。
+     */
+    public String buildLeanWorkspaceMemory(StudentProject project, String userMessage, String activePath) {
+        try {
+            return limit(workspaceMemoryService.buildMemoryContext(project, userMessage, activePath), 2_000);
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
     private String hash(String text) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

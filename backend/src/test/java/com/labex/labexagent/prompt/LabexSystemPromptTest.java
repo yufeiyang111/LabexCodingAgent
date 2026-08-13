@@ -146,6 +146,23 @@ class LabexSystemPromptTest {
     }
 
     @Test
+    void systemPromptDoesNotDuplicateTheToolNameList() {
+        StudentProject project = new StudentProject();
+        project.setProjectName("PromptWorkspace");
+        project.setWorkspacePath("D:/workspaces/prompt");
+        project.setStructureJson("{}");
+
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project,
+                "- read_file: reads a file\n- grep: searches code\n- bash: runs shell commands");
+
+        assertThat(prompt)
+                .doesNotContain("read_file: reads a file")
+                .doesNotContain("grep: searches code")
+                .doesNotContain("bash: runs shell commands")
+                .contains("Tool usage guidelines");
+    }
+
+    @Test
     void systemPromptNoLongerRecommendsCurlForVerification() {
         StudentProject project = new StudentProject();
         project.setProjectName("PromptWorkspace");

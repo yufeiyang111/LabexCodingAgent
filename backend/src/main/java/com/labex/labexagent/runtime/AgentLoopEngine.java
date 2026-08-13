@@ -581,9 +581,11 @@ public class AgentLoopEngine {
         String mcpContext = this.mcpServerService.buildPromptContext(studentId);
         String modePolicy = this.buildModePolicy(mode);
         String languagePolicy = this.buildVisibleLanguagePolicy(visibleLanguage);
-        String initialContextMessage = modePolicy + "\n\n" + languagePolicy + "\n\n"
-                + this.buildContextMessage(projectRules, memoryContext, contextBundle.content(), recentRunLog,
-                checkpoint, globalSkills, mcpContext);
+        // 预览只展示 orchestrator 能提供的完整上下文作为诊断；真实 Provider 请求使用瘦身消息。
+        String initialContextMessage = AgentLoopEngine.buildLeanInitialContextMessage(
+                modePolicy, languagePolicy, projectRules,
+                this.contextOrchestrator.buildLeanWorkspaceMemory(project, draft, activePath),
+                recentRunLog, checkpoint);
         ContextUsageEstimator.PromptContext promptContext = ContextUsageEstimator.PromptContext.of(
                 projectRules, memoryContext, contextBundle.content(), recentRunLog, checkpoint, globalSkills,
                 mcpContext, modePolicy, languagePolicy, initialContextMessage);
@@ -854,23 +856,17 @@ public class AgentLoopEngine {
             List<Map<String, Object>> tools = runtimeProjection.tools();
             llmConfig = runtimeProjection.llmConfig();
             long transcriptEpoch = task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch();
-            String activeFileContent = this.readActiveFile(studentId, projectId, request.getActivePath());
             String projectRules = this.readProjectRules(studentId, projectId);
-            String projectIndex = this.readProjectIndex(studentId, projectId);
-            AgentContextOrchestrator.ContextBundle contextBundle = this.contextOrchestrator.buildInitialBundle(project, request.getActivePath(), activeFileContent, toolDefinitions, request.getMessage(), projectIndex, false, ctx);
-            String sessionContext = contextBundle.content();
+            String leanMemory = this.contextOrchestrator.buildLeanWorkspaceMemory(
+                    project, request.getMessage(), request.getActivePath());
             String recentRunLog = "";
             // 执行进度是可重建的动态投影，不写入 Provider transcript；每次调用前从 durable Part/Event 注入。
-            String globalSkills = this.skillService.buildPromptContext(studentId);
-            String mcpContext = this.mcpServerService.buildPromptContext(studentId);
             String modePolicy = runtimeProjection.modePolicy();
             String languagePolicy = this.buildVisibleLanguagePolicy(visibleLanguage);
-            String initialContextMessage = modePolicy + "\n\n" + languagePolicy + "\n\n"
-                    + this.buildContextMessage(projectRules, memoryContext, sessionContext, recentRunLog, "",
-                    globalSkills, mcpContext);
-            ContextUsageEstimator.PromptContext contextPrompt = ContextUsageEstimator.PromptContext.of(
-                    projectRules, memoryContext, sessionContext, recentRunLog, "", globalSkills,
-                    mcpContext, modePolicy, languagePolicy, initialContextMessage);
+            String initialContextMessage = AgentLoopEngine.buildLeanInitialContextMessage(
+                    modePolicy, languagePolicy, projectRules, leanMemory, recentRunLog, "");
+            ContextUsageEstimator.PromptContext contextPrompt = new ContextUsageEstimator.PromptContext(
+                    leanMemory, "", "", initialContextMessage);
             List<Map<String, Object>> persistedMessages;
             try {
                 AgentTranscriptProjectionService durableProjector = this.requireTranscriptProjectionService();
@@ -900,9 +896,15 @@ public class AgentLoopEngine {
             log.info("AGENT_CONTEXT_READY taskId={} buildMs={} systemPromptChars={} contextChars={} userChars={} toolCount={} toolSchemaChars={} estimatedContextTokens={}",
                     task.getTaskId(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - contextBuildStartedAt),
                     sysPrompt.length(), initialContextMessage.length(), request.getMessage() == null ? 0 : request.getMessage().length(),
-                    tools.size(), GSON.toJson(tools).length(), contextBundle.stats().get("estimatedTokens"));
-            this.sendEvent(sse, conv, "CONTEXT_STATS", contextBundle.stats());
-            this.appendRunLog(runLog, "\n## Context orchestration\n\n```json\n" + GSON.toJson(contextBundle.stats()) + "\n```\n");
+                    tools.size(), GSON.toJson(tools).length(),
+                    this.requestTokenEstimator.estimateValue(initialContextMessage));
+            Map<String, Object> contextStats = new LinkedHashMap<>();
+            contextStats.put("stage", ctx == null ? "intake" : ctx.getStage());
+            contextStats.put("contextMode", "lean");
+            contextStats.put("contextChars", initialContextMessage.length());
+            contextStats.put("estimatedTokens", this.requestTokenEstimator.estimateValue(initialContextMessage));
+            this.sendEvent(sse, conv, "CONTEXT_STATS", contextStats);
+            this.appendRunLog(runLog, "\n## Context orchestration\n\n```json\n" + GSON.toJson(contextStats) + "\n```\n");
             int i = 1;
             AgentLoopGuard loopGuard = new AgentLoopGuard(loopProperties);
             ContextOverflowRecoveryPolicy overflowRecoveryPolicy = new ContextOverflowRecoveryPolicy();
@@ -2034,25 +2036,13 @@ public class AgentLoopEngine {
         String guardedCommand = this.commandForGuard(name, args, ctx);
         String guardedWorkingDirectory = this.commandWorkingDirectoryForArgs(name, ctx.getWorkspaceRoot(), args, ctx);
         boolean opencodeShell = this.usesOpenCodeShellContract(name);
-        boolean approvedOfflineRetry = !opencodeShell && this.isCommandPolicyTool(name)
-                && this.networkAccessService != null
-                && this.networkAccessService.hasApprovedOfflineRetryGrant(ctx.getTaskId(), guardedCommand);
-        // opencode Shell 在隔离 Worker 内默认允许正常依赖网络；禁用网络时返回环境证据，不再创建重复审批。
-        boolean networkRequested = !opencodeShell && (this.networkRequested(args) || approvedOfflineRetry);
-        boolean networkEnabledForTool = false;
+        // 网络访问默认开启：不再为网络命令创建一次性审批，也不存在离线优先执行。
         if (this.isCommandPolicyTool(name)) {
             String networkCommand = this.commandForGuard(name, args, ctx);
             CommandClassification classification = this.commandClassification(name, args, ctx);
             ToolResult singleApprovalGuard = this.singleApprovalGuard(ctx, name, toolCallId);
             if (singleApprovalGuard != null) {
                 return singleApprovalGuard;
-            }
-            if (!opencodeShell && classification != null && classification.decision() != CommandDecision.BLOCK
-                    && this.networkAccessService != null
-                    && !this.networkAccessService.hasApprovedGrant(ctx.getTaskId(), networkCommand)
-                    && (networkRequested || isNetworkCommandClassification(classification))) {
-                return this.createNetworkApproval(ctx, name, networkCommand, toolCallId,
-                        "explicit_command", false, toolCallId, this.networkSummary());
             }
             if (classification != null) {
                 int timeout = this.commandTimeout(name, args, ctx);
@@ -2089,9 +2079,6 @@ public class AgentLoopEngine {
                     return ToolResult.failed("failure_code=" + retryDecision.code() + "\nretryable=false\n" + retryDecision.message());
                 }
                 if (classification.requiresApproval()
-                        && !approvedOfflineRetry
-                        && (this.networkAccessService == null
-                        || !this.networkAccessService.hasApprovedGrant(ctx.getTaskId(), guardedCommand))
                         && !(acceptanceAutoApproveVerification && "run_tests".equals(this.safeTool(name)))) {
                     return this.createCommandApproval(ctx, name, classification, timeout, toolCallId);
                 }
@@ -2131,18 +2118,6 @@ public class AgentLoopEngine {
         } catch (Exception e) {
             log.warn("Permission check failed: {}", e.getMessage());
             return ToolResult.failed(this.localText(visibleLanguage, "权限检查失败：" + e.getMessage(), "Permission check failed: " + e.getMessage()));
-        }
-        if (networkRequested) {
-            if (!this.isCommandPolicyTool(name) || this.networkAccessService == null) {
-                return ToolResult.failed("\u5f53\u524d\u5de5\u5177\u4e0d\u652f\u6301\u53d7\u63a7\u7f51\u7edc\u8bbf\u95ee");
-            }
-            if (!this.networkAccessService.consumeGrant(ctx.getStudentId(), ctx.getProject().getProjectId(),
-                    ctx.getTaskId(), guardedCommand)) {
-                return this.createNetworkApproval(ctx, name, guardedCommand, toolCallId,
-                        "explicit_command", false, toolCallId, this.networkSummary());
-            }
-            ctx.setNetworkEnabled(true);
-            networkEnabledForTool = true;
         }
 
         long totalStartedNanos = System.nanoTime();
@@ -2184,7 +2159,6 @@ public class AgentLoopEngine {
                 this.projectPersistedPlanUpdate(sse, ctx);
             }
             result = this.annotateCommandRecovery(name, result);
-            result = this.maybeRequestNetworkAfterFailure(ctx, name, args, toolCallId, result);
             this.recordProcessOutputArtifact(ctx, name, toolCallId, result);
             delegateElapsedMs = elapsedMs(delegateStartedNanos);
             DiffService.ApplyTelemetry diffTelemetry = this.diffService.consumeLastApplyTelemetry();
@@ -2302,11 +2276,6 @@ public class AgentLoopEngine {
             this.contextOrchestrator.afterTool(ctx, name, args, failed);
             this.metricsService.recordTool(ctx, name, args, failed, totalElapsedMs, AgentPostEditHookService.HookReport.empty());
             return failed;
-        }
-        finally {
-            if (networkEnabledForTool) {
-                ctx.setNetworkEnabled(false);
-            }
         }
     }
 
@@ -2689,53 +2658,6 @@ public class AgentLoopEngine {
         }
     }
 
-    private ToolResult maybeRequestNetworkAfterFailure(AgentContext ctx, String toolName, JsonObject args,
-                                                        String toolCallId, ToolResult result) {
-        if (result == null || result.isSuccess() || result.isApprovalRequired()
-                || result.isInteractionRequired() || !this.isCommandPolicyTool(toolName)
-                || this.networkAccessService == null || this.networkRequested(args)
-                || this.usesOpenCodeShellContract(toolName)) {
-            return result;
-        }
-        String content = result.getContent() == null ? "" : result.getContent();
-        if (!EnvironmentBlockerClassifier.isNetworkRetryCandidate(toolName, result)
-                || this.networkAccessService.hasOfflineRetryAttempt(ctx.getTaskId(), this.commandForGuard(toolName, args, ctx))) {
-            return result;
-        }
-        String command = this.commandForGuard(toolName, args, ctx);
-        return this.createNetworkApproval(ctx, toolName, command, toolCallId,
-                "offline_failure_retry", true, toolCallId,
-                "\u68c0\u6d4b\u5230\u547d\u4ee4\u5728\u79bb\u7ebf\u7f51\u7edc\u73af\u5883\u4e0b\u5931\u8d25\uff1b\u5141\u8bb8\u540e\u5c06\u4ec5\u91cd\u8bd5\u8fd9\u6761\u5b8c\u5168\u76f8\u540c\u7684\u547d\u4ee4\u4e00\u6b21\u3002\n\u5931\u8d25\u6458\u8981\uff1a"
-                        + this.limitForThought(content.replaceAll("\\s+", " "), 500));
-    }
-
-    private ToolResult createNetworkApproval(AgentContext ctx, String toolName, String request, String toolCallId,
-                                             String requestKind, boolean retryable, String attemptKey, String summary) {
-        if (this.networkAccessService == null || ctx.getTaskId() == null) {
-            return ToolResult.failed("network approval service is unavailable");
-        }
-        try {
-            NetworkAccessService.NetworkAccessRequest approval = this.networkAccessService.begin(
-                    ctx.getStudentId(), ctx.getProject().getProjectId(), ctx.getTaskId(), ctx.getConversationId(),
-                    ctx.getSessionId(), toolName, request, summary, requestKind, retryable, attemptKey,
-                    toolCallId, this.networkAccessService.domainsFor(toolName, request));
-            LinkedHashMap<String, Object> event = new LinkedHashMap<>(approval.payload());
-            event.put("requestId", approval.requestId());
-            event.put("taskId", ctx.getTaskId());
-            event.put("sessionId", ctx.getSessionId());
-            event.put("toolCallId", toolCallId);
-            return ToolResult.interactionRequired("\u7b49\u5f85\u7528\u6237\u6279\u51c6\u7f51\u7edc\u8bbf\u95ee", approval.requestId(), "network")
-                    .withInteractionPayload(event);
-        } catch (Exception exception) {
-            log.warn("Unable to create network approval for task {}: {}", ctx.getTaskId(), exception.getMessage());
-            return ToolResult.failed("network approval is unavailable");
-        }
-    }
-
-    private String networkSummary() {
-        return "Agent \u8bf7\u6c42\u8bbf\u95ee\u7f51\u7edc\u4ee5\u5b8c\u6210\u5f53\u524d\u547d\u4ee4";
-    }
-
     private JsonObject loopGuardArguments(String toolName, JsonObject args, AgentContext context) {
         if (!this.isCommandPolicyTool(toolName)) {
             return args;
@@ -2783,14 +2705,7 @@ public class AgentLoopEngine {
                 this.executionProperties.getPermissionProfile()));
     }
 
-    /** Network-classified commands always go through the network approval flow, even when the model did not set the network flag. */
-    private boolean isNetworkCommandClassification(CommandClassification classification) {
-        if (classification == null || classification.reasonCode() == null) {
-            return false;
-        }
-        CommandReasonCode reason = classification.reasonCode();
-        return reason == CommandReasonCode.NETWORK_COMMAND || reason == CommandReasonCode.NETWORK_URL;
-    }
+    /** 网络访问默认开启；网络命令直接执行，不再进入审批流。 */
 
     /**
      * Enforces one pending approval per task: while the task is already waiting for an approval or
@@ -4609,28 +4524,42 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
 </agent_mode>""";
     }
 
-    private String buildContextMessage(String projectRules, String memoryContext, String sessionContext, String recentRunLog, String checkpoint, String globalSkills, String mcpContext) {
+    /**
+     * 组装首条 durable user message 的瘦身初始上下文（对齐 opencode `session/llm/request.ts` 与
+     * `session/system.ts`：稳定策略放最前，项目文件/结构/诊断一律由工具按需拉取，不预注入）。
+     * 恢复场景额外保留 recentRunLog 与 checkpoint 两段有界恢复上下文。
+     */
+    static String buildLeanInitialContextMessage(String modePolicy, String languagePolicy,
+                                                 String projectRules, String leanMemory,
+                                                 String recentRunLog, String checkpoint) {
         StringBuilder builder = new StringBuilder();
+        if (modePolicy != null && !modePolicy.isBlank()) {
+            builder.append(modePolicy).append("\n\n");
+        }
+        if (languagePolicy != null && !languagePolicy.isBlank()) {
+            builder.append(languagePolicy).append("\n\n");
+        }
         if (projectRules != null && !projectRules.isBlank()) {
-            builder.append("<project_rules file=\"Labex.md\">\n").append(this.limitForContext(projectRules, 10000)).append("\n</project_rules>\n\n");
+            builder.append("<project_rules file=\"Labex.md\">\n")
+                    .append(limitForContext(projectRules, 10_000))
+                    .append("\n</project_rules>\n\n");
         }
-        if (globalSkills != null && !globalSkills.isBlank()) {
-            builder.append(this.limitForContext(globalSkills, 16000)).append("\n");
-        }
-        if (mcpContext != null && !mcpContext.isBlank()) {
-            builder.append(this.limitForContext(mcpContext, 12000)).append("\n");
-        }
-        if (memoryContext != null && !memoryContext.isBlank()) {
-            builder.append("<conversation_memory isolated=\"true\">\n").append(this.limitForContext(memoryContext, 16000)).append("\n</conversation_memory>\n\n");
+        if (leanMemory != null && !leanMemory.isBlank()) {
+            builder.append("<workspace_memory scope=\"lean\">\n")
+                    .append(limitForContext(leanMemory, 2_000))
+                    .append("\n</workspace_memory>\n\n");
         }
         if (recentRunLog != null && !recentRunLog.isBlank()) {
-            builder.append("<latest_agent_run_log purpose=\"resume_previous_work\">\n").append(this.limitForContext(recentRunLog, 12000)).append("\n</latest_agent_run_log>\n\n");
+            builder.append("<latest_agent_run_log purpose=\"resume_previous_work\">\n")
+                    .append(limitForContext(recentRunLog, 12_000))
+                    .append("\n</latest_agent_run_log>\n\n");
         }
         if (checkpoint != null && !checkpoint.isBlank()) {
-            builder.append("<agent_checkpoint purpose=\"resume_after_disconnect_or_failure\">\n").append(this.limitForContext(checkpoint, 12000)).append("\n</agent_checkpoint>\n\n");
+            builder.append("<agent_checkpoint purpose=\"resume_after_disconnect_or_failure\">\n")
+                    .append(limitForContext(checkpoint, 12_000))
+                    .append("\n</agent_checkpoint>\n\n");
         }
-        builder.append("<session_context>\n").append(this.limitForContext(sessionContext, 60000)).append("\n</session_context>");
-        return builder.toString();
+        return builder.toString().trim();
     }
 
     private String readProjectRules(Integer studentId, Integer projectId) {
@@ -4656,7 +4585,7 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
      * Enabled unnecessary exception pruning
      * Enabled aggressive exception aggregation
      */
-    private String limitForContext(String text, int max) {
+    private static String limitForContext(String text, int max) {
         if (text == null || text.isBlank()) {
             return "";
         }
