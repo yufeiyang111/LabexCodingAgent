@@ -62,6 +62,8 @@ docs/*
 !docs/superpowers/
 docs/superpowers/*
 !docs/superpowers/agent-self-configuration/
+!docs/coding-agent-industrialization/
+!docs/coding-agent-industrialization/opencode-alignment-status.md
 
 # 架构治理规则与执行计划必须进入版本控制
 
