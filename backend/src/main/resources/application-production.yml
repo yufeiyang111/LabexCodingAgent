@@ -1,0 +1,23 @@
+# production profile：Linux Web 部署默认值。
+# 必须显式提供的环境变量见 deploy/linux/.env.production.example；
+# 缺失时 ProductionStartupValidator 会在启动前失败并列出全部问题。
+
+labex-agent:
+  project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:/srv/labex-agent/workspaces}
+  execution:
+    permission-profile: ${LABEX_AGENT_PERMISSION_PROFILE:opencode}
+  worker:
+    docker:
+      image: ${LABEX_AGENT_WORKER_DOCKER_IMAGE:}
+      max-concurrent-containers: ${LABEX_AGENT_DOCKER_MAX_CONCURRENT_CONTAINERS:8}
+    resources:
+      cpu-millis: ${LABEX_AGENT_WORKER_CPU_MILLIS:2000}
+      memory-megabytes: ${LABEX_AGENT_WORKER_MEMORY_MB:2048}
+      max-pids: ${LABEX_AGENT_WORKER_MAX_PIDS:256}
+  cors:
+    allowed-origins: ${LABEX_AGENT_CORS_ALLOWED_ORIGINS:}
+  websocket:
+    allowed-origins: ${LABEX_AGENT_WEBSOCKET_ALLOWED_ORIGINS:}
+
+rag:
+  upload-path: ${LABEX_AGENT_UPLOAD_PATH:/srv/labex-agent/uploads}

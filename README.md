@@ -9,6 +9,33 @@ LabexAgent 是从 Labex 云编程工作台剥离出来的独立版本。保留�
 
 ---
 
+## 支持矩阵与发布状态
+
+| 部署形态 | 状态 | 说明 |
+|---|---|---|
+| **Windows local** | ✅ Verified | 默认 `local` profile 使用 WSL2 Debian + bubblewrap Worker（或显式 `unsafe-local` 诊断模式）；真实浏览器验收、后端全量测试、前端全量测试均通过（见下方发布标签）。 |
+| **Linux local** | ⚠️ Partial | 后端与 WSL Worker 的 Linux Shell 契约已被真实进程验收覆盖，但完整「Linux 主机后端 + 浏览器」闭环尚未在 Linux 主机上整体验收。 |
+| **Linux Web（生产）** | ❌ Unverified | Docker Worker、MySQL 生产配置、Nginx/Caddy 反向代理、HTTPS、生产前端部署尚未完成验收（对应计划 T3.1–T3.4）。 |
+
+**当前发布标签：`Local Usable`**
+
+依据（2026-08-13 实测）：
+
+- 后端全量 `mvn test`：1550 tests，0 failures，0 errors；
+- 前端 `npm test`：244 pass；`npm run build` 通过 chunk budget；
+- 真实浏览器验收 `scripts/acceptance/run-all.ps1 -RestartBrowserBackend` 全绿：package / acceptance unit / backend restart / browser runtime 四段全部 PASS，浏览器证据 40+ 项全 true，`consoleErrors=0`、`networkErrors=0`；
+- restart / replay / compaction / approval / cancellation 持久化证据全绿。
+
+已知限制（不影响 Local Usable）：
+
+- 交互式 WebSocket PTY 未恢复，REST managed terminal 是当前唯一可用终端路径；
+- Docker Worker 与 Linux 生产部署未验收，不能宣称 `Linux Web Ready`；
+- 多用户并发隔离、限流、配额、监控告警等工业化能力未完成，不能宣称 `Public Multi-user Ready`。
+
+OpenCode 运行时对齐状态（design reference only）见 [docs/coding-agent-industrialization/opencode-alignment-status.md](docs/coding-agent-industrialization/opencode-alignment-status.md)，第三方声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+---
+
 ## 1. 环境依赖
 
 启动前先装好以下软件。
@@ -118,6 +145,8 @@ The local Worker is acceptance-tested with Node.js, npm, Git, Python 3, Java 21,
 For Monaco LSP completion, place `jdtls`, `typescript-language-server`, `vue-language-server`, and `pyright-langserver` in the same WSL distribution, then configure Linux commands through `LABEX_LSP_*_CMD` when needed. For an offline local setup, copy a trusted pre-existing LSP runtime into the WSL native `/usr/local/lib` path and expose only wrappers under `/usr/local/bin`; do not point the sandbox at an executable under `/mnt/c` or another Windows drive.
 
 Use the explicit `unsafe-local` profile only to diagnose isolation failures. It executes child processes directly on the Windows host and must not be used for regular Agent work or demonstrations.
+
+**执行后端选择规则：** 本地开发可使用 `local`（WSL Worker）或显式 `unsafe-local`（仅诊断）；**Linux Web 部署必须使用 Docker Worker**——production profile 下未配置 `LABEX_AGENT_WORKER_DOCKER_IMAGE`（或仍是 smoke 镜像）时后端拒绝启动。生产配置校验（DB 凭据、JWT、Secret Store、HTTPS 来源、Linux 路径、权限 profile）在启动前 fail-fast，完整示例见 [deploy/linux/](deploy/linux/)。
 
 For a server deployment, switch to the Docker Worker:
 

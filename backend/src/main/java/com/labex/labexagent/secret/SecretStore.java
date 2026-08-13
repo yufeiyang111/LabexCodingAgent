@@ -10,7 +10,8 @@ public interface SecretStore {
 
     enum SecretScope {
         MODEL_API_KEY,
-        MCP_AUTH_HEADER
+        MCP_AUTH_HEADER,
+        WORKER_ENV
     }
 
     record StoredSecret(String ciphertext, String keyVersion) {
