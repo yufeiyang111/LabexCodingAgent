@@ -3,6 +3,7 @@ package com.labex.labexagent.prompt;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.execution.WorkerShellDescriptor;
 import org.junit.jupiter.api.Test;
 
 class LabexSystemPromptTest {
@@ -99,6 +100,63 @@ class LabexSystemPromptTest {
         assertThat(prompt)
                 .contains("workspace_root: /workspace")
                 .doesNotContain("D:/workspaces/prompt");
+    }
+
+    @Test
+    void systemPromptExplainsTheOpenCodeRealShellContract() {
+        StudentProject project = new StudentProject();
+        project.setProjectName("PromptWorkspace");
+        project.setWorkspacePath("D:/workspaces/prompt");
+        project.setStructureJson("{}");
+
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh",
+                WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true), "opencode");
+
+        assertThat(prompt)
+                .contains("<command_policy>")
+                .contains("Execution backend: linux-wsl")
+                .contains("Shell: Bash")
+                .contains("Network: enabled")
+                .contains("Permission profile: opencode")
+                .contains("Bash/PowerShell syntax is supported")
+                .contains("cd frontend&&npm install")
+                .contains("workdir")
+                .contains("timeout` in milliseconds")
+                .contains("output_path")
+                .contains("Use `read_file` with `output_path`")
+                .doesNotContain("exactly one restricted direct command")
+                .doesNotContain("never use `cd <dir> && <command>`");
+    }
+
+    @Test
+    void systemPromptUsesInjectedPowerShellDescriptor() {
+        StudentProject project = new StudentProject();
+        project.setProjectName("PromptWorkspace");
+        project.setStructureJson("{}");
+
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools", "en",
+                WorkerShellDescriptor.powerShell("windows", "pwsh.exe", "C:/sandbox", false), "safe");
+
+        assertThat(prompt)
+                .contains("workspace_root: C:/sandbox")
+                .contains("execution_backend: windows")
+                .contains("shell: powershell")
+                .contains("network: disabled")
+                .contains("Permission profile: safe");
+    }
+
+    @Test
+    void systemPromptNoLongerRecommendsCurlForVerification() {
+        StudentProject project = new StudentProject();
+        project.setProjectName("PromptWorkspace");
+        project.setWorkspacePath("D:/workspaces/prompt");
+        project.setStructureJson("{}");
+
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools");
+
+        assertThat(prompt)
+                .doesNotContain("Test the endpoint with curl")
+                .contains("Check `git status` to confirm only intended files changed");
     }
 }
 

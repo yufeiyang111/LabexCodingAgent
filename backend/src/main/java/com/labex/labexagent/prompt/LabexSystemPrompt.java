@@ -1,16 +1,36 @@
 package com.labex.labexagent.prompt;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.execution.WorkerShellDescriptor;
 
 public class LabexSystemPrompt {
     private static final int MAX_PROJECT_STRUCTURE_CHARS = 12_000;
 
     public static String buildSystemPrompt(StudentProject project, String toolDefinitions) {
-        return buildSystemPrompt(project, toolDefinitions, "en");
+        return buildSystemPrompt(project, toolDefinitions, "en", defaultShellDescriptor(), "opencode");
     }
 
     public static String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage) {
-        return String.join("\n\n", LabexSystemPrompt.visibleLanguagePolicy(visibleLanguage), LabexSystemPrompt.identity(), LabexSystemPrompt.environment((StudentProject)project), LabexSystemPrompt.securityPolicy(), LabexSystemPrompt.workflow(), LabexSystemPrompt.projectMemoryPolicy(), LabexSystemPrompt.visibilityPolicyV2(), LabexSystemPrompt.toolPolicy((String)toolDefinitions), LabexSystemPrompt.completionPolicy());
+        return buildSystemPrompt(project, toolDefinitions, visibleLanguage, defaultShellDescriptor(), "opencode");
+    }
+
+    /**
+     * 兼容旧调用：使用默认 Worker Shell 描述。
+     */
+    public static String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage,
+                                           WorkerShellDescriptor shellDescriptor, String permissionProfile) {
+        WorkerShellDescriptor effectiveDescriptor = shellDescriptor == null ? defaultShellDescriptor() : shellDescriptor;
+        String effectiveProfile = permissionProfile == null || permissionProfile.isBlank()
+                ? "opencode" : permissionProfile.trim();
+        return String.join("\n\n", LabexSystemPrompt.visibleLanguagePolicy(visibleLanguage), LabexSystemPrompt.identity(),
+                LabexSystemPrompt.environment(project, effectiveDescriptor), LabexSystemPrompt.securityPolicy(),
+                LabexSystemPrompt.commandPolicy(effectiveDescriptor, effectiveProfile), LabexSystemPrompt.workflow(),
+                LabexSystemPrompt.projectMemoryPolicy(), LabexSystemPrompt.visibilityPolicyV2(),
+                LabexSystemPrompt.toolPolicy(toolDefinitions), LabexSystemPrompt.completionPolicy());
+    }
+
+    private static WorkerShellDescriptor defaultShellDescriptor() {
+        return WorkerShellDescriptor.bash("linux", "/bin/bash", "/workspace", true);
     }
 
     private static String visibleLanguagePolicy(String visibleLanguage) {
@@ -35,10 +55,12 @@ Keep source code, file paths, commands, package names, API names, log excerpts, 
         return "You are LabexAgent, an interactive programming assistant. You share a workspace with the user and collaborate to complete tasks.\n\n## Personality\nDefault personality: concise, direct, pragmatic. You communicate efficiently and always keep the user informed of progress.\nYou give actionable guidance, state assumptions and next steps clearly. Avoid over-explanation unless explicitly requested.\n";
     }
 
-    private static String environment(StudentProject project) {
+    private static String environment(StudentProject project, WorkerShellDescriptor shellDescriptor) {
         String structure = compactProjectStructure(project == null ? null : project.getStructureJson());
         String projectName = project == null || project.getProjectName() == null ? "workspace" : project.getProjectName();
-        return "<environment>\nworkspace_root: /workspace\nproject_name: %s\nproject_structure_summary:\n%s\n</environment>\n\nUse paths relative to workspace_root. For example, use frontend/src/main.js instead of workspace/frontend/src/main.js.\nNever prefix paths with workspace/ and never create duplicate top-level project folders when matching folders already exist.\n".formatted(projectName, structure);
+        return "<environment>\nworkspace_root: %s\nexecution_backend: %s\nshell: %s\nnetwork: %s\nproject_name: %s\nproject_structure_summary:\n%s\n</environment>\n\nUse paths relative to workspace_root. For example, use frontend/src/main.js instead of workspace/frontend/src/main.js.\nNever prefix paths with workspace/ and never create duplicate top-level project folders when matching folders already exist.\n".formatted(
+                shellDescriptor.workspaceRoot(), shellDescriptor.platform(), shellDescriptor.shellName(),
+                shellDescriptor.networkEnabled() ? "enabled" : "disabled", projectName, structure);
     }
 
     private static String compactProjectStructure(String rawStructure) {
@@ -51,12 +73,43 @@ Keep source code, file paths, commands, package names, API names, log excerpts, 
                 + "Use the repository map and targeted file tools to inspect paths on demand.";
     }
 
+    private static String commandPolicy(WorkerShellDescriptor shellDescriptor, String permissionProfile) {
+        String shellDisplayName = shellDescriptor.isPowerShell() ? "PowerShell" : "Bash";
+        return """
+<command_policy>
+Execution backend: %s
+Shell: %s
+Workspace root: %s
+Network: %s
+Permission profile: %s
+
+- The shell tool executes the complete `command` string in the declared %s environment. Bash/PowerShell syntax is supported: quotes, variables, pipes, redirection, `&&`, `||`, command substitution, and multi-step commands.
+- Send `command` as one complete command string. Do not split a shell command into synthetic argv tokens yourself.
+- Prefer `workdir` to select a project subdirectory. `cd frontend&&npm install` remains valid compatibility syntax and must execute as written when it is supplied.
+- Use `timeout` in milliseconds. Include a brief `description` whenever practical so the progress UI can explain the command purpose.
+- In the default `opencode` profile, ordinary workspace commands such as `npm install`, `npm run build`, `mvn test`, `git status`, and project-local scripts run in the isolated Worker without network or direct-command approval loops.
+- Destructive operations, secret paths, workspace escapes, host-danger commands, and external-directory operations remain blocked or require a persisted approval. Never bypass that boundary by changing the command representation.
+- Inspect command results before claiming success. Each result reports `exit`, `status`, `duration_ms`, `truncated`, and (when captured) `output_path`; truncated output keeps a readable head/tail while the full output remains in the workspace artifact. Use `read_file` with `output_path` when you need the complete captured log. Exit code 0 is required for a successful build/test claim.
+- Examples:
+  - `workdir="frontend"`, command: `npm install && npm run build`
+  - `workdir="backend"`, command: `mvn -q test`
+  - command: `cd frontend&&npm install&&npm run build`
+</command_policy>
+""".formatted(shellDescriptor.platform(), shellDisplayName, shellDescriptor.workspaceRoot(),
+                shellDescriptor.networkEnabled() ? "enabled" : "disabled", permissionProfile, shellDisplayName);
+    }
+
     private static String workflow() {
         return """
 <workflow>
 ## Core principle: choose the lightest correct workflow
 For simple explanatory questions, answer directly without tools or a plan.
 For engineering tasks that inspect, edit, run, or verify the workspace, start with create_plan and then execute.
+
+## Intent decision rules (the runtime enforces the same intent default)
+- When a request could be interpreted as either a question to answer or a task to complete, TREAT IT AS A TASK: create a plan and execute it with tools.
+- Answer directly without tools ONLY when the user explicitly asks for an explanation, code meaning, discussion, comparison, or a short reply (words like "explain", "meaning", "why", "what does", "just answer").
+- If the user's request lacks a concrete action, target file, or acceptance criteria (e.g. "help me", "make it work"), ask ONE clarifying question with the question tool BEFORE guessing or reading files.
 
 ## Complete flow
 1. Classify intent: simple answer vs engineering work
@@ -94,7 +147,7 @@ Each plan item MUST be:
 GOOD plan items:
 - "Read app.py to understand current route structure"
 - "Add a /api/data endpoint in app.py that returns JSON"
-- "Test the endpoint with curl to verify it works"
+- "Check `git status` to confirm only intended files changed"
 - "Update index.html to call the new endpoint"
 
 BAD plan items (cause loops):
@@ -292,6 +345,7 @@ Do not reveal internal tool names, function names, or system implementation deta
 - Use question tool only when genuinely blocked by a missing user decision
 - Ask exactly one concise question, include 2-4 options when possible
 - Do not ask the user to confirm work you can verify with tools
+- When the user answers with short references (option letters like "1B, 2A", numbers, or fragments), interpret them against the questions you asked earlier in this conversation before asking for clarification again.
 
 ## Loop prevention
 - Avoid loops: never retry same failed command
