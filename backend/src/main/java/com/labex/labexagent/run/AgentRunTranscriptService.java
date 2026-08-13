@@ -544,7 +544,7 @@ public class AgentRunTranscriptService {
         result.setStatus("completed");
         result.setToolName(toolName);
         result.setInputJson(GSON.toJson(providerResult));
-        result.setOutputText(limit(content, 8_000));
+        result.setOutputText(content);
         markDeferredResolution(result);
         result.setUpdateTime(LocalDateTime.now());
         partMapper.updateById(result);
@@ -662,7 +662,7 @@ public class AgentRunTranscriptService {
         if (calls == null) return;
         for (AgentRunPart call : calls) {
             call.setStatus("completed");
-            call.setOutputText(limit(output, 8_000));
+            call.setOutputText(output);
             call.setUpdateTime(LocalDateTime.now());
             partMapper.updateById(call);
         }
@@ -694,7 +694,7 @@ public class AgentRunTranscriptService {
         part.setToolCallId(toolCallId);
         part.setToolName(toolName);
         part.setInputJson(GSON.toJson(input == null ? Map.of() : input));
-        part.setOutputText(limit(output, 8_000));
+        part.setOutputText(output);
         part.setMetadata(GSON.toJson(Map.of("provider", true, "partType", partType)));
         part.setUpdateTime(LocalDateTime.now());
         if (part.getPartId() == null) {
@@ -795,11 +795,6 @@ public class AgentRunTranscriptService {
 
     private String stringValue(Object value) {
         return value == null ? "" : String.valueOf(value);
-    }
-
-    private String limit(String value, int max) {
-        if (value == null) return "";
-        return value.length() <= max ? value : value.substring(0, max) + "\n...truncated...";
     }
 
     private void requireFence(ExecutionFence fence) {

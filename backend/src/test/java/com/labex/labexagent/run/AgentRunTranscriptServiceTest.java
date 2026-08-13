@@ -619,6 +619,31 @@ class AgentRunTranscriptServiceTest {
     }
 
     @Test
+    void persistsToolResultPartOutputWithoutTruncation() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(parts.selectList(any())).thenReturn(List.of());
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(41L);
+            return 1;
+        });
+
+        String oversized = "w".repeat(60_000);
+        new AgentRunTranscriptService(messages, parts, tasks)
+                .appendMessage(7L, 1L, 0L,
+                        Map.of("role", "tool", "tool_call_id", "call-1", "name", "bash", "content", oversized));
+
+        assertThat(capturedPart(parts).getOutputText())
+                .hasSize(60_000)
+                .doesNotContain("...truncated...");
+    }
+
+    @Test
     void loadsOnlyProtocolSafeFactsAppendedAfterCompactionBoundary() {
         AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
         AgentRunPartMapper parts = mock(AgentRunPartMapper.class);

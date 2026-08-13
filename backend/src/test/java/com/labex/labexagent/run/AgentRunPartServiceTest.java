@@ -51,6 +51,28 @@ class AgentRunPartServiceTest {
         assertThat(result.getInputJson()).contains("strategy").contains("test");
         verify(parts).insert(any(AgentRunPart.class));
     }
+
+    @Test
+    void persistsToolCallDetailWithoutTruncation() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(parts.insert(any(AgentRunPart.class))).thenAnswer(invocation -> {
+            AgentRunPart part = invocation.getArgument(0);
+            part.setPartId(91L);
+            return 1;
+        });
+
+        String oversized = "z".repeat(50_000);
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messageService())
+                .upsertToolCall(7L, "call-1", "completed", "run_tests",
+                        Map.of("strategy", "test"), 3, oversized);
+
+        assertThat(result.getOutputText())
+                .hasSize(50_000)
+                .doesNotContain("...truncated...");
+    }
     @Test
     void attachesTheToolPartToItsStableAssistantTurnMessage() {
         AgentRunPartMapper parts = mock(AgentRunPartMapper.class);

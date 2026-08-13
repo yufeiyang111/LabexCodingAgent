@@ -90,7 +90,7 @@ public class AgentRunPartService {
         LocalDateTime now = LocalDateTime.now();
         for (AgentRunPart providerCall : providerCalls) {
             providerCall.setStatus(status == null || status.isBlank() ? "error" : status);
-            providerCall.setOutputText(limit(detail));
+            providerCall.setOutputText(detail);
             providerCall.setUpdateTime(now);
             partMapper.updateById(providerCall);
         }
@@ -115,7 +115,7 @@ public class AgentRunPartService {
         }
         if (part == null) return null;
         part.setStatus(status == null || status.isBlank() ? "error" : status);
-        part.setOutputText(limit(detail));
+        part.setOutputText(detail);
         part.setUpdateTime(LocalDateTime.now());
         partMapper.updateById(part);
         if (part.getSequenceNumber() != null) {
@@ -216,7 +216,7 @@ public class AgentRunPartService {
             part.setStatus("interrupted");
             String detail = reason == null ? "Agent execution was interrupted" : reason;
             if (part.getOutputText() == null || part.getOutputText().isBlank()) {
-                part.setOutputText(limit(detail));
+                part.setOutputText(detail);
             }
             part.setUpdateTime(LocalDateTime.now());
             updated += partMapper.updateById(part) == 1 ? 1 : 0;
@@ -294,7 +294,7 @@ public class AgentRunPartService {
         part.setToolCallId(toolCallId);
         part.setToolName(toolName == null ? "" : toolName);
         part.setInputJson(input == null ? "{}" : GSON.toJson(input));
-        part.setOutputText(limit(output));
+        part.setOutputText(output);
         part.setSequenceNumber(sequence);
         part.setMetadata(GSON.toJson(Map.of(
                 "sequence", sequence,
@@ -404,11 +404,6 @@ public class AgentRunPartService {
         if ("text".equalsIgnoreCase(type)) return InternalReasoningBoundary.stripVisible(part.getOutputText());
         if ("reasoning".equalsIgnoreCase(type)) return InternalReasoningBoundary.stripTags(part.getOutputText());
         return part.getOutputText();
-    }
-
-    private String limit(String value) {
-        if (value == null) return "";
-        return value.length() <= 8_000 ? value : value.substring(0, 8_000) + "\n...truncated...";
     }
 
     private void requireFence(ExecutionFence fence) {

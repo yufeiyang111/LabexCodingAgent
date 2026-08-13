@@ -82,8 +82,9 @@ npm run build  # → built in ~1m，chunk budget 通过
 
 ## 7. 风险与遗留
 
+- **T0.6 写库截断移除**：本轮后续补充完成（同轮第二次实施）——`AgentRunTranscriptService` 与 `AgentRunPartService` 的 `output_text` 8k 截断全部移除，存储层全量落库（LONGTEXT）；红测试 `AgentRunPartServiceTest.persistsToolCallDetailWithoutTruncation`、`AgentRunTranscriptServiceTest.persistsToolResultPartOutputWithoutTruncation` 先红后绿。展示层截断保持（前端 ToolCallCard 1000 字符、CONTEXT_STATS preview 上限）。
+- **T9.1 对齐状态文档**：`docs/coding-agent-industrialization/opencode-alignment-status.md` 已更新（Phase 0 证据、差异 10-12 条、剩余阶段清单）。
 - **DeepSeek 字段存在性**：`prompt_cache_hit_tokens / prompt_cache_miss_tokens` 以 api-docs.deepseek.com 官方文档为准；若实际返回仅为 `prompt_tokens_details.cached_tokens`，提取链仍能命中（老字段优先保留）。
 - **百分比保留一个版本**：按 spec 8.2，旧百分比与"会话级"标注共存，下一迭代删除百分比、只留 token 账本。
-- **T0.6 写库截断移除**：本轮未做（`AgentRunTranscriptService` 12k/8k 截断仍在），留到下一轮。
 - **live smoke 未跑**：本轮只有单测+前端 build 证据；真实模型流式 usage（`stream_options.include_usage`）路径由既有 `OpenAiCompatibleProviderUsageTest` 的本地 HTTP server 覆盖，未在真实 provider 上验证。用户按第 6 节验收即补上 live 证据。
-- 全量后端测试耗时约 1 分 15 秒（1576 tests）。
+- 全量后端测试：1578 tests（T0.6 红绿后全量复核），0 failures。
