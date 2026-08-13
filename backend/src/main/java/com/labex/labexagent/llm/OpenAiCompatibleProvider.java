@@ -583,7 +583,9 @@ public class OpenAiCompatibleProvider implements LlmProvider {
 
     private int intValue(JsonObject root, String fieldName) {
         try {
-            return root.has(fieldName) && !root.get(fieldName).isJsonNull() ? root.get(fieldName).getAsInt() : 0;
+            // 对齐 opencode getUsage 的 safe() 语义：负数/异常一律归零，负数不得进入权威 token 账本。
+            return root.has(fieldName) && !root.get(fieldName).isJsonNull()
+                    ? Math.max(0, root.get(fieldName).getAsInt()) : 0;
         } catch (Exception e) {
             return 0;
         }

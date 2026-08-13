@@ -93,6 +93,8 @@ class AgentLoopEngineNextPreviewTest {
         when(contextOrchestrator.buildInitialBundle(eq(project), eq("src/App.vue"), anyString(), eq(""),
                 eq("draft request"), anyString(), eq(false), any(AgentContext.class)))
                 .thenReturn(new AgentContextOrchestrator.ContextBundle("current project context", Map.of()));
+        when(contextOrchestrator.buildLeanWorkspaceMemory(eq(project), eq("draft request"), eq("src/App.vue")))
+                .thenReturn("lean durable facts");
 
         AgentLoopEngine engine = new AgentLoopEngine(
                 projects, tools, mock(AgentContextManager.class), mock(AgentCancellationRegistry.class),
@@ -118,12 +120,11 @@ class AgentLoopEngineNextPreviewTest {
         assertFalse(((List<?>) payload.get("previewSections")).isEmpty());
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> sections = (List<Map<String, Object>>) payload.get("previewSections");
-        Map<String, Object> conversationMemory = sections.stream()
-                .filter(section -> "conversationMemory".equals(section.get("key")))
-                .findFirst()
-                .orElseThrow();
-        assertEquals("durable memory", conversationMemory.get("content"));
-        assertFalse(sections.stream().anyMatch(section -> "compactedContext".equals(section.get("key"))));
+        assertFalse(sections.stream().anyMatch(section -> "conversationMemory".equals(section.get("key"))));
+        assertTrue(sections.stream().anyMatch(section -> "workspaceMemory".equals(section.get("key"))
+                && String.valueOf(section.get("content")).contains("lean durable facts")));
+        assertTrue(metadata.containsKey("bundleStats"));
+        assertTrue(((Number) payload.get("usedTokens")).intValue() <= 8_000);
         assertFalse(payload.toString().contains("FOREIGN_RUN_LOG_SENTINEL"));
         assertFalse(payload.toString().contains("FOREIGN_CHECKPOINT_SENTINEL"));
         verify(conversations, never()).touchActivity(any(AgentConversation.class));

@@ -26,7 +26,15 @@ class CacheTelemetryTest {
                 Map.of("prompt_tokens", 100, "cached_tokens", 40, "cache_usage_reported", true)));
         assertEquals(40.0, CacheTelemetry.hitRate(true,
                 Map.of("prompt_tokens", 100, "cached_tokens", 40, "cache_usage_reported", true)));
+    }
+
+    @Test
+    void capsHitRateAtOneHundredAndClampsNegativeCachedTokens() {
+        assertEquals(100.0, CacheTelemetry.hitRate(true,
+                Map.of("prompt_tokens", 100, "cached_tokens", 200, "cache_usage_reported", true)));
         assertEquals(0.0, CacheTelemetry.hitRate(true,
-                Map.of("prompt_tokens", 100, "cached_tokens", 0, "cache_usage_reported", true)));
+                Map.of("prompt_tokens", 100, "cached_tokens", -10, "cache_usage_reported", true)));
+        assertNull(CacheTelemetry.hitRate(true,
+                Map.of("prompt_tokens", -100, "cached_tokens", 40, "cache_usage_reported", true)));
     }
 }

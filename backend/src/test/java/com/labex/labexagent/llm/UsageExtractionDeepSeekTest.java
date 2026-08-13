@@ -65,6 +65,41 @@ class UsageExtractionDeepSeekTest {
                 "cache_usage_reported", true)));
     }
 
+    @Test
+    void normalizesNegativeUsageToZero() throws Exception {
+        String json = "{\"prompt_tokens\":-100,\"completion_tokens\":-5,\"total_tokens\":-105,"
+                + "\"prompt_cache_hit_tokens\":-40,\"prompt_cache_miss_tokens\":-60}";
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}],\"usage\":null}\n\n" +
+                    "data: {\"choices\":[],\"usage\":" + json + "}\n\n" +
+                    "data: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            new OpenAiCompatibleProvider(new OutboundUrlPolicy(host ->
+                    new InetAddress[] {InetAddress.getByName("8.8.8.8")}))
+                    .chatStream("system", List.of(Map.of("role", "user", "content", "hi")), List.of(),
+                            new LlmProvider.LlmConfig("test-key", baseUrl(server), "test-model", 32, 0.1),
+                            chunks::add);
+            Map<String, Object> usage = chunks.stream()
+                    .filter(chunk -> "usage".equals(chunk.type()))
+                    .findFirst()
+                    .orElseThrow()
+                    .usage();
+            assertEquals(0, usage.get("prompt_tokens"));
+            assertEquals(0, usage.get("completion_tokens"));
+            assertEquals(0, usage.get("total_tokens"));
+            assertEquals(0, usage.get("cached_tokens"));
+            assertEquals(0, usage.get("cache_write_tokens"));
+            assertEquals(0, usage.get("cache_hit_tokens"));
+            assertEquals(0, usage.get("cache_miss_tokens"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private static Map<String, Object> extractUsageFromFixture(String fixture) throws Exception {
         String json = new Gson().toJson(JsonParser.parseString(fixtureJson(fixture)));
         HttpServer server = startServer(exchange -> {

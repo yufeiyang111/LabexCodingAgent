@@ -11,6 +11,7 @@ import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.entity.AgentRunConfigSnapshot;
 import com.labex.labexagent.projectconfig.AgentRunConfigSnapshotService;
+import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.context.AgentCompactionRecord;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.context.AgentRequestTokenEstimator;
@@ -244,6 +245,7 @@ public class AgentLoopEngine {
     private AgentTranscriptProjectionService transcriptProjectionService;
     private AgentCompactionService compactionService;
     private AgentRequestTokenEstimator requestTokenEstimator;
+    private AgentInputAttachmentService attachmentService;
 
     @Autowired
     public AgentLoopEngine(StudentProjectService s, ToolRegistry t, AgentContextManager c, AgentCancellationRegistry cr, @Lazy MiniMaxChat mm, @Lazy OllamaChat oc, RagConfig r, AgentConversationService cs, AgentTaskService ts, LlmProviderFactory pf, AgentModelConfigService mcs, TokenTracker tt, AgentSkillService skillService, AgentMcpServerService mcpServerService, PermissionService permissionService, GitSnapshotService gitSnapshotService, DiffService diffService, AgentContextOrchestrator contextOrchestrator, AgentPostEditHookService postEditHookService, AgentMetricsService metricsService, AgentInteractionService interactionService, AgentRunLifecycleService runLifecycleService, CommandApprovalService commandApprovalService, ContextUsageEstimator contextUsageEstimator, ContextUsageRegistry contextUsageRegistry, CompactionAgent compactionAgent) {
@@ -359,6 +361,11 @@ public class AgentLoopEngine {
     @Autowired
     void setTranscriptProjectionService(AgentTranscriptProjectionService transcriptProjectionService) {
         this.transcriptProjectionService = requireRuntimeDependency(transcriptProjectionService, "transcriptProjectionService");
+    }
+
+    @Autowired
+    void setAttachmentService(AgentInputAttachmentService attachmentService) {
+        this.attachmentService = requireRuntimeDependency(attachmentService, "attachmentService");
     }
     @Autowired
     void setRunInteractionService(AgentRunInteractionService runInteractionService) {
@@ -581,26 +588,27 @@ public class AgentLoopEngine {
         String mcpContext = this.mcpServerService.buildPromptContext(studentId);
         String modePolicy = this.buildModePolicy(mode);
         String languagePolicy = this.buildVisibleLanguagePolicy(visibleLanguage);
-        // 预览只展示 orchestrator 能提供的完整上下文作为诊断；真实 Provider 请求使用瘦身消息。
+        // 预览的"下一条请求估算"必须与真实 Provider 请求一致（瘦身消息）；
+        // orchestrator 的完整 bundle 只作为诊断信息放进 previewMetadata，不参与估算。
+        String leanMemory = this.contextOrchestrator.buildLeanWorkspaceMemory(project, draft, activePath);
         String initialContextMessage = AgentLoopEngine.buildLeanInitialContextMessage(
-                modePolicy, languagePolicy, projectRules,
-                this.contextOrchestrator.buildLeanWorkspaceMemory(project, draft, activePath),
-                recentRunLog, checkpoint);
-        ContextUsageEstimator.PromptContext promptContext = ContextUsageEstimator.PromptContext.of(
-                projectRules, memoryContext, contextBundle.content(), recentRunLog, checkpoint, globalSkills,
-                mcpContext, modePolicy, languagePolicy, initialContextMessage);
+                modePolicy, languagePolicy, projectRules, leanMemory, recentRunLog, checkpoint);
+        ContextUsageEstimator.PromptContext promptContext = new ContextUsageEstimator.PromptContext(
+                leanMemory, "", "", initialContextMessage);
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", initialContextMessage));
         if (draftedMessageIncluded) {
             messages.add(Map.of("role", "user", "content", draft));
         }
         Map<String, Object> previewMetadata = new LinkedHashMap<>();
-        previewMetadata.put("estimateBasis", "CURRENT_SESSION_STATE");
+        previewMetadata.put("estimateBasis", "LEAN_NEXT_REQUEST");
         previewMetadata.put("nextUserMessageIncluded", draftedMessageIncluded);
         previewMetadata.put("activePath", activePath == null ? "" : activePath);
         previewMetadata.put("agentMode", mode);
         previewMetadata.put("modelConfigId", modelConfig.getConfigId());
         previewMetadata.put("adaptiveContextDependsOnDraft", true);
+        previewMetadata.put("bundleStats", contextBundle.stats());
+        previewMetadata.put("bundleChars", contextBundle.content().length());
         ContextUsageSnapshot snapshot = this.contextUsageEstimator.estimateNextRequest(conversationId,
                 "context-preview-" + conversationId, modelConfig.getProvider(), modelConfig.getModelName(),
                 modelConfig.getContextWindowTokens(), systemPrompt, tools, promptContext, messages, previewMetadata);
@@ -720,6 +728,10 @@ public class AgentLoopEngine {
                 task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode,
                         request.getMessage(), userVisibleMessage, request.getActivePath(), modelConfig.getConfigId(),
                         request.isBackgroundRun(), request.getSubmittedAt());
+                if (!request.getAttachmentIds().isEmpty()) {
+                    this.requireAttachmentService().bindToTask(studentId, projectId, task.getTaskId(),
+                            conv.getConversationId(), request.getAttachmentIds());
+                }
                 this.conversationService.touchActivity(conv);
             }
             RunLogTarget runLogTarget = this.resolveRunLog(project, request, task, resumedRun);
@@ -882,8 +894,10 @@ public class AgentLoopEngine {
             if (shouldAppendRequestMessageToTranscript(resumedRun, transcriptRestored)) {
                 this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
                         Map.of("role", "user", "content", initialContextMessage));
-                this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
-                        Map.of("role", "user", "content", request.getMessage()));
+                Map<String, Object> durableUserMessage = request.getAttachmentIds().isEmpty()
+                        ? Map.of("role", "user", "content", request.getMessage())
+                        : this.requireAttachmentService().durableUserMessage(request.getMessage(), request.getAttachmentIds());
+                this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, durableUserMessage);
             } else if (resumedRun && preclaimedInteraction != null) {
                 // 只消费事务性 claim 产生的已验证交互；执行循环不接受请求体中的交互 ID。
                 List<Map<String, Object>> toolResults = this.requireTranscriptService()
@@ -3433,6 +3447,13 @@ public class AgentLoopEngine {
         return this.transcriptService;
     }
 
+    private AgentInputAttachmentService requireAttachmentService() {
+        if (this.attachmentService == null) {
+            throw new IllegalStateException("Agent image attachment service is unavailable");
+        }
+        return this.attachmentService;
+    }
+
     private AgentTranscriptProjectionService requireTranscriptProjectionService() {
         if (this.transcriptProjectionService == null) {
             throw new IllegalStateException("Durable Provider transcript projector is unavailable");
@@ -4527,7 +4548,11 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
     /**
      * 组装首条 durable user message 的瘦身初始上下文（对齐 opencode `session/llm/request.ts` 与
      * `session/system.ts`：稳定策略放最前，项目文件/结构/诊断一律由工具按需拉取，不预注入）。
-     * 恢复场景额外保留 recentRunLog 与 checkpoint 两段有界恢复上下文。
+     *
+     * <p>恢复（resume）连续性不由本方法保证：durable transcript 投影会重放完整历史
+     * （含 compaction checkpoint），运行进度由每次调用追加的 {@code <agent_runtime_projection>}
+     * 提供。recentRunLog / checkpoint 参数仅供显式调用方注入有界恢复文本，运行时恢复路径不传
+     * （旧版文件 checkpoint 是只读迁移入口，不是事实源，见 AgentCheckpointStore）。</p>
      */
     static String buildLeanInitialContextMessage(String modePolicy, String languagePolicy,
                                                  String projectRules, String leanMemory,
