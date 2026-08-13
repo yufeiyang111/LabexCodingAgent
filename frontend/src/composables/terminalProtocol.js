@@ -58,3 +58,23 @@ export function buildResizeTerminalMessage(cols, rows) {
     ...normalizeTerminalSize(cols, rows)
   }
 }
+
+
+export function normalizeManagedTerminalResult(result = {}) {
+  const exitCode = result.exitCode === '' || result.exitCode === undefined || result.exitCode === null
+    ? null
+    : Number(result.exitCode)
+  const running = Boolean(result.running)
+  const status = typeof result.status === 'string' && result.status
+    ? result.status
+    : running ? 'running' : exitCode === 0 ? 'succeeded' : exitCode === null ? '' : 'failed'
+  return {
+    running,
+    status,
+    exitCode: Number.isFinite(exitCode) ? exitCode : null,
+    output: typeof result.output === 'string' ? result.output : '',
+    shell: typeof result.shell === 'string' ? result.shell : '',
+    workdir: typeof result.workdir === 'string' ? result.workdir : '',
+    timeoutSeconds: Number.isFinite(Number(result.timeoutSeconds)) ? Number(result.timeoutSeconds) : 0
+  }
+}

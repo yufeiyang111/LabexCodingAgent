@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ref } from 'vue'
 import { createTokenUsageState } from './cacheTelemetryStatus.js'
+import { reduceHistoryEvent } from './agentHistoryReducer.js'
 
 const { useConversationState } = await import('./useConversationState.js')
 
@@ -82,6 +83,10 @@ function createHarness(overrides = {}) {
     currentAgentSession,
     replayHistoryEvent(type, data, message) {
       replayedEvents.push({ type, data })
+      if (overrides.replayHistoryEvent) {
+        overrides.replayHistoryEvent(type, data, message)
+        return
+      }
       if (type === 'FINAL') message.content = data.content || ''
       if (type === 'THINK') message.thinkingBlocks.push({ content: data.content || '' })
     },
@@ -177,6 +182,44 @@ test('does not infer a terminal tool status from history loading alone', async (
   assert.equal(assistant.runState, 'waiting_approval')
   assert.equal(assistant.isStreaming, false)
   assert.equal(assistant.toolCalls[0].status, 'waiting_approval')
+})
+
+
+test('refresh keeps reasoning and tool cards in durable event order while preserving verification failure', async () => {
+  const result = 'file updated\n\n[Post-edit hooks]\n- status=FAIL\n- action_required: run compile'
+  const refreshedTurn = turn(12, 'fix comments', '', {
+    lastEventSequence: 5,
+    events: [
+      { eventId: 121, taskId: 12, sequence: 1, state: 'running', eventType: 'THINK', data: { content: 'inspect existing implementation' } },
+      { eventId: 122, taskId: 12, sequence: 2, state: 'running', eventType: 'TOOL_CALL', data: { tool: 'edit_file', toolCallId: 'call-edit', arguments: { file_path: 'CommentController.java' } } },
+      { eventId: 123, taskId: 12, sequence: 3, state: 'running', eventType: 'OBSERVE', data: { success: true, result } },
+      { eventId: 124, taskId: 12, sequence: 4, state: 'running', eventType: 'THINK', data: { content: 'diagnostics failed; continue repairing' } },
+      { eventId: 125, taskId: 12, sequence: 5, state: 'failed', eventType: 'RUN_STATE_FAILED', data: { taskId: 12 } }
+    ],
+    runMessages: [],
+    parts: [
+      { partId: 1201, partKey: 'tool:call-edit', partType: 'tool', status: 'completed', toolCallId: 'call-edit', tool: 'edit_file', input: '{"file_path":"CommentController.java"}', output: result, sequence: 1 },
+      { partId: 1202, partKey: 'reasoning:1', partType: 'reasoning', status: 'completed', output: 'inspect existing implementation', sequence: 1 },
+      { partId: 1203, partKey: 'reasoning:4', partType: 'reasoning', status: 'completed', output: 'diagnostics failed; continue repairing', sequence: 4 }
+    ]
+  })
+  const { state, messages } = createHarness({
+    replayHistoryEvent: (type, data, message) => reduceHistoryEvent(type, data, message),
+    api: { agentConversationHistory: async () => ({ data: page([refreshedTurn]) }) }
+  })
+
+  await state.loadConversationMessages('conversation-1')
+
+  const assistant = messages.value[1]
+  const timeline = [
+    ...assistant.thinkingBlocks.map(block => ({ type: 'thinking', content: block.content, order: block._order })),
+    ...assistant.toolCalls.map(call => ({ type: 'tool', content: call.toolCallId, order: call._order }))
+  ].sort((left, right) => left.order - right.order)
+  assert.deepEqual(timeline.map(item => item.type), ['thinking', 'tool', 'thinking'])
+  assert.deepEqual(timeline.map(item => item.content), ['inspect existing implementation', 'call-edit', 'diagnostics failed; continue repairing'])
+  assert.equal(assistant.toolCalls[0].durableStatus, 'completed')
+  assert.equal(assistant.toolCalls[0].status, 'error')
+  assert.equal(assistant.toolCalls[0].verificationStatus, 'FAIL')
 })
 
 test('forking a conversation refreshes its list and opens the durable branch history', async () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   buildCreateTerminalMessage,
   buildResizeTerminalMessage,
+  normalizeManagedTerminalResult,
   normalizeTerminalSize
 } from './terminalProtocol.js'
 
@@ -40,4 +41,24 @@ assert.deepEqual(
   normalizeTerminalSize(undefined, undefined),
   { cols: 120, rows: 30 },
   'missing terminal dimensions fall back to stable defaults'
+)
+
+
+assert.deepEqual(
+  normalizeManagedTerminalResult({ running: false, exitCode: 0, output: 'ok', shell: 'bash', workdir: 'frontend', timeoutSeconds: 240 }),
+  { running: false, status: 'succeeded', exitCode: 0, output: 'ok', shell: 'bash', workdir: 'frontend', timeoutSeconds: 240 },
+  'managed terminal exposes the shared Shell result contract'
+)
+
+assert.deepEqual(
+  normalizeManagedTerminalResult({ running: true, output: 'building' }),
+  { running: true, status: 'running', exitCode: null, output: 'building', shell: '', workdir: '', timeoutSeconds: 0 },
+  'long-running managed commands remain explicitly running until the session reports an exit'
+)
+
+
+assert.deepEqual(
+  normalizeManagedTerminalResult({ running: false, status: 'cancelled', exitCode: -1, output: '[Stopped]' }),
+  { running: false, status: 'cancelled', exitCode: -1, output: '[Stopped]', shell: '', workdir: '', timeoutSeconds: 0 },
+  'cancelled managed commands retain an explicit terminal status'
 )

@@ -1,5 +1,6 @@
 import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
-import { upsertDurableToolCallState } from './agentToolCallState.js'
+import { isWaitingInputMisNarration } from '../utils/agentThinking.js'
+import { applyStructuredExecutionStatus, projectToolResultStatus, upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyTokenUsageEvent } from './cacheTelemetryStatus.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
@@ -78,6 +79,11 @@ export function useAgentEventTimeline(options) {
       case 'THINK':
         assistantMsg._thinkingTagFilter?.reset()
         if (data.content) {
+          if (isWaitingInputMisNarration(assistantMsg.thinking) || isWaitingInputMisNarration(data.content)) {
+            assistantMsg.thinking = ''
+            assistantMsg._thinkingDisplay = ''
+            break
+          }
           if (assistantMsg.thinking) {
             assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), iteration: data.iteration || 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
             assistantMsg.thinking = ''
@@ -96,7 +102,18 @@ export function useAgentEventTimeline(options) {
           assistantMsg.thinking = ''
           assistantMsg._thinkingDisplay = ''
         }
-        assistantMsg.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', toolCallId: data.toolCallId || '', startedAt: data.startedAt || Date.now(), execution: { phase: 'tool_delegate', elapsedMs: 0 }, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+        {
+          const toolCallId = data.toolCallId || ''
+          const existing = toolCallId ? assistantMsg.toolCalls.find(call => call?.toolCallId === toolCallId) : null
+          if (existing) {
+            // snapshot 与 SSE 重放重叠时按 toolCallId 幂等合并，不重复建卡片。
+            existing.name = existing.name || data.tool
+            existing.args = existing.args ?? data.arguments
+            if (!existing.summary) existing.summary = data.summary
+          } else {
+            assistantMsg.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', toolCallId: data.toolCallId || '', startedAt: data.startedAt || Date.now(), execution: { phase: 'tool_delegate', elapsedMs: 0 }, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
+          }
+        }
         scheduleAgentRender()
         break
       case 'TOOL_CALL_STATE':
@@ -122,19 +139,23 @@ export function useAgentEventTimeline(options) {
       }
       case 'OBSERVE':
         if (assistantMsg.toolCalls.length > 0) {
-          const last = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1]
-          last.result = data.result || data.content
+          const observed = (data.toolCallId
+            ? assistantMsg.toolCalls.find(call => call.toolCallId === data.toolCallId)
+            : null) || assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1]
+          observed.result = data.result || data.content
           const preservesWaitingInteraction = data.success === false
-            && (last.questionRequest || last.permissionRequest || last.networkRequest)
-          last.status = preservesWaitingInteraction
-            ? (last.permissionRequest || last.networkRequest ? 'waiting_approval' : 'waiting_user')
-            : toolResultStatus(data.success, last.result)
-          last.verificationStatus = last.status === 'warning' ? 'UNAVAILABLE' : ''
-          last.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
+            && (observed.questionRequest || observed.permissionRequest || observed.networkRequest)
+          const resultProjection = projectToolResultStatus(data.success, observed.result)
+          observed.status = preservesWaitingInteraction
+            ? (observed.permissionRequest || observed.networkRequest ? 'waiting_approval' : 'waiting_user')
+            : resultProjection.status
+          observed.verificationStatus = resultProjection.verificationStatus
+          observed.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
             truncated: data.modelProjectionTruncated === true }
+          applyStructuredExecutionStatus(observed, data.executionStatus)
           if (data.diff) {
-            last.hasDiff = true
-            trackFileChange(data, last)
+            observed.hasDiff = true
+            trackFileChange(data, observed)
           }
           if (data.pendingChangeId) changesRefreshKey.value++
         }

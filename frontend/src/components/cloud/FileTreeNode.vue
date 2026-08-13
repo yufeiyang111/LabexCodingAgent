@@ -8,7 +8,7 @@
         <svg v-if="expanded" width="14" height="14" viewBox="0 0 24 24" fill="#6366f1" stroke="#6366f1" stroke-width="1"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       </span>
-      <span class="ftn-name">{{ node.name }}</span>
+      <span class="ftn-name">{{ displayName }}</span>
       <span v-if="node.fileCount" class="ftn-count">{{ node.fileCount }}</span>
       <button v-if="showActions" class="ftn-action-btn" title="新建" @click.stop="$emit('newItem', node.path, 'directory')">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -63,6 +63,7 @@ const children = ref([])
 const loading = ref(false)
 const loaded = ref(false)
 const nextOffset = ref(null)
+const compactPath = ref(null)
 const isDirSelected = computed(() => {
   if (!props.selectedPath) return false
   const sel = props.selectedPath.trim()
@@ -72,6 +73,8 @@ const isDirSelected = computed(() => {
   return selClean === nodePath || selClean.startsWith(nodePath + '/')
 })
 const contextMenu = ref({ visible: false, x: 0, y: 0, node: null })
+
+const displayName = computed(() => compactPath.value || props.node.name)
 
 watch(() => props.node.path, (newPath, oldPath) => {
   if (newPath !== oldPath) {
@@ -99,9 +102,15 @@ async function loadPage(offset = 0, append = false) {
   try {
     const result = await props.loadChildren(props.node.path, offset)
     const page = Array.isArray(result) ? { entries: result, nextOffset: null } : (result || {})
-    children.value = append ? [...children.value, ...(page.entries || [])] : (page.entries || [])
+    const entries = page.entries || []
+    children.value = append ? [...children.value, ...entries] : entries
     nextOffset.value = page.nextOffset ?? null
     loaded.value = true
+    if (!append && entries.length === 1 && entries[0].type === 'directory') {
+      compactPath.value = props.node.name + '\\' + entries[0].name
+    } else {
+      compactPath.value = null
+    }
   } finally {
     loading.value = false
   }
@@ -145,7 +154,7 @@ onBeforeUnmount(() => { document.removeEventListener('click', closeContextMenu) 
 .ftn-file-icon { flex-shrink: 0; display: flex; align-items: center; }
 .ftn-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 13px; }
 .ftn-count { font-size: 10px; color: #9ca3af; background: #f3f4f6; padding: 1px 6px; border-radius: 8px; flex-shrink: 0; }
-.ftn-children { padding-left: 16px; border-left: 1px solid #e5e7eb; margin-left: 7px; }
+.ftn-children { padding-left: 6px; margin-left: 8px; border-left: 1px solid #e5e7eb; }
 .ftn-loading { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: #9ca3af; font-size: 12px; }
 .ftn-load-more { width: calc(100% - 8px); margin: 5px 4px; padding: 5px 8px; border: 1px solid #dbe1f0; border-radius: 5px; background: #fff; color: #4f46e5; font: inherit; font-size: 12px; cursor: pointer; }
 .ftn-load-more:hover { background: #eef2ff; border-color: #c7d2fe; }

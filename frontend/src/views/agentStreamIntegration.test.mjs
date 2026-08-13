@@ -124,6 +124,12 @@ test('all resolved user interactions reconnect the existing task event stream', 
   assert.match(source, /async function handleQuestionReply\(payload\)[\s\S]*?if \(result\.success[\s\S]*?replayResumedAgent\(taskId, assistantMsg(?:, [^)]+)?\)/)
 })
 
+test('command execution keeps the durable event subscription alive while waiting for network approval', () => {
+  assert.match(source, /function continueCommandTaskProjection\(call, approval\)[\s\S]*?replayResumedAgent\(taskId, assistantMsg(?:, [^)]+)?\)/)
+  assert.match(source, /const execution = await projectApi\.agentExecuteCommandApproval[\s\S]*?continueCommandTaskProjection\(call, approval\)/)
+  assert.doesNotMatch(source, /if \(executionData\.resumeAgentLoop\) \{[\s\S]*?replayResumedAgent/)
+})
+
 test('recoverable workspace pause hands the initial stream off to durable task subscription', () => {
   assert.match(timelineSource, /resumeTaskEventsAfterStream = data\.resumeAgentLoop === true/)
   assert.match(source, /const shouldResumeTaskEvents = stillOwnsConversation[\s\S]*?assistantMsg\.resumeTaskEventsAfterStream === true/)

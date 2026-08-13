@@ -19,6 +19,20 @@ test('reduces thinking, tool calls, observations, and permission waits', () => {
   assert.equal(pendingChanges, 1)
 })
 
+
+test('routes an observation to its durable toolCallId instead of the last tool card', () => {
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'read_file', toolCallId: 'call-read', arguments: { file_path: 'README.md' } }, target)
+  reduceHistoryEvent('TOOL_CALL', { tool: 'list_files', toolCallId: 'call-list', arguments: { path: 'src' } }, target)
+
+  reduceHistoryEvent('OBSERVE', { toolCallId: 'call-read', success: true, result: 'README content' }, target)
+
+  assert.equal(target.toolCalls[0].result, 'README content')
+  assert.equal(target.toolCalls[0].status, 'completed')
+  assert.equal(target.toolCalls[1].result, null)
+  assert.equal(target.toolCalls[1].status, 'running')
+})
+
 test('delegates user questions and token accounting while applying final output', () => {
   const target = message()
   const calls = []
@@ -42,6 +56,23 @@ test('keeps a replayed question reply card waiting after its failed tool observa
 
   assert.equal(target.toolCalls[0].status, 'waiting_user')
   assert.equal(target.toolCalls[0].questionRequest.requestId, 'q-replay')
+})
+
+test('drops legacy mis-narrated thinking blocks below a question card', () => {
+  const target = message()
+  reduceHistoryEvent('THINK_DELTA', { delta: '在 question 上遇到错误：正在等待用户输入。' }, target)
+  reduceHistoryEvent('THINK', { content: '在 question 上遇到错误：正在等待用户输入。。需要换一种路径处理。', summary: '检查结果' }, target)
+
+  assert.equal(target.thinking, '')
+  assert.equal(target.thinkingBlocks.length, 0)
+})
+
+test('keeps the answered question narration after interaction resume', () => {
+  const target = message()
+  reduceHistoryEvent('THINK', { content: '已收到用户输入，继续按新的信息执行。', summary: '检查结果' }, target)
+
+  assert.equal(target.thinkingBlocks.length, 1)
+  assert.equal(target.thinkingBlocks[0].content, '已收到用户输入，继续按新的信息执行。')
 })
 
 test('reconstructs one-time command approval and terminal execution state without loop resume', () => {
@@ -389,4 +420,47 @@ test('history replay keeps a terminal provider error visible after partial conte
   assert.equal(target.error, 'Model API failed after bounded retries')
   assert.equal(target.content, 'Partial response before disconnect.\n\n\u9519\u8bef\uff1aModel API failed after bounded retries')
   assert.equal(target.isStreaming, false)
+})
+
+test('replayed TOOL_CALL events merge by toolCallId instead of duplicating cards', () => {
+  const target = message()
+  target.toolCalls.push({
+    name: 'shell', toolCallId: 'shell-call-1', args: { command: 'npm run build' },
+    summary: 'build', result: null, status: 'running'
+  })
+
+  reduceHistoryEvent('TOOL_CALL', {
+    tool: 'shell', toolCallId: 'shell-call-1', arguments: { command: 'npm run build' }, summary: 'build'
+  }, target)
+  reduceHistoryEvent('OBSERVE', { toolCallId: 'shell-call-1', success: true, result: 'status=succeeded' }, target)
+
+  assert.equal(target.toolCalls.length, 1)
+  assert.equal(target.toolCalls[0].toolCallId, 'shell-call-1')
+  assert.equal(target.toolCalls[0].result, 'status=succeeded')
+})
+
+test('snapshot hydration followed by TOOL_CALL replay stays idempotent', () => {
+  const target = message()
+  target.toolCalls.push({
+    name: 'run_tests', toolCallId: 'tests-call-2', args: { strategy: 'test' },
+    summary: 'run_tests', result: null, status: 'running', durableStatus: 'running'
+  })
+
+  reduceHistoryEvent('TOOL_CALL', { tool: 'run_tests', toolCallId: 'tests-call-2', arguments: {} }, target)
+
+  assert.equal(target.toolCalls.length, 1)
+  assert.deepEqual(target.toolCalls[0].args, { strategy: 'test' })
+})
+
+test('replayed OBSERVE projects structured executionStatus instead of guessing text', () => {
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'shell', toolCallId: 'shell-replay', arguments: {} }, target)
+
+  reduceHistoryEvent('OBSERVE', {
+    toolCallId: 'shell-replay', success: false, content: 'status=timed_out', executionStatus: 'timed_out'
+  }, target)
+
+  assert.equal(target.toolCalls[0].status, 'error')
+  assert.equal(target.toolCalls[0].durableStatus, 'timed_out')
+  assert.equal(target.toolCalls[0].executionStatus, 'timed_out')
 })

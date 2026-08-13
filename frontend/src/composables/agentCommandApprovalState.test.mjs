@@ -1,6 +1,6 @@
-import assert from 'node:assert/strict'
+﻿import assert from 'node:assert/strict'
 import test from 'node:test'
-import { attachCommandApprovalState } from './agentCommandApprovalState.js'
+import { applyCommandExecutionResponseState, attachCommandApprovalState, updateCommandApprovalState } from './agentCommandApprovalState.js'
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 
 function message(toolCalls = []) {
@@ -63,4 +63,56 @@ test('legacy approval creates a deterministic isolated card instead of mutating 
   assert.equal(target.toolCalls[0].commandApproval, undefined)
   assert.equal(call.toolCallId, 'legacy-command-approval:legacy-approval')
   assert.equal(call.commandApproval.approvalId, 'legacy-approval')
+})
+
+test('network approval remains authoritative over the failed offline command snapshot', () => {
+  const target = message([{
+    name: 'shell',
+    toolCallId: 'shell-network',
+    status: 'waiting_approval',
+    commandApproval: { approvalId: 'approval-network' },
+    networkRequest: { requestId: 'network-request', toolCallId: 'shell-network' }
+  }])
+
+  const call = updateCommandApprovalState(target, 'COMMAND_EXECUTION_FAILED', {
+    approvalId: 'approval-network',
+    toolCallId: 'shell-network',
+    executionStatus: 'failed',
+    exitCode: 1
+  })
+
+  assert.equal(call.status, 'waiting_approval')
+  assert.equal(call.networkRequest.requestId, 'network-request')
+})
+
+test('waiting_network HTTP response cannot hide a live network approval', () => {
+  const call = {
+    name: 'shell',
+    status: 'running',
+    networkRequest: { requestId: 'network-request' }
+  }
+
+  applyCommandExecutionResponseState(call, {
+    status: 'waiting_network',
+    executionStatus: 'failed',
+    durationMs: 6400,
+    exitCode: 1,
+    output: 'offline dependency resolution failed'
+  })
+
+  assert.equal(call.status, 'waiting_approval')
+  assert.equal(call.durableStatus, 'waiting_approval')
+  assert.equal(call.result.includes('\u7b49\u5f85\u7f51\u7edc\u6279\u51c6'), true)
+  assert.match(call.result, /offline dependency resolution failed/)
+})
+
+test('ordinary failed command response remains an error', () => {
+  const call = { name: 'shell', status: 'running' }
+
+  applyCommandExecutionResponseState(call, {
+    status: 'failed', executionStatus: 'failed', durationMs: 20, exitCode: 2
+  })
+
+  assert.equal(call.status, 'error')
+  assert.equal(call.result.includes('\u547d\u4ee4\u6267\u884c\u5931\u8d25'), true)
 })

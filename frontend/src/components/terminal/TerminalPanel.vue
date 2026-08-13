@@ -118,6 +118,7 @@ import {
   VSCODE_LIGHT_THEME
 } from '@/composables/useTerminal'
 import { projectApi } from '@/api'
+import { normalizeManagedTerminalResult } from '@/composables/terminalProtocol'
 
 const props = defineProps({
   projectId: { type: [String, Number], required: true },
@@ -200,10 +201,18 @@ async function resolveManagedApproval(result, termData) {
   }
   const executed = await projectApi.terminalExecuteApproval(props.projectId, result.approvalId)
   renderManagedOutput(termData, executed.data?.output)
+  renderManagedExecution(termData, executed.data)
+}
+
+function renderManagedExecution(termData, result = {}) {
+  termData.lastExecution = normalizeManagedTerminalResult(result)
 }
 
 async function runManagedCommand(command, termData) {
-  const response = await projectApi.terminalRunSession(props.projectId, termData.managedSessionId, command)
+  const response = await projectApi.terminalRunSession(props.projectId, termData.managedSessionId, command, {
+    path: termData.managedPath,
+    timeoutSeconds: termData.timeoutSeconds
+  })
   const result = response.data || {}
   if (result.refused) {
     termData.terminal.write(`\r\n[Command blocked: ${result.reasonCode || 'policy'}]\r\n`)
@@ -214,6 +223,7 @@ async function runManagedCommand(command, termData) {
     return
   }
   renderManagedOutput(termData, result.output)
+  renderManagedExecution(termData, result)
 }
 
 async function createNewTerminal() {
@@ -240,6 +250,7 @@ async function createNewTerminal() {
   const termData = createTerminal(container, {
     projectId: props.projectId,
     managedSessionId: session.sessionId,
+    managedPath: currentCwd.value,
     runManagedCommand,
     name: session.name || `Terminal ${terminals.value.length + 1}`,
     theme: props.isDark ? VSCODE_DARK_THEME : VSCODE_LIGHT_THEME
@@ -248,6 +259,7 @@ async function createNewTerminal() {
   const host = terminalHosts.value.find(item => item.id === hostId)
   if (host) host.terminalId = termData.id
   renderManagedOutput(termData, session.output)
+  renderManagedExecution(termData, session)
   await nextTick()
   fitTerminal(termData.id)
   termData.terminal.focus()
@@ -284,8 +296,9 @@ async function killActiveTerminal() {
   const active = getActiveTerminal()
   if (!active?.managedSessionId) return
   try {
-    const response = await projectApi.terminalStopSession(props.projectId, active.managedSessionId)
-    renderManagedOutput(active, response.data?.session)
+    const result = response.data || {}
+    renderManagedOutput(active, result.session)
+    renderManagedExecution(active, result)
   } catch (error) {
     ElMessage.error(error?.message || 'Failed to stop terminal command')
   }

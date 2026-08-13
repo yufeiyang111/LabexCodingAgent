@@ -1,5 +1,6 @@
 import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
-import { upsertDurableToolCallState } from './agentToolCallState.js'
+import { isWaitingInputMisNarration } from '../utils/agentThinking.js'
+import { applyStructuredExecutionStatus, projectToolResultStatus, upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachCommandApprovalState, updateCommandApprovalState } from './agentCommandApprovalState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
@@ -8,14 +9,6 @@ import { projectVisibleAgentError } from './agentErrorProjection.js'
 function nextOrder(message) {
   message._nextOrder = (message._nextOrder || 0) + 1
   return message._nextOrder
-}
-
-function toolResultStatus(success, result) {
-  if (success === false) return 'error'
-  const text = String(result || '')
-  if (text.includes('status=FAIL')) return 'error'
-  if (text.includes('status=UNAVAILABLE')) return 'warning'
-  return 'completed'
 }
 
 function normalizedToken(value) {
@@ -186,6 +179,12 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'THINK':
       message._thinkingTagFilter?.reset()
       if (data.content) {
+        if (isWaitingInputMisNarration(message.thinking) || isWaitingInputMisNarration(data.content)) {
+          message.thinking = ''
+          message._thinkingDisplay = ''
+          message._hasThinkStart = false
+          break
+        }
         message.thinkingBlocks = message.thinkingBlocks || []
         if (message.thinking) message.thinkingBlocks.push({ content: message.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), _open: false, _order: nextOrder(message) })
         else if (!message._hasThinkStart) message.thinkingBlocks.push({ content: stripInternalReasoningTags(data.content), summary: stripInternalReasoningBlocks(data.summary || ''), _open: false, _order: nextOrder(message) })
@@ -201,7 +200,18 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
         message.thinking = ''
       }
       message.toolCalls = message.toolCalls || []
-      message.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', toolCallId: data.toolCallId || '', startedAt: data.startedAt || Date.now(), execution: { phase: 'tool_delegate', elapsedMs: 0 }, _order: nextOrder(message) })
+      {
+        const toolCallId = data.toolCallId || ''
+        const existing = toolCallId ? message.toolCalls.find(call => call?.toolCallId === toolCallId) : null
+        if (existing) {
+          // snapshot 与 SSE 重放重叠时按 toolCallId 幂等合并，不重复建卡片。
+          existing.name = existing.name || data.tool
+          existing.args = existing.args ?? data.arguments
+          if (!existing.summary) existing.summary = data.summary
+        } else {
+          message.toolCalls.push({ name: data.tool, args: data.arguments, summary: data.summary, result: null, status: 'running', toolCallId: data.toolCallId || '', startedAt: data.startedAt || Date.now(), execution: { phase: 'tool_delegate', elapsedMs: 0 }, _order: nextOrder(message) })
+        }
+      }
       break
     case 'TOOL_CALL_STATE':
       upsertDurableToolCallState(message, data)
@@ -223,17 +233,21 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       break
     }
     case 'OBSERVE': {
-      const toolCall = message.toolCalls?.at(-1)
+      const toolCall = (data.toolCallId
+        ? message.toolCalls?.find(call => call.toolCallId === data.toolCallId)
+        : null) || message.toolCalls?.at(-1)
       if (toolCall) {
         toolCall.result = data.result || data.content
         const preservesWaitingInteraction = data.success === false
           && (toolCall.questionRequest || toolCall.permissionRequest || toolCall.networkRequest)
+        const resultProjection = projectToolResultStatus(data.success, toolCall.result)
         toolCall.status = preservesWaitingInteraction
           ? (toolCall.permissionRequest || toolCall.networkRequest ? 'waiting_approval' : 'waiting_user')
-          : toolResultStatus(data.success, toolCall.result)
-        toolCall.verificationStatus = toolCall.status === 'warning' ? 'UNAVAILABLE' : ''
+          : resultProjection.status
+        toolCall.verificationStatus = resultProjection.verificationStatus
         toolCall.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
           truncated: data.modelProjectionTruncated === true }
+        applyStructuredExecutionStatus(toolCall, data.executionStatus)
       }
       if (data.pendingChangeId) callbacks.onPendingChange?.()
       break

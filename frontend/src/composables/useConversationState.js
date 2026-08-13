@@ -206,11 +206,9 @@ export function useConversationState({
     orderedEvents.forEach(event => replayHistoryEvent(event.eventType, eventPayload(event), assistant))
 
     const parts = Array.isArray(turn?.parts) ? turn.parts : []
-    if (parts.some(part => String(part?.partType || '').toLowerCase() === 'reasoning')) {
-      assistant.thinkingBlocks = []
-    }
+    const hasReasoningTimeline = orderedEvents.some(event => String(event?.eventType || '').toUpperCase() === 'THINK')
     applyRunMessageSnapshot(assistant, turn?.runMessages || [])
-    applyRunPartSnapshot(assistant, parts)
+    applyRunPartSnapshot(assistant, parts, { preserveReasoningTimeline: hasReasoningTimeline })
 
     assistant.runState = normalizeAgentRunState(turn?.status) || assistant.runState
     assistant.isStreaming = historyTaskIsStreaming(assistant.runState)

@@ -58,7 +58,7 @@
         </div>
         <template v-else>
           <div class="ws-editor-tabs">
-            <div v-for="(f, idx) in openFiles" :key="f.path" class="ws-tab" :class="{ active: idx === activeTabIndex }" @click="switchTab(idx)">
+            <div v-for="(f, idx) in openFiles" :key="f.path" class="ws-tab" :class="{ active: idx === activeTabIndex }" @click="switchTab(idx)" @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeFile(idx) } }">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
               <span class="ws-tab-name">{{ f.name }}</span>
               <span v-if="f.dirty" class="ws-tab-dot"></span>
@@ -538,21 +538,25 @@
                   <span class="usage-stat-value completion">{{ formatTokenCount(allTokenStats?.totalCompletionTokens ?? tokenUsage.completionTokens) }}</span>
                 </div>
               </div>
-              <div class="usage-cache-card" :data-cache-status="cacheTelemetryView.status">
-                <div class="usage-cache-heading">
-                  <span class="usage-cache-title">Prompt 缓存</span>
-                  <span class="usage-cache-status">{{ cacheTelemetryView.label }}</span>
-                  <strong v-if="cacheTelemetryView.showHitRate" class="usage-cache-rate">{{ cacheTelemetryView.hitRate.toFixed(2) }}%</strong>
+                <div class="usage-cache-card" :data-cache-status="cacheTelemetryView.status">
+                  <div class="usage-cache-heading">
+                    <span class="usage-cache-title">Prompt 缓存</span>
+                    <span class="usage-cache-status">{{ cacheTelemetryView.label }}</span>
+                    <strong v-if="cacheTelemetryView.showHitRate" class="usage-cache-rate">
+                      {{ cacheTelemetryView.hitRate.toFixed(2) }}%（会话级）
+                    </strong>
+                  </div>
+                  <p class="usage-cache-detail">{{ cacheTelemetryView.detail }}</p>
+                  <div class="usage-cache-metrics">
+                    <span>读取 {{ formatTokenCount(cacheTelemetryTotals.cachedTokens) }} tokens</span>
+                    <span>写入 {{ formatTokenCount(cacheTelemetryTotals.cacheWriteTokens) }} tokens</span>
+                    <span>非缓存输入 {{ formatTokenCount(cacheTelemetryTotals.nonCachedInputTokens) }} tokens</span>
+                  </div>
                 </div>
-                <p class="usage-cache-detail">{{ cacheTelemetryView.detail }}</p>
-                <div class="usage-cache-metrics">
-                  <span>读取 {{ formatTokenCount(cacheTelemetryTotals.cachedTokens) }} tokens</span>
-                  <span>写入 {{ formatTokenCount(cacheTelemetryTotals.cacheWriteTokens) }} tokens</span>
-                </div>
-              </div>
-              <div class="usage-chart-section">
-                <div class="usage-chart-label">输入 / 输出占比</div>
-                <div ref="usagePieRef" class="usage-echart"></div>
+               <UsageHeatmap v-if="allTokenStats" :by-day="allTokenStats.byDay" :cache-by-day="allTokenStats.cacheByDay" :dark="aiDarkTheme" />
+               <div class="usage-chart-section">
+                 <div class="usage-chart-label">输入 / 输出占比</div>
+                 <div ref="usagePieRef" class="usage-echart"></div>
               </div>
               <div class="usage-chart-section" v-if="allTokenStats?.byDay && Object.keys(allTokenStats.byDay).length > 0">
                 <div class="usage-chart-label">每日消耗趋势</div>
@@ -818,7 +822,7 @@ import { useAgentExtensions } from '@/composables/useAgentExtensions'
 import { useWorkspaceFiles } from '@/composables/useWorkspaceFiles'
 import { useChangeSetState } from '@/composables/useChangeSetState'
 import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
-import { attachCommandApprovalState as attachCommandApproval, findCommandApprovalToolCall as commandApprovalToolCall, updateCommandApprovalState as updateCommandApprovalLifecycle } from '@/composables/agentCommandApprovalState'
+import { applyCommandExecutionResponseState, attachCommandApprovalState as attachCommandApproval, findCommandApprovalToolCall as commandApprovalToolCall, updateCommandApprovalState as updateCommandApprovalLifecycle } from '@/composables/agentCommandApprovalState'
 import { attachDurableInteraction } from '@/composables/agentInteractionProjection'
 import { normalizeSpecialMarkdownBlocks, stripInternalReasoningBlocks, stripInternalReasoningTags } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
@@ -835,6 +839,7 @@ const { stream: streamAgent, replay: replayAgent, subscribe: subscribeAgent, dis
 const MonacoEditor = defineAsyncComponent(() => import('@/components/MonacoEditor.vue'))
 const TerminalPanel = defineAsyncComponent(() => import('@/components/terminal/TerminalPanel.vue'))
 const TokenChart = defineAsyncComponent(() => import('@/components/cloud/TokenChart.vue'))
+const UsageHeatmap = defineAsyncComponent(() => import('@/components/cloud/UsageHeatmap.vue'))
 const AgentTimer = defineAsyncComponent(() => import('@/components/cloud/AgentTimer.vue'))
 const ContextUsageIndicator = defineAsyncComponent(() => import('@/components/cloud/ContextUsageIndicator.vue'))
 const ContextUsageDialog = defineAsyncComponent(() => import('@/components/cloud/ContextUsageDialog.vue'))
@@ -925,7 +930,10 @@ const allTokenStats = ref(null)
 const cacheTelemetryView = computed(() => resolveCacheTelemetryView(allTokenStats.value, tokenUsage.value))
 const cacheTelemetryTotals = computed(() => ({
   cachedTokens: allTokenStats.value?.totalCachedTokens ?? tokenUsage.value.cachedTokens,
-  cacheWriteTokens: allTokenStats.value?.totalCacheWriteTokens ?? tokenUsage.value.cacheWriteTokens
+  cacheWriteTokens: allTokenStats.value?.totalCacheWriteTokens ?? tokenUsage.value.cacheWriteTokens,
+  nonCachedInputTokens: Math.max(0,
+    (allTokenStats.value?.totalPromptTokens ?? tokenUsage.value.promptTokens)
+    - (allTokenStats.value?.totalCachedTokens ?? tokenUsage.value.cachedTokens))
 }))
 let usagePieChart = null
 let usageBarChart = null
@@ -1329,13 +1337,6 @@ function stopMessageTimer(message) {
   if (message?.timing) message.timing.isRunning = false
 }
 
-function executionResultText(data, fallback) {
-  const duration = Number(data?.durationMs)
-  const durationText = Number.isFinite(duration) && duration >= 0 ? ` · ${duration} ms` : ''
-  const exitCode = data?.exitCode === '' || data?.exitCode == null ? '' : ` · exit code ${data.exitCode}`
-  return `${fallback}${durationText}${exitCode}`
-}
-
 function reconcileRecoveredCommandApproval(message, task) {
   const approval = task?.commandApproval
   if (!message || !approval?.approvalId) return
@@ -1384,6 +1385,17 @@ function reconcileRecoveredCommandApproval(message, task) {
 
 function attachUserQuestion(msg, data) {
   attachDurableInteraction(msg, 'question', data)
+}
+
+function continueCommandTaskProjection(call, approval) {
+  const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
+  const taskId = approval?.taskId || assistantMsg?.taskId
+  if (!assistantMsg || !taskId) return
+  assistantMsg.waitingForCommandApproval = false
+  assistantMsg.isStreaming = true
+  if (assistantMsg.timing) assistantMsg.timing.isRunning = true
+  agentLoading.value = true
+  void replayResumedAgent(taskId, assistantMsg, approval?.conversationId || assistantMsg.conversationId)
 }
 
 async function handleCommandApproval(payload) {
@@ -1435,16 +1447,7 @@ async function handleCommandApproval(payload) {
     if (payload.action === 'reject') {
       call.status = 'error'
       call.result = '已拒绝命令，命令未执行'
-      if (decision?.data?.resumeAgentLoop) {
-        const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
-        const taskId = approval.taskId || assistantMsg?.taskId
-        if (assistantMsg && taskId) {
-          assistantMsg.waitingForCommandApproval = false
-          assistantMsg.isStreaming = true
-          agentLoading.value = true
-          void replayResumedAgent(taskId, assistantMsg, approval.conversationId || assistantMsg.conversationId)
-        }
-      }
+      continueCommandTaskProjection(call, approval)
       return
     }
 
@@ -1469,29 +1472,9 @@ async function handleCommandApproval(payload) {
       call.result = '批准请求不可用或已被处理'
       return
     }
-    const executionStatus = executionData.executionStatus ||
-      (executionData.status === 'completed' ? 'completed' : executionData.status === 'failed' ? 'failed' : '')
-    if (executionStatus === 'completed' || executionStatus === 'failed') {
-      call.status = executionStatus === 'completed' ? 'completed' : 'error'
-      call.result = executionResultText(executionData,
-        executionStatus === 'completed' ? '命令执行完成' : '命令执行失败')
-      if (executionData.output) call.result += `
-
-${executionData.output}`
-    } else {
-      call.status = 'running'
-      call.result = '命令已批准，等待执行结果'
-    }
-    if (executionData.resumeAgentLoop) {
-      const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
-      const taskId = approval.taskId || assistantMsg?.taskId
-      if (assistantMsg && taskId) {
-        assistantMsg.waitingForCommandApproval = false
-        assistantMsg.isStreaming = true
-        agentLoading.value = true
-        void replayResumedAgent(taskId, assistantMsg, approval.conversationId || assistantMsg.conversationId)
-      }
-    }
+    applyCommandExecutionResponseState(call, executionData)
+    // HTTP 只描述本次命令请求；waiting_network 等非终态仍必须继续消费持久事件。
+    continueCommandTaskProjection(call, approval)
   } catch (error) {
     call.status = 'error'
     call.result = '命令审批失败：' + (error?.response?.data?.message || error?.message || '未知错误')

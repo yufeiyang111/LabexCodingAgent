@@ -198,6 +198,8 @@ const toolMap = {
 }
 const toolLabel = computed(() => toolMap[props.call.name] || props.call.name)
 const executionText = computed(() => {
+  if (props.call.durableStatus === 'timed_out') return '\u6267\u884c\u8d85\u65f6'
+  if (props.call.durableStatus === 'cancelled') return '\u5df2\u53d6\u6d88'
   if (props.call.status === 'skipped') return '\u5df2\u8df3\u8fc7'
   if (props.call.status === 'interrupted') return '\u5df2\u4e2d\u65ad'
   const execution = props.call.execution
@@ -229,7 +231,8 @@ const isNetworkAsk = computed(() => props.call.status === 'waiting_approval' && 
 const networkRequest = computed(() => props.call.networkRequest || {})
 const networkDomains = computed(() => Array.isArray(networkRequest.value.domains)
   ? networkRequest.value.domains.filter(Boolean) : [])
-const isCommandApproval = computed(() => props.call.status === 'waiting_approval' && !!props.call.commandApproval)
+const isCommandApproval = computed(() => props.call.status === 'waiting_approval'
+  && !!props.call.commandApproval && !props.call.networkRequest && !props.call.permissionRequest)
 const commandApproval = computed(() => props.call.commandApproval || {})
 const isQuestionAsk = computed(() => props.call.status === 'waiting_user' && !!props.call.questionRequest)
 const questionRequest = computed(() => props.call.questionRequest || {})

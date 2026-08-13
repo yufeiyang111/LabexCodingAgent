@@ -55,8 +55,9 @@ function appendReasoningPart(message, part) {
 }
 
 /** 将持久化 RunPart 投影到现有消息视图，兼容旧事件 reducer。 */
-export function applyRunPartSnapshot(message, parts = []) {
+export function applyRunPartSnapshot(message, parts = [], options = {}) {
   if (!message || !Array.isArray(parts)) return message
+  const preserveReasoningTimeline = options.preserveReasoningTimeline === true
   const ordered = [...parts]
     .sort((left, right) =>
       Number(left?.sequence || left?.partId || 0) - Number(right?.sequence || right?.partId || 0))
@@ -74,7 +75,7 @@ export function applyRunPartSnapshot(message, parts = []) {
       return
     }
     if (type === 'reasoning') {
-      appendReasoningPart(message, part)
+      if (!preserveReasoningTimeline) appendReasoningPart(message, part)
       return
     }
     if (type === 'text' && String(part.output || '').trim()) {

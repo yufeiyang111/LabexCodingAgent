@@ -1,5 +1,6 @@
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyRunMessageSnapshot, applyRunPartSnapshot } from './agentRunPartState.js'
+import { createAgentRuntimeIndex } from './agentRuntimeStore.js'
 import { isTerminalAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 import { nextTick as vueNextTick } from 'vue'
 
@@ -110,9 +111,8 @@ export function useAgentTaskRuntime(options) {
   }
 
   function assistantMessageForTask(task) {
-    const existing = [...messages.value]
-      .reverse()
-      .find(message => message?.role === 'assistant' && Number(message.taskId) === Number(task.taskId))
+    // 归一化索引是 messages 的派生只读视图；消息数组仍是唯一事实源。
+    const existing = createAgentRuntimeIndex(messages.value).assistantMessageForTask(task.taskId)
     if (existing) return existing
     const message = recoveredAssistantMessage(task)
     messages.value.push(message)

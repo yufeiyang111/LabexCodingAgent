@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { upsertDurableToolCallState, visibleToolCallStatus } from './agentToolCallState.js'
+import { applyStructuredExecutionStatus, upsertDurableToolCallState, visibleToolCallStatus } from './agentToolCallState.js'
 
 test('durable tool state merges into one idempotent tool card', () => {
   const message = { toolCalls: [], _nextOrder: 0 }
@@ -28,6 +28,43 @@ test('durable status maps to existing visual card states', () => {
   assert.equal(visibleToolCallStatus('environment_blocked'), 'warning')
   assert.equal(visibleToolCallStatus('skipped'), 'skipped')
   assert.equal(visibleToolCallStatus('interrupted'), 'interrupted')
+})
+
+test('shell part terminal statuses stay distinguishable', () => {
+  assert.equal(visibleToolCallStatus('timed_out'), 'error')
+  assert.equal(visibleToolCallStatus('failed'), 'error')
+  assert.equal(visibleToolCallStatus('error'), 'error')
+  assert.equal(visibleToolCallStatus('cancelled'), 'interrupted')
+  assert.equal(visibleToolCallStatus('running'), 'running')
+})
+
+test('structured executionStatus projects timed_out without parsing output text', () => {
+  const call = { toolCallId: 'call-1', status: 'running' }
+  applyStructuredExecutionStatus(call, 'timed_out')
+
+  assert.equal(call.status, 'error')
+  assert.equal(call.durableStatus, 'timed_out')
+  assert.equal(call.executionStatus, 'timed_out')
+})
+
+test('structured executionStatus projects cancelled and infrastructure_error', () => {
+  const cancelled = { toolCallId: 'call-2', status: 'running' }
+  applyStructuredExecutionStatus(cancelled, 'cancelled')
+  assert.equal(cancelled.status, 'interrupted')
+  assert.equal(cancelled.durableStatus, 'cancelled')
+
+  const infrastructure = { toolCallId: 'call-3', status: 'running' }
+  applyStructuredExecutionStatus(infrastructure, 'infrastructure_error')
+  assert.equal(infrastructure.status, 'warning')
+  assert.equal(infrastructure.durableStatus, 'environment_blocked')
+})
+
+test('structured executionStatus leaves ordinary successes untouched', () => {
+  const call = { toolCallId: 'call-4', status: 'completed', durableStatus: 'completed' }
+  applyStructuredExecutionStatus(call, 'succeeded')
+
+  assert.equal(call.status, 'completed')
+  assert.equal(call.durableStatus, 'completed')
 })
 
 test('durable waiting_approval state preserves a permission request for the approval card', () => {

@@ -83,6 +83,20 @@ test('owns tool execution, observations, and change refresh', () => {
   assert.equal(state.calls.filter(call => call[0] === 'change').length, 1)
 })
 
+test('live parallel tool observations update the matching tool card', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({ type: 'TOOL_CALL', data: { taskId: 4, tool: 'read_file', toolCallId: 'call-read', arguments: {} } }, assistant)
+  state.handleAgentEvent({ type: 'TOOL_CALL', data: { taskId: 4, tool: 'list_files', toolCallId: 'call-list', arguments: {} } }, assistant)
+
+  state.handleAgentEvent({ type: 'OBSERVE', data: { taskId: 4, toolCallId: 'call-read', success: true, content: 'README content' } }, assistant)
+
+  assert.equal(assistant.toolCalls[0].result, 'README content')
+  assert.equal(assistant.toolCalls[0].status, 'completed')
+  assert.equal(assistant.toolCalls[1].result, null)
+  assert.equal(assistant.toolCalls[1].status, 'running')
+})
+
 test('routes question, permission, command approval, and pause events', () => {
   const state = harness()
   const assistant = message()
@@ -427,4 +441,36 @@ test('provider failure remains visible after a partial streamed response', () =>
   assert.equal(assistant.error, 'Model API failed after bounded retries')
   assert.equal(assistant.content, 'Partial response before disconnect.\n\n\u9519\u8bef\uff1aModel API failed after bounded retries')
   assert.equal(assistant.isStreaming, false)
+})
+
+test('live TOOL_CALL merges by toolCallId after snapshot hydration', () => {
+  const state = harness()
+  const assistant = message()
+  assistant.toolCalls.push({
+    name: 'shell', toolCallId: 'shell-live-1', args: { command: 'mvn test' },
+    summary: 'test', result: null, status: 'running'
+  })
+
+  state.handleAgentEvent({ type: 'TOOL_CALL', data: { taskId: 4, tool: 'shell', toolCallId: 'shell-live-1', arguments: { command: 'mvn test' } } }, assistant)
+  state.handleAgentEvent({ type: 'OBSERVE', data: { taskId: 4, toolCallId: 'shell-live-1', success: false, content: 'exit=1' } }, assistant)
+
+  assert.equal(assistant.toolCalls.length, 1)
+  assert.equal(assistant.toolCalls[0].toolCallId, 'shell-live-1')
+  assert.equal(assistant.toolCalls[0].result, 'exit=1')
+  assert.equal(assistant.toolCalls[0].status, 'error')
+})
+
+test('live OBSERVE projects structured timed_out and cancelled execution statuses', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({ type: 'TOOL_CALL', data: { taskId: 4, tool: 'shell', toolCallId: 'shell-timeout', arguments: {} } }, assistant)
+  state.handleAgentEvent({ type: 'TOOL_CALL', data: { taskId: 4, tool: 'shell', toolCallId: 'shell-cancel', arguments: {} } }, assistant)
+
+  state.handleAgentEvent({ type: 'OBSERVE', data: { taskId: 4, toolCallId: 'shell-timeout', success: false, content: 'status=timed_out', executionStatus: 'timed_out' } }, assistant)
+  state.handleAgentEvent({ type: 'OBSERVE', data: { taskId: 4, toolCallId: 'shell-cancel', success: false, content: 'status=cancelled', executionStatus: 'cancelled' } }, assistant)
+
+  assert.equal(assistant.toolCalls[0].status, 'error')
+  assert.equal(assistant.toolCalls[0].durableStatus, 'timed_out')
+  assert.equal(assistant.toolCalls[1].status, 'interrupted')
+  assert.equal(assistant.toolCalls[1].durableStatus, 'cancelled')
 })

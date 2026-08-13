@@ -19,3 +19,8 @@ test('missing question identity is visible and browser acceptance waits for a su
   assert.match(workspaceSource, /提问请求仍在同步/)
   assert.match(acceptanceSource, /\.tc-question \.tc-approval-btn\.primary:not\(:disabled\)/)
 })
+
+test('network approval supersedes the consumed command approval on the same tool card', () => {
+  assert.match(cardSource, /isCommandApproval = computed\(\(\) => props\.call\.status === 'waiting_approval'[\s\S]*?!props\.call\.networkRequest[\s\S]*?!props\.call\.permissionRequest\)/)
+  assert.match(cardSource, /v-if="isNetworkAsk" class="tc-approval tc-network-approval"/)
+})

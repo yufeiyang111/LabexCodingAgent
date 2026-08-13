@@ -96,11 +96,19 @@ export const projectApi = {
   terminalRun(projectId, command, timeoutSeconds) {
     return request.post('/student/projects/' + projectId + '/terminal/run', { command, timeoutSeconds: timeoutSeconds || 60 })
   },
-  terminalCreateSession(projectId) {
-    return request.post('/student/projects/' + projectId + '/terminal/sessions', {})
+  terminalCreateSession(projectId, options = {}) {
+    return request.post('/student/projects/' + projectId + '/terminal/sessions', {
+      name: options.name,
+      path: options.path
+    })
   },
-  terminalRunSession(projectId, sessionId, command, timeoutSeconds) {
-    return request.post('/student/projects/' + projectId + '/terminal/sessions/' + sessionId + '/run', { command, timeoutSeconds: timeoutSeconds || 60 })
+  terminalRunSession(projectId, sessionId, command, options = {}) {
+    return request.post('/student/projects/' + projectId + '/terminal/sessions/' + sessionId + '/run', {
+      command,
+      path: options.path,
+      timeoutSeconds: options.timeoutSeconds || 60,
+      longRunning: Boolean(options.longRunning)
+    })
   },
   terminalDecideApproval(projectId, approvalId, action) {
     return request.post('/student/projects/' + projectId + '/terminal/approvals/' + encodeURIComponent(approvalId) + '/decision', {

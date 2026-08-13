@@ -45,10 +45,55 @@ export function attachCommandApprovalState(message, data = {}) {
   return call
 }
 
+function hasWaitingDurableInteraction(call) {
+  if (!call || !['waiting_approval', 'waiting_user'].includes(String(call.status || ''))) return false
+  return Boolean(call.networkRequest || call.permissionRequest || call.questionRequest)
+}
+
+function appendExecutionOutput(result, output) {
+  return output ? `${result}\n\n${output}` : result
+}
+
+export function applyCommandExecutionResponseState(call, data = {}) {
+  if (!call) return null
+  const status = String(data.status || '').toLowerCase()
+  const executionStatus = String(data.executionStatus || '').toLowerCase()
+  const waitingForNetwork = status === 'waiting_network'
+    || (Boolean(call.networkRequest) && executionStatus === 'failed')
+
+  if (waitingForNetwork) {
+    call.status = 'waiting_approval'
+    call.durableStatus = 'waiting_approval'
+    call.result = appendExecutionOutput(
+      executionResultText(data, '\u79bb\u7ebf\u547d\u4ee4\u5931\u8d25\uff0c\u7b49\u5f85\u7f51\u7edc\u6279\u51c6'),
+      data.output
+    )
+    return call
+  }
+  if (executionStatus === 'completed' || executionStatus === 'failed') {
+    call.status = executionStatus === 'completed' ? 'completed' : 'error'
+    call.result = appendExecutionOutput(
+      executionResultText(data, executionStatus === 'completed'
+        ? '\u547d\u4ee4\u6267\u884c\u5b8c\u6210'
+        : '\u547d\u4ee4\u6267\u884c\u5931\u8d25'),
+      data.output
+    )
+    return call
+  }
+  call.status = 'running'
+  call.result = '\u547d\u4ee4\u5df2\u6279\u51c6\uff0c\u7b49\u5f85\u6267\u884c\u7ed3\u679c'
+  return call
+}
+
 export function updateCommandApprovalState(message, type, data = {}) {
   let call = findCommandApprovalToolCall(message, data.approvalId, data.toolCallId)
   if (!call && data.approvalId) call = attachCommandApprovalState(message, data)
   if (!call) return null
+
+  if (hasWaitingDurableInteraction(call)
+      && ['COMMAND_EXECUTION_COMPLETED', 'COMMAND_EXECUTION_FAILED', 'COMMAND_EXECUTION_INTERRUPTED'].includes(type)) {
+    return call
+  }
 
   const decision = String(data.decision || '').toLowerCase()
   if (type === 'COMMAND_APPROVAL_DECIDED') {
