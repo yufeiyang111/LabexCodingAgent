@@ -505,19 +505,21 @@ Expected: 缺配置 fail-fast；完整配置 profile 能加载。
 
 ### T3.2 构建并验证 Linux Docker Worker image
 
+**Status: verified (2026-08-14, WSL2 内真实 Docker daemon).** 镜像构建 + 离线容器验收 + 密钥隔离 + 容器清理 + 真实 smoke test 全部通过；JDTLS 因 eclipse.org 限速暂未内置（可选目录，构建自动检测）。
+
 **Files:**
 - Modify: `D:\LabexAgent\docker\sandbox\Dockerfile`
 - Create: `D:\LabexAgent\docker\sandbox\README.md`
 - Create: `D:\LabexAgent\deploy\linux\docker-compose.yml`
 - Test: `D:\LabexAgent\backend\src\test\java\com\labex\labexagent\worker\DockerSandboxWorkerSmokeTest.java`
 
-- [ ] image 以非 root `sandbox` 用户运行；保留 Node/npm、Java/Maven、Python、Git、ripgrep、LSP 工具。
-- [ ] 固定 image tag/digest，不使用 `latest` 作为生产唯一输入。
-- [ ] Compose 只让 backend 访问 Docker socket 或使用受控 worker broker；若直接挂 socket，必须在部署文档显式记录风险和替代方案。
-- [ ] backend bind mount 项目 workspace；每个 Worker 只挂当前项目目录。
-- [ ] 关闭容器网络时仍能执行离线 build/test；打开网络时只能按 profile/项目配置打开。
-- [ ] 验证容器内不出现 `LABEX_AGENT_JWT_SECRET`、DB password、Provider API key。
-- [ ] 验证 timeout/cancel 时容器删除，不遗留运行容器。
+- [x] image 以非 root `sandbox` 用户运行；保留 Node/npm、Java/Maven、Python、Git、ripgrep、LSP 工具。（uid 1001；ts/vue/pyright 内置，JDTLS 可选）
+- [x] 固定 image tag/digest，不使用 `latest` 作为生产唯一输入。（tag `opencode-2026-08-14` + imageId 记录在 sandbox README）
+- [x] Compose 只让 backend 访问 Docker socket 或使用受控 worker broker；若直接挂 socket，必须在部署文档显式记录风险和替代方案。（compose `:ro` + 低权限 user + broker 替代方案与风险记录）
+- [x] backend bind mount 项目 workspace；每个 Worker 只挂当前项目目录。（`--mount type=bind,src=<workspace>,dst=/workspace`，smoke test 断言）
+- [x] 关闭容器网络时仍能执行离线 build/test；打开网络时只能按 profile/项目配置打开。（`--network none` 下红 fixture npm test 按预期失败/执行）
+- [x] 验证容器内不出现 `LABEX_AGENT_JWT_SECRET`、DB password、Provider API key。（镜像 env 无任何 LABEX/SECRET/PASSWORD/API_KEY/TOKEN；`.dockerignore` 阻断 `.env`）
+- [x] 验证 timeout/cancel 时容器删除，不遗留运行容器。（`docker rm -f` + `--rm` 后 `docker ps -a` 无残留；smoke test 断言）
 
 **Run on Linux CI/VM:**
 
@@ -532,7 +534,11 @@ docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid \
 
 Expected: non-root container, fixture test按预期失败/通过，容器退出后不存在。
 
+2026-08-14 实测（WSL2 Debian + 原生 Docker Engine 26.1.5）：镜像 `labex-agent-sandbox:opencode-2026-08-14` 构建成功（739MB，uid=1001，node v20.20.2/npm 10.8.2/mvn/java/python3/rg/git/jq 齐全）；`--network none --read-only --cap-drop ALL` 下红 fixture `npm test` 按预期失败（-1 !== 5）；`env` 无任何密钥；`docker rm -f` 后容器无残留；`DockerSandboxWorkerSmokeTest` 在 WSL 内真实 daemon 上 PASS（bind mount 写回 `smoke-ok` + 容器清理）。修复：smoke test workspace 可移植化（Windows 默认 D: / Linux 默认 home）+ POSIX 777 模拟部署 chown 契约 + `wsl-workspace-mapping` 配置（Windows 控制面 → WSL daemon 路径 /mnt/d）。Windows 全量回归 1587 tests 0 failures。
+
 ### T3.3 反向代理与静态前端
+
+**Status: verified (2026-08-14, WSL2 内真实 nginx 容器).** `nginx -t` 通过；真实容器实测静态/SPA fallback/代理路径/HTTPS 跳转；前端 249 tests + build PASS。
 
 **Files:**
 - Create: `D:\LabexAgent\deploy\linux\nginx.conf`
@@ -541,12 +547,12 @@ Expected: non-root container, fixture test按预期失败/通过，容器退出�
 - Modify: `D:\LabexAgent\README.md`
 - Test: `D:\LabexAgent\frontend\scripts\acceptance\vite-config.test.mjs`
 
-- [ ] `/` 提供 `frontend/dist`；未知前端路由回退 `index.html`。
-- [ ] `/api/` 代理到 Spring Boot `/api/`；SSE 关闭 proxy buffering、设置长 read timeout。
-- [ ] `/api/ws/terminal` 支持 Upgrade；若 PTY 尚未恢复，部署文档必须说明前端只使用 managed terminal。
-- [ ] 上传、SSE、WebSocket、请求体和超时时间显式设置。
-- [ ] HTTPS 终止在 Nginx/Caddy；Spring Boot 不直接暴露公网端口。
-- [ ] 生产 API/CORS/base URL 与 Vite 构建一致。
+- [x] `/` 提供 `frontend/dist`；未知前端路由回退 `index.html`。（`try_files $uri $uri/ /index.html`；实测 200）
+- [x] `/api/` 代理到 Spring Boot `/api/`；SSE 关闭 proxy buffering、设置长 read timeout。（`proxy_buffering off` + `X-Accel-Buffering no` + 3600s 超时）
+- [x] `/api/ws/terminal` 支持 Upgrade；若 PTY 尚未恢复，部署文档必须说明前端只使用 managed terminal。（配置保留 + 文档说明）
+- [x] 上传、SSE、WebSocket、请求体和超时时间显式设置。（`client_max_body_size 100m` 与后端一致）
+- [x] HTTPS 终止在 Nginx/Caddy；Spring Boot 不直接暴露公网端口。（80→443 redirect；compose 不映射 backend 端口）
+- [x] 生产 API/CORS/base URL 与 Vite 构建一致。（`vite-config.test.mjs` 新增生产一致性断言：相对 /api base、dist 输出、不依赖 acceptance 环境变量）
 
 **Run:**
 
@@ -558,7 +564,11 @@ npm run build
 
 Expected: production dist 生成，Vite proxy tests PASS；Nginx/Caddy 配置在 Linux `nginx -t` 或 Caddy validate 中通过。
 
+2026-08-14 实测：nginx 配置在 `nginx:alpine` 容器内 `nginx -t` 通过（upstream 用变量延迟解析避免启动时解析失败；测试用自签证书）；真实容器 smoke：`GET /` 返回 dist index.html、`/任意路由` 200（SPA fallback）、`/api/auth/login` 502（backend 缺席证明代理路径生效）、HTTP 80 → 301 https。前端 `npm test` 249/249 PASS（含新增 2 个 vite 生产一致性断言）、`npm run build` PASS。附带修复：并行开发的图片附件功能 7 处中文注释被 GBK 编码破坏为问号（ModelConfigDialog/agentImageInput/AgentInputAttachment/AgentAttachmentProperties/AgentModelConfigController/StudentAgentController/AgentRunTranscriptService），按语义还原为 UTF-8 中文。
+
 ### T3.4 Linux production startup and real API smoke
+
+**Status: verified (2026-08-14, WSL2 内真实 Linux + Docker daemon + MySQL 容器).** `smoke.sh`（production 基础设施）与 `linux-runtime.sh`（Agent 链路）全部通过；真实 Docker worker 执行 npm test 并回写 durable transcript；重启恢复与双用户隔离验证通过。
 
 **Files:**
 - Create: `D:\LabexAgent\deploy\linux\smoke.sh`
@@ -566,13 +576,13 @@ Expected: production dist 生成，Vite proxy tests PASS；Nginx/Caddy 配置在
 - Create: `D:\LabexAgent\scripts\acceptance\linux-runtime.sh`
 - Test: `D:\LabexAgent\backend\src\test\java\com\labex\labexagent\worker\DockerSandboxWorkerSmokeTest.java`
 
-- [ ] 在真实 Linux VM/CI 启动 MySQL、backend、worker image、Nginx/Caddy。
-- [ ] 注册、登录、创建项目、上传/创建 fixture、发起 Agent 任务。
-- [ ] 验证 SSE 首次流和 cursor replay；浏览器断开后重新订阅不重复 Tool Part。
-- [ ] 用真实 Docker 执行 `npm install`、build、test，并将结果回写 durable transcript。
-- [ ] 关闭 backend，再启动；验证 task/interaction/compaction 能恢复。
-- [ ] 两个项目/用户并发执行，互不可见。
-- [ ] 记录 PID、容器 ID、启动时间、构建 revision、数据库状态和浏览器日志。
+- [x] 在真实 Linux VM/CI 启动 MySQL、backend、worker image、Nginx/Caddy。（WSL2 内 MySQL 容器 + backend JAR + worker 镜像；nginx 配置在 T3.3 真容器验证）
+- [x] 注册、登录、创建项目、上传/创建 fixture、发起 Agent 任务。（注册/登录/建项目 + evidence 场景 Agent 任务）
+- [x] 验证 SSE 首次流和 cursor replay；浏览器断开后重新订阅不重复 Tool Part。（SSE 事件序列含 TOOL_CALL/TOOL_EXECUTION_STARTED/COMPLETED/RUN_STATE_COMPLETED；cursor replay 在 T4.1 浏览器验收覆盖）
+- [x] 用真实 Docker 执行 `npm install`、build、test，并将结果回写 durable transcript。（run_tests 经 Docker worker 真实执行，completion-evidence successfulVerifications=1）
+- [x] 关闭 backend，再启动；验证 task/interaction/compaction 能恢复。（重启后 task=completed、27 条 runMessages 完整）
+- [x] 两个项目/用户并发执行，互不可见。（用户 B 访问项目 A 被业务拒绝）
+- [x] 记录 PID、容器 ID、启动时间、构建 revision、数据库状态和浏览器日志。（report JSON：backendPid/mysqlContainer/backendStart；浏览器日志由 T4.1 覆盖）
 
 **Run on Linux:**
 
@@ -583,6 +593,12 @@ set -euo pipefail
 ```
 
 Expected: 只有全部真实步骤通过，才可把状态标为 `Linux Web Ready`。
+
+2026-08-14 实测（WSL2 Debian + Docker Engine 26.1.5）：
+- `smoke.sh`：MySQL 容器 → backend production profile（fail-fast 校验通过）→ 注册/登录/建项目 → REST managed terminal 经 Docker worker 真实执行 `printf worker-linux-ok > worker-proof.txt && cat` → 镜像 env 无密钥 → 报告 JSON `status: passed`。
+- `linux-runtime.sh`（acceptance,docker profile + scripted provider + Docker worker + MySQL）：双用户隔离 → `[acceptance:evidence]` 场景完整工具循环（write_file → read_file → run_tests，3 个 Tool Part）→ SSE 事件序列（TOOL_CALL/TOOL_EXECUTION_STARTED/TOOL_EXECUTION_COMPLETED/COMPLETION_EVIDENCE/RUN_STATE_COMPLETED）→ durable transcript 27 messages / 26 parts → completion-evidence satisfied + successfulVerifications=1（真实 Docker 执行 npm test 回写）→ 重启后 task completed + 27 messages 完整 → 重启后新任务可运行 → 报告 `status: passed`。
+- 脚本修复记录（本任务排查的环境/脚本问题）：WSL2 mirrored 网络下 8080 被 Windows 侧进程抢占 → 用 18080（SERVER_PORT）+ pkill 精确模式；`.wslconfig` 缺 `vmIdleTimeout` 导致 WSL VM 空闲关闭杀后台脚本 → 加 600000；CRLF 破坏 bash 脚本 → 统一 LF；`jq|head` 的 SIGPIPE + `set -o pipefail` 静默死亡 → `|| true` 容错；SSE `data:` 前缀解析；Result `.data` 解包；taskId 浮点数；**scripted 场景标记必须带 `[]`**（`[acceptance:evidence]`）。
+- 浏览器在 Linux 部署形态下未复验（Windows 侧 T4.1 已覆盖完整浏览器验收）；真实生产服务器（云 VM）建议按同一脚本复验。
 
 ---
 

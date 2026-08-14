@@ -336,3 +336,92 @@ T4.3（更新文档与发布判定）：README 支持矩阵、alignment status�
 ### Next task
 
 - T3.2（Docker Worker image）需 Linux + Docker 环境（WSL2 内原生 Docker 或启动 Docker Desktop）。
+
+## T3.2 Update (2026-08-14)
+
+**Status: verified（WSL2 内真实 Docker daemon）.**
+
+### 环境
+
+WSL2 Debian 内安装原生 Docker Engine 26.1.5（systemd 托管，daemon.json 配国内 registry mirror：docker.1ms.run + docker.m.daocloud.io）。hello-world 与镜像构建验证通过。Docker Hub 直连被阻断、eclipse.org 被限速（~32KB/s）是本机网络现实。
+
+### 交付
+
+1. `docker/sandbox/Dockerfile`：非 root `sandbox`（uid 1001）、Node 20/npm（registry= npmmirror）+ typescript/vue/pyright LSP、Java 17 + Maven、Python 3、ripgrep、git、jq；JDTLS 可选（`optional-jdtls/jdtls.tar.gz` 存在时自动装，不存在静默跳过）。
+2. 根 `.dockerignore`：`.env`、密钥、node_modules/target/workspaces 永不进入构建上下文。
+3. `deploy/linux/docker-compose.yml`：backend（socket `:ro` + user 1000）+ MySQL 8（healthcheck + 数据卷）；socket 风险与 worker broker 替代方案记录。
+4. `DockerSandboxWorker`：`max-concurrent-containers` Semaphore + `wsl-workspace-mapping`（Windows 控制面 → WSL daemon 的 /mnt/d 路径映射，Terminal/execute 双路径）。
+5. smoke test 可移植化：workspace 默认值平台感知 + POSIX 777 模拟部署 chown 契约。
+
+### 验收证据（WSL 内真实 docker）
+
+- 镜像 `labex-agent-sandbox:opencode-2026-08-14`：739MB，imageId `sha256:c9d473e73d3f...a1cae445`；容器内 `id -u`=1001；mvn/java/python3/rg/git/jq 齐全。
+- `--network none --read-only --cap-drop ALL` 下跑红 fixture：`npm test` 按预期失败（`-1 !== 5`）。
+- 容器 `env` 无 LABEX/SECRET/PASSWORD/API_KEY/TOKEN。
+- `docker rm -f` 后 `docker ps -a` 无残留（execute 的 finally → `docker rm -f` 路径存在）。
+- `DockerSandboxWorkerSmokeTest` 在 WSL 内真实 daemon PASS：bind mount → 容器写 `smoke-ok` → 宿主读回 → 容器清理。
+- Windows 全量回归 1587 tests 0 failures。
+
+### 已知限制
+
+- JDTLS 未内置（eclipse.org 限速；`optional-jdtls/` 目录机制已就绪，后续下载 tar 重 build 即可）。
+- Windows 控制面连 WSL daemon 的 localhost 转发不稳定（wslrelay 间歇 refused）；验证路径改为「WSL 内跑 mvn」+ 源码复制到 ext4。daemon 的 docker.socket 已禁用避免重启循环。
+- 镜像未 push 到任何 registry（本地 imageId 记录；registry digest 待 push 后补）。
+
+### Next task
+
+T3.3（Nginx/Caddy 反代 + 静态前端）可在 WSL 内完成；T3.4 之后是真实服务器复验。
+
+## T3.3 Update (2026-08-14)
+
+**Status: verified（WSL2 内真实 nginx 容器）.**
+
+### 交付
+
+1. `deploy/linux/nginx.conf`：HTTP→HTTPS 跳转；`/` 提供 `frontend/dist` + SPA `try_files` 回退；`/assets/` 长缓存；`/api/` 代理（upstream 变量延迟解析，后端未起时 nginx 也能启动）+ SSE `proxy_buffering off` / `X-Accel-Buffering no` / 3600s 读写超时；`/api/ws/` Upgrade（PTY 恢复后启用）；`client_max_body_size 100m` 与后端一致。
+2. `deploy/linux/Caddyfile.example`：等价配置（Caddy 自动证书、WebSocket 自动 Upgrade、100MB 请求体）。
+3. `vite-config.test.mjs` 新增生产一致性断言：生产构建保持相对 `/api` base + `dist` 输出 + acceptance 环境变量 opt-in 不污染生产。
+4. README 增加部署资产指引（deploy/linux、docker/sandbox、反代要点）。
+
+### 验收证据
+
+- `nginx -t` 在真实 `nginx:alpine` 容器内通过（自签测试证书）。
+- 真实容器 smoke：`GET /` 返回 dist index.html；`GET /任意路由` 200（SPA fallback）；`GET /api/auth/login` 502（backend 缺席，证明代理路径正确）；`GET http://:80/` → 301 https。
+- 前端 `npm test` 249/249 PASS；`npm run build` PASS（budget 内）。
+- 测试容器用完即删（t33-nginx 已清理）。
+
+### 附带修复（并行开发文件的编码破坏）
+
+图片输入附件新功能（并行开发中）有 7 处中文注释/文案被保存为 ASCII 问号（GBK 编码破坏），导致 `sourceEncoding.test.mjs` 失败。已按上下文语义还原为 UTF-8 中文：`ModelConfigDialog.vue`（Base URL hint）、`agentImageInput.js`（策略注释）、`AgentInputAttachment.java`（类注释）、`AgentAttachmentProperties.java`、`AgentModelConfigController.java`（API Key 解析）、`StudentAgentController.java`（附件策略预热）、`AgentRunTranscriptService.java`（attachmentIds 元数据）。
+
+### Next task
+
+T3.4（真实 Linux smoke）：WSL 内起 MySQL 容器 + backend JAR（production profile）+ worker 镜像 + nginx，跑注册/登录/对话/SSE/重启恢复/双用户隔离，写 `deploy/linux/smoke.sh` + `scripts/acceptance/linux-runtime.sh`。
+
+## T3.4 Update (2026-08-14)
+
+**Status: verified（WSL2 内真实 Linux + Docker daemon + MySQL 容器）.** 发布判定推进：**`Linux Web Ready`（WSL2 真实验收）**。
+
+### 交付
+
+1. `deploy/linux/smoke.sh`：production 基础设施 smoke——MySQL 容器 + backend（production profile，fail-fast 校验通过）+ 注册/登录/建项目 + REST managed terminal 经 Docker worker 真实执行 + 镜像无密钥复验 + 证据报告 JSON。
+2. `scripts/acceptance/linux-runtime.sh`：Agent 链路 smoke——acceptance,docker profile（scripted provider + Docker worker + MySQL）+ 双用户隔离 + `[acceptance:evidence]` 场景完整工具循环 + SSE 事件序列 + durable transcript + completion-evidence 验证回写 + 重启恢复 + 重启后新任务。
+
+### 验收证据
+
+- `smoke.sh`：`status: passed`（backendPid/mysqlContainer/projectId 记录）。
+- `linux-runtime.sh` exit 0：SSE 事件含 TOOL_CALL/TOOL_EXECUTION_STARTED/COMPLETED/COMPLETION_EVIDENCE/RUN_STATE_COMPLETED；3 个 Tool Part；`successfulVerifications=1`（真实 Docker 执行 npm test 回写）；27 runMessages / 26 parts；重启后 completed + 27 messages；双用户隔离生效。
+- 关键根因（最后定位）：scripted 场景标记必须带 `[]`——脚本 message 漏了方括号，provider 的 `prompt.contains("[acceptance:evidence]")` 恒 false，任务一轮兜底完成。修复后完整工具循环跑通。
+- 其余环境修复：mirrored 网络 8080 抢占（18080）、vmIdleTimeout、CRLF、SIGPIPE、SSE data: 前缀、Result .data 解包、taskId 浮点。
+- 最终全量回归：后端 1596 tests 0 failures（并行会话的 CancellationToken/FINAL_CANDIDATE_DELTA 重构收尾后全绿）；前端 253 tests + build PASS。
+
+### 已知边界
+
+- 浏览器在 Linux 部署形态下未复验（Windows 侧 T4.1 已覆盖完整浏览器验收）；真实生产服务器（云 VM）建议按同一脚本复验。
+- `Public Multi-user Ready` 仍需限流/配额/监控/备份等工业化建设。
+
+### Next task
+
+- `Public Multi-user Ready` 工业化能力建设（限流、配额、监控告警、备份恢复）；
+- 交互式 WebSocket PTY 恢复（可后置）；
+- 真实云 VM 部署复验（可选，配置直接可搬）。

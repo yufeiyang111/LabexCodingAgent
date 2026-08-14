@@ -102,9 +102,11 @@ Agent 不会把所有失败都当成代码错误。命令失败会先识别 DNS/
 
 #### 命令网络访问审批
 
-命令执行默认在无网络沙箱中运行，不再按 Maven、npm、Gradle、Python 等技术栈维护网络白名单。需要联网的 `shell` 或 `run_tests` 调用可在工具参数中显式设置 `network: true`，后端会为当前任务和当前规范化命令创建一次性网络审批；审批不会转化为永久权限，也不会授权其他命令。
+沙箱网络**默认开启**（WSL Worker 不挂 `--unshare-net`，Docker Worker 使用 `--network bridge`），`curl`/`wget`/`pip`/`npm`/`mvn`/`gradle`/`go` 等构建与网络命令、`git fetch/pull/clone` 及普通 `git push` 直接执行，不再需要审批。需要完全离线沙箱时设置 `LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED=false`。
 
-如果命令在离线沙箱中出现 DNS、连接超时、下载失败等网络型错误，系统会自动创建一次“离线失败重试”审批。用户批准后，Agent 只能按原命令携带 `network: true` 重试一次；拒绝或重试仍失败时，不会继续无限弹窗。`web_search`、`web_fetch` 和 `repo_clone` 继续使用它们自己的受控服务路径，不进入这条命令网络审批链。
+仍需审批的是**破坏性命令**：`rm`/`del`/`rmdir`/`truncate`/`drop`/`flushall`、`git reset --hard`/`clean`/`checkout --`/`rm`/`stash drop`、`git push --force`（`--force-with-lease` 放行）、以及 `docker` 命令。读取 `.env` 等密钥文件也会弹审批。硬拦截（直接拒绝且不可重试）保留：`shutdown`/`mkfs`/`format`、`/etc/passwd`、`.ssh`、云元数据地址、PowerShell 编码命令；`repo_clone` 默认 DENY。
+
+`web_search`、`web_fetch` 走它们自己的受控服务路径，不进入命令审批链。
 ### Agent 忽略文件
 
 项目根目录可以放置 `.labex-agentignore`，用于排除不希望进入 Agent 上下文、代码索引和搜索结果的生成物或大型日志。
@@ -120,6 +122,13 @@ generated/**
 ```
 
 `.labex-agentignore` 只影响 Agent 的上下文和搜索边界，不是操作系统级安全隔离。超过 20 MiB 的文件不会自动进入 Agent 上下文；`.git` 和 `.labex` 等内部目录会始终排除。
+
+### 2.2.2 历史页加载预算（可选）
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `LABEX_AGENT_HISTORY_MAX_PAGE_EVENTS_BUDGET` | `1000` | 历史消息单页最多返回的 run event 总数（跨任务累计）；超出部分留到更早的页，用户上翻时才继续加载 |
+| `LABEX_AGENT_HISTORY_MAX_PART_OUTPUT_CHARS` | `4000` | 历史页工具输出截断长度（字符），完整输出仍持久化在数据库，仅影响浏览时的传输与渲染 |
 
 ### 2.3 Execution isolation
 
@@ -154,8 +163,33 @@ For a server deployment, switch to the Docker Worker:
 |---|---|---|
 | `SPRING_PROFILES_ACTIVE` | `production` | Disables the local WSL Worker and enables production startup validation. |
 | `LABEX_AGENT_WORKER_DOCKER_IMAGE` | `registry.example.com/labex-agent-sandbox:2026-07` | Required prebuilt OCI image containing the shell, language runtimes, package managers, and LSP tools. |
+| `LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED` | `true` | 沙箱网络开关。默认 `true`：WSL 不带 `--unshare-net`、Docker 用 `--network bridge`，网络命令无需审批；`false` 恢复无网络沙箱。 |
 
-The Docker daemon must be available. The Docker Worker also mounts only the current project workspace, disables the network, uses a read-only root filesystem, applies CPU/memory/PID limits, and removes the container after terminal or command completion. Do not bake model API keys, JWT secrets, or database credentials into the image.
+The Docker daemon must be available. The Docker Worker mounts only the current project workspace, uses a read-only root filesystem, applies CPU/memory/PID limits, and removes ordinary terminal or command containers after completion. Its network is `bridge` by default and becomes isolated only when `LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED=false`. Do not bake model API keys, JWT secrets, or database credentials into the image.
+
+### 2.3.1 Managed project previews
+
+Ordinary shell commands remain bounded and must not be used to keep a development server alive. The Agent uses a separately managed preview process for long-running services: it returns a URL only after an HTTP readiness request to the configured port succeeds, stores status/output metadata without persisting the command text, and stops the child process explicitly or when the backend shuts down. A backend restart marks an in-memory preview handle unavailable rather than claiming that a stale URL is still ready.
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `LABEX_AGENT_PREVIEW_ENABLED` | `true` | Enables managed previews. Set to `false` to reject preview starts. |
+| `LABEX_AGENT_PREVIEW_STARTUP_TIMEOUT_MS` | `30000` | Maximum time to wait for HTTP readiness. |
+| `LABEX_AGENT_PREVIEW_POLL_INTERVAL_MS` | `250` | Readiness polling interval. |
+| `LABEX_AGENT_PREVIEW_CONNECT_TIMEOUT_MS` | `1000` | Per-request HTTP connect timeout. |
+| `LABEX_AGENT_PREVIEW_OUTPUT_MAX_CHARS` | `60000` | Maximum captured stdout/stderr characters in the preview artifact; excess output is discarded after a marker. |
+| `LABEX_AGENT_PREVIEW_MIN_PORT` / `LABEX_AGENT_PREVIEW_MAX_PORT` | `1024` / `65535` | Allowed preview-port range. |
+| `LABEX_AGENT_PREVIEW_READINESS_HOST` / `LABEX_AGENT_PREVIEW_PUBLIC_HOST` | `127.0.0.1` / `localhost` | Host used for readiness / URL returned to the browser. |
+
+For a WSL Worker, bind the application to `0.0.0.0` (for example `npm run dev -- --host 0.0.0.0`) and choose a port that the Windows host can reach through WSL localhost forwarding. The browser-visible URL is valid only on the configured `public-host`; production deployments should put it behind the deployment's authenticated reverse proxy rather than exposing arbitrary worker ports.
+
+### 2.3.2 Durable tool-output paging
+
+Large tool results are persisted in the durable Tool Part, while the Provider receives a bounded preview. When that preview is truncated, the Agent receives the originating `tool_call_id` and can use `read_tool_output` to page through the same task's raw output by `offset` and `limit`. The read is constrained to the active task, student, and project; it does not expose another run's output. Keep pages narrow and follow `next_offset` rather than asking the model to reload an entire log.
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `LABEX_AGENT_TOOL_OUTPUT_READ_MAX_CHARS` | `4000` | Maximum UTF-16 characters returned by one `read_tool_output` call. Values are clamped to 256-20000. |
 
 ### 2.4 AI 集成（可选）
 

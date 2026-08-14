@@ -1,0 +1,52 @@
+# LabexAgent Linux Web 部署 Compose（backend + MySQL）。
+# Nginx/Caddy 反向代理与静态前端在 T3.3 接入。
+#
+# 安全说明（必读）：
+# backend 挂载 /var/run/docker.sock 用于创建一次性 Worker 容器。这等同于
+# backend 进程持有 root 权限——攻击者只要能控制 backend，就能通过 socket
+# 逃逸到宿主。替代方案是受控 worker broker（独立 daemon，只暴露
+# create-run/attach/cleanup 白名单 API）；在 broker 落地前，部署时必须：
+#   1. backend 容器以独立低权限用户运行（compose 已设置 user）；
+#   2. socket 挂载为只读（ro）；
+#   3. 宿主机对 2375 TCP 不开放任何端口（compose 不映射任何 docker 端口）。
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${LABEX_AGENT_DB_PASSWORD:?DB password required}
+      MYSQL_DATABASE: labex_agent
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${LABEX_AGENT_DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    image: ${LABEX_AGENT_BACKEND_IMAGE:?backend image required}
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - .env.production
+    environment:
+      SPRING_PROFILES_ACTIVE: production
+      LABEX_AGENT_DB_URL: jdbc:mysql://mysql:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      LABEX_AGENT_PROJECT_BASE_PATH: /srv/labex-agent/workspaces
+      LABEX_AGENT_UPLOAD_PATH: /srv/labex-agent/uploads
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /srv/labex-agent/workspaces:/srv/labex-agent/workspaces
+      - /srv/labex-agent/uploads:/srv/labex-agent/uploads
+
+volumes:
+  mysql-data:

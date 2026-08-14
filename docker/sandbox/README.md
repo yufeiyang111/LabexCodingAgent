@@ -27,6 +27,12 @@ docker build -t labex-agent-sandbox:opencode-2026-08-14 -f docker/sandbox/Docker
 docker image inspect --format '{{index .RepoDigests 0}}' labex-agent-sandbox:<tag>
 ```
 
+当前已验证构建（2026-08-14，WSL2 真实 Docker daemon 验收通过）：
+
+- tag: `labex-agent-sandbox:opencode-2026-08-14`
+- imageId: `sha256:c9d473e73d3f9dc4f2680211ad3e1366593498f525440298ebb35ea9a1cae445`
+- 大小: 739 MB（push 到 registry 后以 `RepoDigests` 的 registry digest 为准）
+
 ## JDTLS（Java LSP）
 
 download.eclipse.org 在国内网络被限速（~32KB/s）。如需要在镜像内置 JDTLS：

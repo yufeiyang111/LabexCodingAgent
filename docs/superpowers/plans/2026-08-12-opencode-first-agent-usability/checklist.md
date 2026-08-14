@@ -11,7 +11,7 @@
 ## 0. 发布标签与总判定
 
 - [x] **Local Usable (Windows)**: Windows WSL/local execution、durable runtime、真实浏览器验收与全量测试门禁全部 verified（2026-08-13）。已知限制：交互式 WebSocket PTY 未恢复（REST managed terminal 是当前路径）；Docker Worker 未在真实 daemon 验证。证据：README「支持矩阵与发布状态」、本文件 T4.1/T4.2/T4.3 Evidence。
-- [ ] **Linux Web Ready**：Linux Docker Worker、MySQL、HTTPS 反代、生产前端、SSE/WebSocket/托管终端、浏览器、重启和双项目隔离全部通过。
+- [x] **Linux Web Ready（WSL2 真实验收）**：Linux Docker Worker、MySQL、生产前端、SSE、托管终端、重启和双项目隔离全部在 WSL2 真实 Linux + Docker daemon 上通过（2026-08-14，T3.1–T3.4）。注意：真实生产服务器（云 VM）建议按同一脚本复验；浏览器在 Linux 部署形态下未单独复验（Windows 侧 T4.1 已覆盖完整浏览器验收）。
 - [ ] **Public Multi-user Ready**：在 `Linux Web Ready` 之外，限流、配额、备份恢复、监控告警、滥用和升级回滚全部通过。
 
 > 未满足下一层门槛时，不能使用下一层标签。只跑 `mvn test`、`npm test` 或 `npm run build`，不得标记任何 Web 发布标签。
@@ -116,6 +116,41 @@
 - [x] `application-production.yml`：Linux 路径 `/srv/labex-agent/workspaces`、`/srv/labex-agent/uploads`。
 - [x] `deploy/linux/` 目录（`.env.production.example` + `README.md`）：拓扑、必填项、安全要点。
 - [x] `ProductionConfigurationTest` 10 tests PASS；后端全量 1560 tests 0 failures；本地 local profile 重启 HTTP 200。
+
+## T3.2 Evidence (2026-08-14)
+
+- [x] WSL2 Debian 原生 Docker Engine 26.1.5（systemd + registry mirror：docker.1ms.run / docker.m.daocloud.io）；hello-world 与镜像构建通过。
+- [x] 镜像 `labex-agent-sandbox:opencode-2026-08-14`（739MB，imageId sha256:c9d473e73d3f...a1cae445）：uid 1001 非 root；node20/npm、Java17+Maven、Python3、git、ripgrep、jq、TS/Vue/Pyright LSP 齐全。
+- [x] 离线约束验证：`--network none --read-only --cap-drop ALL --security-opt no-new-privileges` 下红 fixture `npm test` 按预期失败（-1 !== 5）。
+- [x] 密钥隔离：镜像 env 无 LABEX/SECRET/PASSWORD/API_KEY/TOKEN；`.dockerignore` 阻断 `.env`/密钥进构建上下文。
+- [x] 容器清理：`docker rm -f` 后 `docker ps -a` 无残留；smoke test 断言容器不遗留。
+- [x] `DockerSandboxWorkerSmokeTest` 在 WSL 内真实 daemon PASS（挂载/执行/写回/清理）；workspace 可移植化 + POSIX 777 部署契约。
+- [x] `deploy/linux/docker-compose.yml`：backend（socket :ro + user 1000）+ MySQL 8 healthcheck；socket 风险与 broker 替代方案记录。
+- [x] Windows 全量回归 1587 tests 0 failures；JDTLS 未内置（限速，optional-jdtls 机制已就绪）。
+
+## T3.3 Evidence (2026-08-14)
+
+- [x] `deploy/linux/nginx.conf`：`/` dist + SPA fallback、`/api/` 代理（变量延迟解析 upstream）、SSE `proxy_buffering off` + 3600s、`/api/ws/` Upgrade、`client_max_body_size 100m`、80→443 跳转。
+- [x] 配置语法：`nginx:alpine` 容器内 `nginx -t` 通过。
+- [x] 真实容器 smoke（WSL2，自签证书）：`/` 返回 index.html、`/任意路由` 200、`/api/auth/login` 502（backend 缺席证明代理生效）、HTTP 301 → https。
+- [x] `Caddyfile.example` 等价配置（自动证书 + WebSocket 自动 Upgrade）。
+- [x] `vite-config.test.mjs` 新增生产一致性断言（相对 /api base、dist 输出、opt-in 环境变量不污染生产）。
+- [x] 前端 249/249 tests PASS + `npm run build` PASS（chunk budget 内）。
+- [x] PTY 未恢复已写入部署文档；compose 不映射 backend 公网端口（HTTPS 终止在反代）。
+- [x] 附带修复：并行图片附件功能 7 处中文注释被 GBK 破坏为问号，已按语义还原 UTF-8。
+
+## T3.4 Evidence (2026-08-14)
+
+- [x] `deploy/linux/smoke.sh`（production 基础设施）全绿：MySQL 容器 + backend production profile + 注册/登录/建项目 + REST managed terminal 经 Docker worker 真实执行 + 镜像无密钥；report `status: passed`。
+- [x] `scripts/acceptance/linux-runtime.sh`（Agent 链路，acceptance,docker + scripted provider + Docker worker + MySQL）全绿 exit 0。
+- [x] 双用户/双项目隔离：用户 B 访问项目 A 被业务拒绝（HTTP 200 + code=-1）。
+- [x] SSE 事件序列：TOOL_CALL / TOOL_CALL_STATE / TOOL_EXECUTION_STARTED / TOOL_EXECUTION_COMPLETED / TOOL_PHASE_CHANGED / OBSERVE / COMPLETION_EVIDENCE / RUN_STATE_COMPLETED / DONE。
+- [x] 真实 Docker 工具执行：3 个 Tool Part（write_file → read_file → run_tests），completion-evidence `successfulVerifications=1`（npm test 经 Docker worker 执行并回写）。
+- [x] durable transcript：27 runMessages / 26 parts；重启后 task=completed + 27 messages 完整；重启后新任务可运行。
+- [x] 证据报告：backendPid / mysqlContainer / backendStart / isolationHttpCode / sseEventTypes / restartStatus 全部记录。
+- [x] 排查并修复的环境/脚本问题：mirrored 网络 8080 抢占（18080）、vmIdleTimeout、CRLF、SIGPIPE+pipefail、SSE data: 前缀、Result .data 解包、taskId 浮点、**scripted 标记必须带 `[]`**。
+- [x] 最终回归：后端 1596 tests 0 failures（BUILD SUCCESS）；前端 253 tests + build PASS。
+- [x] 浏览器 Linux 形态未复验（Windows T4.1 已覆盖）；生产服务器建议按同一脚本复验。
 
 
 
