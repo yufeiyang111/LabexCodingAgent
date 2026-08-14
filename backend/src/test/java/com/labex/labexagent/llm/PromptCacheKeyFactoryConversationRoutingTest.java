@@ -19,10 +19,13 @@ class PromptCacheKeyFactoryConversationRoutingTest {
                 42, 7, "https://api.example.test/v1", "model-a", "another-conversation");
         String differentModelRoute = PromptCacheKeyFactory.forConversation(
                 42, 8, "https://api.example.test/v1", "model-b", "conv-sensitive-id");
+        String differentStudentRoute = PromptCacheKeyFactory.forConversation(
+                43, 7, "https://api.example.test/v1", "model-a", "conv-sensitive-id");
 
         assertEquals(first, repeated);
         assertNotEquals(first, differentConversation);
         assertNotEquals(first, differentModelRoute);
+        assertNotEquals(first, differentStudentRoute);
         assertTrue(first.startsWith("labex-"));
         assertFalse(first.contains("conv-sensitive-id"));
     }
