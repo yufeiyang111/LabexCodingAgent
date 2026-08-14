@@ -860,7 +860,7 @@ public class AgentLoopEngine {
             this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Iteration policy: `" + this.iterationPolicyDescription() + "`\n");
             long contextBuildStartedAt = System.nanoTime();
             RunRuntimeProjection runtimeProjection = this.buildRunRuntimeProjection(
-                    studentId, project, mode, modelConfig, llmConfig, visibleLanguage);
+                    studentId, conv.getConversationId(), project, mode, modelConfig, llmConfig, visibleLanguage);
             List<ToolDefinition> selectedToolDefinitions = runtimeProjection.selectedTools();
             ctx.setSelectedToolNames(this.toolSelectionPolicy.selectedNames(selectedToolDefinitions));
             String toolDefinitions = runtimeProjection.toolDefinitions();
@@ -978,10 +978,11 @@ public class AgentLoopEngine {
                                             this.taskService.updateTask(task.getTaskId(), "running", runningStep, null);
                                         }
                                         // plan_exit 完成 durable 模式切换后，下一次 Provider 调用必须重建运行时投影：
-                                        // mode policy、选中工具、系统提示词与 prompt-cache key 全部从当前持久化 mode 派生。
+                                        // mode policy、选中工具、工具 schema 与系统提示词从当前持久化 mode 派生；
+                                        // prompt-cache key 保持当前 conversation 与模型路由作用域。
                                         if (!runtimeProjection.mode().equals(ctx.getMode())) {
                                             RunRuntimeProjection fresh = this.buildRunRuntimeProjection(
-                                                    studentId, project, ctx.getMode(), modelConfig, llmConfig, visibleLanguage);
+                                                    studentId, conv.getConversationId(), project, ctx.getMode(), modelConfig, llmConfig, visibleLanguage);
                                             runtimeProjection = fresh;
                                             sysPrompt = fresh.systemPrompt();
                                             tools = fresh.tools();
@@ -3330,11 +3331,10 @@ public class AgentLoopEngine {
     }
 
     /**
-     * 可重建的运行时投影：mode policy、选中工具、工具 schema、系统提示词与 prompt-cache key
-     * 全部由当前 mode 派生。plan_exit 完成 durable 切换后，下一次 Provider 调用必须调用本方法重建，
-     * 使 build 模式的新工具集与策略在下一轮立即生效。
+     * 可重建的运行时投影：mode policy、选中工具、工具 schema、系统提示词与 prompt-cache key。
+     * cache key 按 conversation 和模型路由稳定；plan_exit 后仍需重建 mode 派生的工具与系统提示词。
      */
-    private RunRuntimeProjection buildRunRuntimeProjection(Integer studentId, StudentProject project, String mode,
+    private RunRuntimeProjection buildRunRuntimeProjection(Integer studentId, String conversationId, StudentProject project, String mode,
                                                            AgentModelConfig modelConfig,
                                                            LlmProvider.LlmConfig baseLlmConfig,
                                                            String visibleLanguage) {
@@ -3343,8 +3343,8 @@ public class AgentLoopEngine {
         String systemPrompt = this.buildSystemPrompt(project, toolDefinitions, visibleLanguage);
         List<Map<String, Object>> tools = new ArrayList<>(this.buildToolsList(selectedTools));
         LlmProvider.LlmConfig configured = baseLlmConfig == null ? null : baseLlmConfig.withPromptCacheKey(
-                PromptCacheKeyFactory.forStablePrefix(studentId, modelConfig.getConfigId(),
-                        baseLlmConfig.baseUrl(), baseLlmConfig.modelName(), systemPrompt, GSON.toJson(tools)));
+                PromptCacheKeyFactory.forConversation(studentId, modelConfig.getConfigId(),
+                        baseLlmConfig.baseUrl(), baseLlmConfig.modelName(), conversationId));
         return new RunRuntimeProjection(mode, selectedTools, toolDefinitions, systemPrompt, tools,
                 this.buildModePolicy(mode), configured);
     }
