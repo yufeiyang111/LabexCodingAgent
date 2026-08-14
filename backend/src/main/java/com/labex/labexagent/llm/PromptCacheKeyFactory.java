@@ -9,11 +9,6 @@ public final class PromptCacheKeyFactory {
     private PromptCacheKeyFactory() {
     }
 
-    public static String forConversation(String conversationId) {
-        if (conversationId == null || conversationId.isBlank()) return "";
-        return digest("conversation", conversationId);
-    }
-
     /**
      * 生成会话与模型路由范围内稳定的脱敏缓存路由 key。
      * 实际请求内容仍是 Provider 判断缓存匹配的唯一依据；该 key 只用于提高缓存分片亲和性。
