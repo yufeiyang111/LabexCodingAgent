@@ -15,16 +15,16 @@ public final class PromptCacheKeyFactory {
     }
 
     /**
-     * Produces a stable routing key for the static prefix that precedes an Agent tool loop.
-     * The key intentionally excludes user messages and tool results so providers that support
-     * prefix caching can reuse the system prompt and tool schema across runs.
+     * Produces an opaque cache-routing key that stays stable for one conversation and model route.
+     * Request content remains the Provider's cache-match authority; this key only improves cache-shard affinity.
      */
-    public static String forStablePrefix(Integer studentId, Integer modelConfigId, String baseUrl,
-                                         String modelName, String systemPrompt, String toolSchemaJson) {
-        return digest("stable-prefix-v1",
+    public static String forConversation(Integer studentId, Integer modelConfigId, String baseUrl,
+                                         String modelName, String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) return "";
+        return digest("conversation-route-v2",
                 String.valueOf(studentId == null ? 0 : studentId),
                 String.valueOf(modelConfigId == null ? 0 : modelConfigId),
-                normalize(baseUrl), normalize(modelName), normalize(systemPrompt), normalize(toolSchemaJson));
+                normalize(baseUrl), normalize(modelName), normalize(conversationId));
     }
 
     private static String digest(String... values) {
