@@ -75,6 +75,7 @@ import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolRegistry;
 import com.labex.labexagent.tool.ToolSelectionPolicy;
 import com.labex.labexagent.tool.ToolResult;
+import com.labex.labexagent.tool.ToolSchemaCanonicalizer;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.labexagent.worker.SandboxWorker;
@@ -587,12 +588,11 @@ public class AgentLoopEngine {
         String globalSkills = this.skillService.buildPromptContext(studentId);
         String mcpContext = this.mcpServerService.buildPromptContext(studentId);
         String modePolicy = this.buildModePolicy(mode);
-        String languagePolicy = this.buildVisibleLanguagePolicy(visibleLanguage);
         // 预览的"下一条请求估算"必须与真实 Provider 请求一致（瘦身消息）；
         // orchestrator 的完整 bundle 只作为诊断信息放进 previewMetadata，不参与估算。
         String leanMemory = this.contextOrchestrator.buildLeanWorkspaceMemory(project, draft, activePath);
         String initialContextMessage = AgentLoopEngine.buildLeanInitialContextMessage(
-                modePolicy, languagePolicy, projectRules, leanMemory, recentRunLog, checkpoint);
+                modePolicy, projectRules, leanMemory, recentRunLog, checkpoint);
         ContextUsageEstimator.PromptContext promptContext = new ContextUsageEstimator.PromptContext(
                 leanMemory, "", "", initialContextMessage);
         List<Map<String, Object>> messages = new ArrayList<>();
@@ -874,9 +874,8 @@ public class AgentLoopEngine {
             String recentRunLog = "";
             // 执行进度是可重建的动态投影，不写入 Provider transcript；每次调用前从 durable Part/Event 注入。
             String modePolicy = runtimeProjection.modePolicy();
-            String languagePolicy = this.buildVisibleLanguagePolicy(visibleLanguage);
             String initialContextMessage = AgentLoopEngine.buildLeanInitialContextMessage(
-                    modePolicy, languagePolicy, projectRules, leanMemory, recentRunLog, "");
+                    modePolicy, projectRules, leanMemory, recentRunLog, "");
             ContextUsageEstimator.PromptContext contextPrompt = new ContextUsageEstimator.PromptContext(
                     leanMemory, "", "", initialContextMessage);
             List<Map<String, Object>> persistedMessages;
@@ -1207,7 +1206,7 @@ public class AgentLoopEngine {
                                                 this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
                                                         this.toolCallBatchProtocol.toolResultMessage(call,
                                                                 "[Tool " + tn + " result]\n"
-                                                                        + this.compactToolResultForModel(tn, rejected)));
+                                                                        + this.compactToolResultForModel(tn, rejected, toolCallId)));
                                                 continue;
                                             }
                                             if (modelThinking.isBlank()) {
@@ -1268,7 +1267,7 @@ public class AgentLoopEngine {
                                                     EnvironmentBlockerClassifier.classify(tn, res);
                                             if (environmentBlocker.isPresent()) {
                                                 String blockedResultForModel = "[Tool " + tn + " result]\n"
-                                                        + this.compactToolResultForModel(tn, res);
+                                                        + this.compactToolResultForModel(tn, res, toolCallId);
                                                 this.journalToolBlocked(executionFence, task.getTaskId(), toolCallId, tn, publicArgs, i, res.getContent());
                                                 this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
                                                         this.toolCallBatchProtocol.toolResultMessage(call, blockedResultForModel));
@@ -1324,7 +1323,7 @@ public class AgentLoopEngine {
                                             String planNote = planStatus.isEmpty() ? "" : "\nCurrent plan progress:\n" + planStatus;
                                             String stageNote = "\nCurrent engineering stage: " + ctx.getStage();
                                             String resultForModel = "[Tool " + tn + " result]\n"
-                                                    + this.compactToolResultForModel(tn, res) + planNote + stageNote
+                                                    + this.compactToolResultForModel(tn, res, toolCallId) + planNote + stageNote
                                                     + "\nContinue using tools when needed. Only output the final summary after all plan tasks are complete and verified.";
                                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(call, resultForModel));
                                             if (isMissingPlanCompletion(tn, ta, res)) {
@@ -1528,7 +1527,7 @@ public class AgentLoopEngine {
                                     Object planNote2 = planStatus2.isEmpty() ? "" : "\nCurrent plan progress:\n" + planStatus2;
                                     String stageNote2 = "\nCurrent engineering stage: " + ctx.getStage();
                                     this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ""));
-                                    this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Tool " + invTool + " result]\n" + this.compactToolResultForModel(invTool, res) + (String)planNote2 + stageNote2 + "\nCall tools to continue. Complete all plan tasks and verify before final summary."));
+                                    this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "[Tool " + invTool + " result]\n" + this.compactToolResultForModel(invTool, res, recoveredToolCallId) + (String)planNote2 + stageNote2 + "\nCall tools to continue. Complete all plan tasks and verify before final summary."));
                                     break block19;
                                 }
                                 cleaned = this.cleanModelOutput(content);
@@ -2643,7 +2642,7 @@ public class AgentLoopEngine {
                             classification.normalizedCommand().displayCommand(),
                             classification.normalizedCommand().canonicalWorkingDirectory(),
                             this.commandApprovalShell(toolName),
-                            "timeout=" + timeout + ";longRunning=false;network="
+                            "timeout=" + timeout + ";longRunning=" + this.isPreviewTool(toolName) + ";network="
                                     + (this.networkAccessService != null
                                     && this.networkAccessService.hasApprovedGrant(ctx.getTaskId(),
                                     classification.normalizedCommand().canonicalCommand())),
@@ -2693,7 +2692,7 @@ public class AgentLoopEngine {
                                            String resolvedCommand, String workingDirectory,
                                            boolean networkRequested) {
         String safeTool = toolName == null ? "" : toolName.trim();
-        boolean commandTool = "run_tests".equals(safeTool) || "shell".equals(safeTool) || "bash".equals(safeTool);
+        boolean commandTool = "run_tests".equals(safeTool) || "shell".equals(safeTool) || "bash".equals(safeTool) || "start_preview".equals(safeTool);
         if (!commandTool || resolvedCommand == null || resolvedCommand.isBlank()) {
             return originalArguments;
         }
@@ -2703,6 +2702,10 @@ public class AgentLoopEngine {
                 workingDirectory == null || workingDirectory.isBlank() ? "." : workingDirectory.trim().replace('\\', '/'));
         if (networkRequested) {
             normalized.addProperty("network", true);
+        }
+        if ("start_preview".equals(safeTool) && originalArguments != null
+                && originalArguments.has("port") && !originalArguments.get("port").isJsonNull()) {
+            normalized.add("port", originalArguments.get("port").deepCopy());
         }
         return normalized;
     }
@@ -2715,7 +2718,7 @@ public class AgentLoopEngine {
         int timeout = this.commandTimeout(toolName, args, context);
         String shell = this.usesOpenCodeShellContract(toolName) ? "shell" : "direct";
         return this.commandClassifier.classify(new CommandRequest(
-                command, shell, workingDirectory, timeout, false, false,
+                command, shell, workingDirectory, timeout, this.isPreviewTool(toolName), this.isPreviewTool(toolName),
                 this.executionProperties.getPermissionProfile()));
     }
 
@@ -2800,7 +2803,7 @@ public class AgentLoopEngine {
 
     private String commandWorkingDirectoryForArgs(
             String toolName, Path workspaceRoot, JsonObject args, AgentContext context) {
-        if (this.isShellTool(toolName)) {
+        if (this.isShellTool(toolName) || this.isPreviewTool(toolName)) {
             String requested = ToolSupport.stringArgMulti(
                     args, ".", "workdir", "working_directory", "workingDirectory", "cwd");
             return requested == null || requested.isBlank() ? "." : requested.replace('\\', '/');
@@ -2817,7 +2820,7 @@ public class AgentLoopEngine {
     }
 
     static String commandWorkingDirectory(String toolName, Path workspaceRoot, JsonObject args) {
-        if (("shell".equals(toolName) || "bash".equals(toolName)) && args != null) {
+        if (("shell".equals(toolName) || "bash".equals(toolName) || "start_preview".equals(toolName)) && args != null) {
             String requested = ToolSupport.stringArgMulti(
                     args, ".", "workdir", "working_directory", "workingDirectory", "cwd");
             return requested == null || requested.isBlank() ? "." : requested.replace('\\', '/');
@@ -2866,7 +2869,7 @@ public class AgentLoopEngine {
     }
 
     private boolean isCommandPolicyTool(String name) {
-        return this.isShellTool(name) || "run_tests".equals(name);
+        return this.isShellTool(name) || this.isPreviewTool(name) || "run_tests".equals(name);
     }
 
     private int shellTimeout(JsonObject args) {
@@ -2886,9 +2889,13 @@ public class AgentLoopEngine {
         return "shell".equals(name) || "bash".equals(name);
     }
 
+    private boolean isPreviewTool(String name) {
+        return "start_preview".equals(name);
+    }
+
     /** 默认 profile 使用完整 Worker Shell 语义；safe 仅保留为旧 direct-command 兼容开关。 */
     private boolean usesOpenCodeShellContract(String name) {
-        return this.isShellTool(name) && this.executionProperties != null
+        return (this.isShellTool(name) || this.isPreviewTool(name)) && this.executionProperties != null
                 && !this.executionProperties.isSafeProfile();
     }
 
@@ -3014,6 +3021,9 @@ public class AgentLoopEngine {
         }
         if ("run_tests".equals(this.safeTool(toolName)) && arguments != null && arguments.has("target_path")) {
             publicArguments.add("target_path", arguments.get("target_path"));
+        }
+        if ("start_preview".equals(this.safeTool(toolName)) && arguments != null && arguments.has("port")) {
+            publicArguments.add("port", arguments.get("port"));
         }
         if (arguments != null && arguments.has("working_directory")) {
             publicArguments.add("working_directory", arguments.get("working_directory"));
@@ -3291,8 +3301,9 @@ public class AgentLoopEngine {
     }
 
     private String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage) {
+        String permissionProfile = this.executionProperties == null ? "opencode" : this.executionProperties.getPermissionProfile();
         return LabexSystemPrompt.buildSystemPrompt(project, toolDefinitions, visibleLanguage,
-                this.shellPromptDescriptor(project), this.executionProperties.getPermissionProfile());
+                this.shellPromptDescriptor(project), permissionProfile);
     }
 
     private WorkerShellDescriptor shellPromptDescriptor(StudentProject project) {
@@ -3494,7 +3505,7 @@ public class AgentLoopEngine {
         ContextBudgetBreakdown breakdown = this.contextAdmissionService.breakdown(
                 categories, modelConfig.getContextWindowTokens(), modelConfig.getMaxTokens(), value.softLimitTokens());
         // 可裁剪和自动压缩已经由 manageContextBeforeModel 执行；这里是 Provider 前的最终硬门禁。
-        return this.contextAdmissionService.decide(breakdown, false, false);
+        return this.contextAdmissionService.decideAfterContextManagement(breakdown, value.autoCompactionEnabled());
     }
 
     private void stopForContextLimit(AgentSsePublisher sse,
@@ -4201,17 +4212,7 @@ public class AgentLoopEngine {
     }
 
     private List<Map<String, Object>> buildToolsList(Collection<ToolDefinition> definitions) {
-        if (definitions == null) return List.of();
-        return definitions.stream().map(d -> {
-            LinkedHashMap<String, Object> tool = new LinkedHashMap<String, Object>();
-            tool.put("type", "function");
-            LinkedHashMap<String, Object> fn = new LinkedHashMap<String, Object>();
-            fn.put("name", d.getName());
-            fn.put("description", d.getDescription());
-            fn.put("parameters", d.getInputSchema());
-            tool.put("function", fn);
-            return tool;
-        }).collect(Collectors.toList());
+        return ToolSchemaCanonicalizer.openAiTools(definitions);
     }
 
     private void appendRemainingBatchToolResults(ExecutionFence executionFence,
@@ -4225,7 +4226,7 @@ public class AgentLoopEngine {
             AgentModelTurnExecutor.NativeToolCall call = nativeAdmission.call();
             String content = nativeAdmission.allowed()
                     ? skippedReason
-                    : this.compactToolResultForModel(call.toolName(), nativeAdmission.rejection());
+                    : this.compactToolResultForModel(call.toolName(), nativeAdmission.rejection(), call.toolCallId());
             this.appendProviderMessage(executionFence, taskId, transcriptEpoch,
                     this.toolCallBatchProtocol.toolResultMessage(call,
                             "[Tool " + call.toolName() + " result]\n" + content));
@@ -4506,17 +4507,6 @@ public class AgentLoopEngine {
         return this.localText(visibleLanguage, "已生成最终回答", "Generated final response");
     }
 
-    private String buildVisibleLanguagePolicy(String visibleLanguage) {
-        VisibleLanguageResolver.Language language = VisibleLanguageResolver.language(visibleLanguage);
-        return """
-<response_language>
-Detected user-visible language for this turn: %s.
-Use %s for all user-visible thinking, tool summaries, status updates, clarifying questions, option labels, and final answers.
-Keep code, file paths, commands, package names, API names, and raw error text unchanged when needed.
-</response_language>""".formatted(language.displayName(), language.displayName());
-    }
-
-
     private void applyBackgroundWorkspace(AgentContext context, StudentProject project, AgentTask task) {
         if (task == null || task.getBackgroundWorktree() == null || task.getBackgroundWorktree().isBlank()) return;
         context.setWorkspaceRoot(BackgroundRunWorkspaceResolver.resolve(
@@ -4554,15 +4544,11 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
      * 提供。recentRunLog / checkpoint 参数仅供显式调用方注入有界恢复文本，运行时恢复路径不传
      * （旧版文件 checkpoint 是只读迁移入口，不是事实源，见 AgentCheckpointStore）。</p>
      */
-    static String buildLeanInitialContextMessage(String modePolicy, String languagePolicy,
-                                                 String projectRules, String leanMemory,
-                                                 String recentRunLog, String checkpoint) {
+    static String buildLeanInitialContextMessage(String modePolicy, String projectRules,
+                                                 String leanMemory, String recentRunLog, String checkpoint) {
         StringBuilder builder = new StringBuilder();
         if (modePolicy != null && !modePolicy.isBlank()) {
             builder.append(modePolicy).append("\n\n");
-        }
-        if (languagePolicy != null && !languagePolicy.isBlank()) {
-            builder.append(languagePolicy).append("\n\n");
         }
         if (projectRules != null && !projectRules.isBlank()) {
             builder.append("<project_rules file=\"Labex.md\">\n")
@@ -4618,11 +4604,22 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
     }
 
     private String compactToolResultForModel(String toolName, ToolResult result) {
+        return this.compactToolResultForModel(toolName, result, "");
+    }
+
+    private String compactToolResultForModel(String toolName, ToolResult result, String toolCallId) {
         if (result == null) {
             return "";
         }
         String content = result.getContent() == null ? "" : result.getContent();
-        String compact = String.valueOf(this.contextManager.compactToolResult(this.safeTool(toolName), content, result.isSuccess()));
+        AgentContextManager.ToolResultProjection projection = this.contextManager.compactToolResultProjection(
+                this.safeTool(toolName), content, result.isSuccess());
+        String compact = projection.content();
+        if (projection.truncated() && toolCallId != null && !toolCallId.isBlank()) {
+            compact = compact + "\n\n[Tool output truncated for the model. The complete durable output remains available only for this task. "
+                    + "Use read_tool_output with tool_call_id=\"" + this.escapeJson(toolCallId)
+                    + "\", offset=0, and a narrow limit to inspect a specific page. Do not request the entire output at once.]";
+        }
         if (result.getPendingChangeId() != null) {
             compact = compact + "\n\nFile changes applied automatically, can revert via Changes panel.";
         }

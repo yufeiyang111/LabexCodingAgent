@@ -149,7 +149,7 @@ public class AgentRunTranscriptService {
             } else if ("tool".equalsIgnoreCase(role)) {
                 result.add(rebuildTool(message));
             } else {
-                result.add(simpleMessage(role, message.getContent()));
+                result.add(simpleMessage(role, message.getContent(), message.getMetadata()));
             }
         }
         return preserveOpenBatch ? resumeProjection(result) : protocolSafeProjection(result);
@@ -758,11 +758,22 @@ public class AgentRunTranscriptService {
         if (providerMessage.containsKey("name")) {
             metadata.put("name", providerMessage.get("name"));
         }
+        if (providerMessage.get("attachmentIds") instanceof List<?> attachmentIds && !attachmentIds.isEmpty()) {
+            // 只保留附件 ID；Provider 消息中的 data URL/Base64 内容不写入 transcript。
+            metadata.put("attachmentIds", List.copyOf(attachmentIds));
+        }
         return metadata;
     }
 
-    private Map<String, Object> simpleMessage(String role, String content) {
-        return Map.of("role", role, "content", content == null ? "" : content);
+    private Map<String, Object> simpleMessage(String role, String content, String metadataJson) {
+        LinkedHashMap<String, Object> message = new LinkedHashMap<>();
+        message.put("role", role);
+        message.put("content", content == null ? "" : content);
+        Object attachmentIds = parseObject(metadataJson).get("attachmentIds");
+        if (attachmentIds instanceof List<?> ids && !ids.isEmpty()) {
+            message.put("attachmentIds", List.copyOf(ids));
+        }
+        return message;
     }
 
     private Map<String, Object> parseObject(String raw) {

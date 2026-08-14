@@ -14,14 +14,14 @@ public class ToolRegistry {
     private static final Map<String, Set<String>> MODE_ALLOWED_TOOLS = Map.of(
         // plan 模式：只读 + plan_exit 切换
         "plan", Set.of(
-            "read_file", "read", "glob", "grep", "list_files", "list",
+            "read_file", "read", "read_tool_output", "glob", "grep", "list_files", "list",
             "project_overview", "repo_overview", "repo_map", "lsp", "lsp_symbols", "retrieve_context",
             "web_fetch", "webfetch", "web_search", "websearch", "understand_image", "image",
             "diagnostics", "create_plan", "plan_exit", "question", "skill", "mcp_call", "task", "context_note"
         ),
         // explore 模式：只读
         "explore", Set.of(
-            "read_file", "read", "glob", "grep", "list_files", "list",
+            "read_file", "read", "read_tool_output", "glob", "grep", "list_files", "list",
             "project_overview", "repo_overview", "repo_map", "lsp", "lsp_symbols", "retrieve_context",
             "web_fetch", "webfetch", "web_search", "websearch", "understand_image", "image",
             "diagnostics", "question", "context_note"

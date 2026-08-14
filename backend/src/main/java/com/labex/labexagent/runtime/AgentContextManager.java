@@ -56,11 +56,25 @@ public class AgentContextManager {
     }
 
     public String compactToolResult(String toolName, String text) {
-        return this.pruneToolResult(toolName, text, true, true);
+        return this.compactToolResultProjection(toolName, text, true).content();
     }
 
     public String compactToolResult(String toolName, String text, boolean success) {
-        return this.pruneToolResult(toolName, text, success, true);
+        return this.compactToolResultProjection(toolName, text, success).content();
+    }
+
+    /**
+     * Builds the provider projection and reports whether its source was truncated.
+     * The durable Tool Part remains the authoritative raw-output record.
+     */
+    public ToolResultProjection compactToolResultProjection(String toolName, String text, boolean success) {
+        String safeTool = this.normalizeTool(toolName);
+        String source = text == null ? "" : text;
+        return new ToolResultProjection(this.pruneToolResult(safeTool, source, success, true),
+                this.isModelProjectionTruncated(safeTool, source, success));
+    }
+
+    public record ToolResultProjection(String content, boolean truncated) {
     }
 
     public String compactCheckpointResult(String toolName, String text, boolean success) {
@@ -94,8 +108,31 @@ public class AgentContextManager {
         return this.withPruneHeader("generic", safeTool, this.smartLimit(text, Math.min(maxChars, forModel ? 3600 : 6200), forModel ? 1600 : 2600));
     }
 
+    private boolean isModelProjectionTruncated(String safeTool, String text, boolean success) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        if (!success) {
+            return text.length() > 3_600;
+        }
+        if (this.isReadTool(safeTool)) {
+            return text.length() > 5_200;
+        }
+        if (this.isSearchTool(safeTool)) {
+            return text.length() > 4_500 || text.split("\\R").length > 90;
+        }
+        if (this.isShellTool(safeTool)) {
+            return text.length() > 4_200;
+        }
+        if (this.isWriteTool(safeTool)) {
+            return text.length() > 3_200;
+        }
+        return text.length() > 3_600;
+    }
+
     private boolean isReadTool(String safeTool) {
-        return "read_file".equals(safeTool) || "read".equals(safeTool);
+        return "read_file".equals(safeTool) || "read".equals(safeTool)
+                || "read_tool_output".equals(safeTool);
     }
 
     private boolean isSearchTool(String safeTool) {
@@ -133,7 +170,7 @@ public class AgentContextManager {
             builder.append(line).append('\n');
             --maxLines;
         }
-        if (omitted > 0 || lines.length > maxLines) {
+        if (omitted > 0) {
             builder.append("...\u5df2\u88c1\u526a\u5176\u4f59\u641c\u7d22/\u5217\u8868\u7ed3\u679c\uff0c\u8bf7\u6309\u9700\u7ee7\u7eed read_file/search_code \u83b7\u53d6\u66f4\u5177\u4f53\u5185\u5bb9...\n");
         }
         return builder.toString().trim();

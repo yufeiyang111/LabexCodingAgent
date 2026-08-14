@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.labex.labexagent.network.OutboundUrlPolicy;
 import com.labex.labexagent.runtime.CancellationToken;
+import com.labex.service.AgentModelConfigService;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -18,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -364,7 +366,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
     private String buildRequestBody(String sysPrompt, List<Map<String, Object>> msgs,
                                      List<Map<String, Object>> tools, LlmConfig config, boolean stream,
                                      boolean includeStreamUsage) {
-        Map<String, Object> body = new HashMap<>();
+        Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", config.modelName());
 
         List<Map<String, Object>> messages = new ArrayList<>();
@@ -372,7 +374,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         messages.addAll(msgs);
         body.put("messages", messages);
 
-        body.put("max_tokens", config.maxTokens() != null ? config.maxTokens() : 8192);
+        body.put("max_tokens", config.maxTokens() != null ? config.maxTokens() : AgentModelConfigService.DEFAULT_MAX_TOKENS);
         if (config.temperature() != null) body.put("temperature", config.temperature());
         if (config.reasoningEffort() != null && !config.reasoningEffort().isBlank()) {
             body.put("reasoning_effort", config.reasoningEffort());

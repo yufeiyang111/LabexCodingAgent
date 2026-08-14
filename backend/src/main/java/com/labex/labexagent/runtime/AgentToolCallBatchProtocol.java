@@ -15,7 +15,8 @@ public final class AgentToolCallBatchProtocol {
 
     public String validateIdentity(AgentModelTurnExecutor.NativeToolCall call) {
         if (call == null) return "toolCall is required";
-        if (call.toolCallId() == null || call.toolCallId().isBlank()) return "toolCallId is required";
+        String toolCallIdError = AgentToolCallIdPolicy.validationError(call.toolCallId());
+        if (!toolCallIdError.isEmpty()) return toolCallIdError;
         if (call.toolName() == null || call.toolName().isBlank()) return "toolName is required";
         return "";
     }

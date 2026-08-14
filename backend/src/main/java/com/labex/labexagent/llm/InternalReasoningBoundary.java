@@ -56,12 +56,14 @@ public final class InternalReasoningBoundary {
     public static boolean requiresEventPayloadSanitization(String eventType) {
         return "FINAL".equalsIgnoreCase(eventType)
                 || "FINAL_DELTA".equalsIgnoreCase(eventType)
+                || "FINAL_CANDIDATE_DELTA".equalsIgnoreCase(eventType)
                 || eventType != null && eventType.toUpperCase(Locale.ROOT).startsWith("THINK");
     }
 
     public static Object sanitizeEventPayload(String eventType, Object payload) {
         boolean finalProjection = "FINAL".equalsIgnoreCase(eventType)
-                || "FINAL_DELTA".equalsIgnoreCase(eventType);
+                || "FINAL_DELTA".equalsIgnoreCase(eventType)
+                || "FINAL_CANDIDATE_DELTA".equalsIgnoreCase(eventType);
         if (!requiresEventPayloadSanitization(eventType) || payload == null) {
             return payload;
         }

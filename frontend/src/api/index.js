@@ -36,6 +36,9 @@ export const projectApi = {
   agentConversationHistory(projectId, conversationId, params = {}) {
     return request.get('/student/projects/' + projectId + '/agent/conversations/' + conversationId + '/messages', { params })
   },
+  agentAttachmentPreview(projectId, attachmentId) {
+    return request.get('/student/projects/' + projectId + '/agent/attachments/' + attachmentId + '/preview', { responseType: 'blob' })
+  },
   agentDeleteConversation(projectId, conversationId) {
     return request.delete('/student/projects/' + projectId + '/agent/conversations/' + conversationId)
   },
@@ -74,6 +77,9 @@ export const projectApi = {
   },
   agentContextStatus(projectId, conversationId) {
     return request.get('/student/projects/' + projectId + '/agent/conversations/' + encodeURIComponent(conversationId) + '/context-status')
+  },
+  agentImageAttachmentPolicy(projectId) {
+    return request.get('/student/projects/' + projectId + '/agent/attachments/policy')
   },
   agentNextContextPreview(projectId, conversationId, payload = {}) {
     return request.post('/student/projects/' + projectId + '/agent/conversations/' + encodeURIComponent(conversationId) + '/context-preview', payload)

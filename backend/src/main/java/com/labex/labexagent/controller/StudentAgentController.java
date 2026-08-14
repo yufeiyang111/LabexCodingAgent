@@ -1,12 +1,15 @@
 package com.labex.labexagent.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
 import com.labex.common.Result;
+import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.commandsecurity.CommandApprovalOrchestrator;
 import com.labex.labexagent.commandsecurity.CommandRedactor;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.AgentRunEvent;
+import com.labex.service.StudentProjectService;
 import com.labex.labexagent.diff.DiffService;
 import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.dto.AgentStreamHttpRequest;
@@ -31,6 +34,9 @@ import com.labex.labexagent.service.TokenTracker;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
@@ -44,6 +50,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -71,6 +79,15 @@ public class StudentAgentController {
 
     @Autowired(required = false)
     private RunCompletionEvidenceService completionEvidenceService;
+
+    @Autowired(required = false)
+    private AgentInputAttachmentService attachmentService;
+
+    @Autowired(required = false)
+    private ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private StudentProjectService studentProjectService;
 
     public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService) {
         this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService,
@@ -175,12 +192,68 @@ public class StudentAgentController {
         }
     }
 
-    @PostMapping(value={"/stream"}, produces={"text/event-stream"})
+    @PostMapping(value={"/stream"}, consumes=MediaType.APPLICATION_JSON_VALUE, produces=MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@PathVariable Integer projectId, @RequestBody AgentStreamHttpRequest httpRequest, Authentication auth) {
+        return startStream(projectId, httpRequest, List.of(), auth);
+    }
+
+    @PostMapping(value={"/stream"}, consumes=MediaType.MULTIPART_FORM_DATA_VALUE, produces=MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamWithImages(@PathVariable Integer projectId,
+                                        @RequestPart("request") String requestJson,
+                                        @RequestPart(value="images", required=false) List<MultipartFile> images,
+                                        Authentication auth) throws Exception {
+        ObjectMapper mapper = this.objectMapper == null ? new ObjectMapper().findAndRegisterModules() : this.objectMapper;
+        AgentStreamHttpRequest httpRequest = mapper.readValue(requestJson, AgentStreamHttpRequest.class);
+        return startStream(projectId, httpRequest, images, auth);
+    }
+
+    @GetMapping(value={"/attachments/policy"})
+    public Result<Map<String, Object>> attachmentPolicy(@PathVariable Integer projectId, Authentication auth) {
+        Integer studentId = this.getStudentId(auth);
+        this.requireAttachmentService();
+        this.requireOwnedProject(studentId, projectId);
+        return Result.success(this.attachmentService.policy());
+    }
+
+    @GetMapping(value={"/attachments/{attachmentId}/preview"})
+    public ResponseEntity<FileSystemResource> previewAttachment(@PathVariable Integer projectId,
+                                                                  @PathVariable String attachmentId,
+                                                                  Authentication auth) {
+        AgentInputAttachmentService.Preview preview = this.requireAttachmentService()
+                .preview(this.getStudentId(auth), projectId, attachmentId);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "inline; filename=\"" + preview.filename().replace("\"", "") + "\"")
+                .contentType(MediaType.parseMediaType(preview.mimeType()))
+                .body(new FileSystemResource(preview.path()));
+    }
+
+    private SseEmitter startStream(Integer projectId, AgentStreamHttpRequest httpRequest,
+                                   List<MultipartFile> images, Authentication auth) {
         Integer studentId = this.getStudentId(auth);
         AgentStreamRequest request = httpRequest.toInternalRequest();
         this.commandService.prepareAgentStreamRequest(studentId, projectId, request);
+        if (images != null && images.stream().anyMatch(file -> file != null && !file.isEmpty())) {
+            request.setAttachmentIds(this.requireAttachmentService()
+                    .storeForRequest(studentId, projectId, request.getModelConfigId(), images));
+        }
         return this.agentLoopEngine.start(studentId, projectId, request);
+    }
+
+    private void requireOwnedProject(Integer studentId, Integer projectId) {
+        if (this.studentProjectService == null) {
+            throw new IllegalStateException("Student project service is unavailable");
+        }
+        if (this.studentProjectService.getOwnedProject(studentId, projectId) == null) {
+            throw new IllegalArgumentException("Project not found");
+        }
+    }
+
+    private AgentInputAttachmentService requireAttachmentService() {
+        if (this.attachmentService == null) {
+            throw new IllegalStateException("Agent image attachment service is unavailable");
+        }
+        return this.attachmentService;
     }
 
     @GetMapping(value = {"/tasks/{taskId}/events"}, produces = MediaType.TEXT_EVENT_STREAM_VALUE)

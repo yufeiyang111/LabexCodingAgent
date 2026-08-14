@@ -57,6 +57,8 @@ export function useAgentEventTimeline(options) {
         if (assistantMsg.timing) assistantMsg.timing.taskId = assistantMsg.taskId
         break
       case 'THINK_START':
+        assistantMsg.pendingFinalContent = ''
+        assistantMsg.hasPendingFinalDraft = false
         if (assistantMsg.thinking) {
           assistantMsg.thinkingBlocks.push({ content: assistantMsg.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), iteration: data.iteration || 0, _open: false, _order: (assistantMsg._nextOrder = (assistantMsg._nextOrder || 0) + 1) })
         }
@@ -200,7 +202,7 @@ export function useAgentEventTimeline(options) {
         break
       case 'USER_QUESTION':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
-        assistantMsg.resumeTaskEventsAfterStream = true
+        assistantMsg.resumeTaskEventsAfterStream = false
         attachUserQuestion(assistantMsg, data)
         scheduleAgentRender()
         break
@@ -236,7 +238,15 @@ export function useAgentEventTimeline(options) {
         break
       case 'COMPLETION_EVIDENCE':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
-        assistantMsg.completionEvidence = data
+        if (data.satisfied === true) {
+          assistantMsg.completionEvidence = data
+          assistantMsg.completionBlockedEvidence = null
+        } else {
+          assistantMsg.completionEvidence = null
+          assistantMsg.completionBlockedEvidence = data
+          assistantMsg.pendingFinalContent = ''
+          assistantMsg.hasPendingFinalDraft = false
+        }
         scheduleAgentRender()
         break
       case 'RUN_INTERACTION_RESUME_QUEUED':
@@ -307,6 +317,11 @@ export function useAgentEventTimeline(options) {
         scheduleAgentRender()
         break
       }
+      case 'FINAL_CANDIDATE_DELTA':
+        assistantMsg.pendingFinalContent = (assistantMsg.pendingFinalContent || '') + (data.delta || '')
+        assistantMsg.hasPendingFinalDraft = Boolean(assistantMsg.pendingFinalContent)
+        scheduleAgentRender()
+        break
       case 'FINAL_DELTA':
         if (isRecoverableAgentRunState(assistantMsg.runState)) break
         assistantMsg._finalReasoningFilter ??= createInternalReasoningBlockStreamFilter()
@@ -314,6 +329,8 @@ export function useAgentEventTimeline(options) {
         scheduleAgentRender()
         break
       case 'FINAL':
+        assistantMsg.pendingFinalContent = ''
+        assistantMsg.hasPendingFinalDraft = false
         if (!isRecoverableAgentRunState(assistantMsg.runState) && data.content && !assistantMsg.error) {
           assistantMsg.content = stripInternalReasoningBlocks(data.content)
         }
@@ -324,7 +341,7 @@ export function useAgentEventTimeline(options) {
         assistantMsg.runState = normalizeAgentRunState(data.taskStatus) || assistantMsg.runState || ''
         assistantMsg.waitingForCommandApproval = data.reason === 'command_approval'
         assistantMsg.resumeTaskEventsAfterStream = data.resumeAgentLoop === true
-          || ['workspace_checkout', 'command_approval', 'permission', 'network', 'question'].includes(data.reason)
+          && !['command_approval', 'permission', 'network', 'question'].includes(data.reason)
         assistantMsg.isStreaming = false
         stopMessageTimer(assistantMsg)
         agentLoading.value = false

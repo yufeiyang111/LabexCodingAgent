@@ -91,6 +91,11 @@
                   </select>
                 </div>
                 <div class="mc-field">
+                  <label>Base URL <span class="mc-required">*</span></label>
+                  <input v-model.trim="state.mcForm.baseUrl" class="mc-input" placeholder="https://api.example.com/v1" />
+                  <div class="mc-hint">LLM 与 OpenAI Compatible API 的接入地址，例如 https://api.example.com/v1</div>
+                </div>
+                <div class="mc-field">
                   <label>模型名称 <span class="mc-required">*</span></label>
                   <input v-model="state.mcForm.modelName" class="mc-input" placeholder="deepseek-chat" />
                 </div>
@@ -102,7 +107,7 @@
                       {{ state.mcModelsLoading ? '获取中...' : '获取模型' }}
                     </button>
                   </div>
-                  <div class="mc-hint">{{ state.mcCustomMode ? '仅自定义配置需要填写模型列表 URL' : '从厂商官方模型列表接口读取可用模型；多数服务需要先填写 API Key' }}</div>
+                  <div class="mc-hint">&#27169;&#22411;&#21015;&#34920; URL &#21487;&#30041;&#31354;&#65292;&#21518;&#31471;&#20250;&#26681;&#25454; Base URL &#33258;&#21160;&#25512;&#23548;&#65307;&#32534;&#36753;&#24050;&#26377;&#37197;&#32622;&#26102;&#20250;&#23433;&#20840;&#22797;&#29992;&#24050;&#20445;&#23384;&#30340; API Key&#12290;</div>
                   <select v-if="state.mcFetchedModels.length > 0" v-model="state.mcForm.modelName" class="mc-select mc-model-select" @change="actions.applyFetchedModelLimits">
                     <option v-for="model in state.mcFetchedModels" :key="model.id" :value="model.id">{{ model.id }}{{ model.maxTokens ? ` (${model.maxTokens})` : '' }}</option>
                   </select>

@@ -96,6 +96,10 @@ export function upsertDurableToolCallState(message, state = {}) {
   call.args = state.arguments || call.args || {}
   call.durableStatus = state.status || call.durableStatus || 'pending'
   if (state.detail !== undefined && state.detail !== null) call.result = state.detail
+  if (state.outputTruncated) {
+    call.outputTruncated = true
+    call.outputLength = Number(state.outputLength) || call.result?.length || 0
+  }
   const verificationStatus = postEditVerificationStatus(call.result)
   call.verificationStatus = verificationStatus
   if (state.interactionPayload && typeof state.interactionPayload === 'object') {

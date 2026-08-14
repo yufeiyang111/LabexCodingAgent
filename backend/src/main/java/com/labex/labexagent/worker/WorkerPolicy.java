@@ -28,9 +28,9 @@ public record WorkerPolicy(
         return WorkerResourceDefaults.defaults();
     }
 
-    /** 无 Spring 上下文时的兜底默认值，只用于纯单元测试路径。 */
+    /** 无 Spring 上下文时的兜底默认值，只用于纯单元测试路径。网络默认开启。 */
     static WorkerPolicy fallbackDefaults() {
-        return new WorkerPolicy("labex-agent-sandbox:latest", 1_000, 1_024, 256, false);
+        return new WorkerPolicy("labex-agent-sandbox:latest", 1_000, 1_024, 256, true);
     }
 
     /** 返回具有指定网络能力的新策略，不修改默认的离线策略。 */

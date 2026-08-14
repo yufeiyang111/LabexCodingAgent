@@ -199,7 +199,8 @@
           </div>
 
           <!-- ==================== CHAT TAB ==================== -->
-          <div v-if="activeAiTab === 'chat'" :class="['ai-content', { 'is-empty': messages.length === 0 }]">
+          <!-- v-show 而不是 v-if：切换 tab 时保留消息 DOM 与滚动位置，避免回来时从顶部重新渲染 -->
+          <div v-show="activeAiTab === 'chat'" :class="['ai-content', { 'is-empty': messages.length === 0 }]">
             <div class="ai-messages" ref="msgContainer" @scroll="handleScroll">
               <button v-if="hasOlderMessages" class="ai-history-load" type="button" :disabled="loadingOlderMessages" @click="loadOlderHistory">
                 {{ loadingOlderMessages ? '正在加载更早记录...' : '加载更早记录' }}
@@ -288,6 +289,14 @@
                     </div>
                     <!-- Content + Loading skeleton -->
                     <div class="ai-msg-content">
+                      <AgentImageAttachments
+                        v-if="msg.attachments?.length"
+                        :attachments="msg.attachments"
+                        variant="message"
+                        :show-names="false"
+                        aria-label="&#22270;&#29255;&#38468;&#20214;"
+                        @preview="openImagePreview"
+                      />
                       <!-- 骨架屏加载态 -->
                       <div v-if="msg.isStreaming && !msg.content && !msg.thinking" class="ai-loading-skeleton">
                         <div class="skeleton-line w-80"></div>
@@ -451,15 +460,37 @@
               </div>
 
               <!-- 2. Claude 风格主输入框 -->
-              <div class="ai-input-box">
+              <div
+                class="ai-input-box"
+                :class="{ 'is-image-dragover': imageDragActive }"
+                @dragenter="handleImageDragEnter"
+                @dragover="handleImageDragOver"
+                @dragleave="handleImageDragLeave"
+                @drop="handleImageDrop"
+              >
                 <!-- 上层文本区 -->
                 <div class="ai-input-text-area">
-                  <textarea v-model="agentInput" rows="1" :placeholder="activePath ? '输入问题，例如：这段代码有什么问题？' : 'How can I help you today?'" @keydown.enter.exact.prevent="sendMessage" @keydown.escape="closeCommandPalette" @input="handleInput" :disabled="agentLoading" ref="aiInputRef"></textarea>
+                  <textarea v-model="agentInput" rows="1" :placeholder="activePath ? '输入问题，例如：这段代码有什么问题？' : 'How can I help you today?'" @keydown.enter.exact.prevent="sendMessage" @keydown.escape="closeCommandPalette" @input="handleInput" @paste="handleImagePaste" :disabled="agentLoading" ref="aiInputRef"></textarea>
                 </div>
 
-                <!-- 底层工具栏与发送按钮 -->
+                <div v-if="pendingImageAttachments.length" class="ai-input-image-strip">
+                  <AgentImageAttachments
+                    :attachments="pendingImageAttachments"
+                    :removable="true"
+                    aria-label="&#24453;&#21457;&#36865;&#22270;&#29255;"
+                    @preview="openImagePreview"
+                    @remove="removePendingImage"
+                  />
+                </div>
+
+                <!-- 图片工具栏与发送按钮 -->
                 <div class="ai-input-footer">
                   <div class="ai-input-toolbar">
+                    <input ref="imageInputRef" class="ai-image-file-input" type="file" multiple :accept="imageAccept" @change="handleImageInput" />
+                    <button type="button" class="ai-toolbar-btn" :class="{ 'is-disabled': !currentModelSupportsImages }" :aria-disabled="!currentModelSupportsImages" :title="imageInputTitle" @click="requestImageInput">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+                      <span>&#22270;&#29255;</span>
+                    </button>
                     <button class="ai-toolbar-btn" title="模型配置" @click="showModelConfig = !showModelConfig">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                       <span>模型</span>
@@ -542,8 +573,17 @@
                   <div class="usage-cache-heading">
                     <span class="usage-cache-title">Prompt 缓存</span>
                     <span class="usage-cache-status">{{ cacheTelemetryView.label }}</span>
+                    <select
+                      v-model="selectedCacheTelemetryModel"
+                      :disabled="cacheTelemetryModels.length === 0"
+                      class="usage-cache-model-select"
+                      aria-label="按模型查看 Prompt 缓存统计"
+                    >
+                      <option value="">全部模型</option>
+                      <option v-for="model in cacheTelemetryModels" :key="model" :value="model">{{ model }}</option>
+                    </select>
                     <strong v-if="cacheTelemetryView.showHitRate" class="usage-cache-rate">
-                      {{ cacheTelemetryView.hitRate.toFixed(2) }}%（会话级）
+                      {{ cacheTelemetryView.hitRate.toFixed(2) }}%（{{ cacheTelemetryScopeLabel }}）
                     </strong>
                   </div>
                   <p class="usage-cache-detail">{{ cacheTelemetryView.detail }}</p>
@@ -788,6 +828,18 @@
       </Transition>
     </Teleport>
 
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="imagePreviewAttachment" class="ai-image-preview-overlay" @click.self="closeImagePreview">
+          <button type="button" class="ai-image-preview-close" @click="closeImagePreview" aria-label="Close image preview">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+          <img :src="imagePreviewAttachment.previewUrl" :alt="imagePreviewAttachment.name" />
+          <div class="ai-image-preview-caption">{{ imagePreviewAttachment.name }}</div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <ModelConfigDialog :state="modelConfigDialogState" :actions="modelConfigDialogActions" />
   </div>
 </template>
@@ -797,8 +849,10 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch, d
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, modelConfigApi, agentExtensionApi } from '@/api'
-import { modelConfigPresets } from '@/constants/modelPresets'
+import { DEFAULT_MAX_TOKENS, modelConfigPresets } from '@/constants/modelPresets'
+import { DEFAULT_AGENT_IMAGE_INPUT_POLICY, imageAcceptValue } from '@/constants/agentImageInput'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
+import AgentImageAttachments from '@/components/cloud/AgentImageAttachments.vue'
 import ToolCallCard from '@/components/cloud/ToolCallCard.vue'
 import ContextLimitBlockerCard from '@/components/cloud/ContextLimitBlockerCard.vue'
 import CompletionEvidenceCard from '@/components/cloud/CompletionEvidenceCard.vue'
@@ -826,7 +880,7 @@ import { applyCommandExecutionResponseState, attachCommandApprovalState as attac
 import { attachDurableInteraction } from '@/composables/agentInteractionProjection'
 import { normalizeSpecialMarkdownBlocks, stripInternalReasoningBlocks, stripInternalReasoningTags } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
-import { applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
+import { applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
 import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
 import { enhanceFileLinks } from '@/utils/fileLinks'
 import 'highlight.js/styles/github.css'
@@ -902,6 +956,11 @@ const agentLoading = ref(false)
 const agentMode = ref('build')
 const msgContainer = ref(null)
 const aiInputRef = ref(null)
+const imageInputRef = ref(null)
+const pendingImageAttachments = ref([])
+const imagePreviewAttachment = ref(null)
+const imageDragActive = ref(false)
+const imageInputPolicy = ref(DEFAULT_AGENT_IMAGE_INPUT_POLICY)
 const showScrollBtn = ref(false)
 const selectedCode = ref('')
 
@@ -927,13 +986,18 @@ const usageBarRef = ref(null)
 const usageTimelineRef = ref(null)
 const usageModelRef = ref(null)
 const allTokenStats = ref(null)
-const cacheTelemetryView = computed(() => resolveCacheTelemetryView(allTokenStats.value, tokenUsage.value))
+const selectedCacheTelemetryModel = ref('')
+const cacheTelemetryModels = computed(() => Object.keys(allTokenStats.value?.cacheByModel || {}))
+const selectedCacheTelemetryStats = computed(() => resolveCacheTelemetryScope(
+  allTokenStats.value,
+  selectedCacheTelemetryModel.value
+))
+const cacheTelemetryView = computed(() => resolveCacheTelemetryView(selectedCacheTelemetryStats.value, tokenUsage.value))
+const cacheTelemetryScopeLabel = computed(() => selectedCacheTelemetryModel.value || '全部模型')
 const cacheTelemetryTotals = computed(() => ({
-  cachedTokens: allTokenStats.value?.totalCachedTokens ?? tokenUsage.value.cachedTokens,
-  cacheWriteTokens: allTokenStats.value?.totalCacheWriteTokens ?? tokenUsage.value.cacheWriteTokens,
-  nonCachedInputTokens: Math.max(0,
-    (allTokenStats.value?.totalPromptTokens ?? tokenUsage.value.promptTokens)
-    - (allTokenStats.value?.totalCachedTokens ?? tokenUsage.value.cachedTokens))
+  cachedTokens: cacheTelemetryView.value.ledger.cacheReadTokens,
+  cacheWriteTokens: cacheTelemetryView.value.ledger.cacheWriteTokens,
+  nonCachedInputTokens: cacheTelemetryView.value.ledger.nonCachedInputTokens
 }))
 let usagePieChart = null
 let usageBarChart = null
@@ -975,7 +1039,7 @@ const emptyModelConfigForm = () => ({
   apiKey: '',
   baseUrl: '',
   modelsUrl: '',
-  maxTokens: 32768,
+  maxTokens: DEFAULT_MAX_TOKENS,
   contextWindowTokens: null,
   promptCacheKeyEnabled: false,
   reasoningEffort: 'medium',
@@ -999,7 +1063,7 @@ const mcCustomTemplate = {
   baseUrl: '',
   modelsUrl: '',
   modelName: '',
-  maxTokens: 32768,
+  maxTokens: DEFAULT_MAX_TOKENS,
   contextWindowTokens: null,
   provider: 'openai_compatible',
   note: '手动填写服务信息',
@@ -1061,6 +1125,14 @@ const currentModelName = computed(() => {
   }
   return 'MiniMax'
 })
+const currentModelSupportsImages = computed(() => {
+  const config = modelConfigs.value.find(item => item.configId === selectedModelConfigId.value)
+  return config?.imageInputEnabled === 1 || config?.imageInputEnabled === true
+})
+const imageAccept = computed(() => imageAcceptValue(imageInputPolicy.value.allowedMimeTypes))
+const imageInputTitle = computed(() => currentModelSupportsImages.value
+  ? '\u6dfb\u52a0\u56fe\u7247'
+  : '\u5f53\u524d\u6a21\u578b\u662f\u7eaf\u6587\u672c\u6a21\u578b\uff0c\u4e0d\u80fd\u8f93\u5165\u56fe\u7247')
 
 const agentModes = [
   { key: 'build', label: '构建', icon: 'cube' },
@@ -1109,6 +1181,7 @@ onMounted(async () => {
   const startupConversationSelection = conversationSelectionGuard.capture()
   const secondaryResources = loadWorkspaceResources([
     () => loadModelConfigs(),
+    () => loadImageInputPolicy(),
     () => loadAgentExtensions(),
     () => loadConversations(),
     () => loadCommandCatalog()
@@ -1140,6 +1213,8 @@ onBeforeUnmount(() => {
       msg._thinkingTimer = null
     }
   })
+  revokeImageObjectUrls(pendingImageAttachments.value)
+  messages.value.forEach(msg => revokeImageObjectUrls(msg.attachments || []))
 })
 
 async function exportProject() {
@@ -1236,11 +1311,16 @@ function buildClientSlashActions() {
 // AI methods
 async function sendMessage() {
   const q = agentInput.value.trim()
-  if (!q || agentLoading.value) return
+  const imageAttachments = pendingImageAttachments.value.slice()
+  if ((!q && imageAttachments.length === 0) || agentLoading.value) return
 
   let messageToSend = q
   let displayMessage = null
   if (q.startsWith('/')) {
+    if (imageAttachments.length > 0) {
+      ElMessage.warning('Slash command \u6682\u4e0d\u652f\u6301\u56fe\u7247\u9644\u4ef6\uff0c\u8bf7\u79fb\u9664\u56fe\u7247\u540e\u518d\u6267\u884c\u3002')
+      return
+    }
     // 先关闭输入时产生的旧面板，允许 /help 等客户端动作按需重新打开目标 UI。
     closeCommandPalette()
     try {
@@ -1268,10 +1348,12 @@ async function sendMessage() {
       return
     }
   }
-  messages.value.push({ role: 'user', content: q, timestamp: Date.now() })
-  messages.value.push({ role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), conversationId: currentAgentSession.value?.conversationId || null, timing: createMessageTiming() })
+  messages.value.push({ role: 'user', content: q, attachments: imageAttachments, timestamp: Date.now() })
+  messages.value.push({ role: 'assistant', content: '', pendingFinalContent: '', hasPendingFinalDraft: false, thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), conversationId: currentAgentSession.value?.conversationId || null, timing: createMessageTiming() })
   const assistantMsg = messages.value[messages.value.length - 1]
-  agentInput.value = ''; agentLoading.value = true
+  agentInput.value = ''
+  pendingImageAttachments.value = []
+  agentLoading.value = true
   userScrolled.value = false
   await nextTick(); scrollDown(true)
 
@@ -1288,6 +1370,7 @@ async function sendMessage() {
       activePath: activePath.value || '',
       modelConfigId: selectedModelConfigId.value || null
     }, {
+      files: imageAttachments.map(attachment => attachment.file),
       onEvent: event => {
         if (!conversationSelectionGuard.isCurrent(streamConversationGeneration)) return
         handleAgentEvent(event, assistantMsg)
@@ -1620,6 +1703,7 @@ const conversationState = useConversationState({
   agentLoading,
   currentAgentSession,
   replayHistoryEvent,
+  onHistoryAttachments: hydrateHistoryAttachmentPreviews,
   onHistoryLoaded: initialScroll
 })
 const {
@@ -1711,6 +1795,152 @@ const {
   scheduleAgentRender
 })
 
+async function loadImageInputPolicy() {
+  try {
+    const response = await projectApi.agentImageAttachmentPolicy(projectId.value)
+    const policy = response.data || {}
+    imageInputPolicy.value = {
+      maxFilesPerMessage: Number(policy.maxFilesPerMessage) || DEFAULT_AGENT_IMAGE_INPUT_POLICY.maxFilesPerMessage,
+      maxFileSizeBytes: Number(policy.maxFileSizeBytes) || DEFAULT_AGENT_IMAGE_INPUT_POLICY.maxFileSizeBytes,
+      maxTotalSizeBytes: Number(policy.maxTotalSizeBytes) || DEFAULT_AGENT_IMAGE_INPUT_POLICY.maxTotalSizeBytes,
+      allowedMimeTypes: Array.isArray(policy.allowedMimeTypes) && policy.allowedMimeTypes.length > 0
+        ? policy.allowedMimeTypes : DEFAULT_AGENT_IMAGE_INPUT_POLICY.allowedMimeTypes
+    }
+  } catch {
+    imageInputPolicy.value = DEFAULT_AGENT_IMAGE_INPUT_POLICY
+  }
+}
+
+function requestImageInput() {
+  if (agentLoading.value) return
+  if (!currentModelSupportsImages.value) {
+    ElMessage.warning('\u5f53\u524d\u6a21\u578b\u662f\u7eaf\u6587\u672c\u6a21\u578b\uff0c\u4e0d\u80fd\u8f93\u5165\u56fe\u7247\uff1b\u8bf7\u5207\u6362\u5230\u5df2\u5f00\u542f\u201c\u652f\u6301\u56fe\u7247\u7406\u89e3\u201d\u7684\u6a21\u578b\u914d\u7f6e\u3002')
+    return
+  }
+  imageInputRef.value?.click()
+}
+
+function handleImageInput(event) {
+  addImageFiles(event.target?.files)
+  event.target.value = ''
+}
+
+function handleImagePaste(event) {
+  const files = Array.from(event.clipboardData?.files || []).filter(file => file.type.startsWith('image/'))
+  if (files.length > 0) {
+    event.preventDefault()
+    addImageFiles(files)
+  }
+}
+
+function hasImageFiles(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes('Files')
+}
+
+function handleImageDragEnter(event) {
+  if (!hasImageFiles(event.dataTransfer)) return
+  event.preventDefault()
+  imageDragActive.value = true
+}
+
+function handleImageDragOver(event) {
+  if (!hasImageFiles(event.dataTransfer)) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = currentModelSupportsImages.value ? 'copy' : 'none'
+}
+
+function handleImageDragLeave(event) {
+  if (!hasImageFiles(event.dataTransfer)) return
+  event.preventDefault()
+  if (!event.currentTarget.contains(event.relatedTarget)) imageDragActive.value = false
+}
+
+function handleImageDrop(event) {
+  if (!hasImageFiles(event.dataTransfer)) return
+  event.preventDefault()
+  imageDragActive.value = false
+  addImageFiles(event.dataTransfer?.files)
+}
+
+function addImageFiles(fileList) {
+  const files = Array.from(fileList || []).filter(Boolean)
+  if (files.length === 0 || agentLoading.value) return
+  if (!currentModelSupportsImages.value) {
+    ElMessage.warning('\u5f53\u524d\u6a21\u578b\u662f\u7eaf\u6587\u672c\u6a21\u578b\uff0c\u4e0d\u80fd\u8f93\u5165\u56fe\u7247\uff1b\u8bf7\u5207\u6362\u5230\u5df2\u5f00\u542f\u201c\u652f\u6301\u56fe\u7247\u7406\u89e3\u201d\u7684\u6a21\u578b\u914d\u7f6e\u3002')
+    return
+  }
+  const policy = imageInputPolicy.value
+  const existing = pendingImageAttachments.value
+  let totalBytes = existing.reduce((sum, attachment) => sum + attachment.file.size, 0)
+  const accepted = []
+  for (const file of files) {
+    if (!policy.allowedMimeTypes.includes(file.type)) {
+      ElMessage.warning(`\u4e0d\u652f\u6301 ${file.name} \u7684\u56fe\u7247\u683c\u5f0f`)
+      continue
+    }
+    if (file.size <= 0 || file.size > policy.maxFileSizeBytes) {
+      ElMessage.warning(`${file.name} \u8d85\u8fc7\u5355\u5f20\u56fe\u7247\u5927\u5c0f\u9650\u5236`)
+      continue
+    }
+    if (existing.length + accepted.length >= policy.maxFilesPerMessage) {
+      ElMessage.warning(`\u4e00\u6b21\u6700\u591a\u6dfb\u52a0 ${policy.maxFilesPerMessage} \u5f20\u56fe\u7247`)
+      break
+    }
+    if (totalBytes + file.size > policy.maxTotalSizeBytes) {
+      ElMessage.warning('\u56fe\u7247\u603b\u5927\u5c0f\u8d85\u8fc7\u5f53\u524d\u9650\u5236')
+      break
+    }
+    const duplicate = [...existing, ...accepted].some(item => item.file.name === file.name
+      && item.file.size === file.size && item.file.lastModified === file.lastModified)
+    if (duplicate) continue
+    accepted.push({ id: crypto.randomUUID(), file, name: file.name || 'image', previewUrl: URL.createObjectURL(file) })
+    totalBytes += file.size
+  }
+  pendingImageAttachments.value.push(...accepted)
+}
+
+function removePendingImage(attachmentId) {
+  const attachment = pendingImageAttachments.value.find(item => item.id === attachmentId)
+  if (attachment?.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+  pendingImageAttachments.value = pendingImageAttachments.value.filter(item => item.id !== attachmentId)
+  if (imagePreviewAttachment.value?.id === attachmentId) closeImagePreview()
+}
+
+async function hydrateHistoryAttachmentPreviews() {
+  const attachments = messages.value.flatMap(message => message?.attachments || [])
+  await Promise.all(attachments.map(hydrateHistoryAttachmentPreview))
+}
+
+async function hydrateHistoryAttachmentPreview(attachment) {
+  if (!attachment || attachment.previewUrl || attachment.expired || attachment.previewFailed || attachment._previewPromise) return
+  attachment._previewPromise = projectApi.agentAttachmentPreview(projectId.value, attachment.id)
+    .then(blob => {
+      if (!(blob instanceof Blob) || blob.size === 0) throw new Error('图片预览为空')
+      attachment.previewUrl = URL.createObjectURL(blob)
+    })
+    .catch(error => {
+      const status = error?.response?.status
+      if (status === 404 || status === 410) attachment.expired = true
+      else attachment.previewFailed = true
+    })
+    .finally(() => { attachment._previewPromise = null })
+  await attachment._previewPromise
+}
+
+function openImagePreview(attachment) {
+  imagePreviewAttachment.value = attachment
+}
+
+function closeImagePreview() {
+  imagePreviewAttachment.value = null
+}
+
+function revokeImageObjectUrls(attachments) {
+  ;(attachments || []).forEach(attachment => {
+    if (attachment?.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+  })
+}
+
 async function loadModelConfigs() {
   try {
     const r = await modelConfigApi.list()
@@ -1739,7 +1969,7 @@ function editConfig(cfg) {
     apiKey: '',
     baseUrl: cfg.baseUrl || '',
     modelsUrl: '',
-    maxTokens: cfg.maxTokens || 32768,
+    maxTokens: cfg.maxTokens || DEFAULT_MAX_TOKENS,
     contextWindowTokens: cfg.contextWindowTokens ?? null,
     promptCacheKeyEnabled: cfg.promptCacheKeyEnabled === 1,
     reasoningEffort: cfg.reasoningEffort || 'medium',
@@ -1767,7 +1997,7 @@ function selectModelTemplate(tpl) {
     baseUrl: tpl.baseUrl || '',
     modelsUrl: tpl.modelsUrl || '',
     modelName: tpl.modelName || '',
-    maxTokens: tpl.maxTokens || 32768,
+    maxTokens: tpl.maxTokens || DEFAULT_MAX_TOKENS,
     contextWindowTokens: tpl.contextWindowTokens ?? null,
     temperature: tpl.temperature ?? 0.7
   }
@@ -1791,13 +2021,14 @@ function applyFetchedModelLimits() {
 }
 async function fetchModelList() {
   const f = mcForm.value
-  if (!f.modelsUrl.trim()) {
-    ElMessage.warning(mcCustomMode.value ? '请先填写模型列表 URL' : '该模板暂未配置官方模型列表 URL')
+  if (!f.baseUrl.trim() && !f.modelsUrl.trim()) {
+    ElMessage.warning('\u8bf7\u586b\u5199 Base URL \u6216\u6a21\u578b\u5217\u8868 URL')
     return
   }
   mcModelsLoading.value = true
   try {
     const r = await modelConfigApi.listModels({
+      configId: mcEditingId.value || null,
       baseUrl: f.baseUrl.trim(),
       modelsUrl: f.modelsUrl.trim(),
       apiKey: f.apiKey.trim()
@@ -1805,7 +2036,7 @@ async function fetchModelList() {
     const data = r.data || {}
     if (!data.success) {
       mcFetchedModels.value = []
-      ElMessage.warning(data.error || '模型列表获取失败')
+      ElMessage.warning(data.error || '\u6a21\u578b\u5217\u8868\u83b7\u53d6\u5931\u8d25')
       return
     }
     mcFetchedModels.value = data.models || []
@@ -1813,14 +2044,14 @@ async function fetchModelList() {
       mcForm.value.modelsUrl = data.modelsUrl
     }
     if (mcFetchedModels.value.length === 0) {
-      ElMessage.warning('模型列表为空')
+      ElMessage.warning('\u6a21\u578b\u5217\u8868\u4e3a\u7a7a')
     } else {
       applyFetchedModelLimits()
-      ElMessage.success(`已获取 ${mcFetchedModels.value.length} 个模型`)
+      ElMessage.success(`\u5df2\u83b7\u53d6 ${mcFetchedModels.value.length} \u4e2a\u6a21\u578b`)
     }
   } catch (e) {
     mcFetchedModels.value = []
-    ElMessage.error('模型列表获取失败: ' + (e?.response?.data?.message || e?.message || '未知错误'))
+    ElMessage.error('\u6a21\u578b\u5217\u8868\u83b7\u53d6\u5931\u8d25: ' + (e?.response?.data?.message || e?.message || '\u672a\u77e5\u9519\u8bef'))
   } finally {
     mcModelsLoading.value = false
   }
@@ -2180,7 +2411,14 @@ async function loadAllTokenStats() {
   const requestEpoch = tokenUsageProjectionEpoch
   try {
     const r = await projectApi.agentTokenSummary(projectId.value)
-    if (requestEpoch === tokenUsageProjectionEpoch) allTokenStats.value = r.data || null
+    if (requestEpoch === tokenUsageProjectionEpoch) {
+      const stats = r.data || null
+      if (selectedCacheTelemetryModel.value
+        && !Object.prototype.hasOwnProperty.call(stats?.cacheByModel || {}, selectedCacheTelemetryModel.value)) {
+        selectedCacheTelemetryModel.value = ''
+      }
+      allTokenStats.value = stats
+    }
   } catch (e) {
     if (requestEpoch === tokenUsageProjectionEpoch) allTokenStats.value = null
   }

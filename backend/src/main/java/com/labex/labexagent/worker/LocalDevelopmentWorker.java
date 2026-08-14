@@ -216,8 +216,10 @@ public class LocalDevelopmentWorker implements SandboxWorker {
             @Override
             public void terminate() {
                 try {
-                    closeProcessStreams(process);
+                    // On Windows, terminate before closing streams so reader threads cannot block FileDescriptor.close0.
+                    // Closing streams after the process tree exits keeps preview shutdown bounded.
                     terminateProcessTree(process);
+                    closeProcessStreams(process);
                 } finally {
                     afterTerminate.run();
                 }

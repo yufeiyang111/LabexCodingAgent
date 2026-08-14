@@ -259,8 +259,8 @@ public final class TestCommandResolver {
 
     private static List<String> pythonVerificationCommand(VerificationStrategy strategy) {
         return strategy == VerificationStrategy.COMPILE
-                ? List.of("python", "-m", "compileall", ".")
-                : List.of("python", "-m", "pytest");
+                ? List.of("python3", "-m", "compileall", ".")
+                : List.of("python3", "-m", "pytest");
     }
 
     public static int defaultTimeoutSeconds(List<String> command) {

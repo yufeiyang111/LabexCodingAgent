@@ -1,5 +1,6 @@
 package com.labex.labexagent.runtime;
 
+import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import java.util.List;
@@ -13,11 +14,13 @@ public final class AgentTranscriptProjectionService {
     private final AgentRunTranscriptService transcriptService;
     private final AgentProviderMessageProjector providerProjector;
     private final AgentCompactionService compactionService;
+    private final AgentInputAttachmentService attachmentService;
 
     @Autowired
     public AgentTranscriptProjectionService(AgentRunTranscriptService transcriptService,
                                              AgentProviderMessageProjector providerProjector,
-                                             AgentCompactionService compactionService) {
+                                             AgentCompactionService compactionService,
+                                             AgentInputAttachmentService attachmentService) {
         if (transcriptService == null) {
             throw new IllegalArgumentException("Durable Provider transcript service is required");
         }
@@ -30,6 +33,13 @@ public final class AgentTranscriptProjectionService {
         }
         this.providerProjector = providerProjector;
         this.compactionService = compactionService;
+        this.attachmentService = attachmentService;
+    }
+
+    public AgentTranscriptProjectionService(AgentRunTranscriptService transcriptService,
+                                             AgentProviderMessageProjector providerProjector,
+                                             AgentCompactionService compactionService) {
+        this(transcriptService, providerProjector, compactionService, null);
     }
 
     /** Provider 的唯一读取入口；缺少持久化事实时失败，禁止回退到内存消息。 */
@@ -64,17 +74,30 @@ public final class AgentTranscriptProjectionService {
                     boundary -> transcriptService.loadProjectableTranscriptAfter(taskId, boundary));
         if (compacted.isPresent()) {
             AgentCompactionService.Projection value = compacted.orElseThrow();
+            List<Map<String, Object>> hydrated = hydrateAttachments(taskId, value.messages());
             return new DurableProjection(interactionResume
-                            ? providerProjector.copyMessages(value.messages())
-                            : providerProjector.project(value.messages()),
+                            ? providerProjector.copyMessages(hydrated)
+                            : providerProjector.project(hydrated),
                     "compaction_epoch=" + value.compactionEpoch()
                             + ",source_max_sequence=" + value.sourceMaxSequence());
         }
+        List<Map<String, Object>> durableMessages = interactionResume
+                ? transcriptService.loadProjectableTranscriptForInteractionResume(taskId)
+                : transcriptService.loadProjectableTranscript(taskId);
+        List<Map<String, Object>> hydrated = hydrateAttachments(taskId, durableMessages);
         return new DurableProjection(interactionResume
-                        ? providerProjector.copyMessages(
-                                transcriptService.loadProjectableTranscriptForInteractionResume(taskId))
-                        : providerProjector.project(transcriptService.loadProjectableTranscript(taskId)),
+                        ? providerProjector.copyMessages(hydrated)
+                        : providerProjector.project(hydrated),
                 interactionResume ? "interaction_resume" : "durable_transcript");
+    }
+
+    private List<Map<String, Object>> hydrateAttachments(Long taskId, List<Map<String, Object>> messages) {
+        if (attachmentService == null || messages == null || messages.isEmpty()) {
+            return messages == null ? List.of() : messages;
+        }
+        return messages.stream()
+                .map(message -> attachmentService.hydrateProviderMessage(taskId, message))
+                .toList();
     }
 
     public record Projection(List<Map<String, Object>> messages, String detail) {

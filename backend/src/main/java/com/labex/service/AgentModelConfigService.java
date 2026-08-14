@@ -13,7 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AgentModelConfigService extends ServiceImpl<AgentModelConfigMapper, AgentModelConfig> {
-    private static final int DEFAULT_MAX_TOKENS = 32_768;
+    public static final int DEFAULT_MAX_TOKENS = 32_000;
 
     private final SecretStore secretStore;
 

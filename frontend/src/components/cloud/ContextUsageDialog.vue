@@ -111,6 +111,7 @@ const categories = [
   { key: 'compactedContext', label: '旧版恢复上下文', color: '#bc7d6b' },
   { key: 'skillsAndInstructions', label: 'Skills 与指令', color: '#e6ad70' },
   { key: 'fixedInstructions', label: '固定运行指令', color: '#d5b66f' },
+  { key: 'imageInputs', label: '图片输入', color: '#a07ad8' },
   { key: 'conversationMessages', label: '会话消息', color: '#b079d3' },
   { key: 'toolResults', label: '工具结果', color: '#ce85c7' },
   { key: 'messageProtocol', label: '协议元数据', color: '#8791a2' }

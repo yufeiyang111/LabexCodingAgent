@@ -298,7 +298,15 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'PLAN_UPDATE': message.plan = data.summary || data.plan || null; message.planJson = data.planJson || null; break
     case 'COMPLETION_EVIDENCE':
       message.taskId = data.taskId || message.taskId || null
-      message.completionEvidence = data
+      if (data.satisfied === true) {
+        message.completionEvidence = data
+        message.completionBlockedEvidence = null
+      } else {
+        message.completionEvidence = null
+        message.completionBlockedEvidence = data
+        message.pendingFinalContent = ''
+        message.hasPendingFinalDraft = false
+      }
       break
     case 'RUN_INTERACTION_RESUME_QUEUED':
       message.taskId = data.taskId || message.taskId || null
@@ -339,6 +347,10 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message.runState = normalizeAgentRunState(data.taskStatus) || message.runState || ''
       message.isStreaming = false
       break
+    case 'FINAL_CANDIDATE_DELTA':
+      message.pendingFinalContent = (message.pendingFinalContent || '') + (data.delta || '')
+      message.hasPendingFinalDraft = Boolean(message.pendingFinalContent)
+      break
     case 'FINAL_DELTA': {
       if (isRecoverableAgentRunState(message.runState)) break
       message._finalReasoningFilter ??= createInternalReasoningBlockStreamFilter()
@@ -346,6 +358,8 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       break
     }
     case 'FINAL':
+      message.pendingFinalContent = ''
+      message.hasPendingFinalDraft = false
       if (!isRecoverableAgentRunState(message.runState) && data.content && !message.error) {
         message.content = stripInternalReasoningBlocks(data.content)
       }

@@ -2,6 +2,7 @@ package com.labex.labexagent.llm;
 
 import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.secret.SecretStore;
+import com.labex.service.AgentModelConfigService;
 import com.labex.rag.config.RagConfig;
 import java.util.HashMap;
 import java.util.List;
@@ -46,7 +47,7 @@ public class LlmProviderFactory {
                     configuredKey,
                     config.getBaseUrl() != null ? config.getBaseUrl() : "https://api.openai.com",
                     config.getModelName() != null ? config.getModelName() : "gpt-4o-mini",
-                    config.getMaxTokens() != null ? config.getMaxTokens() : 32768,
+                    config.getMaxTokens() != null ? config.getMaxTokens() : AgentModelConfigService.DEFAULT_MAX_TOKENS,
                     config.getTemperature(), null, null, null,
                     Integer.valueOf(1).equals(config.getPromptCacheKeyEnabled()), null
             ).withReasoningEffort(ReasoningEffort.normalize(config.getReasoningEffort()));
@@ -57,7 +58,7 @@ public class LlmProviderFactory {
                 key,
                 ragConfig.getMiniMaxBaseUrl() != null ? ragConfig.getMiniMaxBaseUrl() : "https://api.minimaxi.com/v1",
                 ragConfig.getMiniMaxModel() != null ? ragConfig.getMiniMaxModel() : "MiniMax-M2.7",
-                32768, null
+                AgentModelConfigService.DEFAULT_MAX_TOKENS, null
         );
     }
 

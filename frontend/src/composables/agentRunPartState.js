@@ -54,10 +54,16 @@ function appendReasoningPart(message, part) {
   })
 }
 
+function hasLiveReasoningTimeline(message) {
+  if (String(message?.thinking || '').trim()) return true
+  return Array.isArray(message?.thinkingBlocks)
+    && message.thinkingBlocks.some(block => String(block?.content || '').trim() && !block?._partKey)
+}
+
 /** 将持久化 RunPart 投影到现有消息视图，兼容旧事件 reducer。 */
 export function applyRunPartSnapshot(message, parts = [], options = {}) {
   if (!message || !Array.isArray(parts)) return message
-  const preserveReasoningTimeline = options.preserveReasoningTimeline === true
+  const preserveReasoningTimeline = options.preserveReasoningTimeline === true || hasLiveReasoningTimeline(message)
   const ordered = [...parts]
     .sort((left, right) =>
       Number(left?.sequence || left?.partId || 0) - Number(right?.sequence || right?.partId || 0))
@@ -70,7 +76,9 @@ export function applyRunPartSnapshot(message, parts = [], options = {}) {
         tool: part.tool,
         arguments: type === 'tool_result' ? undefined : parseJson(part.input),
         status: part.status,
-        detail: part.output
+        detail: part.output,
+        outputTruncated: part.outputTruncated === true,
+        outputLength: part.outputLength || 0
       })
       return
     }
@@ -83,7 +91,14 @@ export function applyRunPartSnapshot(message, parts = [], options = {}) {
       return
     }
     if (type === 'completion_evidence') {
-      message.completionEvidence = parseJson(part.output, parseJson(part.input, {}))
+      const evidence = parseJson(part.output, parseJson(part.input, {}))
+      if (evidence.satisfied === true) {
+        message.completionEvidence = evidence
+        message.completionBlockedEvidence = null
+      } else {
+        message.completionEvidence = null
+        message.completionBlockedEvidence = evidence
+      }
       return
     }
     if (type === 'error') {

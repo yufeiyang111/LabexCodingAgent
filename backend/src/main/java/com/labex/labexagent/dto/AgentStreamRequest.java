@@ -2,6 +2,7 @@ package com.labex.labexagent.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.LocalDateTime;
+import java.util.List;
 
 public class AgentStreamRequest {
     private String sessionId;
@@ -11,6 +12,9 @@ public class AgentStreamRequest {
     private String displayMessage;
     private String activePath;
     private Integer modelConfigId;
+    /** 仅由 multipart 入口在服务器侧填充，不接受公开 JSON 请求直接传入。 */
+    @JsonIgnore
+    private List<String> attachmentIds = List.of();
     /**
      * 调度器/continuation 专用恢复标识，不能从公共 HTTP 请求体绑定。
      */
@@ -89,6 +93,11 @@ public class AgentStreamRequest {
     }
 
     @JsonIgnore
+    public List<String> getAttachmentIds() {
+        return this.attachmentIds == null ? List.of() : List.copyOf(this.attachmentIds);
+    }
+
+    @JsonIgnore
     public Long getResumeTaskId() {
         return this.resumeTaskId;
     }
@@ -123,6 +132,11 @@ public class AgentStreamRequest {
 
     public void setModelConfigId(Integer modelConfigId) {
         this.modelConfigId = modelConfigId;
+    }
+
+    @JsonIgnore
+    public void setAttachmentIds(List<String> attachmentIds) {
+        this.attachmentIds = attachmentIds == null ? List.of() : List.copyOf(attachmentIds);
     }
 
     @JsonIgnore

@@ -24,6 +24,9 @@ public final class WorkerResourceDefaults implements InitializingBean {
     @Value("${labex-agent.worker.docker.image:}")
     private String configuredImage;
 
+    @Value("${labex-agent.worker.network-default-enabled:true}")
+    private boolean networkDefaultEnabled;
+
     private static volatile WorkerPolicy configuredDefaults;
 
     /** 当前配置的默认策略；Spring 上下文未初始化（纯单元测试）时回退硬编码。 */
@@ -38,6 +41,6 @@ public final class WorkerResourceDefaults implements InitializingBean {
                 ? "labex-agent-sandbox:latest"
                 : configuredImage.trim();
         configuredDefaults = new WorkerPolicy(image, Math.max(100, cpuMillis),
-                Math.max(128, memoryMegabytes), Math.max(16, maxPids), false);
+                Math.max(128, memoryMegabytes), Math.max(16, maxPids), networkDefaultEnabled);
     }
 }

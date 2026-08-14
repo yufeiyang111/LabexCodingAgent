@@ -1,12 +1,12 @@
 package com.labex.labexagent.runtime;
 
-import com.google.gson.Gson;
 import com.labex.labexagent.context.AgentRequestTokenEstimator;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -14,13 +14,23 @@ public class ContextUsageEstimator {
     private static final String TOOL_RESULT_PREFIX = "[Tool ";
     private static final int MAX_PREVIEW_SECTION_CHARS = 8_000;
     private static final int MAX_PREVIEW_TOTAL_CHARS = 36_000;
-    private static final Gson GSON = new Gson();
     private static final Pattern API_KEY = Pattern.compile("(?i)\\bsk-[a-z0-9_-]{10,}\\b");
     private static final Pattern BEARER = Pattern.compile("(?i)\\bbearer\\s+[a-z0-9._~-]{10,}");
     private static final Pattern NAMED_SECRET = Pattern.compile(
             "(?i)\\b(api[_ -]?key|authorization|token|password|secret)\\s*[:=]\\s*([^\\s,;\\]}]+)");
 
-    private final AgentRequestTokenEstimator requestTokenEstimator = new AgentRequestTokenEstimator();
+    private final AgentRequestTokenEstimator requestTokenEstimator;
+
+    @Autowired
+    public ContextUsageEstimator(AgentRequestTokenEstimator requestTokenEstimator) {
+        this.requestTokenEstimator = requestTokenEstimator == null
+                ? new AgentRequestTokenEstimator() : requestTokenEstimator;
+    }
+
+    /** 保持既有直接构造测试可用；运行时由 Spring 注入带附件配置的统一估算器。 */
+    public ContextUsageEstimator() {
+        this(new AgentRequestTokenEstimator());
+    }
 
     public ContextUsageSnapshot estimate(String conversationId, String sessionId, String provider, String model,
                                          Integer contextWindowTokens, String systemPrompt, Object tools,
@@ -56,7 +66,7 @@ public class ContextUsageEstimator {
         PromptContext context = promptContext == null ? new PromptContext("", "", "", "") : promptContext;
         Map<String, Integer> categories = new LinkedHashMap<>();
         categories.put("systemPrompt", estimateTokens(systemPrompt));
-        categories.put("toolDefinitions", estimateTokens(serialize(tools)));
+        categories.put("toolDefinitions", requestTokenEstimator.estimateValue(tools));
         categories.put("projectContext", estimateTokens(context.projectContext()));
         categories.put("workspaceMemory", estimateTokens(context.workspaceMemory()));
         categories.put("conversationMemory", estimateTokens(context.conversationMemory()));
@@ -65,12 +75,13 @@ public class ContextUsageEstimator {
         categories.put("skillsAndInstructions", estimateTokens(context.skillsAndInstructions()));
         categories.put("fixedInstructions", estimateTokens(context.fixedInstructions()));
         categories.put("conversationMessages", 0);
+        categories.put("imageInputs", 0);
         categories.put("toolResults", 0);
         categories.put("messageProtocol", 0);
 
         for (Map<String, Object> message : messages == null ? List.<Map<String, Object>>of() : messages) {
             Object content = message.get("content");
-            String text = content instanceof String value ? value : serialize(content);
+            String text = contentText(content);
             if (text.equals(context.initialContextMessage())) continue;
             String role = String.valueOf(message.getOrDefault("role", "user"));
             String category;
@@ -82,10 +93,12 @@ public class ContextUsageEstimator {
             } else {
                 category = "conversationMessages";
             }
-            categories.merge(category, estimateTokens(text), Integer::sum);
+            AgentRequestTokenEstimator.ValueEstimate contentEstimate = requestTokenEstimator.analyzeValue(content);
+            categories.merge(category, contentEstimate.textTokens(), Integer::sum);
+            categories.merge("imageInputs", contentEstimate.imageInputTokens(), Integer::sum);
             LinkedHashMap<String, Object> protocol = new LinkedHashMap<>(message);
             protocol.remove("content");
-            categories.merge("messageProtocol", estimateTokens(serialize(protocol)), Integer::sum);
+            categories.merge("messageProtocol", requestTokenEstimator.estimateValue(protocol), Integer::sum);
         }
         return Map.copyOf(categories);
     }
@@ -116,7 +129,7 @@ public class ContextUsageEstimator {
         StringBuilder compactionSummaries = new StringBuilder();
         for (Map<String, Object> message : messages == null ? List.<Map<String, Object>>of() : messages) {
             Object content = message.get("content");
-            String text = content instanceof String value ? value : serialize(content);
+            String text = contentText(content);
             if (text.equals(promptContext.initialContextMessage())) continue;
             String role = String.valueOf(message.getOrDefault("role", "user"));
             String entry = "[" + role + "] " + text + "\n";
@@ -162,8 +175,12 @@ public class ContextUsageEstimator {
         return NAMED_SECRET.matcher(safe).replaceAll("$1=[REDACTED]");
     }
 
+    private String contentText(Object content) {
+        return content instanceof String value ? value : requestTokenEstimator.sanitizedSerialization(content);
+    }
+
     private String serialize(Object value) {
-        return value == null ? "" : GSON.toJson(value);
+        return value == null ? "" : requestTokenEstimator.sanitizedSerialization(value);
     }
 
     private record PreviewInput(String key, String content) {

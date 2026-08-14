@@ -39,7 +39,7 @@ const palette = {
   systemPrompt: '#5d86e8', toolDefinitions: '#68b9ee', projectContext: '#72c7b5', workspaceMemory: '#8bd98a',
   conversationMemory: '#6fc0a8', runRecoveryContext: '#d6c16c', compactionSummary: '#e58a6b',
   compactedContext: '#bc7d6b', skillsAndInstructions: '#e6ad70', fixedInstructions: '#d5b66f',
-  conversationMessages: '#b079d3', toolResults: '#ce85c7', messageProtocol: '#8791a2'
+  imageInputs: '#a07ad8', conversationMessages: '#b079d3', toolResults: '#ce85c7', messageProtocol: '#8791a2'
 }
 const budget = computed(() => normalizeContextBudget(props.status || {}))
 const hasSnapshot = computed(() => Boolean(props.status?.usedTokens > 0 || Object.keys(props.status?.categories || {}).length))

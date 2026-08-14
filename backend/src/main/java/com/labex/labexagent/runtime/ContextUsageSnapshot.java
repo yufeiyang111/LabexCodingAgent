@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class ContextUsageSnapshot {
-    private static final String CURRENT_CATEGORY_VERSION = "context-budget-v2";
+    private static final String CURRENT_CATEGORY_VERSION = "context-budget-v3";
     private final String conversationId;
     private final String sessionId;
     private final String provider;

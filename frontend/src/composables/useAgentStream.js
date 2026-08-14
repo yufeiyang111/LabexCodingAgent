@@ -23,13 +23,24 @@ export function useAgentStream() {
     })
 
     try {
+      const imageFiles = Array.isArray(options.files) ? options.files.filter(Boolean) : []
+      const headers = {
+        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+      }
+      let body
+      if (imageFiles.length > 0) {
+        const form = new FormData()
+        form.append('request', JSON.stringify(payload))
+        imageFiles.forEach(file => form.append('images', file))
+        body = form
+      } else {
+        headers['Content-Type'] = 'application/json'
+        body = JSON.stringify(payload)
+      }
       const response = await fetch(`/api/student/projects/${projectId}/agent/stream`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-        },
-        body: JSON.stringify(payload),
+        headers,
+        body,
         signal: controller.signal
       })
 

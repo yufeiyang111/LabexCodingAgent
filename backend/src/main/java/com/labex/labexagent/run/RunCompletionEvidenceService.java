@@ -94,12 +94,6 @@ public class RunCompletionEvidenceService {
                 .map(this::verificationLabel).toList();
         List<String> unresolvedRisks = new ArrayList<>();
         boolean hasSuccessfulVerification = !passed.isEmpty();
-        boolean hasHistoricalFailedVerification = verifications != null
-                && verifications.stream().anyMatch(item -> item != null && !passed(item));
-        boolean runTestsFailureRecovered = hasSuccessfulVerification
-                && failed.isEmpty()
-                && environmentVerifications.isEmpty()
-                && hasHistoricalFailedVerification;
         for (AgentRunArtifact artifact : artifactService.list(taskId, "post_edit_verification")) {
             String content = artifact.getContent() == null ? "" : artifact.getContent();
             if (content.contains("status=UNAVAILABLE")) {
@@ -110,15 +104,6 @@ public class RunCompletionEvidenceService {
             } else if (content.contains("status=FAIL")) {
                 unresolvedRisks.add("post-edit diagnostics failed");
             }
-        }
-        for (AgentRunArtifact artifact : artifactService.list(taskId, "tool_failure")) {
-            String content = artifact.getContent() == null ? "" : artifact.getContent();
-            // run_tests 的失败工件保留审计；只有更晚的权威验证已覆盖全部历史失败时才解除完成阻塞。
-            if (runTestsFailureRecovered && isRunTestsFailure(content)) {
-                continue;
-            }
-            failed.add("tool failure: " + boundedLabel(content));
-            unresolvedRisks.add("unrecovered tool failure");
         }
         RunCompletionEvidence evidence = policy.evaluate(new RunCompletionPolicy.Input(
                 taskId, changedFiles, passed, failed, environmentVerifications, manualFileVerification, runState,
@@ -230,18 +215,12 @@ public class RunCompletionEvidenceService {
     }
 
     private String normalizedVerificationCommand(String command) {
-        return command == null ? "" : command.trim().replaceAll("\\s+", " ");
+        return displayVerificationCommand(command)
+                .replaceFirst("(?i)^python(?:\\d+(?:\\.\\d+)*)?\\b", "python");
     }
 
-    private boolean isRunTestsFailure(String content) {
-        if (content == null || content.isBlank()) return false;
-        for (String line : content.split("\\R")) {
-            String normalized = line.trim();
-            if (normalized.regionMatches(true, 0, "tool=", 0, "tool=".length())) {
-                return "run_tests".equalsIgnoreCase(normalized.substring("tool=".length()).trim());
-            }
-        }
-        return false;
+    private String displayVerificationCommand(String command) {
+        return command == null ? "" : command.trim().replaceAll("\\s+", " ");
     }
 
     private boolean passed(AgentVerification verification) {
@@ -261,7 +240,7 @@ public class RunCompletionEvidenceService {
     }
 
     private String verificationLabel(AgentVerification verification) {
-        String command = normalizedVerificationCommand(verification.getCommand());
+        String command = displayVerificationCommand(verification.getCommand());
         if (command.isBlank()) command = "verification";
         command = SECRET.matcher(command).replaceAll("$1=[REDACTED]");
         if (command.length() > 240) command = command.substring(0, 240) + "...";

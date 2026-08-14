@@ -3,6 +3,8 @@ package com.labex.labexagent.runtime;
 import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.run.RunCompletionEvidence;
 import com.labex.labexagent.run.RunCompletionEvidenceService;
+import java.util.ArrayList;
+import java.util.List;
 import org.springframework.stereotype.Service;
 
 /** 将模型的 final 文本转换为服务器证据判定，模型本身不能设置完成布尔值。 */
@@ -40,18 +42,26 @@ public final class AgentRunFinalizer {
     }
 
     private String buildGuidance(RunCompletionEvidence evidence) {
-        if (!evidence.failedVerifications().isEmpty()) {
-            return "Completion evidence is not satisfied: fix the failed verification and run it again.";
+        List<String> blockers = new ArrayList<>();
+        for (String verification : evidence.failedVerifications()) {
+            blockers.add("failed verification: " + verification);
         }
-        if (!evidence.environmentVerifications().isEmpty()) {
-            return "Completion evidence is not satisfied: the last verification could not run because of an "
-                    + "environment failure (timeout, cancellation, DNS/network or infrastructure). "
-                    + "Restore the environment or switch verification strategy, then run the verification again.";
+        for (String verification : evidence.environmentVerifications()) {
+            blockers.add("environment-blocked verification: " + verification);
+        }
+        for (String risk : evidence.unresolvedRisks()) {
+            blockers.add("recorded risk: " + risk);
         }
         if (!evidence.changedFiles().isEmpty() && evidence.successfulVerifications().isEmpty()) {
-            return "Completion evidence is not satisfied: run a relevant verification after the latest file change.";
+            blockers.add("changed files have no successful server-recorded verification");
         }
-        return "Completion evidence is not satisfied: resolve the recorded run risks before finalizing.";
+        if (blockers.isEmpty()) {
+            blockers.add("the server completion policy is not satisfied");
+        }
+        return "Completion evidence is not satisfied. Resolve only these recorded blockers before finalizing:\n- "
+                + String.join("\n- ", blockers)
+                + "\nUse a server-recognized verification path or verification strategy after the latest relevant change. "
+                + "Do not add configuration or tests unless they change one of the blockers above.";
     }
 
     public record CompletionAssessment(boolean allowed, RunCompletionEvidence evidence, String guidance) {

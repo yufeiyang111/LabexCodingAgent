@@ -96,24 +96,35 @@ public class ToolDefinition {
         public Builder name(String name) { this.name = name; return this; }
         public Builder description(String description) { this.description = description; return this; }
         public Builder stringProperty(String name, String desc, boolean required) {
-            properties.put(name, Map.of("type", "string", "description", desc != null ? desc : ""));
+            properties.put(name, propertySchema("string", desc, null));
             if (required) this.required.add(name);
             return this;
         }
         public Builder intProperty(String name, String desc, boolean required) {
-            properties.put(name, Map.of("type", "integer", "description", desc != null ? desc : ""));
+            properties.put(name, propertySchema("integer", desc, null));
             if (required) this.required.add(name);
             return this;
         }
         public Builder booleanProperty(String name, String desc, boolean required) {
-            properties.put(name, Map.of("type", "boolean", "description", desc != null ? desc : ""));
+            properties.put(name, propertySchema("boolean", desc, null));
             if (required) this.required.add(name);
             return this;
         }
         public Builder arrayProperty(String name, String desc, Map<String, Object> items, boolean required) {
-            properties.put(name, Map.of("type", "array", "description", desc != null ? desc : "", "items", items));
+            properties.put(name, propertySchema("array", desc, items));
             if (required) this.required.add(name);
             return this;
+        }
+
+        /** 使用有序 Map 固化工具字段声明顺序，避免运行时集合实现影响 Provider schema。 */
+        private Map<String, Object> propertySchema(String type, String description, Object items) {
+            Map<String, Object> schema = new java.util.LinkedHashMap<>();
+            schema.put("type", type);
+            schema.put("description", description != null ? description : "");
+            if (items != null) {
+                schema.put("items", items);
+            }
+            return schema;
         }
         public ToolDefinition build() {
             Map<String, Object> schema = new java.util.LinkedHashMap<>();

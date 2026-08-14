@@ -8,11 +8,13 @@ import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
+import com.labex.labexagent.runtime.AgentToolCallIdPolicy;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -31,15 +33,24 @@ public class AgentRunPartService {
     private final AgentTaskMapper taskMapper;
     private final AgentRunMessageService messageService;
     private final AgentRunExecutionLeaseService leaseService;
+    private final AgentToolOutputProperties toolOutputProperties;
 
     @Autowired
     public AgentRunPartService(AgentRunPartMapper partMapper, AgentTaskMapper taskMapper,
                                AgentRunMessageService messageService,
-                               AgentRunExecutionLeaseService leaseService) {
+                               AgentRunExecutionLeaseService leaseService,
+                               AgentToolOutputProperties toolOutputProperties) {
         this.partMapper = partMapper;
         this.taskMapper = taskMapper;
         this.messageService = messageService;
         this.leaseService = leaseService;
+        this.toolOutputProperties = toolOutputProperties == null ? new AgentToolOutputProperties() : toolOutputProperties;
+    }
+
+    public AgentRunPartService(AgentRunPartMapper partMapper, AgentTaskMapper taskMapper,
+                               AgentRunMessageService messageService,
+                               AgentRunExecutionLeaseService leaseService) {
+        this(partMapper, taskMapper, messageService, leaseService, new AgentToolOutputProperties());
     }
 
     public AgentRunPartService(AgentRunPartMapper partMapper, AgentTaskMapper taskMapper,
@@ -51,7 +62,7 @@ public class AgentRunPartService {
     @Transactional(rollbackFor = Exception.class)
     public AgentRunPart upsertToolCall(Long taskId, String toolCallId, String status, String toolName,
                                        Object arguments, int iteration, String detail) {
-        if (taskId == null || taskId <= 0 || toolCallId == null || toolCallId.isBlank()) {
+        if (taskId == null || taskId <= 0 || !AgentToolCallIdPolicy.isValid(toolCallId)) {
             return null;
         }
         syncProviderToolCallState(taskId, toolCallId, status, detail);
@@ -63,7 +74,7 @@ public class AgentRunPartService {
         };
         AgentRunMessage message = messageService.upsertAssistantTurn(taskId, iteration, messageStatus);
         return upsertPart(taskId, message.getRunMessageId(),
-                "tool:" + toolCallId.trim(), "tool", status, toolCallId,
+                "tool:" + toolCallId, "tool", status, toolCallId,
                 toolName, arguments, detail, iteration);
     }
 
@@ -99,7 +110,7 @@ public class AgentRunPartService {
     /** 更新已存在的工具 Part，用于命令审批等延后终态的持久化。 */
     @Transactional(rollbackFor = Exception.class)
     public AgentRunPart resolveExistingToolCall(Long taskId, String toolCallId, String status, String detail) {
-        if (taskId == null || taskId <= 0 || toolCallId == null || toolCallId.isBlank()) return null;
+        if (taskId == null || taskId <= 0 || !AgentToolCallIdPolicy.isValid(toolCallId)) return null;
         syncProviderToolCallState(taskId, toolCallId, status, detail);
         AgentRunPart part = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
                 .eq(AgentRunPart::getTaskId, taskId)
@@ -224,6 +235,62 @@ public class AgentRunPartService {
         return updated;
     }
 
+    /**
+     * Reads a bounded raw-output page only when the active task, student, and project all match.
+     * Offsets use Java character indices but never split a Unicode surrogate pair.
+     */
+    @Transactional(readOnly = true)
+    public ToolOutputSlice readOwnedToolOutput(Integer studentId, Integer projectId, Long taskId,
+                                                String toolCallId, int offset, int requestedLimit) {
+        if (studentId == null || projectId == null || taskId == null || taskId <= 0
+                || !AgentToolCallIdPolicy.isValid(toolCallId)) {
+            throw new IllegalArgumentException("tool output is unavailable for the active task");
+        }
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must be non-negative");
+        }
+        AgentRunPart part = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .eq(AgentRunPart::getToolCallId, toolCallId)
+                .eq(AgentRunPart::getPartType, "tool")
+                .last("LIMIT 1"));
+        if (part == null || !Objects.equals(studentId, part.getStudentId())
+                || !Objects.equals(projectId, part.getProjectId())
+                || !AgentToolCallIdPolicy.isValid(part.getToolCallId())
+                || !Objects.equals(toolCallId, part.getToolCallId())) {
+            throw new IllegalArgumentException("tool output is unavailable for the active task");
+        }
+
+        String raw = part.getOutputText() == null ? "" : part.getOutputText();
+        if (offset > raw.length()) {
+            throw new IllegalArgumentException("offset is outside the stored tool output");
+        }
+        if (offset < raw.length() && offset > 0 && Character.isLowSurrogate(raw.charAt(offset))
+                && Character.isHighSurrogate(raw.charAt(offset - 1))) {
+            throw new IllegalArgumentException("offset must not split a Unicode surrogate pair");
+        }
+        if (requestedLimit < 0) {
+            throw new IllegalArgumentException("limit must be non-negative");
+        }
+        int limit = requestedLimit == 0 ? toolOutputProperties.getReadMaxChars()
+                : Math.min(requestedLimit, toolOutputProperties.getReadMaxChars());
+        int candidateEnd = Math.min(raw.length(), offset + limit);
+        if (candidateEnd < raw.length() && candidateEnd > offset
+                && Character.isHighSurrogate(raw.charAt(candidateEnd - 1))
+                && Character.isLowSurrogate(raw.charAt(candidateEnd))) {
+            candidateEnd++;
+        }
+        return new ToolOutputSlice(part.getToolName(), toolCallId, offset, candidateEnd,
+                raw.length(), raw.substring(offset, candidateEnd));
+    }
+
+    public record ToolOutputSlice(String toolName, String toolCallId, int offset, int nextOffset,
+                                  int totalChars, String content) {
+        public boolean hasMore() {
+            return nextOffset < totalChars;
+        }
+    }
+
     public List<AgentRunPart> history(Long taskId) {
         if (taskId == null || taskId <= 0) return List.of();
         return partMapper.selectList(new LambdaQueryWrapper<AgentRunPart>()
@@ -237,6 +304,16 @@ public class AgentRunPartService {
 
     /** 按任务批量读取公开 Part 投影，避免历史页重复查询与组装 DTO。 */
     public Map<Long, List<Map<String, Object>>> publicHistoryByTaskIds(Collection<Long> taskIds) {
+        return publicHistoryByTaskIds(taskIds, 0);
+    }
+
+    /**
+     * 按任务批量读取公开 Part 投影；当 {@code maxOutputChars > 0} 时，工具输出超出部分会被
+     * 截断并附加 {@code outputTruncated}/{@code outputLength} 标记（历史浏览用），
+     * 任务恢复等完整路径不受影响。
+     */
+    public Map<Long, List<Map<String, Object>>> publicHistoryByTaskIds(Collection<Long> taskIds,
+                                                                        int maxOutputChars) {
         List<Long> ids = taskIds == null ? List.of() : taskIds.stream()
                 .filter(id -> id != null && id > 0)
                 .distinct()
@@ -250,7 +327,7 @@ public class AgentRunPartService {
         for (AgentRunPart part : stored == null ? List.<AgentRunPart>of() : stored) {
             if (part == null || part.getTaskId() == null) continue;
             grouped.computeIfAbsent(part.getTaskId(), ignored -> new java.util.ArrayList<>())
-                    .add(publicPayload(part));
+                    .add(publicPayload(part, maxOutputChars));
         }
         grouped.replaceAll((ignored, values) -> List.copyOf(values));
         return Map.copyOf(grouped);
@@ -382,6 +459,10 @@ public class AgentRunPartService {
     }
 
     private Map<String, Object> publicPayload(AgentRunPart part) {
+        return publicPayload(part, 0);
+    }
+
+    private Map<String, Object> publicPayload(AgentRunPart part, int maxOutputChars) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("partId", part.getPartId());
         payload.put("messageId", part.getMessageId());
@@ -391,7 +472,12 @@ public class AgentRunPartService {
         payload.put("toolCallId", part.getToolCallId());
         payload.put("tool", part.getToolName());
         payload.put("input", part.getInputJson());
-        payload.put("output", publicOutput(part));
+        Map<String, Object> output = publicOutput(part, maxOutputChars);
+        payload.put("output", output.get("text"));
+        if (output.get("truncated") == Boolean.TRUE) {
+            payload.put("outputTruncated", true);
+            payload.put("outputLength", output.get("length"));
+        }
         payload.put("metadata", part.getMetadata());
         payload.put("sequence", part.getSequenceNumber());
         payload.put("createdAt", part.getCreateTime());
@@ -399,11 +485,21 @@ public class AgentRunPartService {
         return payload;
     }
 
-    private String publicOutput(AgentRunPart part) {
+    private Map<String, Object> publicOutput(AgentRunPart part, int maxOutputChars) {
         String type = part.getPartType() == null ? "" : part.getPartType();
-        if ("text".equalsIgnoreCase(type)) return InternalReasoningBoundary.stripVisible(part.getOutputText());
-        if ("reasoning".equalsIgnoreCase(type)) return InternalReasoningBoundary.stripTags(part.getOutputText());
-        return part.getOutputText();
+        String text;
+        if ("text".equalsIgnoreCase(type)) {
+            text = InternalReasoningBoundary.stripVisible(part.getOutputText());
+        } else if ("reasoning".equalsIgnoreCase(type)) {
+            text = InternalReasoningBoundary.stripTags(part.getOutputText());
+        } else {
+            text = part.getOutputText();
+        }
+        if (maxOutputChars > 0 && text != null && text.length() > maxOutputChars) {
+            return Map.of("text", text.substring(0, maxOutputChars), "truncated", true,
+                    "length", text.length());
+        }
+        return Map.of("text", text, "truncated", false);
     }
 
     private void requireFence(ExecutionFence fence) {

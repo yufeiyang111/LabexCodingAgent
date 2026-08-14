@@ -88,6 +88,7 @@ export function useConversationState({
   agentLoading,
   currentAgentSession,
   replayHistoryEvent,
+  onHistoryAttachments,
   onHistoryLoaded,
   createSessionId = () => crypto.randomUUID(),
   storage = globalThis.sessionStorage
@@ -196,7 +197,14 @@ export function useConversationState({
         taskId: turn.taskId ?? null,
         conversationId: turn.conversationId || null,
         sourceConversationId: turn.sourceConversationId || turn.conversationId || null,
-        inherited: Boolean(turn.inherited)
+        inherited: Boolean(turn.inherited),
+        attachments: Array.isArray(turn.attachments) ? turn.attachments.map(attachment => ({
+          id: attachment.attachmentId,
+          name: attachment.name || '图片',
+          mimeType: attachment.mimeType || '',
+          expired: attachment.expired === true,
+          previewUrl: null
+        })) : []
       })
     }
 
@@ -223,8 +231,9 @@ export function useConversationState({
     return rendered
   }
 
-  function rebuildHistoryMessages() {
+  async function rebuildHistoryMessages() {
     messages.value = historyTurns.value.flatMap(hydrateHistoryTurn)
+    await onHistoryAttachments?.(messages.value)
   }
 
   function mergeHistoryTurns(olderTurns) {
@@ -254,7 +263,7 @@ export function useConversationState({
       historyTurns.value = [...page.turns].sort(compareTaskIds)
       hasOlderMessages.value = Boolean(page.hasMore)
       nextBeforeTaskId.value = page.nextBeforeTaskId ?? null
-      rebuildHistoryMessages()
+      await rebuildHistoryMessages()
       return true
     } catch (error) {
       return Promise.reject(error)
@@ -277,7 +286,7 @@ export function useConversationState({
       mergeHistoryTurns(page.turns)
       hasOlderMessages.value = Boolean(page.hasMore)
       nextBeforeTaskId.value = page.nextBeforeTaskId ?? null
-      rebuildHistoryMessages()
+      await rebuildHistoryMessages()
       return true
     } catch {
       return false

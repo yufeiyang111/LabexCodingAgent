@@ -159,18 +159,17 @@ public class AgentModelConfigController {
     }
 
     @PostMapping({"/models", "/model-list"})
-    public Result<Map<String, Object>> listModels(@RequestBody ModelListRequest req) {
+    public Result<Map<String, Object>> listModels(@RequestBody ModelListRequest req, Authentication auth) {
         try {
-            String url = req.modelsUrl != null && !req.modelsUrl.isBlank()
-                    ? req.modelsUrl.trim()
-                    : buildModelsUrl(req.baseUrl);
+            ResolvedModelListRequest resolved = resolveModelListRequest(req, auth);
+            String url = resolved.modelsUrl();
             validatePublicHttpsUrl(url);
 
             HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("Accept", "application/json");
-            if (req.apiKey != null && !req.apiKey.isBlank()) {
-                applyModelListAuth(conn, URI.create(url), req.apiKey.trim());
+            if (!resolved.apiKey().isBlank()) {
+                applyModelListAuth(conn, URI.create(url), resolved.apiKey());
             }
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(20000);
@@ -240,6 +239,38 @@ public class AgentModelConfigController {
     public Result<AgentModelConfig> getDefault(Authentication auth) {
         AgentModelConfig config = configService.getDefault(getStudentId(auth));
         return Result.success(sanitizeConfig(config));
+    }
+
+    private ResolvedModelListRequest resolveModelListRequest(ModelListRequest req, Authentication auth) {
+        String baseUrl = trimToEmpty(req.baseUrl);
+        String modelsUrl = trimToEmpty(req.modelsUrl);
+        String apiKey = trimToEmpty(req.apiKey);
+
+        if (req.configId != null) {
+            if (auth == null) {
+                throw new IllegalArgumentException("Authentication is required when using a saved model configuration");
+            }
+            AgentModelConfig config = configService.getOwned(getStudentId(auth), req.configId);
+            if (config == null) {
+                throw new IllegalArgumentException("Config not found");
+            }
+            if (baseUrl.isBlank()) {
+                baseUrl = trimToEmpty(config.getBaseUrl());
+            }
+            // 未显式传入时从已保存模型配置解析 API Key；绝不返回明文。
+            if (apiKey.isBlank()) {
+                apiKey = trimToEmpty(configService.resolveApiKey(config));
+            }
+        }
+
+        if (modelsUrl.isBlank()) {
+            modelsUrl = buildModelsUrl(baseUrl);
+        }
+        return new ResolvedModelListRequest(modelsUrl, apiKey);
+    }
+
+    private String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private Integer getStudentId(Authentication auth) {
@@ -466,8 +497,12 @@ public class AgentModelConfigController {
     }
 
     public static class ModelListRequest {
+        public Integer configId;
         public String baseUrl;
         public String modelsUrl;
         public String apiKey;
+    }
+
+    private record ResolvedModelListRequest(String modelsUrl, String apiKey) {
     }
 }

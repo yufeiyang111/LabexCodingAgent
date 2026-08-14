@@ -56,6 +56,11 @@ labex-agent:
   legacy-migration:
     target-removal-version: ${LABEX_AGENT_LEGACY_REMOVAL_VERSION:1.1.0}
     observation-window-days: ${LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS:14}
+  history:
+    max-page-events-budget: ${LABEX_AGENT_HISTORY_MAX_PAGE_EVENTS_BUDGET:1000}
+    max-part-output-chars: ${LABEX_AGENT_HISTORY_MAX_PART_OUTPUT_CHARS:4000}
+  tool-output:
+    read-max-chars: ${LABEX_AGENT_TOOL_OUTPUT_READ_MAX_CHARS:4000}
   loop:
     hard-max-iterations: ${LABEX_AGENT_HARD_MAX_ITERATIONS:0}
     soft-max-iterations: ${LABEX_AGENT_SOFT_MAX_ITERATIONS:0}
@@ -78,11 +83,22 @@ labex-agent:
     permission-profile: ${LABEX_AGENT_PERMISSION_PROFILE:opencode}
     network-default-enabled: ${LABEX_AGENT_NETWORK_DEFAULT_ENABLED:true}
     allow-full-access: ${LABEX_AGENT_ALLOW_FULL_ACCESS:false}
+  preview:
+    enabled: ${LABEX_AGENT_PREVIEW_ENABLED:true}
+    startup-timeout-ms: ${LABEX_AGENT_PREVIEW_STARTUP_TIMEOUT_MS:30000}
+    poll-interval-ms: ${LABEX_AGENT_PREVIEW_POLL_INTERVAL_MS:250}
+    connect-timeout-ms: ${LABEX_AGENT_PREVIEW_CONNECT_TIMEOUT_MS:1000}
+    output-max-chars: ${LABEX_AGENT_PREVIEW_OUTPUT_MAX_CHARS:60000}
+    min-port: ${LABEX_AGENT_PREVIEW_MIN_PORT:1024}
+    max-port: ${LABEX_AGENT_PREVIEW_MAX_PORT:65535}
+    readiness-host: ${LABEX_AGENT_PREVIEW_READINESS_HOST:127.0.0.1}
+    public-host: ${LABEX_AGENT_PREVIEW_PUBLIC_HOST:localhost}
   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
   lease-reconciliation-interval-ms: ${LABEX_AGENT_LEASE_RECONCILIATION_INTERVAL_MS:30000}
   lease-reconciliation-batch-size: ${LABEX_AGENT_LEASE_RECONCILIATION_BATCH_SIZE:50}
   worker:
+    network-default-enabled: ${LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED:true}
     wsl:
       distribution: ${LABEX_AGENT_WSL_DISTRIBUTION:Debian}
     docker:
@@ -110,6 +126,17 @@ labex-agent:
       typescript: ${LABEX_LSP_TS_CMD:typescript-language-server --stdio}
       vue: ${LABEX_LSP_VUE_CMD:vue-language-server --stdio}
       python: ${LABEX_LSP_PY_CMD:pyright-langserver --stdio}
+  attachment:
+    storage-path: ${LABEX_AGENT_ATTACHMENT_PATH:${LABEX_AGENT_UPLOAD_PATH:D:/LabexAgent/uploads}/agent-input-attachments}
+    max-files-per-message: ${LABEX_AGENT_ATTACHMENT_MAX_FILES_PER_MESSAGE:4}
+    max-file-size-bytes: ${LABEX_AGENT_ATTACHMENT_MAX_FILE_SIZE_BYTES:20971520}
+    max-total-size-bytes: ${LABEX_AGENT_ATTACHMENT_MAX_TOTAL_SIZE_BYTES:41943040}
+    allowed-mime-types: ${LABEX_AGENT_ATTACHMENT_ALLOWED_MIME_TYPES:image/jpeg,image/png,image/gif,image/webp}
+    pending-ttl-minutes: ${LABEX_AGENT_ATTACHMENT_PENDING_TTL_MINUTES:15}
+    terminal-ttl-hours: ${LABEX_AGENT_ATTACHMENT_TERMINAL_TTL_HOURS:24}
+    cleanup-interval-ms: ${LABEX_AGENT_ATTACHMENT_CLEANUP_INTERVAL_MS:900000}
+    cleanup-batch-size: ${LABEX_AGENT_ATTACHMENT_CLEANUP_BATCH_SIZE:100}
+    estimated-image-tokens: ${LABEX_AGENT_ATTACHMENT_ESTIMATED_IMAGE_TOKENS:8192}
   web-search:
     provider: ${LABEX_AGENT_WEB_SEARCH_PROVIDER:auto}
     exa-enabled: ${LABEX_AGENT_WEB_SEARCH_EXA_ENABLED:true}

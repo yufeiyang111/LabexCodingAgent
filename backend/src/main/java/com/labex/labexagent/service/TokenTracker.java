@@ -173,6 +173,14 @@ public class TokenTracker {
                 .collect(Collectors.groupingBy(AgentTokenUsage::getModel,
                         Collectors.summingInt(u -> value(u.getTotalTokens()))));
 
+        Map<String, List<AgentTokenUsage>> usagesByModel = list.stream()
+                .filter(u -> u.getModel() != null && !u.getModel().isBlank())
+                .collect(Collectors.groupingBy(
+                        AgentTokenUsage::getModel,
+                        TreeMap::new,
+                        Collectors.toList()));
+        Map<String, Object> cacheByModel = new TreeMap<>();
+        usagesByModel.forEach((model, modelUsages) -> cacheByModel.put(model, cacheStats(modelUsages)));
         Map<String, List<AgentTokenUsage>> usagesByDay = list.stream()
                 .filter(u -> u.getCreateTime() != null)
                 .collect(Collectors.groupingBy(
@@ -206,8 +214,23 @@ public class TokenTracker {
         stats.put("cacheHitRate", cache.hitRate());
         stats.put("callCount", list.size());
         stats.put("byModel", byModel);
+        stats.put("cacheByModel", cacheByModel);
         stats.put("byDay", byDay);
         stats.put("cacheByDay", cacheByDay);
+        return stats;
+    }
+
+    private Map<String, Object> cacheStats(List<AgentTokenUsage> usages) {
+        CacheAggregate cache = aggregateCache(usages);
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("totalPromptTokens", usages.stream().mapToInt(u -> value(u.getPromptTokens())).sum());
+        stats.put("totalCachedTokens", usages.stream().mapToInt(u -> value(u.getCachedTokens())).sum());
+        stats.put("totalCacheWriteTokens", usages.stream().mapToInt(u -> value(u.getCacheWriteTokens())).sum());
+        stats.put("totalCacheHitTokens", usages.stream().mapToInt(u -> value(u.getCacheHitTokens())).sum());
+        stats.put("totalCacheMissTokens", usages.stream().mapToInt(u -> value(u.getCacheMissTokens())).sum());
+        stats.put("cacheStatus", cache.status().value());
+        stats.put("cacheTelemetryCallCount", cache.reportedCallCount());
+        stats.put("cacheHitRate", cache.hitRate());
         return stats;
     }
 

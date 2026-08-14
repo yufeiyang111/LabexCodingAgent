@@ -1,10 +1,12 @@
 package com.labex.labexagent.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.google.gson.Gson;
 import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.context.AgentRequestTokenEstimator;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.run.AgentRunMessageService;
@@ -14,13 +16,16 @@ import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -46,6 +51,8 @@ public class AgentConversationHistoryProjectionService {
     private final AgentConversationForkBoundaryService forkBoundaries;
     private final AgentLegacyConversationHistoryMigrationService migrationService;
     private final AgentConversationMemoryProjectionService memoryProjection;
+    private final AgentInputAttachmentService attachmentService;
+    private final AgentHistoryProperties historyProperties;
     private final AgentRequestTokenEstimator tokenEstimator = new AgentRequestTokenEstimator();
 
     public AgentConversationHistoryProjectionService(AgentConversationMapper conversationMapper,
@@ -56,6 +63,34 @@ public class AgentConversationHistoryProjectionService {
                                                      AgentConversationForkBoundaryService forkBoundaries,
                                                      AgentLegacyConversationHistoryMigrationService migrationService,
                                                      AgentConversationMemoryProjectionService memoryProjection) {
+        this(conversationMapper, taskMapper, eventMapper, runMessageService, runPartService, forkBoundaries,
+                migrationService, memoryProjection, null, new AgentHistoryProperties());
+    }
+
+    public AgentConversationHistoryProjectionService(AgentConversationMapper conversationMapper,
+                                                     AgentTaskMapper taskMapper,
+                                                     AgentRunEventMapper eventMapper,
+                                                     AgentRunMessageService runMessageService,
+                                                     AgentRunPartService runPartService,
+                                                     AgentConversationForkBoundaryService forkBoundaries,
+                                                     AgentLegacyConversationHistoryMigrationService migrationService,
+                                                     AgentConversationMemoryProjectionService memoryProjection,
+                                                     AgentInputAttachmentService attachmentService) {
+        this(conversationMapper, taskMapper, eventMapper, runMessageService, runPartService, forkBoundaries,
+                migrationService, memoryProjection, attachmentService, new AgentHistoryProperties());
+    }
+
+    @Autowired
+    public AgentConversationHistoryProjectionService(AgentConversationMapper conversationMapper,
+                                                     AgentTaskMapper taskMapper,
+                                                     AgentRunEventMapper eventMapper,
+                                                     AgentRunMessageService runMessageService,
+                                                     AgentRunPartService runPartService,
+                                                     AgentConversationForkBoundaryService forkBoundaries,
+                                                     AgentLegacyConversationHistoryMigrationService migrationService,
+                                                     AgentConversationMemoryProjectionService memoryProjection,
+                                                     AgentInputAttachmentService attachmentService,
+                                                     AgentHistoryProperties historyProperties) {
         this.conversationMapper = conversationMapper;
         this.taskMapper = taskMapper;
         this.eventMapper = eventMapper;
@@ -64,6 +99,8 @@ public class AgentConversationHistoryProjectionService {
         this.forkBoundaries = forkBoundaries;
         this.migrationService = migrationService;
         this.memoryProjection = memoryProjection;
+        this.attachmentService = attachmentService;
+        this.historyProperties = historyProperties;
     }
 
     public HistoryPage page(Integer studentId, Integer projectId, String conversationId,
@@ -99,21 +136,26 @@ public class AgentConversationHistoryProjectionService {
                 .sorted(Comparator.comparing((TaskSource source) -> source.task().getTaskId()).reversed())
                 .forEach(source -> unique.putIfAbsent(source.task().getTaskId(), source));
         List<TaskSource> newest = new ArrayList<>(unique.values());
-        boolean hasMore = newest.size() > safeLimit;
-        if (hasMore) newest = new ArrayList<>(newest.subList(0, safeLimit));
+        boolean taskLimitTruncated = newest.size() > safeLimit;
+        if (taskLimitTruncated) newest = new ArrayList<>(newest.subList(0, safeLimit));
+        boolean budgetTruncated = applyEventBudget(newest, studentId, projectId);
         newest.sort(Comparator.comparing(source -> source.task().getTaskId()));
 
         List<Long> taskIds = newest.stream().map(source -> source.task().getTaskId()).toList();
+        boolean hasMore = taskLimitTruncated || budgetTruncated;
         Map<Long, List<HistoryEvent>> eventsByTask = loadEvents(studentId, projectId, taskIds);
         Map<Long, List<Map<String, Object>>> messagesByTask = taskIds.isEmpty()
                 ? Map.of() : runMessageService.publicHistoryByTaskIds(taskIds);
+        int maxPartOutputChars = historyProperties == null ? 0 : historyProperties.getMaxPartOutputChars();
         Map<Long, List<Map<String, Object>>> partsByTask = taskIds.isEmpty()
-                ? Map.of() : runPartService.publicHistoryByTaskIds(taskIds);
+                ? Map.of() : runPartService.publicHistoryByTaskIds(taskIds, maxPartOutputChars);
         List<HistoryTurn> turns = newest.stream()
                 .map(source -> historyTurn(conversationId, source,
                         eventsByTask.getOrDefault(source.task().getTaskId(), List.of()),
                         messagesByTask.getOrDefault(source.task().getTaskId(), List.of()),
-                        partsByTask.getOrDefault(source.task().getTaskId(), List.of())))
+                        partsByTask.getOrDefault(source.task().getTaskId(), List.of()),
+                        historyAttachments(studentId, projectId,
+                                messagesByTask.getOrDefault(source.task().getTaskId(), List.of()))))
                 .toList();
         Long cursor = hasMore && !turns.isEmpty() ? turns.get(0).taskId() : null;
         return new HistoryPage(PROJECTION_VERSION, conversationId, turns, hasMore, cursor, migration.migrated);
@@ -193,8 +235,67 @@ public class AgentConversationHistoryProjectionService {
                 && Objects.equals(segment.conversationId(), task.getConversationId());
     }
 
-    private Map<Long, List<HistoryEvent>> loadEvents(Integer studentId, Integer projectId, List<Long> taskIds) {
-        if (taskIds.isEmpty()) return Map.of();
+    /**
+     * 单页事件预算：从最新任务开始累积事件数，超过预算后丢弃更老的任务（留到更早的页）。
+     * {@code newest} 保持新→旧顺序。返回是否发生了预算截断（还有更早任务未返回）。
+     */
+    private boolean applyEventBudget(List<TaskSource> newest, Integer studentId, Integer projectId) {
+        if (newest.size() <= 1) return false;
+        int budget = historyProperties == null ? 0 : historyProperties.getMaxPageEventsBudget();
+        if (budget <= 0) return false;
+        Map<Long, Integer> eventCounts = countEventsByTask(studentId, projectId,
+                newest.stream().map(source -> source.task().getTaskId()).toList());
+        List<TaskSource> budgeted = new ArrayList<>();
+        boolean truncated = false;
+        int total = 0;
+        for (TaskSource source : newest) {
+            int count = eventCounts.getOrDefault(source.task().getTaskId(), 0);
+            if (total > 0 && total + count > budget) {
+                truncated = true;
+                break;
+            }
+            total += count;
+            budgeted.add(source);
+        }
+        newest.clear();
+        newest.addAll(budgeted);
+        return truncated;
+    }
+
+    private Map<Long, Integer> countEventsByTask(Integer studentId, Integer projectId, Collection<Long> taskIds) {
+        if (taskIds == null || taskIds.isEmpty()) return Map.of();
+        List<Map<String, Object>> rows = eventMapper.selectMaps(new QueryWrapper<AgentRunEvent>()
+                .select("task_id", "COUNT(*) AS cnt")
+                .in("task_id", taskIds)
+                .eq("student_id", studentId)
+                .eq("project_id", projectId)
+                .groupBy("task_id"));
+        Map<Long, Integer> counts = new HashMap<>();
+        if (rows == null) return counts;
+        for (Map<String, Object> row : rows) {
+            if (row == null) continue;
+            Long taskId = numericColumn(row, "task_id");
+            Long count = numericColumn(row, "cnt");
+            if (taskId != null && count != null) counts.put(taskId, count.intValue());
+        }
+        return counts;
+    }
+
+    private Long numericColumn(Map<String, Object> row, String column) {
+        for (String key : row.keySet()) {
+            if (!column.equalsIgnoreCase(String.valueOf(key))) continue;
+            Object value = row.get(key);
+            if (value == null) return null;
+            try {
+                return Long.valueOf(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private Map<Long, List<HistoryEvent>> loadEvents(Integer studentId, Integer projectId, List<Long> taskIds) {        if (taskIds.isEmpty()) return Map.of();
         List<AgentRunEvent> stored = eventMapper.selectList(new LambdaQueryWrapper<AgentRunEvent>()
                 .in(AgentRunEvent::getTaskId, taskIds)
                 .eq(AgentRunEvent::getStudentId, studentId)
@@ -236,7 +337,8 @@ public class AgentConversationHistoryProjectionService {
     private HistoryTurn historyTurn(String requestedConversationId, TaskSource source,
                                     List<HistoryEvent> events,
                                     List<Map<String, Object>> runMessages,
-                                    List<Map<String, Object>> parts) {
+                                    List<Map<String, Object>> parts,
+                                    List<AgentInputAttachmentService.HistoryAttachment> attachments) {
         AgentTask task = source.task();
         return new HistoryTurn(task.getTaskId(), requestedConversationId, source.sourceConversationId(),
                 source.inherited(), task.getSessionId(), task.getMode(), task.getStatus(),
@@ -245,7 +347,24 @@ public class AgentConversationHistoryProjectionService {
                 task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch(),
                 task.getSubmittedAt(), task.getStartedAt(), task.getFinishedAt(),
                 task.getActiveElapsedMs() == null ? 0L : task.getActiveElapsedMs(),
-                task.getCreateTime(), task.getUpdateTime(), events, runMessages, parts);
+                task.getCreateTime(), task.getUpdateTime(), events, runMessages, parts, attachments);
+    }
+
+    private List<AgentInputAttachmentService.HistoryAttachment> historyAttachments(Integer studentId, Integer projectId,
+                                                                                      List<Map<String, Object>> messages) {
+        if (attachmentService == null || messages == null || messages.isEmpty()) {
+            return List.of();
+        }
+        List<String> attachmentIds = new ArrayList<>();
+        for (Map<String, Object> message : messages) {
+            Object ids = message == null ? null : message.get("attachmentIds");
+            if (ids instanceof List<?> values) {
+                for (Object value : values) {
+                    if (value != null && !String.valueOf(value).isBlank()) attachmentIds.add(String.valueOf(value));
+                }
+            }
+        }
+        return attachmentService.historyAttachments(studentId, projectId, attachmentIds);
     }
 
     private String durableRequest(AgentTask task) {
@@ -289,11 +408,13 @@ public class AgentConversationHistoryProjectionService {
                               LocalDateTime createdAt, LocalDateTime updatedAt,
                               List<HistoryEvent> events,
                               List<Map<String, Object>> runMessages,
-                              List<Map<String, Object>> parts) {
+                              List<Map<String, Object>> parts,
+                              List<AgentInputAttachmentService.HistoryAttachment> attachments) {
         public HistoryTurn {
             events = List.copyOf(events == null ? List.of() : events);
             runMessages = List.copyOf(runMessages == null ? List.of() : runMessages);
             parts = List.copyOf(parts == null ? List.of() : parts);
+            attachments = List.copyOf(attachments == null ? List.of() : attachments);
         }
     }
 

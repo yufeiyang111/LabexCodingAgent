@@ -110,7 +110,7 @@ public final class AgentModelTurnExecutor {
         Consumer<String> projectVisible = delta -> {
             if (delta == null || delta.isEmpty()) return;
             try {
-                request.eventSink().transientEvent("FINAL_DELTA", Map.of(
+                request.eventSink().transientEvent("FINAL_CANDIDATE_DELTA", Map.of(
                         "delta", delta,
                         "taskId", request.taskId()));
             } catch (Exception eventFailure) {

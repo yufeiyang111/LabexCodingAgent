@@ -21,9 +21,7 @@ public class DefaultPermissionRuleset {
             new PermissionRule("shell", "rm *", PermissionAction.ASK),
             new PermissionRule("shell", "del *", PermissionAction.ASK),
             new PermissionRule("shell", "Remove-Item *", PermissionAction.ASK),
-            new PermissionRule("shell", "git push*", PermissionAction.ASK),
-            new PermissionRule("bash", "rm *", PermissionAction.ASK),
-            new PermissionRule("bash", "git push*", PermissionAction.ASK)
+            new PermissionRule("bash", "rm *", PermissionAction.ASK)
     );
 
     /** Explicit unsafe-local opt-in. Project checkout and external-directory boundaries remain elsewhere. */

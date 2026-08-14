@@ -325,10 +325,22 @@ implements StudentProjectService {
             }
             Path target = source.getParent().resolve(safeName).normalize();
             this.ensureInsideWorkspace(project, target);
-            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            boolean targetExists = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
+            boolean sameEntry = targetExists && Files.isSameFile(source, target);
+            if (targetExists && !sameEntry) {
                 throw new IllegalArgumentException("A file or folder with this name already exists");
             }
-            Files.move(source, target, new CopyOption[0]);
+            if (sameEntry && source.getFileName().toString().equals(safeName)) {
+                return project;
+            }
+            if (sameEntry) {
+                Path temporary = source.getParent().resolve(".labex-rename-" + java.util.UUID.randomUUID()).normalize();
+                this.ensureInsideWorkspace(project, temporary);
+                Files.move(source, temporary, new CopyOption[0]);
+                Files.move(temporary, target, new CopyOption[0]);
+            } else {
+                Files.move(source, target, new CopyOption[0]);
+            }
             this.refreshProjectMetadataInternal(project);
             this.updateById(project);
             return project;

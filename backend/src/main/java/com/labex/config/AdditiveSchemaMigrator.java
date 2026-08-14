@@ -96,6 +96,8 @@ public class AdditiveSchemaMigrator {
                     catalog == null || catalog.isBlank() ? "<default>" : catalog,
                     metadata.getDatabaseProductName());
             createCommandAuditTableIfMissing(metadata, catalog);
+            createAgentInputAttachmentTableIfMissing(metadata, catalog);
+            createAgentPreviewRunTableIfMissing(metadata, catalog);
             createProjectCheckoutLeaseTableIfMissing(metadata, catalog);
             // 注意：新增表的存在性用“锚定列是否存在”判定而不是 getTables。
             // AdditiveSchemaMigratorTimingTest 对 execute 次数做精确断言（其 mock 的
@@ -155,6 +157,85 @@ public class AdditiveSchemaMigrator {
             if (sql.getErrorCode()==1061 || message.contains("duplicate key name") || message.contains("already exists")) return true;
         }
         return false;
+    }
+
+
+    private void createAgentPreviewRunTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (tableExists(metadata, catalog, "t_agent_preview_run")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_agent_preview_run (
+                    preview_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    student_id INT NOT NULL,
+                    project_id INT NOT NULL,
+                    task_id BIGINT DEFAULT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'starting',
+                    workdir VARCHAR(1024) NOT NULL DEFAULT '.',
+                    port INT NOT NULL,
+                    public_url VARCHAR(2048) DEFAULT NULL,
+                    process_id BIGINT DEFAULT NULL,
+                    process_host_id VARCHAR(64) DEFAULT NULL,
+                    owner_instance VARCHAR(160) DEFAULT NULL,
+                    worker_runtime VARCHAR(32) DEFAULT NULL,
+                    output_path VARCHAR(1024) DEFAULT NULL,
+                    last_http_status INT DEFAULT NULL,
+                    failure_code VARCHAR(64) DEFAULT NULL,
+                    started_at DATETIME(3) DEFAULT NULL,
+                    ready_at DATETIME(3) DEFAULT NULL,
+                    stopped_at DATETIME(3) DEFAULT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_agent_preview_owner (student_id, project_id, create_time),
+                    INDEX idx_agent_preview_task (task_id, create_time),
+                    INDEX idx_agent_preview_active_host (process_host_id, status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && tableExists(metadata, catalog, "t_agent_preview_run")) {
+                log.info("Agent preview run table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+    private void createAgentInputAttachmentTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (tableExists(metadata, catalog, "t_agent_input_attachment")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_agent_input_attachment (
+                    attachment_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    student_id INT NOT NULL,
+                    project_id INT NOT NULL,
+                    task_id BIGINT DEFAULT NULL,
+                    conversation_id VARCHAR(64) DEFAULT NULL,
+                    original_filename VARCHAR(512) NOT NULL,
+                    mime_type VARCHAR(64) NOT NULL,
+                    size_bytes BIGINT NOT NULL,
+                    sha256 CHAR(64) NOT NULL,
+                    storage_key VARCHAR(160) NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                    expires_at DATETIME(3) NOT NULL,
+                    create_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+                    update_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+                    UNIQUE KEY uk_agent_input_attachment_storage (storage_key),
+                    INDEX idx_agent_input_attachment_owner (student_id, project_id, create_time),
+                    INDEX idx_agent_input_attachment_expiry (status, expires_at),
+                    INDEX idx_agent_input_attachment_task (task_id, status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && tableExists(metadata, catalog, "t_agent_input_attachment")) {
+                log.info("Agent input attachment table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
     }
 
     private void createProjectCheckoutLeaseTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {

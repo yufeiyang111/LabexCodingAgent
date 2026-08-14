@@ -100,6 +100,13 @@ export function applyTokenUsageEvent(target, data = {}) {
   return target
 }
 
+export function resolveCacheTelemetryScope(stats = null, model = '') {
+  if (typeof model !== 'string' || model.length === 0) return stats
+  const cacheByModel = stats?.cacheByModel
+  if (!cacheByModel || !Object.prototype.hasOwnProperty.call(cacheByModel, model)) return stats
+  return cacheByModel[model]
+}
+
 export function resolveCacheTelemetryView(stats = null, live = null) {
   const source = stats?.cacheStatus ? stats : (live || {})
   const status = normalizeStatus(source.cacheStatus)

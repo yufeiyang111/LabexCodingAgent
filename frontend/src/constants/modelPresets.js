@@ -1,3 +1,5 @@
+export const DEFAULT_MAX_TOKENS = 32000
+
 export const modelConfigPresets = [
   {
     name: 'OpenAI',
@@ -7,7 +9,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.openai.com/v1',
     modelsUrl: 'https://api.openai.com/v1/models',
     modelName: 'gpt-5.5',
-    maxTokens: 128000,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'GPT-5.5 frontier model'
   },
@@ -19,7 +21,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.deepseek.com',
     modelsUrl: 'https://api.deepseek.com/models',
     modelName: 'deepseek-v4-pro',
-    maxTokens: 393216,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'DeepSeek V4 Pro'
   },
@@ -31,7 +33,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     modelsUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/models',
     modelName: 'qwen3.7-max',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Qwen3.7 flagship'
   },
@@ -43,7 +45,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.moonshot.ai/v1',
     modelsUrl: 'https://api.moonshot.ai/v1/models',
     modelName: 'kimi-k2.7-code',
-    maxTokens: 131072,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Kimi coding flagship'
   },
@@ -55,7 +57,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.minimax.io/v1',
     modelsUrl: 'https://api.minimax.io/v1/models',
     modelName: 'MiniMax-M3',
-    maxTokens: 128000,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'M3 agentic coding model'
   },
@@ -67,7 +69,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     modelsUrl: 'https://open.bigmodel.cn/api/paas/v4/models',
     modelName: 'glm-5.1',
-    maxTokens: 128000,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'GLM long-horizon model'
   },
@@ -79,7 +81,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://openrouter.ai/api/v1',
     modelsUrl: 'https://openrouter.ai/api/v1/models',
     modelName: 'openai/gpt-5.5',
-    maxTokens: 128000,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Unified model router'
   },
@@ -91,7 +93,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.x.ai/v1',
     modelsUrl: 'https://api.x.ai/v1/models',
     modelName: 'grok-4.3',
-    maxTokens: 65536,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Grok flagship'
   },
@@ -103,7 +105,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     modelsUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
     modelName: 'gemini-3.5-flash',
-    maxTokens: 65536,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Gemini OpenAI-compatible'
   },
@@ -115,7 +117,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.mistral.ai/v1',
     modelsUrl: 'https://api.mistral.ai/v1/models',
     modelName: 'mistral-medium-latest',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Frontier multimodal model'
   },
@@ -127,7 +129,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.groq.com/openai/v1',
     modelsUrl: 'https://api.groq.com/openai/v1/models',
     modelName: 'openai/gpt-oss-120b',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Low-latency inference'
   },
@@ -139,7 +141,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.together.xyz/v1',
     modelsUrl: 'https://api.together.xyz/v1/models',
     modelName: 'deepseek-ai/DeepSeek-V3.2',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Open model hosting'
   },
@@ -151,7 +153,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.cerebras.ai/v1',
     modelsUrl: 'https://api.cerebras.ai/v1/models',
     modelName: 'qwen-3-coder-480b',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'High-speed inference'
   },
@@ -163,7 +165,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.fireworks.ai/inference/v1',
     modelsUrl: 'https://api.fireworks.ai/inference/v1/models',
     modelName: 'accounts/fireworks/models/deepseek-v3p2',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Serverless model inference'
   },
@@ -175,7 +177,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://integrate.api.nvidia.com/v1',
     modelsUrl: 'https://integrate.api.nvidia.com/v1/models',
     modelName: 'nvidia/llama-3.3-nemotron-super-49b-v1',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'NVIDIA-hosted NIM'
   },
@@ -187,7 +189,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://router.huggingface.co/v1',
     modelsUrl: 'https://router.huggingface.co/v1/models',
     modelName: 'openai/gpt-oss-120b',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Inference Providers router'
   },
@@ -199,7 +201,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://models.github.ai/inference',
     modelsUrl: 'https://models.github.ai/inference/models',
     modelName: 'openai/gpt-5',
-    maxTokens: 128000,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'GitHub model catalog'
   },
@@ -211,7 +213,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.deepinfra.com/v1/openai',
     modelsUrl: 'https://api.deepinfra.com/v1/openai/models',
     modelName: 'deepseek-ai/DeepSeek-V3.2',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'OpenAI-compatible hosting'
   },
@@ -223,7 +225,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.siliconflow.cn/v1',
     modelsUrl: 'https://api.siliconflow.cn/v1/models',
     modelName: 'deepseek-ai/DeepSeek-V3.2',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'China-accessible router'
   },
@@ -235,7 +237,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     modelsUrl: 'https://ark.cn-beijing.volces.com/api/v3/models',
     modelName: 'doubao-seed-1-6-250615',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Doubao flagship endpoint'
   },
@@ -247,7 +249,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://qianfan.baidubce.com/v2',
     modelsUrl: 'https://qianfan.baidubce.com/v2/models',
     modelName: 'ernie-4.5-turbo-128k',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'ERNIE compatible API'
   },
@@ -259,7 +261,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
     modelsUrl: 'https://api.hunyuan.cloud.tencent.com/v1/models',
     modelName: 'hunyuan-turbos-latest',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Hunyuan Turbo alias'
   },
@@ -271,7 +273,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api-inference.modelscope.cn/v1',
     modelsUrl: 'https://api-inference.modelscope.cn/v1/models',
     modelName: 'Qwen/Qwen3-Coder-480B-A35B-Instruct',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'ModelScope inference API'
   },
@@ -283,7 +285,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.sambanova.ai/v1',
     modelsUrl: 'https://api.sambanova.ai/v1/models',
     modelName: 'Meta-Llama-3.3-70B-Instruct',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'SambaNova Cloud'
   },
@@ -295,7 +297,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.aimlapi.com/v1',
     modelsUrl: 'https://api.aimlapi.com/models',
     modelName: 'openai/gpt-5.5',
-    maxTokens: 128000,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Unified model provider'
   },
@@ -307,7 +309,7 @@ export const modelConfigPresets = [
     baseUrl: 'https://api.perplexity.ai',
     modelsUrl: 'https://api.perplexity.ai/v1/models',
     modelName: 'sonar-deep-research',
-    maxTokens: 32768,
+    maxTokens: DEFAULT_MAX_TOKENS,
     provider: 'openai_compatible',
     note: 'Search-grounded models'
   }

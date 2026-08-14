@@ -75,6 +75,23 @@ public final class ContextAdmissionService {
         return proceed(breakdown, "soft_limit_advisory_only");
     }
 
+    /**
+     * 上下文管理阶段已经运行后使用的最终门禁。自动压缩开启时，不能把压缩未降到容量内误报为配置禁用。
+     */
+    public ContextAdmissionDecision decideAfterContextManagement(ContextBudgetBreakdown breakdown,
+                                                                  boolean autoCompactionEnabled) {
+        ContextAdmissionDecision decision = decide(breakdown, false, false);
+        if (!autoCompactionEnabled
+                || decision.action() != ContextAdmissionDecision.Action.BLOCK_REDUCIBLE_OVERFLOW) {
+            return decision;
+        }
+        return new ContextAdmissionDecision(ContextAdmissionDecision.Action.BLOCK_REDUCIBLE_OVERFLOW, false,
+                "reducible_context_exceeds_input_capacity_after_auto_compaction",
+                "自动压缩已启用，但本轮上下文管理未能将可压缩历史降到模型输入容量以内。",
+                breakdown, List.of("查看 COMPACTION_FAILED 事件中的摘要失败原因",
+                        "修正或重试当前会话的压缩摘要", "手动压缩当前会话后重试"));
+    }
+
     private ContextAdmissionDecision proceed(ContextBudgetBreakdown breakdown, String reasonCode) {
         return new ContextAdmissionDecision(ContextAdmissionDecision.Action.PROCEED, true, reasonCode,
                 "", breakdown, List.of());

@@ -150,10 +150,26 @@ public final class AcceptanceScriptedProvider implements LlmProvider {
         }
 
         String prompt = flatten(messages);
-        log.info("ACCEPTANCE_PROVIDER_STREAM model={} messageCount={} compactionMarker={} permissionBatchMarker={} interactionResolved={} listResult={}",
+        StringBuilder messageSummary = new StringBuilder();
+        if (messages != null) {
+            for (Map<String, Object> message : messages) {
+                if (message == null) {
+                    continue;
+                }
+                Object content = message.get("content");
+                String text = content == null ? "<null>" : String.valueOf(content);
+                if (text.length() > 120) {
+                    text = text.substring(0, 120) + "...";
+                }
+                messageSummary.append('[').append(message.getOrDefault("role", "?")).append("] ")
+                        .append(text.replace('\n', ' ')).append(" | ");
+            }
+        }
+        log.info("ACCEPTANCE_PROVIDER_STREAM model={} messageCount={} compactionMarker={} permissionBatchMarker={} interactionResolved={} listResult={} evidenceMarker={} messages={}",
                 config == null ? "" : config.modelName(), messages == null ? 0 : messages.size(),
                 prompt.contains("[acceptance:compaction]"), prompt.contains("[acceptance:permission-batch]"),
-                hasResumedInteraction(prompt, "waiting_user"), prompt.contains("[Tool list_files result]"));
+                hasResumedInteraction(prompt, "waiting_user"), prompt.contains("[Tool list_files result]"),
+                prompt.contains("[acceptance:evidence]"), messageSummary);
         if (prompt.contains("[acceptance:reasoning-boundary]")) {
             onChunk.accept(new StreamChunk("thinking_delta", "\\",
                     null, null, null, false, null, null, null, null));

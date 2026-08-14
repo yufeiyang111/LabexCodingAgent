@@ -199,8 +199,9 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
         command.add("--dir");
         command.add("/etc");
         if (run.policy().networkEnabled()) {
-            // 网络授权时只读挂载 DNS 与系统 CA；Java cacerts 会链接到 /etc/ssl/certs/java/cacerts。
+            // 网络开启时只读挂载 DNS、hosts 与系统 CA；Java cacerts 会链接到 /etc/ssl/certs/java/cacerts。
             readOnlyBind(command, "/etc/resolv.conf");
+            readOnlyBind(command, "/etc/hosts");
             readOnlyBind(command, "/etc/ssl");
         }
         readOnlyBind(command, "/etc/alternatives");

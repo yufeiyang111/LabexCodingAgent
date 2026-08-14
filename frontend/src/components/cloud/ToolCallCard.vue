@@ -79,6 +79,9 @@
         <!-- Result Section -->
         <div v-if="call.result" class="tc-section">
           <div class="tc-section-label">结果</div>
+          <div v-if="call.outputTruncated" class="tc-projection-note">
+            输出过长，历史页已截断展示前 {{ truncate(call.result, 1000).length }} 字符（完整 {{ call.outputLength || call.result.length }} 字符已持久化在数据库，不在历史页传输）。
+          </div>
           <div v-if="isShellTool" class="tc-shell-output">
             <pre>{{ truncate(call.result, 1000) }}</pre>
           </div>
