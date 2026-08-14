@@ -20,7 +20,7 @@ test('ContextUsageDialog exposes stable categories and a safely rendered actual-
   const source = await component('ContextUsageDialog.vue')
   const workspace = await readFile(new URL('../../views/CloudWorkspace.vue', import.meta.url), 'utf8')
   const api = await readFile(new URL('../../api/index.js', import.meta.url), 'utf8')
-  for (const category of ['systemPrompt', 'toolDefinitions', 'projectContext', 'workspaceMemory', 'conversationMemory', 'runRecoveryContext', 'compactionSummary', 'compactedContext', 'skillsAndInstructions', 'conversationMessages', 'toolResults', 'messageProtocol']) {
+  for (const category of ['systemPrompt', 'toolDefinitions', 'projectContext', 'workspaceMemory', 'conversationMemory', 'runRecoveryContext', 'compactionSummary', 'compactedContext', 'skillsAndInstructions', 'imageInputs', 'conversationMessages', 'toolResults', 'messageProtocol']) {
     assert.match(source, new RegExp(category))
   }
   assert.match(source, /previewSections/)

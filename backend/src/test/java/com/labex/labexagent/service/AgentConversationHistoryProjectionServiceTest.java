@@ -3,6 +3,7 @@ package com.labex.labexagent.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -53,7 +54,7 @@ class AgentConversationHistoryProjectionServiceTest {
         when(runMessages.publicHistoryByTaskIds(List.of(20L, 30L))).thenReturn(Map.of(
                 20L, List.of(Map.of("messageKey", "assistant:final", "content", "answer-20")),
                 30L, List.of(Map.of("messageKey", "assistant:final", "content", "answer-30"))));
-        when(parts.publicHistoryByTaskIds(List.of(20L, 30L))).thenReturn(Map.of(
+        when(parts.publicHistoryByTaskIds(List.of(20L, 30L), 4_000)).thenReturn(Map.of(
                 20L, List.of(Map.of("partKey", "final", "partType", "text", "output", "answer-20")),
                 30L, List.of(Map.of("partKey", "final", "partType", "text", "output", "answer-30"))));
 
@@ -77,6 +78,42 @@ class AgentConversationHistoryProjectionServiceTest {
     }
 
     @Test
+    void eventBudgetKeepsNewestTasksAndDefersOlderOnesToTheNextPage() {
+        AgentConversationMapper conversations = mock(AgentConversationMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunMessageService runMessages = mock(AgentRunMessageService.class);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        AgentLegacyConversationHistoryMigrationService migration =
+                mock(AgentLegacyConversationHistoryMigrationService.class);
+        AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
+        when(conversations.selectOne(any())).thenReturn(conversation("conversation", null, null));
+        when(tasks.selectList(any())).thenReturn(List.of(
+                task(30, "conversation"), task(20, "conversation"), task(10, "conversation")));
+        when(events.selectMaps(any())).thenReturn(List.of(
+                Map.of("task_id", 30L, "cnt", 2L),
+                Map.of("task_id", 20L, "cnt", 2L),
+                Map.of("task_id", 10L, "cnt", 8L)));
+        when(events.selectList(any())).thenReturn(List.of(event(30, 1, "FINAL"), event(20, 1, "FINAL")));
+        when(runMessages.publicHistoryByTaskIds(List.of(20L, 30L))).thenReturn(Map.of());
+        when(parts.publicHistoryByTaskIds(any(), anyInt())).thenReturn(Map.of());
+
+        AgentHistoryProperties props = new AgentHistoryProperties();
+        props.setMaxPageEventsBudget(5);
+        AgentConversationHistoryProjectionService service = new AgentConversationHistoryProjectionService(
+                conversations, tasks, events, runMessages, parts, null, migration, memory, null, props);
+
+        AgentConversationHistoryProjectionService.HistoryPage page = service.page(7, 3, "conversation", null, 20);
+
+        assertThat(page.turns()).extracting(AgentConversationHistoryProjectionService.HistoryTurn::taskId)
+                .containsExactly(20L, 30L);
+        assertThat(page.hasMore()).isTrue();
+        assertThat(page.nextBeforeTaskId()).isEqualTo(20L);
+        verify(runMessages).publicHistoryByTaskIds(List.of(20L, 30L));
+        verify(parts).publicHistoryByTaskIds(List.of(20L, 30L), 4_000);
+    }
+
+    @Test
     void recursivelyIncludesOnlyTheImmutableParentForkBoundary() {
         AgentConversationMapper conversations = mock(AgentConversationMapper.class);
         AgentTaskMapper tasks = mock(AgentTaskMapper.class);
@@ -94,7 +131,7 @@ class AgentConversationHistoryProjectionServiceTest {
                 List.of(task(30, "child")));
         when(events.selectList(any())).thenReturn(List.of());
         when(runMessages.publicHistoryByTaskIds(List.of(10L, 20L, 30L))).thenReturn(Map.of());
-        when(parts.publicHistoryByTaskIds(List.of(10L, 20L, 30L))).thenReturn(Map.of());
+        when(parts.publicHistoryByTaskIds(any(), anyInt())).thenReturn(Map.of());
 
         AgentConversationHistoryProjectionService service = new AgentConversationHistoryProjectionService(
                 conversations, tasks, events, runMessages, parts, boundaries, migration, memory);
@@ -127,7 +164,7 @@ class AgentConversationHistoryProjectionServiceTest {
         when(tasks.selectList(any())).thenReturn(List.of(slashTask));
         when(events.selectList(any())).thenReturn(List.of());
         when(runMessages.publicHistoryByTaskIds(List.of(40L))).thenReturn(Map.of());
-        when(parts.publicHistoryByTaskIds(List.of(40L))).thenReturn(Map.of());
+        when(parts.publicHistoryByTaskIds(any(), anyInt())).thenReturn(Map.of());
 
         AgentConversationHistoryProjectionService service = new AgentConversationHistoryProjectionService(
                 conversations, tasks, events, runMessages, parts, null, migration, memory);

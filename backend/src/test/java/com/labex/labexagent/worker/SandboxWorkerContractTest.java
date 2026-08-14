@@ -69,7 +69,7 @@ class SandboxWorkerContractTest {
     }
 
     @Test
-    void dockerWorkerBuildsARestrictedNetworklessCommand() {
+    void dockerWorkerBuildsARestrictedNetworkedCommand() {
         DockerSandboxWorker worker = new DockerSandboxWorker(new LocalProcessExecutor());
         WorkerRunSpec run = WorkerRunSpec.forWorkspace("docker-contract", workspace);
         ProcessExecutionRequest request = new ProcessExecutionRequest(
@@ -77,7 +77,7 @@ class SandboxWorkerContractTest {
 
         List<String> command = worker.buildDockerCommand(run, request);
 
-        assertContainsPair(command, "--network", "none");
+        assertContainsPair(command, "--network", "bridge");
         assertContainsPair(command, "--pids-limit", String.valueOf(run.policy().maxPids()));
         assertContainsPair(command, "--memory", run.policy().memoryMegabytes() + "m");
         assertTrue(command.contains("--read-only"));
@@ -90,15 +90,15 @@ class SandboxWorkerContractTest {
     }
 
     @Test
-    void dockerWorkerUsesBridgeOnlyForAnExplicitNetworkRun() {
+    void dockerWorkerUsesNoneOnlyForAnExplicitOfflineRun() {
         DockerSandboxWorker worker = new DockerSandboxWorker(new LocalProcessExecutor());
-        WorkerRunSpec run = WorkerRunSpec.forWorkspace("docker-network", workspace, true);
+        WorkerRunSpec run = WorkerRunSpec.forWorkspace("docker-offline", workspace, false);
         ProcessExecutionRequest request = new ProcessExecutionRequest(
                 List.of("/bin/sh", "-lc", "npm test"), workspace, Duration.ofSeconds(10), 10_000);
 
         List<String> command = worker.buildDockerCommand(run, request);
 
-        assertContainsPair(command, "--network", "bridge");
+        assertContainsPair(command, "--network", "none");
     }
 
     @Test
@@ -112,7 +112,7 @@ class SandboxWorkerContractTest {
 
         assertTrue(command.contains("-i"));
         assertTrue(command.contains("-t"));
-        assertContainsPair(command, "--network", "none");
+        assertContainsPair(command, "--network", "bridge");
         assertContainsPair(command, "--workdir", "/workspace");
         assertTrue(command.contains("--read-only"));
         assertContainsPair(command, "--env", "HOME=/workspace/.labex-agent/runtime/home");

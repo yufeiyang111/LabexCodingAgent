@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import java.util.Arrays;
@@ -31,6 +32,24 @@ class AgentTranscriptProjectionServiceTest {
 
         assertThat(service(transcript).loadProviderMessages(7L))
                 .isEqualTo(messages);
+    }
+
+    @Test
+    void hydratesDurableAttachmentReferencesOnlyAtProviderProjectionBoundary() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentInputAttachmentService attachments = mock(AgentInputAttachmentService.class);
+        List<Map<String, Object>> durable = List.of(Map.of(
+                "role", "user", "content", "inspect this", "attachmentIds", List.of("image-1")));
+        List<Map<String, Object>> hydrated = List.of(Map.of(
+                "role", "user", "content", List.of(Map.of("type", "text", "text", "inspect this"))));
+        when(transcript.loadProjectableTranscript(7L)).thenReturn(durable);
+        when(attachments.hydrateProviderMessage(7L, durable.get(0))).thenReturn(hydrated.get(0));
+
+        AgentTranscriptProjectionService service = new AgentTranscriptProjectionService(
+                transcript, new AgentProviderMessageProjector(), mock(AgentCompactionService.class), attachments);
+
+        assertThat(service.loadProviderMessages(7L)).isEqualTo(hydrated);
+        org.mockito.Mockito.verify(attachments).hydrateProviderMessage(7L, durable.get(0));
     }
 
     @Test

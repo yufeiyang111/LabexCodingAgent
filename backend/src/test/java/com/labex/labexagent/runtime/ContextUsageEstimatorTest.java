@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.labex.labexagent.fixtures.OpenAiImageProtocolFixture;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -34,6 +35,20 @@ class ContextUsageEstimatorTest {
         assertEquals("ESTIMATED_CHARS", payload.get("measurementSource"));
     }
 
+
+    @Test
+    void assignsOpenAiImageDataUrlToVisualInputInsteadOfConversationText() {
+        Map<String, Integer> categories = estimator.estimateCategories("", List.of(),
+                new ContextUsageEstimator.PromptContext("", "", "", ""),
+                List.of(OpenAiImageProtocolFixture.userMessage("describe the screenshot")));
+
+        assertTrue(OpenAiImageProtocolFixture.dataUrlChars() > 480_000);
+        assertEquals(8_192, categories.get("imageInputs"));
+        assertTrue(categories.get("conversationMessages") < 1_000);
+        assertTrue(categories.get("messageProtocol") < 1_000);
+    }
+
+
     @Test
     @SuppressWarnings("unchecked")
     void separatesProjectWorkspaceMemoryRecoveryAndCompactionSources() {
@@ -57,7 +72,7 @@ class ContextUsageEstimatorTest {
         assertEquals(estimator.estimateTokens("recent run tool log"), categories.get("runRecoveryContext"));
         assertEquals(estimator.estimateTokens("conversation checkpoint"), categories.get("compactionSummary"));
         assertFalse(categories.containsKey("compactedContext"));
-        assertEquals("context-budget-v2", snapshot.toPayload().get("contextCategoryVersion"));
+        assertEquals("context-budget-v3", snapshot.toPayload().get("contextCategoryVersion"));
     }
 
     @Test

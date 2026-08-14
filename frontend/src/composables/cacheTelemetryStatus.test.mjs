@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   applyTokenUsageEvent,
   createTokenUsageState,
+  resolveCacheTelemetryScope,
   resolveCacheTelemetryView
 } from './cacheTelemetryStatus.js'
 
@@ -104,4 +105,39 @@ test('uses miss-aware official denominator when deepseek hit/miss fields are rep
   assert.equal(view.ledger.cacheReadTokens, 550)
   assert.equal(view.ledger.cacheWriteTokens, 1250)
   assert.equal(view.sessionScoped, true)
+})
+
+test('resolves a selected model cache telemetry scope without changing the all-model summary', () => {
+  const stats = {
+    cacheStatus: 'hit',
+    cacheHitRate: 30,
+    totalCachedTokens: 300,
+    cacheByModel: {
+      'gpt-5': {
+        cacheStatus: 'hit',
+        cacheHitRate: 80,
+        totalPromptTokens: 100,
+        totalCachedTokens: 80,
+        totalCacheWriteTokens: 20
+      },
+      'qwen-max': {
+        cacheStatus: 'not_reported',
+        cacheHitRate: null,
+        totalPromptTokens: 70,
+        totalCachedTokens: 0,
+        totalCacheWriteTokens: 0
+      }
+    }
+  }
+
+  assert.equal(resolveCacheTelemetryScope(stats, ''), stats)
+  assert.equal(resolveCacheTelemetryScope(stats, 'gpt-5'), stats.cacheByModel['gpt-5'])
+  assert.equal(resolveCacheTelemetryScope(stats, 'missing-model'), stats)
+
+  const selectedView = resolveCacheTelemetryView(resolveCacheTelemetryScope(stats, 'gpt-5'))
+  assert.equal(selectedView.hitRate, 80)
+  assert.equal(selectedView.ledger.cacheReadTokens, 80)
+  assert.equal(selectedView.ledger.cacheWriteTokens, 20)
+  assert.equal(selectedView.ledger.nonCachedInputTokens, 20)
+  assert.equal(resolveCacheTelemetryView(resolveCacheTelemetryScope(stats, 'qwen-max')).showHitRate, false)
 })

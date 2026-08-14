@@ -2,13 +2,33 @@ package com.labex.labexagent.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.labex.labexagent.llm.LlmProvider;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class AgentLoopEngineCancellationTest {
+
+    @Test
+    void streamsModelTextAsCandidateUntilTheLoopCommitsTheFinalResponse() throws Exception {
+        CapturingProvider provider = new CapturingProvider();
+        RecordingSink sink = new RecordingSink();
+
+        AgentModelTurnExecutor.ModelTurnResult result = new AgentModelTurnExecutor(5_000L).execute(
+                new AgentModelTurnExecutor.ModelTurnRequest(
+                        "system", List.of(Map.of("role", "user", "content", "hi")), List.of(), provider,
+                        new LlmProvider.LlmConfig("key", "https://example.test", "model", 32, 0.1),
+                        1, 51L, "en", new AgentCancellationRegistry()
+                                .register("session-candidate", 7, 12, 51L), sink));
+
+        assertEquals(AgentModelTurnExecutor.ResultType.TEXT, result.type());
+        assertTrue(sink.transientTypes.contains("FINAL_CANDIDATE_DELTA"));
+        assertFalse(sink.transientTypes.contains("FINAL_DELTA"));
+    }
 
     @Test
     void streamsModelResponsesWithTheActiveRunCancellationToken() throws Exception {
@@ -27,6 +47,16 @@ class AgentLoopEngineCancellationTest {
     private static final class NoopSink implements AgentModelTurnExecutor.EventSink {
         public void durable(String type, Object data) {}
         public void transientEvent(String type, Object data) {}
+    }
+
+    private static final class RecordingSink implements AgentModelTurnExecutor.EventSink {
+        private final List<String> transientTypes = new ArrayList<>();
+
+        public void durable(String type, Object data) {}
+
+        public void transientEvent(String type, Object data) {
+            transientTypes.add(type);
+        }
     }
 
     private static final class CapturingProvider implements LlmProvider {

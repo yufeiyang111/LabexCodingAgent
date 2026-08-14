@@ -137,11 +137,23 @@ test('recoverable workspace pause hands the initial stream off to durable task s
 })
 
 test('CloudWorkspace projects durable cache telemetry instead of treating absent data as a miss', () => {
-  assert.match(source, /import \{ applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryView \} from '@\/composables\/cacheTelemetryStatus'/)
+  assert.match(source, /import \{ applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView \} from '@\/composables\/cacheTelemetryStatus'/)
+  assert.match(source, /const selectedCacheTelemetryStats = computed\(\(\) => resolveCacheTelemetryScope\([\s\S]*allTokenStats\.value,[\s\S]*selectedCacheTelemetryModel\.value/)
   assert.match(timelineSource, /case 'TOKEN_USAGE': \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, data\)/)
   assert.match(source, /onTokenUsage: usage => \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, usage\)/)
   assert.match(source, /class="usage-cache-card"[\s\S]*cacheTelemetryView\.label[\s\S]*cacheTelemetryView\.detail/)
   assert.match(source, /activeAiTab\.value = key[\s\S]*if \(key === 'usage'\) await initUsageCharts\(\)/)
   assert.match(source, /onTokenUsageProjected: invalidateTokenStatsProjection/)
   assert.match(source, /const requestEpoch = tokenUsageProjectionEpoch[\s\S]*requestEpoch === tokenUsageProjectionEpoch/)
+})
+
+test('provider candidate final text stays provisional until the run finalizes', () => {
+  assert.match(timelineSource, /case 'FINAL_CANDIDATE_DELTA':[\s\S]*assistantMsg\.pendingFinalContent = \(assistantMsg\.pendingFinalContent \|\| ''\) \+ \(data\.delta \|\| ''\)[\s\S]*assistantMsg\.hasPendingFinalDraft = Boolean\(assistantMsg\.pendingFinalContent\)/)
+  assert.match(timelineSource, /case 'COMPLETION_EVIDENCE':[\s\S]*data\.satisfied === true[\s\S]*assistantMsg\.completionBlockedEvidence = data[\s\S]*assistantMsg\.pendingFinalContent = ''/)
+  assert.match(timelineSource, /case 'FINAL':[\s\S]*assistantMsg\.pendingFinalContent = ''[\s\S]*assistantMsg\.content = stripInternalReasoningBlocks\(data\.content\)/)
+})
+
+test('question and approval pauses do not reconnect before an explicit user decision', () => {
+  assert.match(timelineSource, /case 'TASK_PAUSED':[\s\S]*!\['command_approval', 'permission', 'network', 'question'\]\.includes\(data\.reason\)/)
+  assert.match(source, /async function handleQuestionReply\(payload\) \{[\s\S]*?replayResumedAgent\(taskId, assistantMsg(?:, [^)]+)?\)/)
 })

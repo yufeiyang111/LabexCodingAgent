@@ -119,7 +119,7 @@ test('routes question, permission, command approval, and pause events', () => {
   assert.equal(state.calls.filter(call => call[0] === 'commandLifecycle').length, 1)
   assert.equal(state.calls.filter(call => call[0] === 'render').length >= 1, true)
   assert.equal(assistant.waitingForCommandApproval, true)
-  assert.equal(assistant.resumeTaskEventsAfterStream, true)
+  assert.equal(assistant.resumeTaskEventsAfterStream, false)
   assert.equal(assistant.taskId, 7)
 })
 
@@ -473,4 +473,28 @@ test('live OBSERVE projects structured timed_out and cancelled execution statuse
   assert.equal(assistant.toolCalls[0].durableStatus, 'timed_out')
   assert.equal(assistant.toolCalls[1].status, 'interrupted')
   assert.equal(assistant.toolCalls[1].durableStatus, 'cancelled')
+})
+
+
+test('keeps a user-question pause idle and commits candidate final text only after FINAL', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({ type: 'USER_QUESTION', data: { taskId: 9, requestId: 'question-1' } }, assistant)
+  state.handleAgentEvent({ type: 'TASK_PAUSED', data: { taskId: 9, reason: 'question', resumeAgentLoop: true, taskStatus: 'waiting_user' } }, assistant)
+  assert.equal(assistant.resumeTaskEventsAfterStream, false)
+
+  state.handleAgentEvent({ type: 'FINAL_CANDIDATE_DELTA', data: { taskId: 9, delta: '## Summary' } }, assistant)
+  assert.equal(assistant.content, '')
+  assert.equal(assistant.pendingFinalContent, '## Summary')
+
+  state.handleAgentEvent({ type: 'COMPLETION_EVIDENCE', data: { taskId: 9, satisfied: false } }, assistant)
+  assert.equal(assistant.completionEvidence, null)
+  assert.equal(assistant.completionBlockedEvidence.satisfied, false)
+  assert.equal(assistant.pendingFinalContent, '')
+
+  state.handleAgentEvent({ type: 'RUN_STATE_RUNNING', data: { taskId: 9, state: 'running' } }, assistant)
+  state.handleAgentEvent({ type: 'FINAL', data: { taskId: 9, content: 'Verified delivery' } }, assistant)
+  assert.equal(assistant.content, 'Verified delivery')
+  assert.equal(assistant.pendingFinalContent, '')
 })

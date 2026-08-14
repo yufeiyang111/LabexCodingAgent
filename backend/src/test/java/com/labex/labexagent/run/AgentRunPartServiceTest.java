@@ -73,6 +73,37 @@ class AgentRunPartServiceTest {
                 .hasSize(50_000)
                 .doesNotContain("...truncated...");
     }
+
+    @Test
+    void historyProjectionTruncatesOversizedToolOutputWithMarkerButRecoveryPathStaysFull() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentRunPart stored = new AgentRunPart();
+        stored.setPartId(1L);
+        stored.setTaskId(7L);
+        stored.setPartType("tool");
+        stored.setToolName("run_tests");
+        stored.setToolCallId("call-1");
+        stored.setInputJson("{\"strategy\":\"test\"}");
+        stored.setOutputText("z".repeat(10_000));
+        stored.setSequenceNumber(1L);
+        stored.setStatus("completed");
+        when(parts.selectList(any())).thenReturn(List.of(stored));
+
+        AgentRunPartService service = new AgentRunPartService(
+                parts, mock(AgentTaskMapper.class), messageService());
+
+        Map<Long, List<Map<String, Object>>> truncated =
+                service.publicHistoryByTaskIds(List.of(7L), 4_000);
+        assertThat(truncated.get(7L)).hasSize(1);
+        assertThat(truncated.get(7L).get(0))
+                .containsEntry("outputTruncated", true)
+                .containsEntry("outputLength", 10_000);
+        assertThat((String) truncated.get(7L).get(0).get("output")).hasSize(4_000);
+
+        Map<Long, List<Map<String, Object>>> full = service.publicHistoryByTaskIds(List.of(7L));
+        assertThat(full.get(7L).get(0)).doesNotContainKey("outputTruncated");
+        assertThat((String) full.get(7L).get(0).get("output")).hasSize(10_000);
+    }
     @Test
     void attachesTheToolPartToItsStableAssistantTurnMessage() {
         AgentRunPartMapper parts = mock(AgentRunPartMapper.class);

@@ -104,6 +104,36 @@ class TokenTrackerCacheTelemetryTest {
         assertEquals(2, daily.get("cacheTelemetryCallCount"));
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void exposesCacheTelemetryByModelForPromptCacheFiltering() {
+        AgentTokenUsageMapper mapper = mock(AgentTokenUsageMapper.class);
+        AgentTokenUsage gptHit = usage(100, 40, CacheTelemetryStatus.HIT);
+        gptHit.setModel("gpt-5");
+        gptHit.setCacheWriteTokens(60);
+        AgentTokenUsage gptMiss = usage(100, 0, CacheTelemetryStatus.MISS);
+        gptMiss.setModel("gpt-5");
+        AgentTokenUsage qwenUnreported = usage(80, 0, CacheTelemetryStatus.NOT_REPORTED);
+        qwenUnreported.setModel("qwen-max");
+        AgentTokenUsage unnamed = usage(50, 0, CacheTelemetryStatus.HIT);
+        unnamed.setModel(" ");
+        when(mapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(gptHit, gptMiss, qwenUnreported, unnamed));
+        TokenTracker tracker = new TokenTracker(mapper);
+
+        Map<String, Object> stats = tracker.getStudentStats(1);
+        Map<String, Map<String, Object>> cacheByModel = (Map<String, Map<String, Object>>) stats.get("cacheByModel");
+
+        assertEquals(List.of("gpt-5", "qwen-max"), List.copyOf(cacheByModel.keySet()));
+        Map<String, Object> gptStats = cacheByModel.get("gpt-5");
+        assertEquals("hit", gptStats.get("cacheStatus"));
+        assertEquals(2, gptStats.get("cacheTelemetryCallCount"));
+        assertEquals(20.0, gptStats.get("cacheHitRate"));
+        assertEquals(40, gptStats.get("totalCachedTokens"));
+        assertEquals(60, gptStats.get("totalCacheWriteTokens"));
+        assertEquals("not_reported", cacheByModel.get("qwen-max").get("cacheStatus"));
+        assertEquals(0, cacheByModel.get("qwen-max").get("cacheTelemetryCallCount"));
+        assertNull(cacheByModel.get("qwen-max").get("cacheHitRate"));
+    }
     private AgentTokenUsage usage(int promptTokens, int cachedTokens, CacheTelemetryStatus status) {
         AgentTokenUsage usage = new AgentTokenUsage("conversation", "session", 1, 2,
                 "provider", "model", promptTokens, 10, promptTokens + 10, 1, null);

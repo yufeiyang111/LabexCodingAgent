@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class OpenAiCompatibleProviderContractTest {
@@ -303,6 +304,32 @@ class OpenAiCompatibleProviderContractTest {
     }
 
     @Test
+    void writesOpenAiCompatibleRootFieldsInDeterministicOrder() throws Exception {
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = startServer(exchange -> {
+            requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendSse(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n");
+        });
+        try {
+            providerForLocalServer().chatStream("system", List.of(),
+                    List.of(java.util.Map.of("type", "function", "function", java.util.Map.of("name", "read_file"))),
+                    promptCacheConfig(server), ignored -> { });
+
+            String request = requestBody.get();
+            assertAppearsBefore(request, "\"model\"", "\"messages\"");
+            assertAppearsBefore(request, "\"messages\"", "\"max_tokens\"");
+            assertAppearsBefore(request, "\"max_tokens\"", "\"temperature\"");
+            assertAppearsBefore(request, "\"temperature\"", "\"prompt_cache_key\"");
+            assertAppearsBefore(request, "\"prompt_cache_key\"", "\"stream\"");
+            assertAppearsBefore(request, "\"stream\"", "\"tools\"");
+            assertAppearsBefore(request, "\"tools\"", "\"tool_choice\"");
+            assertAppearsBefore(request, "\"tool_choice\"", "\"parallel_tool_calls\"");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void omitsPromptCacheKeyUnlessTheModelConfigurationExplicitlyEnablesIt() throws Exception {
         HttpServer server = startServer(exchange -> {
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -450,6 +477,14 @@ class OpenAiCompatibleProviderContractTest {
 
     private static String baseUrl(HttpServer server) {
         return "http://127.0.0.1:" + server.getAddress().getPort();
+    }
+
+    private static void assertAppearsBefore(String request, String earlier, String later) {
+        int earlierIndex = request == null ? -1 : request.indexOf(earlier);
+        int laterIndex = request == null ? -1 : request.indexOf(later);
+        assertTrue(earlierIndex >= 0, () -> "missing request field " + earlier + " in " + request);
+        assertTrue(laterIndex >= 0, () -> "missing request field " + later + " in " + request);
+        assertTrue(earlierIndex < laterIndex, () -> earlier + " must precede " + later + " in " + request);
     }
 
     private static void sendSse(HttpExchange exchange, String body) throws IOException {

@@ -31,6 +31,14 @@ class DockerSandboxWorkerSmokeTest {
         Path workspace = workspace();
         Files.createDirectories(workspace);
         Files.deleteIfExists(workspace.resolve("smoke-result.txt"));
+        // 部署契约：workspace 目录必须对镜像内的 sandbox 用户（uid 1001）可写。
+        // 测试通常以其他身份创建目录，因此显式放开权限模拟部署时的 chown/chmod。
+        try {
+            Files.setPosixFilePermissions(workspace,
+                    java.nio.file.attribute.PosixFilePermissions.fromString("rwxrwxrwx"));
+        } catch (UnsupportedOperationException | IOException ignored) {
+            // Windows 宿主不需要 POSIX 权限。
+        }
 
         boolean wslMapping = Boolean.getBoolean("labex.docker.smoke.wsl-mapping");
         DockerSandboxWorker worker = new DockerSandboxWorker(

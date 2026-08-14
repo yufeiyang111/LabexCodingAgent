@@ -65,6 +65,29 @@ class AgentLoopEngineCommandIdentityTest {
     }
 
     @Test
+    void keepsPreviewPortAndWorkdirInTheCommandLoopIdentity() {
+        JsonObject firstArguments = new JsonObject();
+        firstArguments.addProperty("port", 3000);
+        firstArguments.addProperty("workdir", "frontend");
+        JsonObject secondArguments = new JsonObject();
+        secondArguments.addProperty("port", 4173);
+        secondArguments.addProperty("workdir", "frontend");
+
+        JsonObject first = AgentLoopEngine.commandLoopArguments(
+                "start_preview", firstArguments, "npm run dev", "frontend", true);
+        JsonObject second = AgentLoopEngine.commandLoopArguments(
+                "start_preview", secondArguments, "npm run dev", "frontend", true);
+        AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());
+
+        assertThat(first.has("port")).isTrue();
+        assertThat(first.get("port").getAsInt()).isEqualTo(3000);
+        assertThat(AgentLoopEngine.commandWorkingDirectory(
+                "start_preview", Path.of("."), firstArguments)).isEqualTo("frontend");
+        assertThat(guard.beforeToolCall("start_preview", first).signature())
+                .isNotEqualTo(guard.beforeToolCall("start_preview", second).signature());
+    }
+
+    @Test
     void recognizesAnExplicitLoopGuardRetryAnswerAsACommandFailureReset() {
         assertThat(AgentLoopEngine.isCommandFailureResetRequest(
                 "User response payload: {\"answer\":\"允许重新尝试该调用\"}"))

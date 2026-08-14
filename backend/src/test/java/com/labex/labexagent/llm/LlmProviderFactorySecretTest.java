@@ -35,6 +35,21 @@ class LlmProviderFactorySecretTest {
         assertEquals(true, runtime.promptCacheKeyEnabled());
     }
 
+
+    @Test
+    void usesOpenCodeAlignedDefaultOutputLimitButPreservesExplicitUserValue() {
+        SecretStore secrets = new LocalEnvelopeSecretStore(masterKey(), false);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(provider.getProviderId()).thenReturn("openai_compatible");
+        LlmProviderFactory factory = new LlmProviderFactory(List.of(provider), new RagConfig(), secrets);
+        AgentModelConfig config = new AgentModelConfig();
+        config.setApiKey("sk-runtime-secret");
+
+        assertEquals(32_000, factory.buildConfig(config).maxTokens());
+
+        config.setMaxTokens(12_345);
+        assertEquals(12_345, factory.buildConfig(config).maxTokens());
+    }
     private String masterKey() {
         return Base64.getEncoder().encodeToString(
                 "01234567890123456789012345678901".getBytes(StandardCharsets.UTF_8));

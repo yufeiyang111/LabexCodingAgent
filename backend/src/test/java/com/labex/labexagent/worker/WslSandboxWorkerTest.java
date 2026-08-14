@@ -27,14 +27,15 @@ class WslSandboxWorkerTest {
 
         assertTrue(!command.contains("--unshare-net"));
         assertContainsSequence(command, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf");
+        assertContainsSequence(command, "--ro-bind", "/etc/hosts", "/etc/hosts");
         assertContainsSequence(command, "--ro-bind", "/etc/ssl", "/etc/ssl");
         assertContainsSequence(command, "--bind", expectedWslPath(workspace), "/workspace");
     }
 
     @Test
-    void buildsANetworklessBubblewrapCommandWithOnlyTheWorkspaceBoundWritable() {
+    void buildsANetworklessBubblewrapCommandForAnExplicitOfflineRun() {
         WslSandboxWorker worker = new WslSandboxWorker(new LocalProcessExecutor(), "Debian");
-        WorkerRunSpec run = WorkerRunSpec.forWorkspace("wsl-contract", workspace);
+        WorkerRunSpec run = WorkerRunSpec.forWorkspace("wsl-contract", workspace, false);
         ProcessExecutionRequest request = new ProcessExecutionRequest(
                 List.of("/bin/bash", "-lc", "printf ok > result.txt"), workspace, Duration.ofSeconds(30), 10_000);
 

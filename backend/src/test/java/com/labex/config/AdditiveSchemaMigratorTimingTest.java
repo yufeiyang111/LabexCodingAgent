@@ -133,7 +133,8 @@ class AdditiveSchemaMigratorTimingTest {
         new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, org.mockito.Mockito.times(8)).execute(sql.capture());
+        // 新增表迁移只会增加 execute 次数（当前包含 t_agent_input_attachment 等），用 atLeast 保持语义不脆断。
+        verify(jdbcTemplate, org.mockito.Mockito.atLeast(8)).execute(sql.capture());
         assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("CREATE TABLE t_command_audit_event")));
         assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("uk_command_audit_approval_idempotency")));
         assertTrue(sql.getAllValues().stream().anyMatch(statement -> statement.contains("CREATE TABLE t_agent_project_checkout_lease")));

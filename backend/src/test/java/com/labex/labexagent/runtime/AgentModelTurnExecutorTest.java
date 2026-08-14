@@ -39,7 +39,7 @@ class AgentModelTurnExecutorTest {
         assertEquals("完成", result.content());
         assertEquals("检查", result.thinking());
         assertEquals(12, result.usage().get("total_tokens"));
-        assertEquals(List.of("THINK_START", "THINK_DELTA", "FINAL_DELTA", "THINK"), events);
+        assertEquals(List.of("THINK_START", "THINK_DELTA", "FINAL_CANDIDATE_DELTA", "THINK"), events);
     }
 
     @Test
@@ -91,6 +91,7 @@ class AgentModelTurnExecutorTest {
 
         assertEquals(AgentModelTurnExecutor.ResultType.TEXT, result.type());
         assertEquals(envelope, result.content());
+        assertFalse(events.contains("FINAL_CANDIDATE_DELTA"));
         assertFalse(events.contains("FINAL_DELTA"));
     }
 

@@ -362,4 +362,51 @@ class RunCompletionEvidenceServiceTest {
         verify(artifacts, never()).recordDeterministic(any(), any(), any(), any());
     }
 
+    @Test
+    void allowsAFormalVerificationToSupersedeAnEarlierPythonAliasFailure() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentFileChange change = new AgentFileChange();
+        change.setRelativePath("verify_app.py"); change.setStatus("pending");
+        AgentVerification failed = new AgentVerification();
+        failed.setCommand("python -m pytest"); failed.setStatus("failed"); failed.setExitCode(127);
+        AgentVerification passed = new AgentVerification();
+        passed.setCommand("python3 -m pytest"); passed.setStatus("passed"); passed.setExitCode(0);
+        when(changes.selectList(any())).thenReturn(List.of(change));
+        when(verifications.selectList(any())).thenReturn(List.of(failed, passed));
+        when(artifacts.list(9L, "post_edit_verification")).thenReturn(List.of());
+        when(artifacts.list(9L, "tool_failure")).thenReturn(List.of());
+
+        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts)
+                .evaluateAndPersist(9L, 7, 3, false, "running");
+
+        assertTrue(evidence.satisfied());
+        assertEquals(List.of("python3 -m pytest (exit 0)"), evidence.successfulVerifications());
+        assertTrue(evidence.failedVerifications().isEmpty());
+    }
+
+    @Test
+    void keepsGenericToolFailuresAuditableWithoutMakingThemPermanentCompletionBlockers() {
+        AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
+        AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentFileChange change = new AgentFileChange();
+        change.setRelativePath("verify_app.py"); change.setStatus("pending");
+        AgentVerification passed = new AgentVerification();
+        passed.setCommand("python3 -m pytest"); passed.setStatus("passed"); passed.setExitCode(0);
+        AgentRunArtifact failedShell = new AgentRunArtifact();
+        failedShell.setContent("tool=shell\nexit=1\nexploratory check failed");
+        when(changes.selectList(any())).thenReturn(List.of(change));
+        when(verifications.selectList(any())).thenReturn(List.of(passed));
+        when(artifacts.list(9L, "post_edit_verification")).thenReturn(List.of());
+        when(artifacts.list(9L, "tool_failure")).thenReturn(List.of(failedShell));
+
+        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts)
+                .evaluateAndPersist(9L, 7, 3, false, "running");
+
+        assertTrue(evidence.satisfied());
+        assertTrue(evidence.unresolvedRisks().isEmpty());
+    }
+
 }

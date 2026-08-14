@@ -57,4 +57,16 @@ class InternalReasoningBoundaryTest {
         assertEquals("", payload.get("detail"));
     }
 
+
+
+    @Test
+    void sanitizesCandidateFinalDeltasBeforeTheyReachTheClient() {
+        var sanitized = InternalReasoningBoundary.sanitizeEventPayload("FINAL_CANDIDATE_DELTA",
+                java.util.Map.of("delta", "visible <think>private</think> answer"));
+
+        @SuppressWarnings("unchecked")
+        var payload = (java.util.Map<String, Object>) sanitized;
+        assertEquals("visible  answer", payload.get("delta"));
+    }
+
 }

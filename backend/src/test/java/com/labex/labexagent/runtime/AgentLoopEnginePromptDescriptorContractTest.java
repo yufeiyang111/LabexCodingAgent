@@ -15,8 +15,12 @@ class AgentLoopEnginePromptDescriptorContractTest {
 
         assertThat(source)
                 .contains("this.buildSystemPrompt(project, toolDefinitions, visibleLanguage)")
+                .contains("LabexSystemPrompt.buildSystemPrompt(project, toolDefinitions, visibleLanguage,")
                 .contains("this.sandboxWorker.shellDescriptor(run)")
                 .contains("this.shellPromptDescriptor(project)")
-                .contains("this.executionProperties.getPermissionProfile()");
+                .contains("this.executionProperties.getPermissionProfile()")
+                .contains("conv.getConversationId()")
+                .contains("PromptCacheKeyFactory.forConversation(studentId, modelConfig.getConfigId(),")
+                .doesNotContain("buildRuntimeContext(");
     }
 }

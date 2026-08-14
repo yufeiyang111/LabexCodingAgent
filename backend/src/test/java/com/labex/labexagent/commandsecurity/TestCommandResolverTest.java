@@ -82,4 +82,13 @@ class TestCommandResolverTest {
         assertEquals(180, TestCommandResolver.defaultTimeoutSeconds(java.util.List.of("python", "-m", "pytest")));
     }
 
+    @Test
+    void usesPython3ForPythonProjectVerificationInLinuxWorkers() throws Exception {
+        Files.writeString(workspace.resolve("requirements.txt"), "pytest");
+
+        TestCommandResolver.ResolvedTestCommand resolved = TestCommandResolver.resolveProject(workspace);
+
+        assertEquals(java.util.List.of("python3", "-m", "pytest"), resolved.command());
+    }
+
 }

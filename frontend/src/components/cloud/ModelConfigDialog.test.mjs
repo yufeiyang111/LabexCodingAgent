@@ -55,3 +55,12 @@ test('ModelConfigDialog exposes and persists the automatic compaction threshold'
   assert.match(workspace, /compactionThresholdPercent: f\.compactionThresholdPercent/)
   assert.match(workspace, /Number\.isFinite\(f\.compactionThresholdPercent\)/)
 })
+
+test('CloudWorkspace uses the shared 32000 output default while preserving saved user values', async () => {
+  const workspace = await readFile(new URL('../../views/CloudWorkspace.vue', import.meta.url), 'utf8')
+
+  assert.match(workspace, /DEFAULT_MAX_TOKENS/)
+  assert.match(workspace, /maxTokens:\s*DEFAULT_MAX_TOKENS/)
+  assert.match(workspace, /maxTokens:\s*cfg\.maxTokens\s*\|\|\s*DEFAULT_MAX_TOKENS/)
+  assert.match(workspace, /maxTokens:\s*tpl\.maxTokens\s*\|\|\s*DEFAULT_MAX_TOKENS/)
+})

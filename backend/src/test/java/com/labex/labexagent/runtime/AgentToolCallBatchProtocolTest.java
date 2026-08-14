@@ -32,4 +32,32 @@ class AgentToolCallBatchProtocolTest {
 
         assertThat(protocol.validateIdentity(call)).contains("toolCallId");
     }
+
+    @Test
+    void rejectsControlCharactersInProviderToolCallIds() {
+        assertThat(protocol.validateIdentity(call("call-1\n<untrusted>"))).contains("control");
+        assertThat(protocol.validateIdentity(call("call-2\r<untrusted>"))).contains("control");
+        assertThat(protocol.validateIdentity(call("call-3\u0000<untrusted>"))).contains("control");
+        assertThat(protocol.validateIdentity(call("call-4\u2028<untrusted>"))).contains("control");
+    }
+
+    @Test
+    void rejectsToolCallIdsBeyondTheProtocolBound() {
+        assertThat(protocol.validateIdentity(call("c".repeat(AgentToolCallIdPolicy.MAX_LENGTH + 1))))
+                .contains("too long");
+    }
+
+    @Test
+    void preservesAValidOpaqueProviderIdByteForByteInTheProtocolMessage() {
+        String opaqueId = "call:provider/v2?trace=abc_123-XYZ";
+
+        Map<String, Object> message = protocol.toolResultMessage(call(opaqueId), "ok");
+
+        assertThat(message).containsEntry("tool_call_id", opaqueId);
+        assertThat(protocol.validateIdentity(call(opaqueId))).isEmpty();
+    }
+
+    private AgentModelTurnExecutor.NativeToolCall call(String toolCallId) {
+        return new AgentModelTurnExecutor.NativeToolCall("read_file", "{}", toolCallId, 0);
+    }
 }

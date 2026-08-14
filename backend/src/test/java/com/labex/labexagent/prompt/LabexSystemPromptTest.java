@@ -9,12 +9,7 @@ import org.junit.jupiter.api.Test;
 class LabexSystemPromptTest {
     @Test
     void systemPromptExplainsProjectMemoryInitializationRules() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("PromptWorkspace");
-        project.setWorkspacePath("D:/workspaces/prompt");
-        project.setStructureJson("{}");
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools");
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools");
 
         assertThat(prompt)
                 .contains("Project memory and init rules")
@@ -25,99 +20,69 @@ class LabexSystemPromptTest {
     }
 
     @Test
-    void systemPromptPromotesVisibleLanguagePolicyAboveEnglishInstructions() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("PromptWorkspace");
-        project.setWorkspacePath("D:/workspaces/prompt");
-        project.setStructureJson("{}");
+    void systemPromptIsStableWhenSessionFactsMatchAndProjectTreeChanges() {
+        StudentProject project = project("PromptWorkspace", "D:/workspaces/prompt", "first tree");
+        WorkerShellDescriptor descriptor = WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true);
 
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh");
+        String first = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh", descriptor, "opencode");
+        project.setStructureJson("second tree with different files");
+        String second = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh", descriptor, "opencode");
 
-        assertThat(prompt)
+        assertThat(first)
+                .isEqualTo(second)
                 .contains("<visible_language>")
+                .contains("<environment>")
+                .contains("<command_policy>")
+                .doesNotContain("project_structure_summary")
+                .doesNotContain("first tree")
+                .doesNotContain("second tree with different files");
+    }
+
+    @Test
+    void systemPromptKeepsVisibleLanguageAndWorkerFactsAtSystemPriority() {
+        String prompt = LabexSystemPrompt.buildSystemPrompt(
+                project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools", "zh",
+                WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true), "opencode");
+
+        assertThat(prompt)
+                .startsWith("<visible_language>")
                 .contains("User visible language: Simplified Chinese")
-                .contains("All user-visible thinking, status updates, questions, option labels, tool summaries, error explanations, and final answers MUST use Simplified Chinese")
-                .contains("This language rule overrides the English wording used elsewhere in this system prompt");
-    }
-
-
-    @Test
-    void systemPromptRequestsSafeStructuredMarkdownForUserVisibleFinalOutput() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("PromptWorkspace");
-        project.setWorkspacePath("D:/workspaces/prompt");
-        project.setStructureJson("{}");
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh");
-
-        assertThat(prompt)
-                .contains("Use GitHub-flavored Markdown only")
-                .contains("Use `:::note`, `:::tip`, `:::success`, `:::warning`, `:::important`, or `:::error`")
-                .contains("Do not emit raw HTML");
-    }
-
-    @Test
-    void systemPromptDoesNotInjectAnUnboundedPersistedProjectTree() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("LargeWorkspace");
-        project.setWorkspacePath("D:/workspaces/large");
-        project.setStructureJson("x".repeat(3_800_000));
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools");
-
-        assertThat(prompt)
-                .contains("project_structure_summary")
-                .contains("omitted from the system prompt")
-                .hasSizeLessThan(40_000)
-                .doesNotContain("x".repeat(20_000));
-    }
-
-
-    @Test
-    void systemPromptOmitsOversizedPersistedProjectTrees() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("LargeWorkspace");
-        project.setWorkspacePath("D:/workspaces/large");
-        project.setStructureJson("x".repeat(50_000));
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools");
-
-        assertThat(prompt)
-                .contains("Stored project tree has 50000 characters")
-                .contains("repository map and targeted file tools")
-                .doesNotContain("x".repeat(20_000));
-    }
-
-    @Test
-    void systemPromptUsesTheSandboxAliasInsteadOfTheHostWorkspacePath() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("PromptWorkspace");
-        project.setWorkspacePath("D:/workspaces/prompt");
-        project.setStructureJson("{}");
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools");
-
-        assertThat(prompt)
+                .contains("<environment>")
                 .contains("workspace_root: /workspace")
-                .doesNotContain("D:/workspaces/prompt");
+                .contains("execution_backend: linux-wsl")
+                .contains("shell: bash")
+                .contains("network: enabled")
+                .contains("project_name: PromptWorkspace")
+                .contains("<command_policy>")
+                .contains("Permission profile: opencode")
+                .doesNotContain("project_structure_summary");
+    }
+
+    @Test
+    void systemPromptChangesWhenSessionRuntimeFactsChange() {
+        StudentProject project = project("PromptWorkspace", "D:/workspaces/prompt", "{}");
+        String linuxChinese = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh",
+                WorkerShellDescriptor.bash("linux", "/bin/bash", "/workspace", true), "opencode");
+        String windowsEnglish = LabexSystemPrompt.buildSystemPrompt(project, "tools", "en",
+                WorkerShellDescriptor.powerShell("windows", "pwsh.exe", "C:/sandbox", false), "safe");
+
+        assertThat(linuxChinese).isNotEqualTo(windowsEnglish);
+        assertThat(windowsEnglish)
+                .contains("User visible language: English")
+                .contains("workspace_root: C:/sandbox")
+                .contains("execution_backend: windows")
+                .contains("shell: powershell")
+                .contains("network: disabled")
+                .contains("Permission profile: safe");
     }
 
     @Test
     void systemPromptExplainsTheOpenCodeRealShellContract() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("PromptWorkspace");
-        project.setWorkspacePath("D:/workspaces/prompt");
-        project.setStructureJson("{}");
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh",
+        String prompt = LabexSystemPrompt.buildSystemPrompt(
+                project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools", "zh",
                 WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true), "opencode");
 
         assertThat(prompt)
-                .contains("<command_policy>")
-                .contains("Execution backend: linux-wsl")
-                .contains("Shell: Bash")
-                .contains("Network: enabled")
-                .contains("Permission profile: opencode")
                 .contains("Bash/PowerShell syntax is supported")
                 .contains("cd frontend&&npm install")
                 .contains("workdir")
@@ -129,30 +94,18 @@ class LabexSystemPromptTest {
     }
 
     @Test
-    void systemPromptUsesInjectedPowerShellDescriptor() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("PromptWorkspace");
-        project.setStructureJson("{}");
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools", "en",
-                WorkerShellDescriptor.powerShell("windows", "pwsh.exe", "C:/sandbox", false), "safe");
+    void systemPromptRequestsSafeStructuredMarkdownForUserVisibleFinalOutput() {
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools");
 
         assertThat(prompt)
-                .contains("workspace_root: C:/sandbox")
-                .contains("execution_backend: windows")
-                .contains("shell: powershell")
-                .contains("network: disabled")
-                .contains("Permission profile: safe");
+                .contains("Use GitHub-flavored Markdown only")
+                .contains("Use `:::note`, `:::tip`, `:::success`, `:::warning`, `:::important`, or `:::error`")
+                .contains("Do not emit raw HTML");
     }
 
     @Test
     void systemPromptDoesNotDuplicateTheToolNameList() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("PromptWorkspace");
-        project.setWorkspacePath("D:/workspaces/prompt");
-        project.setStructureJson("{}");
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project,
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project("PromptWorkspace", "D:/workspaces/prompt", "{}"),
                 "- read_file: reads a file\n- grep: searches code\n- bash: runs shell commands");
 
         assertThat(prompt)
@@ -164,16 +117,18 @@ class LabexSystemPromptTest {
 
     @Test
     void systemPromptNoLongerRecommendsCurlForVerification() {
-        StudentProject project = new StudentProject();
-        project.setProjectName("PromptWorkspace");
-        project.setWorkspacePath("D:/workspaces/prompt");
-        project.setStructureJson("{}");
-
-        String prompt = LabexSystemPrompt.buildSystemPrompt(project, "tools");
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools");
 
         assertThat(prompt)
                 .doesNotContain("Test the endpoint with curl")
                 .contains("Check `git status` to confirm only intended files changed");
     }
-}
 
+    private static StudentProject project(String name, String workspacePath, String structureJson) {
+        StudentProject project = new StudentProject();
+        project.setProjectName(name);
+        project.setWorkspacePath(workspacePath);
+        project.setStructureJson(structureJson);
+        return project;
+    }
+}

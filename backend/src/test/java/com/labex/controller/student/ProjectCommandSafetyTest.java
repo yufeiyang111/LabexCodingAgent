@@ -44,13 +44,12 @@ class ProjectCommandSafetyTest {
     }
 
     @Test
-    void requiresApprovalForNetworkCommandRegardlessOfLegacyApproval() {
+    void allowsNetworkCommandsWithoutApproval() {
         ProjectCommandSafety.SafetyCheck result = ProjectCommandSafety.check("curl https://example.invalid", true);
 
-        assertFalse(result.allowed());
-        assertTrue(result.approvalRequired());
-        assertEquals("approval_required", result.riskLevel());
-        assertEquals("network_url", result.matchedRule());
+        assertTrue(result.allowed());
+        assertFalse(result.approvalRequired());
+        assertEquals("safe", result.riskLevel());
     }
 
     @Test

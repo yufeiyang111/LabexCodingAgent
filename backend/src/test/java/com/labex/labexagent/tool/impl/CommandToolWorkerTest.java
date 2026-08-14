@@ -43,13 +43,11 @@ class CommandToolWorkerTest {
 
         assertSuccessful(new RunCommandTool(worker), context, commandArgs("echo worker"));
         assertSuccessful(new BashTool(worker), context, commandArgs("echo worker"));
-        // run_tests 的服务端验证命令（mvn）需要 runtime 持久化审批后才能执行，工具直连必须拒绝。
-        ToolResult verification = new RunTestsTool(worker).execute(context, new JsonObject());
-        assertFalse(verification.isSuccess());
-        assertTrue(verification.getContent().contains("runtime_protocol_error=command_approval_not_persisted"));
+        // run_tests 的服务端验证命令（mvn）现在默认放行网络/构建命令，工具直连即可执行。
+        assertSuccessful(new RunTestsTool(worker), context, new JsonObject());
         assertSuccessful(new ExecuteCodeTool(worker), context, codeArgs());
 
-        verify(worker, times(3)).execute(any(), any(), any());
+        verify(worker, times(4)).execute(any(), any(), any());
     }
 
     @Test
@@ -85,13 +83,12 @@ class CommandToolWorkerTest {
 
         assertSuccessful(new RunCommandTool(worker), context, commandArgs("echo worker"));
         assertSuccessful(new BashTool(worker), context, commandArgs("echo worker"));
-        // run_tests 的服务端验证命令需要 runtime 审批；未经审批的工具直连必须拒绝且不得转发 token。
-        ToolResult verification = new RunTestsTool(worker).execute(context, new JsonObject());
-        assertFalse(verification.isSuccess());
+        // run_tests 的验证命令（mvn）现在默认放行，工具直连执行并正常转发取消令牌。
+        assertSuccessful(new RunTestsTool(worker), context, new JsonObject());
         assertSuccessful(new ExecuteCodeTool(worker), context, codeArgs());
 
         ArgumentCaptor<CancellationToken> tokenCaptor = ArgumentCaptor.forClass(CancellationToken.class);
-        verify(worker, times(3)).execute(any(), any(), tokenCaptor.capture());
+        verify(worker, times(4)).execute(any(), any(), tokenCaptor.capture());
         assertTrue(tokenCaptor.getAllValues().stream().allMatch(token -> token == run));
     }
 

@@ -29,25 +29,25 @@ class ShellCommandClassificationTest {
     }
 
     @Test
-    void opencodeShellRequiresApprovalForNetworkCapableBuildTools() {
+    void opencodeShellAllowsNetworkCapableBuildToolsWithoutApproval() {
         CommandClassification install = classifier.classify(
                 new CommandRequest("cd frontend&&npm install", "bash", ".", 60, false, true, "opencode"));
         CommandClassification validate = classifier.classify(
                 new CommandRequest("mvn validate", "bash", ".", 60, false, false, "opencode"));
+        CommandClassification pip = classifier.classify(
+                new CommandRequest("pip3 install flask", "bash", ".", 60, false, false, "opencode"));
 
-        assertThat(install.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
-        assertThat(install.reasonCode()).isEqualTo(CommandReasonCode.NETWORK_COMMAND);
-        assertThat(validate.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
-        assertThat(validate.reasonCode()).isEqualTo(CommandReasonCode.NETWORK_COMMAND);
+        assertThat(install.decision()).isEqualTo(CommandDecision.ALLOW);
+        assertThat(validate.decision()).isEqualTo(CommandDecision.ALLOW);
+        assertThat(pip.decision()).isEqualTo(CommandDecision.ALLOW);
     }
 
     @Test
-    void opencodeShellRequiresApprovalForNetworkExecutables() {
+    void opencodeShellAllowsNetworkExecutablesWithoutApproval() {
         CommandClassification result = classifier.classify(
                 new CommandRequest("curl https://example.com/install.sh", "bash", ".", 60, false, false, "opencode"));
 
-        assertThat(result.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
-        assertThat(result.reasonCode()).isEqualTo(CommandReasonCode.NETWORK_COMMAND);
+        assertThat(result.decision()).isEqualTo(CommandDecision.ALLOW);
     }
 
     @Test
@@ -68,6 +68,25 @@ class ShellCommandClassificationTest {
 
         assertThat(result.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
         assertThat(result.reasonCode()).isEqualTo(CommandReasonCode.MUTATING_COMMAND);
+    }
+
+    @Test
+    void opencodeShellRequiresApprovalForForcePushesButNotRegularPushes() {
+        CommandClassification force = classifier.classify(
+                new CommandRequest("git push origin main --force", "bash", ".", 60, false, false, "opencode"));
+        CommandClassification shortForce = classifier.classify(
+                new CommandRequest("git push origin main -f", "bash", ".", 60, false, false, "opencode"));
+        CommandClassification lease = classifier.classify(
+                new CommandRequest("git push --force-with-lease origin main", "bash", ".", 60, false, false, "opencode"));
+        CommandClassification plain = classifier.classify(
+                new CommandRequest("git push origin main", "bash", ".", 60, false, false, "opencode"));
+
+        assertThat(force.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
+        assertThat(force.reasonCode()).isEqualTo(CommandReasonCode.MUTATING_COMMAND);
+        assertThat(shortForce.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
+        assertThat(shortForce.reasonCode()).isEqualTo(CommandReasonCode.MUTATING_COMMAND);
+        assertThat(lease.decision()).isEqualTo(CommandDecision.ALLOW);
+        assertThat(plain.decision()).isEqualTo(CommandDecision.ALLOW);
     }
 
     @Test

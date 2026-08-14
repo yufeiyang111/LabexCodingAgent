@@ -11,6 +11,7 @@ import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.context.AgentRequestTokenEstimator;
 import com.labex.labexagent.context.CompactionSelection;
+import com.labex.labexagent.fixtures.OpenAiImageProtocolFixture;
 import com.labex.labexagent.run.AgentRunProgressProjectionService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.tool.ToolRegistry;
@@ -21,6 +22,54 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class AgentLoopEngineContextBudgetTest {
+
+
+
+    @Test
+    void doesNotClaimEnabledAutoCompactionIsDisabledAfterItCannotReduceTheRequest() throws Exception {
+        AgentLoopEngine engine = newEngine();
+        var estimatorField = AgentLoopEngine.class.getDeclaredField("contextUsageEstimator");
+        estimatorField.setAccessible(true);
+        estimatorField.set(engine, new ContextUsageEstimator());
+        AgentModelConfig config = new AgentModelConfig();
+        config.setContextWindowTokens(200_000);
+        config.setMaxTokens(32_000);
+        config.setCompactionAuto(1);
+        config.setCompactionPrune(1);
+        config.setCompactionThresholdPercent(90);
+
+        ContextAdmissionDecision decision = engine.evaluateContextAdmission(config, "system", List.of(),
+                new ContextUsageEstimator.PromptContext("", "", "", ""),
+                List.of(Map.of("role", "user", "content", "z".repeat(510_000))));
+
+        assertEquals(ContextAdmissionDecision.Action.BLOCK_REDUCIBLE_OVERFLOW, decision.action());
+        assertTrue(decision.message().contains("\u81ea\u52a8\u538b\u7f29\u5df2\u542f\u7528"));
+        assertFalse(decision.message().contains("\u7981\u7528\u4e86\u81ea\u52a8\u538b\u7f29"));
+    }
+
+
+    @Test
+    void doesNotBlockA200kModelBecauseOneImageDataUrlWasSerializedAsConversationText() throws Exception {
+        AgentLoopEngine engine = newEngine();
+        var estimatorField = AgentLoopEngine.class.getDeclaredField("contextUsageEstimator");
+        estimatorField.setAccessible(true);
+        estimatorField.set(engine, new ContextUsageEstimator());
+        AgentModelConfig config = new AgentModelConfig();
+        config.setContextWindowTokens(200_000);
+        config.setMaxTokens(32_000);
+        config.setCompactionAuto(1);
+        config.setCompactionPrune(1);
+        config.setCompactionThresholdPercent(90);
+
+        ContextAdmissionDecision decision = engine.evaluateContextAdmission(config, "x".repeat(41_904), List.of(),
+                new ContextUsageEstimator.PromptContext("", "", "", ""),
+                List.of(OpenAiImageProtocolFixture.userMessage("describe the screenshot")));
+
+        assertTrue(OpenAiImageProtocolFixture.dataUrlChars() > 480_000);
+        assertEquals(ContextAdmissionDecision.Action.PROCEED, decision.action());
+        assertTrue(decision.providerInvocationAllowed());
+    }
+
 
     @Test
     void identifiesWhenOverflowCompactionCannotReduceTheRequest() {

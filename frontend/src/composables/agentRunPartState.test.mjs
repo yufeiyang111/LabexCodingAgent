@@ -75,3 +75,18 @@ test('sanitizes durable reasoning and final projections during recovery', () => 
   assert.equal(fromParts.thinkingBlocks[0].content, 'inspect project')
   assert.doesNotMatch(JSON.stringify({ fromMessage, fromParts }), /<\/?think/i)
 })
+
+
+test('does not append durable reasoning parts over an already rendered live timeline', () => {
+  const target = message()
+  target.thinkingBlocks.push({ content: 'inspect project', _order: 1 })
+
+  applyRunPartSnapshot(target, [
+    { partId: 1, partKey: 'reasoning:1', partType: 'reasoning', output: 'inspect project', sequence: 1 },
+    { partId: 2, partKey: 'tool:call-1', partType: 'tool', toolCallId: 'call-1', tool: 'question', status: 'waiting_user', sequence: 2 }
+  ])
+
+  assert.equal(target.thinkingBlocks.length, 1)
+  assert.equal(target.toolCalls.length, 1)
+  assert.equal(target.toolCalls[0].toolCallId, 'call-1')
+})

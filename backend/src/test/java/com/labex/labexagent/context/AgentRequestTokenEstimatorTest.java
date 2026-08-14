@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.labex.labexagent.fixtures.OpenAiImageProtocolFixture;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,22 @@ class AgentRequestTokenEstimatorTest {
         assertEquals(3_584, estimate.inputCapacityTokens());
         assertFalse(estimate.overflowsInputCapacity());
     }
+
+
+    @Test
+    void assignsDataUrlImagesAnIndependentVisualBudgetInsteadOfCountingBase64AsText() {
+        Map<String, Object> imagePart = OpenAiImageProtocolFixture.imagePart();
+
+        AgentRequestTokenEstimator.ValueEstimate estimate = estimator.analyzeValue(imagePart);
+
+        assertTrue(OpenAiImageProtocolFixture.dataUrlChars() > 480_000);
+        assertEquals(1, estimate.imageCount());
+        assertEquals(8_192, estimate.imageInputTokens());
+        assertTrue(estimate.textTokens() < 1_000);
+        assertTrue(estimate.totalTokens() <= 9_500,
+                () -> "image data URL must not be charged as ordinary text, estimated=" + estimate.totalTokens());
+    }
+
 
     @Test
     void rejectsUnknownOrUnsafeModelWindowInsteadOfUsingPermissiveDefault() {

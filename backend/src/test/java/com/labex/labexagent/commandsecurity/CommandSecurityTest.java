@@ -24,6 +24,9 @@ class CommandSecurityTest {
         assertRequiresApproval("git clean -fd");
         assertRequiresApproval("git checkout -- file");
         assertRequiresApproval("git rm obsolete.txt");
+        assertRequiresApproval("git stash drop");
+        assertRequiresApproval("git push origin main --force");
+        assertRequiresApproval("git push origin main -f");
         assertRequiresApproval("rm obsolete.txt");
         assertRequiresApproval("rmdir empty-dir");
         assertRequiresApproval("truncate -s 0 notes.txt");
@@ -68,27 +71,34 @@ class CommandSecurityTest {
         assertBlocked("echo\nok", CommandReasonCode.UNKNOWN_CONTROL_CHARACTER);
         assertBlocked("ba\\sh -c echo", CommandReasonCode.QUOTE_SPLIT_EXECUTABLE);
         assertBlocked("powe^rshell -EncodedCommand AAAA", CommandReasonCode.QUOTE_SPLIT_EXECUTABLE);
-        assertRequiresApproval("curl https://example.invalid", CommandReasonCode.NETWORK_URL);
-        assertRequiresApproval("wget file.txt", CommandReasonCode.NETWORK_COMMAND);
-        assertRequiresApproval("git fetch origin", CommandReasonCode.NETWORK_COMMAND);
-        assertRequiresApproval("npm install package", CommandReasonCode.NETWORK_COMMAND);
-        assertRequiresApproval("pip install requests", CommandReasonCode.NETWORK_COMMAND);
-        assertRequiresApproval("ping example.invalid", CommandReasonCode.NETWORK_COMMAND);
     }
 
     @Test
-    void requiresApprovalForUnrecognizedExecutableInsteadOfPassingItToShell() {
+    void allowsNetworkCommandsAndSafeForcePushesWithoutApproval() {
+        assertAllows("curl https://example.invalid");
+        assertAllows("wget file.txt");
+        assertAllows("git fetch origin");
+        assertAllows("git pull origin main");
+        assertAllows("git push origin main");
+        assertAllows("git push --force-with-lease origin main");
+        assertAllows("npm install package");
+        assertAllows("pip install requests");
+        assertAllows("ping example.invalid");
+    }
+
+    @Test
+    void allowsUnrecognizedExecutablesToExecuteInsideTheWorker() {
         CommandClassification result = classifier.classify(request("unknown-command argument"));
 
-        assertEquals(CommandDecision.REQUIRE_APPROVAL, result.decision());
+        assertEquals(CommandDecision.ALLOW, result.decision());
         assertEquals(CommandReasonCode.UNRECOGNIZED_COMMAND, result.reasonCode());
     }
 
     @Test
-    void requiresApprovalForNetworkRequestEvenWithSafeExecutable() {
+    void allowsNetworkRequestWithSafeExecutableBecauseNetworkIsEnabledByDefault() {
         CommandRequest request = new CommandRequest("git status", "direct", ".", 60, false, true, "sandbox-deny-network");
 
-        assertEquals(CommandDecision.REQUIRE_APPROVAL, classifier.classify(request).decision());
+        assertEquals(CommandDecision.ALLOW, classifier.classify(request).decision());
         assertEquals(CommandReasonCode.NETWORK_COMMAND, classifier.classify(request).reasonCode());
     }
 

@@ -8,29 +8,44 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
 /**
- * 契约：网络命令（npm install 等）在用户批准网络审批后不得再次弹命令审批。
- * 一次批准 = 该命令带网络执行一次。
+ * 契约：网络访问默认开启后，执行链不再为网络命令创建任何审批；
+ * 破坏性命令审批仍然持久化存在，普通命令继续进入通用 PermissionService 评估。
  */
 class AgentLoopEngineNetworkApprovalMergingTest {
 
     private final String source = readSource("AgentLoopEngine.java");
 
     @Test
-    void opencodeShellBypassesLegacyNetworkApprovalButKeepsDestructiveApprovalDurable() {
-        int shellProfile = source.indexOf("boolean opencodeShell = this.usesOpenCodeShellContract(name);");
-        int networkGate = source.indexOf("if (!opencodeShell && classification != null");
-        int commandGate = source.indexOf("if (classification.requiresApproval()\n                        && !approvedOfflineRetry");
+    void networkCommandsRunWithoutAnyNetworkApprovalGate() {
+        assertFalse(source.contains("createNetworkApproval"),
+                "network approval creation must be removed from the exec tool path");
+        assertFalse(source.contains("maybeRequestNetworkAfterFailure"),
+                "offline network-retry approval must be removed from the exec tool path");
+        assertFalse(source.contains("isNetworkCommandClassification"),
+                "legacy network classification gate must be removed");
+        assertFalse(source.contains("hasApprovedOfflineRetryGrant"),
+                "legacy offline-retry grant check must be removed from the exec tool path");
+        assertTrue(source.contains("// 网络访问默认开启：不再为网络命令创建一次性审批"),
+                "the network-enabled-by-default policy must be documented at the gate");
+    }
+
+    @Test
+    void destructiveCommandApprovalRemainsDurableAfterTheClassificationGate() {
+        int classification = source.indexOf("CommandClassification classification = this.commandClassification(name, args, ctx);");
+        int requiresApproval = source.indexOf("if (classification.requiresApproval()");
         int commandApproval = source.indexOf("return this.createCommandApproval(ctx, name, classification, timeout, toolCallId);");
         int genericPermission = source.indexOf("PermissionService.PermissionEvaluation eval");
 
-        assertTrue(shellProfile >= 0, "opencode Shell profile must be calculated before command gates");
-        assertTrue(networkGate > shellProfile, "legacy network approval must be conditional on non-opencode shell");
-        assertTrue(commandGate > networkGate, "destructive command approval remains after the network gate");
-        assertTrue(commandApproval > commandGate, "destructive command approval must be durable and explicit");
-        assertTrue(genericPermission > commandGate, "ordinary commands continue to the generic PermissionService evaluation");
-        assertTrue(source.contains("this.usesOpenCodeShellContract(toolName)"),
-                "offline network-retry approval must also be bypassed for opencode shell");
-        assertFalse(source.contains("Thread.sleep(28L)"));
+        assertTrue(classification >= 0, "command classification must run inside the command policy gate");
+        assertTrue(requiresApproval > classification, "approval decision must follow classification");
+        assertTrue(commandApproval > requiresApproval, "destructive command approval must be durable and explicit");
+        assertTrue(genericPermission > commandApproval, "ordinary commands continue to the generic PermissionService evaluation");
+    }
+
+    @Test
+    void commandApprovalKeepsNetworkGrantAndRecordsWhetherTheToolIsLongRunning() {
+        assertTrue(source.contains("\"timeout=\" + timeout + \";longRunning=\" + this.isPreviewTool(toolName) + \";network=\""),
+                "command approval options must keep the network grant flag and the actual lifecycle type");
     }
 
     private String readSource(String fileName) {

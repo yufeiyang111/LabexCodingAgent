@@ -3,6 +3,7 @@ package com.labex.labexagent.runtime;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
+import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,7 @@ class AgentTranscriptProjectionServiceWiringTest {
                 .withBean(AgentRunTranscriptService.class, () -> mock(AgentRunTranscriptService.class))
                 .withBean(AgentProviderMessageProjector.class, AgentProviderMessageProjector::new)
                 .withBean(AgentCompactionService.class, () -> mock(AgentCompactionService.class))
+                .withBean(AgentInputAttachmentService.class, () -> mock(AgentInputAttachmentService.class))
                 .withBean(AgentTranscriptProjectionService.class)
                 .run(context -> assertThat(context)
                         .hasSingleBean(AgentTranscriptProjectionService.class));

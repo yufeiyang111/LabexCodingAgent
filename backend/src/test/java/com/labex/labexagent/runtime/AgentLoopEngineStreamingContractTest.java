@@ -12,9 +12,23 @@ class AgentLoopEngineStreamingContractTest {
     private final String source = readSource("AgentLoopEngine.java") + readSource("AgentModelTurnExecutor.java");
 
     @Test
+    void givesTruncatedDurableToolOutputACallScopedReopenPath() {
+        assertTrue(source.contains("compactToolResultForModel(tn, res, toolCallId)"));
+        assertTrue(source.contains("read_tool_output"));
+        assertTrue(source.contains("tool_call_id"));
+    }
+
+    @Test
+    void quotesButDoesNotMutateValidatedToolCallIdsWhenBuildingTheModelReopenHint() {
+        assertTrue(source.contains("tool_call_id=\\\""));
+        assertTrue(source.contains("this.escapeJson(toolCallId)"));
+        assertFalse(source.contains("toolCallId.trim()"));
+    }
+
+    @Test
     void forwardsProviderTextAndThinkingDeltasWithoutArtificialDelay() {
         assertTrue(source.contains("case TEXT_DELTA ->"));
-        assertTrue(source.contains("request.eventSink().transientEvent(\"FINAL_DELTA\""));
+        assertTrue(source.contains("request.eventSink().transientEvent(\"FINAL_CANDIDATE_DELTA\""));
         assertTrue(source.contains("request.eventSink().transientEvent(\"THINK_DELTA\""));
         assertTrue(source.contains("THINK_SNAPSHOT"));
         assertFalse(source.contains("Thread.sleep(28L)"));

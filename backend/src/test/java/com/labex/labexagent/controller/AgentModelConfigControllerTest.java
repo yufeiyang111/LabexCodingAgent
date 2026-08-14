@@ -155,7 +155,7 @@ class AgentModelConfigControllerTest {
                 null, 8_192, null, false));
         assertThrows(IllegalArgumentException.class, () -> service.create(
                 42, "local", "openai_compatible", "gpt-test", "", "https://api.example.test",
-                null, 32_768, null, false));
+                null, 32_000, null, false));
 
         assertFalse(service.saved);
     }
@@ -276,6 +276,31 @@ class AgentModelConfigControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.success").value(false));
+    }
+
+    @Test
+    void modelListUsesStoredApiKeyForSavedConfigurationWhenEditFormLeavesKeyBlank() throws Exception {
+        AgentModelConfig config = new AgentModelConfig();
+        config.setConfigId(7);
+        config.setBaseUrl("https://api.example.test/v1");
+        when(configService.getOwned(42, 7)).thenReturn(config);
+        when(configService.resolveApiKey(config)).thenReturn("stored-secret");
+        String modelsUrl = "https://models.example.test/models";
+        when(outboundUrlPolicy.validate(modelsUrl)).thenThrow(
+                new OutboundUrlPolicy.RejectedOutboundUrlException(
+                        OutboundUrlPolicy.RejectionReason.BLOCKED_ADDRESS,
+                        "URL resolves to a blocked address"));
+
+        mockMvc.perform(post("/student/model-configs/model-list")
+                        .with(authenticatedAs(42))
+                        .contentType("application/json")
+                        .content("{\"configId\":7,\"modelsUrl\":\"" + modelsUrl + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.success").value(false));
+
+        verify(configService).resolveApiKey(config);
+        verify(outboundUrlPolicy).validate(modelsUrl);
     }
 
     @Test
