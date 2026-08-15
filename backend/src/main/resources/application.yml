@@ -59,8 +59,12 @@ labex-agent:
   history:
     max-page-events-budget: ${LABEX_AGENT_HISTORY_MAX_PAGE_EVENTS_BUDGET:1000}
     max-part-output-chars: ${LABEX_AGENT_HISTORY_MAX_PART_OUTPUT_CHARS:4000}
+  tool-discovery:
+    read-file-candidate-limit: ${LABEX_AGENT_READ_FILE_CANDIDATE_LIMIT:3}
   tool-output:
     read-max-chars: ${LABEX_AGENT_TOOL_OUTPUT_READ_MAX_CHARS:4000}
+    model-max-lines: ${LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_LINES:2000}
+    model-max-bytes: ${LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_BYTES:51200}
   loop:
     hard-max-iterations: ${LABEX_AGENT_HARD_MAX_ITERATIONS:0}
     soft-max-iterations: ${LABEX_AGENT_SOFT_MAX_ITERATIONS:0}
@@ -68,6 +72,7 @@ labex-agent:
     max-cycle-length: ${LABEX_AGENT_MAX_TOOL_CYCLE_LENGTH:3}
     max-automatic-strategy-switches: ${LABEX_AGENT_MAX_AUTOMATIC_STRATEGY_SWITCHES:1}
     max-non-progress-iterations: ${LABEX_AGENT_MAX_NON_PROGRESS_ITERATIONS:8}
+    finalization-recovery-limit: ${LABEX_AGENT_FINALIZATION_RECOVERY_LIMIT:1}
   recovery:
     auto-repair-enabled: ${LABEX_AGENT_AUTO_REPAIR_ENABLED:true}
     max-automatic-repairs: ${LABEX_AGENT_MAX_AUTOMATIC_REPAIRS:3}
@@ -89,6 +94,8 @@ labex-agent:
     poll-interval-ms: ${LABEX_AGENT_PREVIEW_POLL_INTERVAL_MS:250}
     connect-timeout-ms: ${LABEX_AGENT_PREVIEW_CONNECT_TIMEOUT_MS:1000}
     output-max-chars: ${LABEX_AGENT_PREVIEW_OUTPUT_MAX_CHARS:60000}
+    failure-hint-max-chars: ${LABEX_AGENT_PREVIEW_FAILURE_HINT_MAX_CHARS:512}
+    output-drain-timeout-ms: ${LABEX_AGENT_PREVIEW_OUTPUT_DRAIN_TIMEOUT_MS:1000}
     min-port: ${LABEX_AGENT_PREVIEW_MIN_PORT:1024}
     max-port: ${LABEX_AGENT_PREVIEW_MAX_PORT:65535}
     readiness-host: ${LABEX_AGENT_PREVIEW_READINESS_HOST:127.0.0.1}

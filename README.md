@@ -94,6 +94,7 @@ Agent 不会把所有失败都当成代码错误。命令失败会先识别 DNS/
 | `LABEX_AGENT_MAX_TOOL_CYCLE_LENGTH` | `3` | 可识别的交替工具调用循环最大长度，例如 `A-B-A-B-A-B`。 |
 | `LABEX_AGENT_MAX_AUTOMATIC_STRATEGY_SWITCHES` | `1` | 同一循环模式允许 Agent 自动切换策略的次数；之后升级为持久化用户问题。 |
 | `LABEX_AGENT_MAX_NON_PROGRESS_ITERATIONS` | `8` | 连续没有成功工具进展的模型回合上限；防止空答复、反复失败或策略无效时无限消耗请求。 |
+| `LABEX_AGENT_FINALIZATION_RECOVERY_LIMIT` | `1` | 同一份 durable 完成证据下，最终答复被服务端拒绝后允许的自动纠正次数；`0` 表示直接以明确失败结束。 |
 | `LABEX_AGENT_LEGACY_REMOVAL_VERSION` | `1.1.0` | 旧版 history/checkpoint reader 达到删除门槛后的目标版本；为空时永远不报告可删除。 |
 | `LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS` | `14` | 旧 reader pending 存量归零且无新命中后的连续观察天数；任何新命中都会重置观察起点。 |
 
@@ -178,6 +179,8 @@ Ordinary shell commands remain bounded and must not be used to keep a developmen
 | `LABEX_AGENT_PREVIEW_POLL_INTERVAL_MS` | `250` | Readiness polling interval. |
 | `LABEX_AGENT_PREVIEW_CONNECT_TIMEOUT_MS` | `1000` | Per-request HTTP connect timeout. |
 | `LABEX_AGENT_PREVIEW_OUTPUT_MAX_CHARS` | `60000` | Maximum captured stdout/stderr characters in the preview artifact; excess output is discarded after a marker. |
+| `LABEX_AGENT_PREVIEW_FAILURE_HINT_MAX_CHARS` | `512` | Maximum characters of the already-redacted stdout/stderr tail returned with a failed preview result. The full artifact remains the diagnostic source. |
+| `LABEX_AGENT_PREVIEW_OUTPUT_DRAIN_TIMEOUT_MS` | `1000` | Maximum time to drain stdout/stderr after a preview process exits or is stopped. |
 | `LABEX_AGENT_PREVIEW_MIN_PORT` / `LABEX_AGENT_PREVIEW_MAX_PORT` | `1024` / `65535` | Allowed preview-port range. |
 | `LABEX_AGENT_PREVIEW_READINESS_HOST` / `LABEX_AGENT_PREVIEW_PUBLIC_HOST` | `127.0.0.1` / `localhost` | Host used for readiness / URL returned to the browser. |
 
@@ -190,6 +193,9 @@ Large tool results are persisted in the durable Tool Part, while the Provider re
 | Variable | Default | Purpose |
 |---|---:|---|
 | `LABEX_AGENT_TOOL_OUTPUT_READ_MAX_CHARS` | `4000` | Maximum UTF-16 characters returned by one `read_tool_output` call. Values are clamped to 256-20000. |
+| `LABEX_AGENT_READ_FILE_CANDIDATE_LIMIT` | `3` | Maximum workspace-relative candidate paths returned after `read_file` cannot find the requested file. Values are clamped to 1-10. |
+| `LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_LINES` | `2000` | Maximum number of lines projected from durable Tool Parts to the model. Values are clamped to 1-20000. |
+| `LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_BYTES` | `51200` | Maximum UTF-8 bytes projected to the model, aligned with OpenCode's 50 KiB tool-output limit. Values are clamped to 1024-1048576. |
 
 ### 2.4 AI 集成（可选）
 
