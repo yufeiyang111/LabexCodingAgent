@@ -90,3 +90,34 @@ test('does not append durable reasoning parts over an already rendered live time
   assert.equal(target.toolCalls.length, 1)
   assert.equal(target.toolCalls[0].toolCallId, 'call-1')
 })
+
+
+test('keeps the latest model step terminal state when a stale snapshot arrives', () => {
+  const target = message()
+  applyRunPartSnapshot(target, [
+    { partId: 41, partKey: 'model-step:3', partType: 'model_step', status: 'completed',
+      input: '{"iteration":3,"resultType":"tool_call"}', sequence: 12 }
+  ])
+  applyRunPartSnapshot(target, [
+    { partId: 40, partKey: 'model-step:3', partType: 'model_step', status: 'running',
+      input: '{"iteration":3}', sequence: 11 }
+  ])
+
+  assert.equal(target.modelSteps.length, 1)
+  assert.equal(target.modelSteps[0].status, 'completed')
+  assert.equal(target.modelSteps[0].resultType, 'tool_call')
+  assert.equal(target.modelSteps[0].sequence, 12)
+})
+
+
+test('restores a durable finalization blocker without adding a new sidebar card', () => {
+  const target = message()
+  applyRunPartSnapshot(target, [
+    { partId: 52, partKey: 'finalization:evidence-a', partType: 'finalization_blocker', status: 'error',
+      input: '{"reasonCode":"preview_url_mismatch","guidance":"report only the ready URL","recoveryAllowed":false}', sequence: 18 }
+  ])
+
+  assert.equal(target.completionEvidence, null)
+  assert.equal(target.completionBlockedEvidence.reasonCode, 'preview_url_mismatch')
+  assert.equal(target.completionBlockedEvidence.recoveryAllowed, false)
+})

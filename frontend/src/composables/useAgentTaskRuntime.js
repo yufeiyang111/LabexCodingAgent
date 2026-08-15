@@ -98,6 +98,7 @@ export function useAgentTaskRuntime(options) {
       _thinkingTimer: null,
       thinkingBlocks: [],
       toolCalls: [],
+      modelSteps: [],
       plan: null,
       planJson: null,
       isStreaming: true,

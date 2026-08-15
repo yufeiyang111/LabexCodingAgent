@@ -37,6 +37,7 @@ function createAssistantMessage(turn = {}) {
     _thinkingDisplay: '',
     thinkingBlocks: [],
     toolCalls: [],
+    modelSteps: [],
     plan: null,
     planJson: null,
     isStreaming,
@@ -142,7 +143,7 @@ export function useConversationState({
       if (selectedConversation) return selectedConversation
       selectionStore.clear()
     }
-    return conversations.value[0] || null
+    return null
   }
 
   function createNewSession() {
@@ -176,7 +177,11 @@ export function useConversationState({
 
   function eventPayload(event) {
     const data = event?.data
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+    const payload = data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+    const eventSequence = Number(event?.sequence ?? event?.eventId)
+    return Number.isFinite(eventSequence) && eventSequence >= 0
+      ? { ...payload, eventSequence }
+      : payload
   }
 
   function finalizeHistoryMessage(message) {

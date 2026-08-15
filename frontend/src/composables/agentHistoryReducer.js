@@ -5,10 +5,43 @@ import { attachCommandApprovalState, updateCommandApprovalState } from './agentC
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 import { projectVisibleAgentError } from './agentErrorProjection.js'
+import { modelStepStatusForEvent, upsertModelStepState } from './agentRunPartState.js'
 
 function nextOrder(message) {
   message._nextOrder = (message._nextOrder || 0) + 1
   return message._nextOrder
+}
+
+function thinkingMessageId(data = {}) {
+  const value = data.messageId
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function completedThinkingBlock(message, messageId) {
+  return message.thinkingBlocks?.find(block => block?.messageId === messageId) || null
+}
+
+function clearThinkingStream(message) {
+  message._thinkingTagFilter?.reset()
+  message._thinkingTagFilter = null
+  message.thinking = ''
+  message._thinkingDisplay = ''
+  message._thinkingMessageId = null
+  message._hasThinkStart = false
+}
+
+function upsertCompletedThinkingBlock(message, messageId, summary, content) {
+  message.thinkingBlocks = message.thinkingBlocks || []
+  const existing = completedThinkingBlock(message, messageId)
+  if (existing) {
+    existing.summary = summary || existing.summary || ''
+    existing.content = content
+    return existing
+  }
+  const block = { content, summary, _open: false, _order: nextOrder(message) }
+  if (messageId) block.messageId = messageId
+  message.thinkingBlocks.push(block)
+  return block
 }
 
 function normalizedToken(value) {
@@ -156,48 +189,85 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'SESSION':
       message.taskId = data.taskId || message.taskId || null
       break
-    case 'THINK_START':
-      if (message.thinking) {
-        message.thinkingBlocks = message.thinkingBlocks || []
-        message.thinkingBlocks.push({ content: message.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), _open: false, _order: nextOrder(message) })
-        message.thinking = ''
+    case 'THINK_START': {
+      const messageId = thinkingMessageId(data)
+      if (!messageId) {
+        if (message.thinking) {
+          upsertCompletedThinkingBlock(message, null, stripInternalReasoningBlocks(data.summary || ''), message.thinking)
+          clearThinkingStream(message)
+        }
+        message._hasThinkStart = true
+        message._thinkingTagFilter = createInternalReasoningTagStreamFilter()
+        break
       }
+      if (completedThinkingBlock(message, messageId)) break
+      if (message._thinkingMessageId === messageId) break
+      if (message._thinkingMessageId && message._thinkingMessageId !== messageId) clearThinkingStream(message)
+      message._thinkingMessageId = messageId
       message._hasThinkStart = true
       message._thinkingTagFilter = createInternalReasoningTagStreamFilter()
       break
-    case 'THINK_DELTA':
+    }
+    case 'THINK_DELTA': {
+      const messageId = thinkingMessageId(data)
+      if (messageId) {
+        if (completedThinkingBlock(message, messageId)) break
+        if (message._thinkingMessageId && message._thinkingMessageId !== messageId) break
+        if (!message._thinkingMessageId) {
+          message._thinkingMessageId = messageId
+          message._hasThinkStart = true
+        }
+      }
       message._thinkingTagFilter ??= createInternalReasoningTagStreamFilter()
       message.thinking += message._thinkingTagFilter.push(data.delta)
       message._thinkingDisplay = message.thinking
       break
-    case 'THINK_SNAPSHOT':
+    }
+    case 'THINK_SNAPSHOT': {
+      const messageId = thinkingMessageId(data)
+      if (messageId) {
+        if (completedThinkingBlock(message, messageId)) break
+        if (message._thinkingMessageId && message._thinkingMessageId !== messageId) break
+        if (!message._thinkingMessageId) {
+          message._thinkingMessageId = messageId
+          message._hasThinkStart = true
+        }
+      }
       message._thinkingTagFilter?.reset()
       message._thinkingTagFilter = createInternalReasoningTagStreamFilter()
       message.thinking = stripInternalReasoningTags(data.content || message.thinking || '')
       message._thinkingDisplay = message.thinking
       break
-    case 'THINK':
-      message._thinkingTagFilter?.reset()
-      if (data.content) {
-        if (isWaitingInputMisNarration(message.thinking) || isWaitingInputMisNarration(data.content)) {
-          message.thinking = ''
-          message._thinkingDisplay = ''
-          message._hasThinkStart = false
+    }
+    case 'THINK': {
+      const messageId = thinkingMessageId(data)
+      if (!data.content) break
+      if (messageId) {
+        if (isWaitingInputMisNarration(data.content)) {
+          if (message._thinkingMessageId === messageId) clearThinkingStream(message)
           break
         }
-        message.thinkingBlocks = message.thinkingBlocks || []
-        if (message.thinking) message.thinkingBlocks.push({ content: message.thinking, summary: stripInternalReasoningBlocks(data.summary || ''), _open: false, _order: nextOrder(message) })
-        else if (!message._hasThinkStart) message.thinkingBlocks.push({ content: stripInternalReasoningTags(data.content), summary: stripInternalReasoningBlocks(data.summary || ''), _open: false, _order: nextOrder(message) })
-        message.thinking = ''
-        message._hasThinkStart = false
+        const content = stripInternalReasoningTags(data.content)
+        const summary = stripInternalReasoningBlocks(data.summary || '')
+        upsertCompletedThinkingBlock(message, messageId, summary, content)
+        if (message._thinkingMessageId === messageId) clearThinkingStream(message)
+        break
       }
+      message._thinkingTagFilter?.reset()
+      if (isWaitingInputMisNarration(message.thinking) || isWaitingInputMisNarration(data.content)) {
+        clearThinkingStream(message)
+        break
+      }
+      if (message.thinking) upsertCompletedThinkingBlock(message, null, stripInternalReasoningBlocks(data.summary || ''), message.thinking)
+      else if (!message._hasThinkStart) upsertCompletedThinkingBlock(message, null, stripInternalReasoningBlocks(data.summary || ''), stripInternalReasoningTags(data.content))
+      clearThinkingStream(message)
       break
+    }
     case 'TOOL_CALL':
       message._thinkingTagFilter?.reset()
       if (message.thinking) {
-        message.thinkingBlocks = message.thinkingBlocks || []
-        message.thinkingBlocks.push({ content: message.thinking, summary: stripInternalReasoningBlocks(data.summary || data.tool || ''), _open: false, _order: nextOrder(message) })
-        message.thinking = ''
+        upsertCompletedThinkingBlock(message, message._thinkingMessageId || null, stripInternalReasoningBlocks(data.summary || data.tool || ''), message.thinking)
+        clearThinkingStream(message)
       }
       message.toolCalls = message.toolCalls || []
       {
@@ -215,6 +285,16 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       break
     case 'TOOL_CALL_STATE':
       upsertDurableToolCallState(message, data)
+      break
+    case 'MODEL_STEP_STARTED':
+    case 'MODEL_STEP_COMPLETED':
+    case 'MODEL_STEP_FAILED':
+    case 'MODEL_STEP_BLOCKED':
+    case 'MODEL_STEP_INTERRUPTED':
+      upsertModelStepState(message, {
+        ...data,
+        status: modelStepStatusForEvent(type)
+      })
       break
     case 'TOOL_EXECUTION_STARTED':
     case 'TOOL_PHASE_CHANGED':
@@ -307,6 +387,13 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
         message.pendingFinalContent = ''
         message.hasPendingFinalDraft = false
       }
+      break
+    case 'FINALIZATION_BLOCKED':
+      message.taskId = data.taskId || message.taskId || null
+      message.completionEvidence = null
+      message.completionBlockedEvidence = data
+      message.pendingFinalContent = ''
+      message.hasPendingFinalDraft = false
       break
     case 'RUN_INTERACTION_RESUME_QUEUED':
       message.taskId = data.taskId || message.taskId || null

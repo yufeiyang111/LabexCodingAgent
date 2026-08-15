@@ -5,8 +5,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
       </span>
       <span class="ftn-folder-icon" :class="{ open: expanded }">
-        <svg v-if="expanded" width="14" height="14" viewBox="0 0 24 24" fill="#6366f1" stroke="#6366f1" stroke-width="1"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <FileIcon kind="folder" :size="14" :open="expanded" :selected="isDirSelected" />
       </span>
       <span class="ftn-name">{{ displayName }}</span>
       <span v-if="node.fileCount" class="ftn-count">{{ node.fileCount }}</span>
@@ -26,7 +25,7 @@
       </div>
     </Transition>
     <div v-if="node.type === 'file'" class="ftn-row file" :class="{ selected: node.path === selectedPath }" @click.stop="emit('select', node.path)" @contextmenu.prevent="openContextMenu($event, node)" tabindex="-1">
-      <span class="ftn-file-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="node.path === selectedPath ? '#6366f1' : '#9ca3af'" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
+      <span class="ftn-file-icon"><FileIcon :name="node.name" :size="14" :selected="node.path === selectedPath" /></span>
       <span class="ftn-name">{{ node.name }}</span>
     </div>
     <Teleport to="body">
@@ -56,6 +55,7 @@
 </template>
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import FileIcon from '../icons/FileIcon.vue'
 const props = defineProps({ node: { type: Object, required: true }, depth: { type: Number, default: 0 }, selectedPath: { type: String, default: '' }, loadChildren: { type: Function, default: null }, showActions: { type: Boolean, default: false }, refreshKey: { type: [Number, String], default: 0 } })
 const emit = defineEmits(['select', 'newItem', 'rename', 'delete'])
 const expanded = ref(false)

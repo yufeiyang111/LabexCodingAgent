@@ -5,6 +5,7 @@ import { attachDurableInteraction, resolveDurableInteraction } from './agentInte
 import { applyTokenUsageEvent } from './cacheTelemetryStatus.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 import { projectVisibleAgentError } from './agentErrorProjection.js'
+import { modelStepStatusForEvent, upsertModelStepState } from './agentRunPartState.js'
 
 function toolResultStatus(success, result) {
   if (success === false) return 'error'
@@ -120,6 +121,18 @@ export function useAgentEventTimeline(options) {
         break
       case 'TOOL_CALL_STATE':
         upsertDurableToolCallState(assistantMsg, data)
+        scheduleAgentRender()
+        break
+      case 'MODEL_STEP_STARTED':
+      case 'MODEL_STEP_COMPLETED':
+      case 'MODEL_STEP_FAILED':
+      case 'MODEL_STEP_BLOCKED':
+      case 'MODEL_STEP_INTERRUPTED':
+        upsertModelStepState(assistantMsg, {
+          ...data,
+          sequence: data.sequence ?? data.eventSequence ?? event.eventId,
+          status: modelStepStatusForEvent(type)
+        })
         scheduleAgentRender()
         break
       case 'TOOL_EXECUTION_STARTED':
@@ -247,6 +260,14 @@ export function useAgentEventTimeline(options) {
           assistantMsg.pendingFinalContent = ''
           assistantMsg.hasPendingFinalDraft = false
         }
+        scheduleAgentRender()
+        break
+      case 'FINALIZATION_BLOCKED':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.completionEvidence = null
+        assistantMsg.completionBlockedEvidence = data
+        assistantMsg.pendingFinalContent = ''
+        assistantMsg.hasPendingFinalDraft = false
         scheduleAgentRender()
         break
       case 'RUN_INTERACTION_RESUME_QUEUED':

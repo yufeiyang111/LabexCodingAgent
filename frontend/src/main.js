@@ -10,6 +10,7 @@ import '@/styles/tailwind.css'
 import '@/styles/global.scss'
 import '@/styles/wabi-sabi.scss'
 import '@/styles/theme.scss'
+import '@/styles/sidebar.scss'
 
 const app = createApp(App)
 const pinia = createPinia()

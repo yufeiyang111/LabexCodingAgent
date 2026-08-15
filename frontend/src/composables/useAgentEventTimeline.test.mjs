@@ -498,3 +498,34 @@ test('keeps a user-question pause idle and commits candidate final text only aft
   assert.equal(assistant.content, 'Verified delivery')
   assert.equal(assistant.pendingFinalContent, '')
 })
+
+
+test('projects live model step boundaries monotonically by durable event sequence', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({ type: 'MODEL_STEP_STARTED', eventId: 30, data: { taskId: 9, iteration: 2 } }, assistant)
+  state.handleAgentEvent({ type: 'MODEL_STEP_COMPLETED', eventId: 31, data: { taskId: 9, iteration: 2, resultType: 'tool_call' } }, assistant)
+  state.handleAgentEvent({ type: 'MODEL_STEP_STARTED', eventId: 30, data: { taskId: 9, iteration: 2 } }, assistant)
+
+  assert.equal(assistant.modelSteps.length, 1)
+  assert.equal(assistant.modelSteps[0].status, 'completed')
+  assert.equal(assistant.modelSteps[0].resultType, 'tool_call')
+  assert.equal(assistant.modelSteps[0].sequence, 31)
+})
+
+
+test('projects a finalization blocker as durable completion feedback', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({ type: 'FINALIZATION_BLOCKED', data: {
+    taskId: 9,
+    reasonCode: 'preview_url_mismatch',
+    guidance: 'report only the ready URL',
+    recoveryAllowed: false
+  } }, assistant)
+
+  assert.equal(assistant.completionEvidence, null)
+  assert.equal(assistant.completionBlockedEvidence.reasonCode, 'preview_url_mismatch')
+  assert.equal(assistant.pendingFinalContent, '')
+})

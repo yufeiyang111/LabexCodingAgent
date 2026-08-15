@@ -464,3 +464,92 @@ test('replayed OBSERVE projects structured executionStatus instead of guessing t
   assert.equal(target.toolCalls[0].durableStatus, 'timed_out')
   assert.equal(target.toolCalls[0].executionStatus, 'timed_out')
 })
+
+
+test('reconciles out-of-order thinking streams by messageId without creating an orphan fragment card', () => {
+  const target = message()
+  const analyzing = '\u5206\u6790\u95ee\u9898'
+  const smoke = '\u5192\u70df'
+  const smokePassed = '\u5192\u70df\u6d4b\u8bd5\u5168\u90e8\u901a\u8fc7\u3002'
+  const completed = '\u601d\u8003\u5b8c\u6210'
+  const full = '\u5192\u70df\u6d4b\u8bd5\u5168\u90e8\u901a\u8fc7\u3002\u6240\u6709\u529f\u80fd\u9a8c\u8bc1\u6210\u529f\u3002'
+
+  reduceHistoryEvent('THINK_START', { messageId: 'think-a', summary: analyzing }, target)
+  reduceHistoryEvent('THINK_DELTA', { messageId: 'think-a', delta: smoke }, target)
+
+  reduceHistoryEvent('THINK_START', { messageId: 'think-b', summary: analyzing }, target)
+  reduceHistoryEvent('THINK_DELTA', { messageId: 'think-b', delta: smokePassed }, target)
+  reduceHistoryEvent('THINK', {
+    messageId: 'think-b',
+    summary: completed,
+    content: full
+  }, target)
+
+  assert.deepEqual(target.thinkingBlocks.map(block => ({ messageId: block.messageId, summary: block.summary, content: block.content })), [{
+    messageId: 'think-b',
+    summary: completed,
+    content: full
+  }])
+  assert.equal(target.thinking, '')
+})
+
+
+test('deduplicates replayed durable thinking completion by messageId', () => {
+  const target = message()
+  const final = '\u9a8c\u8bc1\u5df2\u5b8c\u6210'
+
+  reduceHistoryEvent('THINK_START', { messageId: 'think-replay', summary: '\u5206\u6790' }, target)
+  reduceHistoryEvent('THINK_DELTA', { messageId: 'think-replay', delta: '\u524d\u534a\u6bb5' }, target)
+  reduceHistoryEvent('THINK', { messageId: 'think-replay', summary: '\u5b8c\u6210', content: final }, target)
+  reduceHistoryEvent('THINK', { messageId: 'think-replay', summary: '\u5b8c\u6210', content: final }, target)
+
+  assert.equal(target.thinkingBlocks.length, 1)
+  assert.equal(target.thinkingBlocks[0].messageId, 'think-replay')
+  assert.equal(target.thinkingBlocks[0].content, final)
+})
+
+test('ignores a delayed thinking delta after the durable message has completed', () => {
+  const target = message()
+  const final = '\u5b8c\u6574\u7684\u5192\u70df\u9a8c\u8bc1\u7ed3\u679c'
+
+  reduceHistoryEvent('THINK_START', { messageId: 'think-complete', summary: '\u5206\u6790' }, target)
+  reduceHistoryEvent('THINK_DELTA', { messageId: 'think-complete', delta: '\u5192\u70df' }, target)
+  reduceHistoryEvent('THINK', { messageId: 'think-complete', summary: '\u5b8c\u6210', content: final }, target)
+  reduceHistoryEvent('THINK_DELTA', { messageId: 'think-complete', delta: '\u8fdf\u5230\u7247\u6bb5' }, target)
+
+  assert.equal(target.thinkingBlocks.length, 1)
+  assert.equal(target.thinkingBlocks[0].content, final)
+  assert.equal(target.thinking, '')
+})
+
+
+test('replays model step lifecycle onto one stable durable projection', () => {
+  const target = message()
+
+  reduceHistoryEvent('MODEL_STEP_STARTED', { iteration: 4, eventSequence: 20 }, target)
+  reduceHistoryEvent('MODEL_STEP_COMPLETED', {
+    iteration: 4, resultType: 'text', eventSequence: 21
+  }, target)
+  reduceHistoryEvent('MODEL_STEP_STARTED', { iteration: 4, eventSequence: 20 }, target)
+
+  assert.equal(target.modelSteps.length, 1)
+  assert.equal(target.modelSteps[0].partKey, 'model-step:4')
+  assert.equal(target.modelSteps[0].status, 'completed')
+  assert.equal(target.modelSteps[0].resultType, 'text')
+  assert.equal(target.modelSteps[0].sequence, 21)
+})
+
+
+test('replays a finalization blocker as completion feedback', () => {
+  const target = message()
+  reduceHistoryEvent('FINALIZATION_BLOCKED', {
+    taskId: 91,
+    reasonCode: 'preview_url_mismatch',
+    guidance: 'report only the ready URL',
+    recoveryAllowed: false
+  }, target)
+
+  assert.equal(target.completionEvidence, null)
+  assert.equal(target.completionBlockedEvidence.reasonCode, 'preview_url_mismatch')
+  assert.equal(target.pendingFinalContent, '')
+})

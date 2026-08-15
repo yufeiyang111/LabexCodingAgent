@@ -8,24 +8,14 @@
 .ws-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
 .ws-center { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: #fff; }
 
-/* ===== Left Sidebar (File Tree) ===== */
-.ws-sidebar { width: 240px; border-right: 1px solid #f0f0f0; display: flex; flex-direction: column; background: #fafbfc; flex-shrink: 0; }
-.ws-sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f0f0f0; }
-.ws-sidebar-actions { display: flex; gap: 2px; text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 500; color: #374151; }
+/* ===== Left Sidebar (File Tree + Conversation Panel) ===== */
+.ws-sidebar { width: 240px; border-right: 1px solid #f0f0f0; display: flex; flex-direction: column; background: #fafbfc; flex-shrink: 0; overflow: hidden; }
+.ws-sidebar-panel { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .ws-resize-handle { width: 5px; cursor: col-resize; flex: 0 0 5px; background: transparent; }
 .ws-resize-handle:hover { background: #cbd5e1; }
-.ws-tree { flex: 1; overflow-y: auto; padding: 6px 4px; }
-.ws-tree *:focus { outline: none !important; }
-.ws-tree *:focus-visible { outline: none !important; }
-.ws-tree-empty { padding: 16px; color: #9ca3af; font-size: 13px; text-align: center; }
-.ws-tree-error { margin: 8px; padding: 8px; border: 1px solid #fecaca; border-radius: 6px; background: #fef2f2; color: #b91c1c; font-size: 12px; line-height: 1.5; }
-.ws-tree-error button { margin-top: 6px; border: 0; border-radius: 4px; padding: 4px 7px; background: #fee2e2; color: inherit; font: inherit; cursor: pointer; }
-.ws-tree-load-more { display: block; width: calc(100% - 8px); margin: 6px 4px; padding: 7px 8px; border: 1px solid #dbe1f0; border-radius: 6px; background: #fff; color: #4f46e5; font: inherit; font-size: 12px; cursor: pointer; }
-.ws-tree-load-more:hover { background: #eef2ff; border-color: #c7d2fe; }
 
 /* ===== Editor ===== */
-.ws-editor { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; min-width: 0; min-height: 0; }
-.ws-terminal-resize-handle { flex: 0 0 5px; height: 5px; cursor: row-resize; background: transparent; border-top: 1px solid #dfe3e8; position: relative; z-index: 3; touch-action: none; }
+.ws-editor { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; min-width: 0; min-height: 0; }.ws-terminal-resize-handle { flex: 0 0 5px; height: 5px; cursor: row-resize; background: transparent; border-top: 1px solid #dfe3e8; position: relative; z-index: 3; touch-action: none; }
 .ws-terminal-resize-handle::after { content: ''; position: absolute; left: 50%; top: 1px; width: 44px; height: 2px; transform: translateX(-50%); border-radius: 2px; background: #c7cdd4; opacity: 0; transition: opacity .15s; }
 .ws-terminal-resize-handle:hover::after { opacity: 1; }
 .ws-terminal-dock { flex: 0 0 auto; min-height: 140px; max-height: 70%; border-top: 0; background: #fff; display: flex; flex-direction: column; overflow: hidden; }
@@ -47,20 +37,6 @@
 .ws-tab-close:hover { background: #fee2e2; color: #ef4444; }
 .ws-tab-path { font-size: 11px; color: #9ca3af; margin-left: 4px; }
 .ws-monaco { flex: 1; overflow: hidden; }
-
-/* ===== Buttons ===== */
-.ws-btn { display: inline-flex; align-items: center; gap: 4px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; padding: 6px 10px; transition: all 0.15s ease; font-family: inherit; background: transparent; color: #374151; }
-.ws-btn svg { flex-shrink: 0; }
-.ws-btn:hover { background: #f3f4f6; }
-.ws-btn-primary { background: #4f46e5; color: #fff; }
-.ws-btn-primary:hover { background: #4338ca; }
-.ws-btn-outline { background: #fff; border: 1px solid #e5e7eb; }
-.ws-btn-outline:hover { background: #f9fafb; }
-.ws-btn-ghost { padding: 4px 6px; color: #6b7280; }
-.ws-btn-ghost:hover { background: #f3f4f6; color: #111827; }
-.ws-btn-sm { padding: 5px 10px; font-size: 12px; }
-.ws-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
 
 /* 上下文压缩状态卡片 */
 .ai-context-management-card {

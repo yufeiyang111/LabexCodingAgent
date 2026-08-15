@@ -105,6 +105,13 @@ test('loads conversations in server order and exposes the selected title', async
   assert.equal(state.currentSessionName.value, 'Older conversation')
 })
 
+test('keeps a fresh workspace on a new conversation instead of selecting the most recent history', async () => {
+  const { state } = createHarness()
+  await state.loadConversations()
+
+  assert.equal(state.resolveStartupConversation(), null)
+})
+
 test('restores the last selected conversation after refresh and clears it for an explicit new session', async () => {
   const storage = memoryStorage({ 'labex-agent:selected-conversation:42': 'conversation-b' })
   const { state } = createHarness({

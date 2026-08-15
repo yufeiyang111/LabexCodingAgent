@@ -60,6 +60,57 @@ function hasLiveReasoningTimeline(message) {
     && message.thinkingBlocks.some(block => String(block?.content || '').trim() && !block?._partKey)
 }
 
+function durableSequence(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
+function modelStepKey(values = {}) {
+  const explicit = String(values.partKey || '').trim()
+  if (explicit) return explicit
+  const iteration = Number(values.iteration)
+  return Number.isFinite(iteration) && iteration > 0 ? `model-step:${iteration}` : ''
+}
+
+export function modelStepStatusForEvent(eventType) {
+  return {
+    MODEL_STEP_STARTED: 'running',
+    MODEL_STEP_COMPLETED: 'completed',
+    MODEL_STEP_FAILED: 'error',
+    MODEL_STEP_BLOCKED: 'blocked',
+    MODEL_STEP_INTERRUPTED: 'interrupted'
+  }[eventType] || 'unknown'
+}
+
+export function upsertModelStepState(message, values = {}) {
+  if (!message) return null
+  const partKey = modelStepKey(values)
+  if (!partKey) return null
+  const incomingSequence = durableSequence(values.sequence ?? values.eventSequence ?? values.eventId)
+  message.modelSteps ||= []
+  const existing = message.modelSteps.find(step => step?.partKey === partKey)
+  if (existing) {
+    const existingSequence = durableSequence(existing.sequence)
+    if (incomingSequence != null && existingSequence != null && incomingSequence < existingSequence) return existing
+    existing.status = values.status || existing.status || 'unknown'
+    existing.iteration = Number.isFinite(Number(values.iteration)) ? Number(values.iteration) : existing.iteration
+    existing.resultType = values.resultType || existing.resultType || ''
+    existing.reason = values.reason || existing.reason || ''
+    if (incomingSequence != null) existing.sequence = incomingSequence
+    return existing
+  }
+  const step = {
+    partKey,
+    iteration: Number.isFinite(Number(values.iteration)) ? Number(values.iteration) : 0,
+    status: values.status || 'unknown',
+    resultType: values.resultType || '',
+    reason: values.reason || '',
+    sequence: incomingSequence ?? 0
+  }
+  message.modelSteps.push(step)
+  return step
+}
+
 /** 将持久化 RunPart 投影到现有消息视图，兼容旧事件 reducer。 */
 export function applyRunPartSnapshot(message, parts = [], options = {}) {
   if (!message || !Array.isArray(parts)) return message
@@ -86,6 +137,15 @@ export function applyRunPartSnapshot(message, parts = [], options = {}) {
       if (!preserveReasoningTimeline) appendReasoningPart(message, part)
       return
     }
+    if (type === 'model_step') {
+      upsertModelStepState(message, {
+        ...parseJson(part.input),
+        partKey: part.partKey,
+        status: part.status,
+        sequence: part.sequence ?? part.partId
+      })
+      return
+    }
     if (type === 'text' && String(part.output || '').trim()) {
       message.content = stripInternalReasoningBlocks(part.output)
       return
@@ -99,6 +159,14 @@ export function applyRunPartSnapshot(message, parts = [], options = {}) {
         message.completionEvidence = null
         message.completionBlockedEvidence = evidence
       }
+      return
+    }
+    if (type === 'finalization_blocker') {
+      const blocker = parseJson(part.output, parseJson(part.input, {}))
+      message.completionEvidence = null
+      message.completionBlockedEvidence = blocker
+      message.pendingFinalContent = ''
+      message.hasPendingFinalDraft = false
       return
     }
     if (type === 'error') {

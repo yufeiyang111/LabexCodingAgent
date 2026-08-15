@@ -24,29 +24,44 @@
     </header>
     <div class="ws-body">
       <aside class="ws-sidebar" :style="{ width: `${sidebarWidth}px` }">
-        <div class="ws-sidebar-header">
-          <span>文件资源管理器</span>
-          <div class="ws-sidebar-actions">
-            <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="showNewFileModal('file')" title="新建文件">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-            </button>
-            <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="showNewFileModal('directory')" title="新建文件夹">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-            </button>
-            <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="loadRoot" title="刷新">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-          </div>
-        </div>
-        <div class="ws-tree" v-loading="treeLoading" @scroll="handleTreeScroll">
-          <div v-if="treeError" class="ws-tree-error" role="alert">
-            <span>{{ treeError }}</span>
-            <button type="button" @click="loadRoot">重试</button>
-          </div>
-          <FileTreeNode v-for="child in fileTree" :key="child.path" :node="child" :selected-path="activePath" :load-children="loadChildren" :show-actions="true" @select="openFile" @newItem="handleNewItem" @rename="handleRename" @delete="handleDelete"/>
-          <button v-if="treeNextOffset !== null" class="ws-tree-load-more" type="button" @click="loadMoreRoot">加载更多文件</button>
-          <div v-if="!treeLoading && !treeError && fileTree.length === 0" class="ws-tree-empty">暂无文件</div>
-        </div>
+        <SidebarNav :view="sidebarView" @change="sidebarView = $event" />
+        <FileExplorerPanel
+          v-show="sidebarView === 'files'"
+          :file-tree="fileTree"
+          :tree-error="treeError"
+          :tree-loading="treeLoading"
+          :tree-next-offset="treeNextOffset"
+          :active-path="activePath"
+          :load-children="loadChildren"
+          :show-new-modal="showNewModal"
+          :new-modal-type="newModalType"
+          v-model:new-item-name="newItemName"
+          :show-rename-modal="showRenameModal"
+          v-model:rename-value="renameItemValue"
+          @select="openFile"
+          @new-item="handleNewItem"
+          @rename="handleRename"
+          @delete="handleDelete"
+          @refresh="loadRoot"
+          @load-more="loadMoreRoot"
+          @scroll="handleTreeScroll"
+          @create-file="showNewFileModal('file')"
+          @create-dir="showNewFileModal('directory')"
+          @close-new="showNewModal = false"
+          @close-rename="showRenameModal = false"
+          @confirm-new="confirmNewItem"
+          @confirm-rename="confirmRename"
+        />
+        <ConversationPanel
+          v-show="sidebarView === 'conversations'"
+          :conversations="conversations"
+          :current-conversation-id="currentAgentSession?.conversationId"
+          @select="selectConversation"
+          @fork="forkConversation"
+          @compact="compactConversation"
+          @delete="deleteConversation"
+          @create="createNewSession"
+        />
       </aside>
       <div class="ws-resize-handle" @pointerdown="startSidebarResize"></div>
       <div ref="workspaceCenterRef" class="ws-center">
@@ -59,7 +74,7 @@
         <template v-else>
           <div class="ws-editor-tabs">
             <div v-for="(f, idx) in openFiles" :key="f.path" class="ws-tab" :class="{ active: idx === activeTabIndex }" @click="switchTab(idx)" @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeFile(idx) } }">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <FileIcon :name="f.name" :size="12" />
               <span class="ws-tab-name">{{ f.name }}</span>
               <span v-if="f.dirty" class="ws-tab-dot"></span>
               <button class="ws-tab-close" @click.stop="closeFile(idx)" title="关闭">
@@ -112,21 +127,11 @@
               <span>LabexAgent</span>
             </div>
             <div class="ai-topbar-actions">
-              <div class="ai-session-select" @click.stop="showSessions = !showSessions">
+              <div class="ai-session-select" @click="showConversationPanel" :title="'打开左侧会话列表'">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 0 1 9-9"/></svg>
                 <span class="ai-session-name">{{ currentSessionName }}</span>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                <ConversationMenu
-                  v-if="showSessions"
-                  :conversations="conversations"
-                  :current-conversation-id="currentAgentSession?.conversationId"
-                  @select="selectConversation"
-                  @fork="forkConversation"
-                  @compact="compactConversation"
-                  @delete="deleteConversation"
-                  @create="createNewSession"
-                />
-                </div>
+              </div>
               <button class="ai-topbar-btn" @click="toggleAiTheme" :title="aiDarkTheme ? '切换亮色主题' : '切换暗色主题'">
                 <svg v-if="aiDarkTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
                 <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -798,36 +803,6 @@
       <!-- ==================== END AI ASSISTANT SIDEBAR ==================== -->
     </div>
 
-    <!-- New Item Modal -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="showNewModal" class="ws-overlay" @click.self="showNewModal = false">
-          <div class="ws-dialog">
-            <h3>{{ newModalType === 'directory' ? '新建文件夹' : '新建文件' }}</h3>
-            <input v-model="newItemName" class="ws-dialog-input" :placeholder="newModalType === 'directory' ? '请输入文件夹名称' : '请输入文件名称（含扩展名）'" @keyup.enter="confirmNewItem" />
-            <div class="ws-dialog-actions">
-              <button class="ws-btn ws-btn-outline" @click="showNewModal = false">取消</button>
-              <button class="ws-btn ws-btn-primary" @click="confirmNewItem">创建</button>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="showRenameModal" class="ws-overlay" @click.self="showRenameModal = false">
-          <div class="ws-dialog">
-            <h3>重命名</h3>
-            <input v-model="renameItemValue" class="ws-dialog-input" placeholder="请输入新名称" @keyup.enter="confirmRename" />
-            <div class="ws-dialog-actions">
-              <button class="ws-btn ws-btn-outline" @click="showRenameModal = false">取消</button>
-              <button class="ws-btn ws-btn-primary" @click="confirmRename">确认</button>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
-
     <Teleport to="body">
       <Transition name="modal">
         <div v-if="imagePreviewAttachment" class="ai-image-preview-overlay" @click.self="closeImagePreview">
@@ -852,6 +827,10 @@ import { projectApi, modelConfigApi, agentExtensionApi } from '@/api'
 import { DEFAULT_MAX_TOKENS, modelConfigPresets } from '@/constants/modelPresets'
 import { DEFAULT_AGENT_IMAGE_INPUT_POLICY, imageAcceptValue } from '@/constants/agentImageInput'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
+import FileIcon from '@/components/icons/FileIcon.vue'
+import SidebarNav from '@/components/sidebar/SidebarNav.vue'
+import FileExplorerPanel from '@/components/sidebar/FileExplorerPanel.vue'
+import ConversationPanel from '@/components/sidebar/ConversationPanel.vue'
 import AgentImageAttachments from '@/components/cloud/AgentImageAttachments.vue'
 import ToolCallCard from '@/components/cloud/ToolCallCard.vue'
 import ContextLimitBlockerCard from '@/components/cloud/ContextLimitBlockerCard.vue'
@@ -897,7 +876,6 @@ const UsageHeatmap = defineAsyncComponent(() => import('@/components/cloud/Usage
 const AgentTimer = defineAsyncComponent(() => import('@/components/cloud/AgentTimer.vue'))
 const ContextUsageIndicator = defineAsyncComponent(() => import('@/components/cloud/ContextUsageIndicator.vue'))
 const ContextUsageDialog = defineAsyncComponent(() => import('@/components/cloud/ContextUsageDialog.vue'))
-const ConversationMenu = defineAsyncComponent(() => import('@/components/cloud/ConversationMenu.vue'))
 const ModelConfigDialog = defineAsyncComponent(() => import('@/components/cloud/ModelConfigDialog.vue'))
 
 // Core project state
@@ -1006,7 +984,12 @@ let usageModelChart = null
 
 
 // Multi-session management
-const showSessions = ref(false)
+const sidebarView = ref('files')
+
+function showConversationPanel() {
+  loadConversations()
+  sidebarView.value = 'conversations'
+}
 
 // AI Panel UI state
 const aiCollapsed = ref(false)
@@ -1265,7 +1248,7 @@ function buildClientSlashActions() {
   return {
     SESSION_LIST: async () => {
       await loadConversations()
-      showSessions.value = true
+      sidebarView.value = 'conversations'
     },
     SESSION_NEW: async () => createNewSession(),
     CONVERSATION_COMPACT: async () => compactCurrentConversation(),
@@ -2210,7 +2193,6 @@ function createNewSession() {
   conversationSelectionGuard.invalidate()
   invalidateTaskRuntime()
   disconnectAgentStream()
-  showSessions.value = false
   showContextUsageDialog.value = false
   contextUsageStatus.value = null
   nextContextPreview.value = null
@@ -2227,7 +2209,6 @@ async function selectConversation(conversation, { explicit = true } = {}) {
   }
   invalidateTaskRuntime()
   disconnectAgentStream()
-  showSessions.value = false
   resetRenderedConversation()
   try {
     const loaded = await selectConversationState(conversation)
@@ -2326,7 +2307,6 @@ async function forkConversation(conversation) {
       ElMessage.error(result.message)
       return false
     }
-    showSessions.value = false
     ElMessage.success('\u5df2\u521b\u5efa\u4f1a\u8bdd\u5206\u652f')
     return true
   } catch (error) {
