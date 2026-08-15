@@ -22,14 +22,11 @@ public class StartPreviewTool implements AgentTool {
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("start_preview")
-                .description("启动项目的常驻本地预览服务。仅当指定端口真实返回 HTTP 响应后才返回可访问 URL；普通 shell 不应用于保持开发服务器运行。")
-                .stringProperty("command", "启动服务的完整命令，例如 npm run dev -- --host 0.0.0.0", true)
-                .intProperty("port", "预览服务监听端口，必须与命令实际监听端口一致", true)
-                .stringProperty("workdir", "workspace 内相对工作目录，不填使用根目录", false)
-                .stringProperty("readiness_path", "用于就绪探测的 HTTP 路径，默认 /", false)
-                .stringProperty("working_directory", "兼容字段：映射到 workdir", false)
-                .stringProperty("workingDirectory", "兼容字段：映射到 workdir", false)
-                .stringProperty("cwd", "兼容字段：映射到 workdir", false)
+                .description("Start a persistent local preview service for the project. Return a URL only after the requested port serves a real HTTP response; do not use ordinary shell execution to keep a development server alive.")
+                .stringProperty("command", "Complete command that starts the service, for example npm run dev -- --host 0.0.0.0", true)
+                .intProperty("port", "Port the preview service listens on; it must match the port used by the command", true)
+                .stringProperty("workdir", "Workspace-relative working directory; defaults to the workspace root", false)
+                .stringProperty("readiness_path", "HTTP path used for readiness checks; default /", false)
                 .build();
     }
 
@@ -44,10 +41,15 @@ public class StartPreviewTool implements AgentTool {
                     context.getStudentId(), context.getProject().getProjectId(), context.getTaskId(),
                     context.getWorkspaceRoot(), workdir, command, port, readinessPath));
             if (!run.ready()) {
-                return ToolResult.failed("preview_status=" + run.status().name().toLowerCase(java.util.Locale.ROOT)
-                        + "\nfailure_code=" + run.failureCode()
-                        + "\noutput_path=" + run.outputPath()
-                        + "\nA preview URL was not issued because HTTP readiness did not succeed.");
+                StringBuilder failure = new StringBuilder("preview_status=")
+                        .append(run.status().name().toLowerCase(java.util.Locale.ROOT))
+                        .append("\nfailure_code=").append(run.failureCode())
+                        .append("\noutput_path=").append(run.outputPath());
+                if (!run.failureHint().isBlank()) {
+                    failure.append("\nuntrusted_failure_output_tail=").append(run.failureHint());
+                }
+                failure.append("\nA preview URL was not issued because HTTP readiness did not succeed.");
+                return ToolResult.failed(failure.toString());
             }
             StringBuilder content = new StringBuilder("preview_status=ready")
                     .append("\npreview_id=").append(run.previewId())

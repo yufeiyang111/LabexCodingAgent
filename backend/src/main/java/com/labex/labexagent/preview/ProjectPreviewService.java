@@ -5,9 +5,11 @@ import com.labex.entity.AgentPreviewRun;
 import com.labex.labexagent.commandsecurity.DirectCommandTokenizer;
 import com.labex.labexagent.commandsecurity.StatefulCommandRedactor;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
+import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.execution.WorkerShellDescriptor;
 import com.labex.labexagent.execution.WorkerShellExecutor;
 import com.labex.labexagent.runtime.AgentExecutionProperties;
+import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.worker.SandboxWorker;
 import com.labex.labexagent.worker.WorkerRunSpec;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
@@ -33,6 +35,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -119,15 +123,16 @@ public class ProjectPreviewService {
 
         try {
             WorkerRunSpec workerRun = WorkerRunSpec.forWorkspace("preview-" + previewId, workspace, true);
+            String command = resolveWorkerCompatibleCommand(workerRun, workdir, request.command());
             ProcessExecutionRequest processRequest;
             WorkerShellDescriptor descriptor;
             if (executionProperties.isSafeProfile()) {
-                processRequest = new ProcessExecutionRequest(DirectCommandTokenizer.tokenize(request.command()), workdir,
+                processRequest = new ProcessExecutionRequest(DirectCommandTokenizer.tokenize(command), workdir,
                         Duration.ofMillis(properties.getStartupTimeoutMs()), properties.getOutputMaxChars(), outputArtifact);
                 descriptor = WorkerShellDescriptor.powerShell("direct", "direct", "/workspace", true);
             } else {
                 WorkerShellExecutor shellExecutor = new WorkerShellExecutor(sandboxWorker);
-                WorkerShellExecutor.PreparedExecution prepared = shellExecutor.prepare(workerRun, request.command(), workdir,
+                WorkerShellExecutor.PreparedExecution prepared = shellExecutor.prepare(workerRun, command, workdir,
                         Duration.ofMillis(properties.getStartupTimeoutMs()), properties.getOutputMaxChars(), outputArtifact);
                 processRequest = prepared.request();
                 descriptor = prepared.descriptor();
@@ -137,20 +142,50 @@ public class ProjectPreviewService {
             run.setWorkerRuntime(descriptor.platform());
             persistUpdate(run);
 
-            OutputLog outputLog = new OutputLog(outputArtifact, properties.getOutputMaxChars());
+            OutputLog outputLog = new OutputLog(outputArtifact, properties.getOutputMaxChars(), properties.getFailureHintMaxChars());
             LivePreview live = new LivePreview(run, process, outputLog);
             liveRuns.put(previewId, live);
             startOutputReader(live, process.standardOutput(), "stdout");
             startOutputReader(live, process.standardError(), "stderr");
-            startExitWatcher(live);
-            return awaitReadiness(live, request.readinessPath());
+            PreviewRun readiness = awaitReadiness(live, request.readinessPath());
+            if (readiness.ready()) {
+                startExitWatcher(live);
+            }
+            return readiness;
         } catch (Exception failure) {
             run.setStatus(Status.FAILED.value());
             run.setFailureCode("start_failed");
             run.setPublicUrl("");
             run.setStoppedAt(LocalDateTime.now());
             persistUpdate(run);
-            return snapshot(run);
+            return snapshot(run, "Preview process could not be started; inspect the output artifact.");
+        }
+    }
+
+    private String resolveWorkerCompatibleCommand(WorkerRunSpec workerRun, Path workdir, String command) {
+        if (!sandboxWorker.usesLinuxShell() || !isSimplePythonCommand(command)) {
+            return command;
+        }
+        WorkerShellExecutor shellExecutor = new WorkerShellExecutor(sandboxWorker);
+        WorkerShellExecutor.PreparedExecution probe = shellExecutor.prepare(workerRun,
+                "if command -v python >/dev/null 2>&1; then exit 1; fi; command -v python3 >/dev/null 2>&1",
+                workdir, Duration.ofMillis(properties.getStartupTimeoutMs()), properties.getOutputMaxChars(), null);
+        ProcessExecutionResult result = shellExecutor.execute(workerRun, probe, CancellationToken.none());
+        if (!result.succeeded()) {
+            return command;
+        }
+        int offset = command.indexOf("python");
+        return command.substring(0, offset) + "python3" + command.substring(offset + "python".length());
+    }
+
+    private boolean isSimplePythonCommand(String command) {
+        if (command == null || command.isBlank()) {
+            return false;
+        }
+        try {
+            return "python".equals(DirectCommandTokenizer.tokenize(command).get(0));
+        } catch (IllegalArgumentException ignored) {
+            return false;
         }
     }
 
@@ -179,6 +214,7 @@ public class ProjectPreviewService {
         if (live.process.isAlive()) {
             live.process.terminate();
         }
+        live.awaitOutputDrain(Duration.ofMillis(properties.getOutputDrainTimeoutMs()));
         live.outputLog.closeQuietly();
         return snapshot(run);
     }
@@ -243,8 +279,19 @@ public class ProjectPreviewService {
         live.run.setStoppedAt(LocalDateTime.now());
         persistUpdate(live.run);
         if (live.process.isAlive()) live.process.terminate();
+        live.awaitOutputDrain(Duration.ofMillis(properties.getOutputDrainTimeoutMs()));
         live.outputLog.closeQuietly();
-        return snapshot(live.run);
+        return snapshot(live.run, failureHint(live, failureCode));
+    }
+
+    private String failureHint(LivePreview live, String failureCode) {
+        String captured = live.outputLog.failureHint();
+        if (!captured.isBlank()) {
+            return captured;
+        }
+        String exitCode = live.process.exitCode() == null ? "unknown" : String.valueOf(live.process.exitCode());
+        return "No stdout/stderr was captured before " + failureCode
+                + " (exit_code=" + exitCode + "); inspect output artifact: " + live.run.getOutputPath();
     }
 
     private void startOutputReader(LivePreview live, InputStream stream, String source) {
@@ -261,6 +308,8 @@ public class ProjectPreviewService {
                 if (!tail.isEmpty()) live.outputLog.append(source, tail);
             } catch (IOException ignored) {
                 // 终止进程会关闭流；最终状态由 watcher 统一写入。
+            } finally {
+                live.outputReaderFinished();
             }
         }, "labex-preview-log-" + live.run.getPreviewId() + "-" + source);
         reader.setDaemon(true);
@@ -286,6 +335,7 @@ public class ProjectPreviewService {
             live.run.setPublicUrl("");
             live.run.setStoppedAt(LocalDateTime.now());
             persistUpdate(live.run);
+            live.awaitOutputDrain(Duration.ofMillis(properties.getOutputDrainTimeoutMs()));
             live.outputLog.closeQuietly();
         }, "labex-preview-exit-" + live.run.getPreviewId());
         watcher.setDaemon(true);
@@ -310,7 +360,7 @@ public class ProjectPreviewService {
     }
 
     private PreviewRun failedTransient(StartRequest request, String failureCode) {
-        return new PreviewRun("", Status.FAILED, false, "", null, failureCode, "", null);
+        return new PreviewRun("", Status.FAILED, false, "", null, failureCode, "", null, "");
     }
 
     private AgentPreviewRun findLiveByPort(Integer studentId, Integer projectId, int port) {
@@ -413,14 +463,19 @@ public class ProjectPreviewService {
     }
 
     public record PreviewRun(String previewId, Status status, boolean ready, String publicUrl, Long processId,
-                             String failureCode, String outputPath, Integer lastHttpStatus) {
+                             String failureCode, String outputPath, Integer lastHttpStatus, String failureHint) {
     }
 
     private PreviewRun snapshot(AgentPreviewRun run) {
+        return snapshot(run, "");
+    }
+
+    private PreviewRun snapshot(AgentPreviewRun run, String failureHint) {
         Status status = Status.from(run.getStatus());
         return new PreviewRun(run.getPreviewId(), status, status == Status.READY,
                 status == Status.READY ? nullToEmpty(run.getPublicUrl()) : "", run.getProcessId(),
-                nullToEmpty(run.getFailureCode()), nullToEmpty(run.getOutputPath()), run.getLastHttpStatus());
+                nullToEmpty(run.getFailureCode()), nullToEmpty(run.getOutputPath()), run.getLastHttpStatus(),
+                status == Status.READY ? "" : nullToEmpty(failureHint));
     }
 
     private String nullToEmpty(String value) {
@@ -431,26 +486,43 @@ public class ProjectPreviewService {
         private final AgentPreviewRun run;
         private final SandboxWorker.WorkerProcess process;
         private final OutputLog outputLog;
+        private final CountDownLatch outputReaders = new CountDownLatch(2);
         private volatile boolean stopRequested;
         private LivePreview(AgentPreviewRun run, SandboxWorker.WorkerProcess process, OutputLog outputLog) {
             this.run = run; this.process = process; this.outputLog = outputLog;
+        }
+
+        private void outputReaderFinished() {
+            outputReaders.countDown();
+        }
+
+        private void awaitOutputDrain(Duration timeout) {
+            try {
+                outputReaders.await(Math.max(1L, timeout.toMillis()), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
     private static final class OutputLog {
         private final BufferedWriter writer;
         private final int outputMaxChars;
+        private final int failureHintMaxChars;
+        private final StringBuilder failureTail = new StringBuilder();
         private int capturedChars;
         private boolean truncated;
 
-        private OutputLog(Path path, int outputMaxChars) throws IOException {
+        private OutputLog(Path path, int outputMaxChars, int failureHintMaxChars) throws IOException {
             Files.createDirectories(path.getParent());
             writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
             this.outputMaxChars = outputMaxChars;
+            this.failureHintMaxChars = failureHintMaxChars;
         }
 
         private synchronized void append(String source, String value) {
+            appendFailureTail(source, value);
             try {
                 int remaining = outputMaxChars - capturedChars;
                 if (remaining <= 0) {
@@ -467,6 +539,16 @@ public class ProjectPreviewService {
             } catch (IOException ignored) {
                 // Logging failure never fabricates preview readiness; only real HTTP readiness can do that.
             }
+        }
+
+        private void appendFailureTail(String source, String value) {
+            failureTail.append('[').append(source).append("] ").append(value);
+            int excess = failureTail.length() - failureHintMaxChars;
+            if (excess > 0) failureTail.delete(0, excess);
+        }
+
+        private synchronized String failureHint() {
+            return failureTail.toString().replace('\r', ' ').replace('\n', ' ').trim();
         }
 
         private void writeTruncationMarker() throws IOException {

@@ -90,20 +90,26 @@ class ProjectPreviewServiceTest {
 
     @Test
     void neverReturnsAUsableUrlWhenTheChildExitsBeforeReadiness() throws Exception {
-        int port = freePort();
         PreviewRuntimeProperties properties = new PreviewRuntimeProperties();
         properties.setStartupTimeoutMs(1_000);
         properties.setPollIntervalMs(25);
         ProjectPreviewService service = new ProjectPreviewService(
                 new LocalDevelopmentWorker(new LocalProcessExecutor()), previewExecution(), properties);
         try {
-            ProjectPreviewService.PreviewRun run = service.start(new ProjectPreviewService.StartRequest(
-                    7, 12, 100L, workspace, ".", "java -version", port, "/"));
+            for (int attempt = 0; attempt < 5; attempt++) {
+                int port = freePort();
+                ProjectPreviewService.PreviewRun run = service.start(new ProjectPreviewService.StartRequest(
+                        7, 12, 100L, workspace, ".", "java -version", port, "/"));
 
-            assertEquals(ProjectPreviewService.Status.FAILED, run.status());
-            assertFalse(run.ready());
-            assertTrue(run.publicUrl().isBlank());
-            assertTrue(run.failureCode().equals("process_exited") || run.failureCode().equals("readiness_timeout"), run::toString);
+                assertEquals(ProjectPreviewService.Status.FAILED, run.status());
+                assertFalse(run.ready());
+                assertTrue(run.publicUrl().isBlank());
+                assertTrue(run.failureCode().equals("process_exited") || run.failureCode().equals("readiness_timeout"), run::toString);
+                assertFalse(run.failureHint().isBlank(), "failure result must include a safe diagnostic hint");
+                String normalizedHint = run.failureHint().toLowerCase(java.util.Locale.ROOT);
+                assertTrue(normalizedHint.contains("version") || normalizedHint.contains("no stdout/stderr was captured"),
+                        run::failureHint);
+            }
         } finally {
             service.stopAll();
         }

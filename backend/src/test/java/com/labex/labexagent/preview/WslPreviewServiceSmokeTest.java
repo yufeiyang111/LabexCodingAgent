@@ -56,6 +56,31 @@ class WslPreviewServiceSmokeTest {
         }
     }
 
+    @Test
+    void fallsBackToPython3WhenTheWslWorkerHasNoPythonAlias() throws Exception {
+        int port = freePort();
+        Files.writeString(workspace.resolve("index.html"), "wsl-python-fallback-ready", StandardCharsets.UTF_8);
+        PreviewRuntimeProperties properties = new PreviewRuntimeProperties();
+        properties.setStartupTimeoutMs(10_000);
+        properties.setPollIntervalMs(50);
+        ProjectPreviewService service = new ProjectPreviewService(
+                new WslSandboxWorker(new LocalProcessExecutor(), "Debian"),
+                new AgentExecutionProperties(), properties);
+        try {
+            ProjectPreviewService.PreviewRun run = service.start(new ProjectPreviewService.StartRequest(
+                    7, 12, 103L, workspace, ".",
+                    "python -m http.server " + port + " --bind 0.0.0.0", port, "/"));
+
+            assertEquals(ProjectPreviewService.Status.READY, run.status(), run::toString);
+            HttpResponse<String> response = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(URI.create(run.publicUrl())).timeout(Duration.ofSeconds(3)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, response.statusCode());
+            assertEquals("wsl-python-fallback-ready", response.body());
+        } finally {
+            service.stopAll();
+        }
+    }
     private int freePort() throws Exception {
         try (ServerSocket socket = new ServerSocket(0)) {
             return socket.getLocalPort();

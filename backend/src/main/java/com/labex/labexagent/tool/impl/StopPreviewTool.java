@@ -22,8 +22,8 @@ public class StopPreviewTool implements AgentTool {
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("stop_preview")
-                .description("停止指定的受控预览服务。仅使用 start_preview 返回的 preview_id。")
-                .stringProperty("preview_id", "start_preview 返回的预览运行 ID", true)
+                .description("Stop a specified managed preview service. Use only a preview_id returned by start_preview.")
+                .stringProperty("preview_id", "Preview run ID returned by start_preview", true)
                 .build();
     }
 

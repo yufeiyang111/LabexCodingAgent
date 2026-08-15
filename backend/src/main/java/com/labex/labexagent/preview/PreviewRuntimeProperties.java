@@ -12,6 +12,8 @@ public class PreviewRuntimeProperties {
     private int pollIntervalMs = 250;
     private int connectTimeoutMs = 1_000;
     private int outputMaxChars = 60_000;
+    private int failureHintMaxChars = 512;
+    private int outputDrainTimeoutMs = 1_000;
     private int minPort = 1024;
     private int maxPort = 65_535;
     private String readinessHost = "127.0.0.1";
@@ -27,6 +29,10 @@ public class PreviewRuntimeProperties {
     public void setConnectTimeoutMs(int value) { connectTimeoutMs = value; }
     public int getOutputMaxChars() { return Math.max(1_024, outputMaxChars); }
     public void setOutputMaxChars(int value) { outputMaxChars = value; }
+    public int getFailureHintMaxChars() { return Math.max(64, failureHintMaxChars); }
+    public void setFailureHintMaxChars(int value) { failureHintMaxChars = value; }
+    public int getOutputDrainTimeoutMs() { return Math.max(100, outputDrainTimeoutMs); }
+    public void setOutputDrainTimeoutMs(int value) { outputDrainTimeoutMs = value; }
     public int getMinPort() { return Math.max(1, Math.min(minPort, getMaxPort())); }
     public void setMinPort(int value) { minPort = value; }
     public int getMaxPort() { return Math.max(1, Math.min(65_535, maxPort)); }
