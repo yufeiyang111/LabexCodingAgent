@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.labex.entity.AgentRunEvent;
 import com.labex.labexagent.dto.AgentEvent;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import java.io.IOException;
 import java.util.Comparator;
@@ -18,6 +19,7 @@ public class AgentSsePublisher {
     private final TransientEventListener transientEventListener;
     private AgentRunLifecycleService lifecycleService;
     private Long taskId;
+    private ExecutionFence executionFence;
     private long lastProjectedSequence;
     private boolean connectionClosed;
 
@@ -31,31 +33,47 @@ public class AgentSsePublisher {
     }
 
     public void bindRun(AgentRunLifecycleService lifecycleService, Long taskId) {
+        bindRun(lifecycleService, taskId, null);
+    }
+
+    /**
+     * Binds the active execution fence so executor-originated durable events cannot outlive their lease.
+     */
+    public void bindRun(AgentRunLifecycleService lifecycleService, Long taskId, ExecutionFence executionFence) {
         if (lifecycleService == null || taskId == null) {
             throw new IllegalArgumentException("A lifecycle service and task ID are required to bind an agent SSE stream");
         }
+        if (executionFence != null && !taskId.equals(executionFence.taskId())) {
+            throw new IllegalArgumentException("Execution fence task ID must match the bound agent run");
+        }
         this.lifecycleService = lifecycleService;
         this.taskId = taskId;
-        // bind 之前的事件由独立 replay/subscription 入口负责；当前连接只补齐 bind 之后出现的缺口。
+        this.executionFence = executionFence;
+        // Events before binding are replayed by the task subscription; this stream only fills later gaps.
         this.lastProjectedSequence = Math.max(0L, lifecycleService.currentEventSequence(taskId));
     }
 
-    /** 当前 SSE 是否已绑定到可持久化的 Agent run。 */
+        /** 当前 SSE 是否已绑定到可持久化的 Agent run。 */
     public boolean isBound() {
         return this.lifecycleService != null && this.taskId != null;
     }
 
     public synchronized void send(String type, Object data) throws IOException {
+        send(type, data, "");
+    }
+
+    /** 使用调用方提供的稳定幂等键追加 durable event；空键保留既有随机事件语义。 */
+    public synchronized void send(String type, Object data, String idempotencyKey) throws IOException {
         if (this.lifecycleService == null || this.taskId == null) {
             throw new IllegalStateException(
                     "Durable SSE events require a bound agent run before they can be sent");
         }
         Object safeData = InternalReasoningBoundary.sanitizeEventPayload(type, data);
-        AgentRunEvent event = this.lifecycleService.appendEvent(
-                this.taskId,
-                type,
-                safeData,
-                "sse-" + this.taskId + "-" + UUID.randomUUID());
+        String eventKey = idempotencyKey == null || idempotencyKey.isBlank()
+                ? "sse-" + this.taskId + "-" + UUID.randomUUID() : idempotencyKey;
+        AgentRunEvent event = this.executionFence == null
+                ? this.lifecycleService.appendEvent(this.taskId, type, safeData, eventKey)
+                : this.lifecycleService.appendEvent(this.executionFence, this.taskId, type, safeData, eventKey);
         if (event == null || event.getSequenceNumber() == null) {
             throw new IllegalStateException("Durable SSE persistence returned no event sequence");
         }

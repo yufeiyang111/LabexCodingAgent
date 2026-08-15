@@ -15,6 +15,8 @@ public class AgentLoopProperties {
     private int maxCycleLength = 3;
     private int maxAutomaticStrategySwitches = 1;
     private int maxNonProgressIterations = 8;
+    /** 同一 durable 完成证据允许的最终答复自动纠正次数；0 表示直接失败。 */
+    private int finalizationRecoveryLimit = 1;
 
     public int getHardMaxIterations() {
         return hardMaxIterations;
@@ -62,5 +64,13 @@ public class AgentLoopProperties {
 
     public void setMaxNonProgressIterations(int value) {
         maxNonProgressIterations = Math.max(1, Math.min(100, value));
+    }
+
+    public int getFinalizationRecoveryLimit() {
+        return finalizationRecoveryLimit;
+    }
+
+    public void setFinalizationRecoveryLimit(int value) {
+        finalizationRecoveryLimit = Math.max(0, Math.min(5, value));
     }
 }

@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunInteraction;
+import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.entity.AgentRunConfigSnapshot;
@@ -36,6 +37,7 @@ import com.labex.labexagent.migration.AgentLegacyCheckpointMigrationService;
 import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunPlanService;
+import com.labex.labexagent.run.AgentRunPartService;
 import com.labex.labexagent.run.AgentRunProgressProjectionService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.run.AgentRunTransitionKey;
@@ -237,11 +239,13 @@ public class AgentLoopEngine {
     private ProjectCheckoutLeaseHeartbeatService projectCheckoutLeaseHeartbeatService;
     private AgentTaskEventSubscriptionService taskEventSubscriptionService;
     private AgentRunFinalizer runFinalizer;
+    private AgentFinalizationRecoveryService finalizationRecoveryService;
     private AgentRunArtifactService artifactService;
     private AgentToolCallJournalService toolCallJournalService;
     private AgentRunTranscriptService transcriptService;
     private AgentRunInteractionService runInteractionService;
     private AgentRunPlanService runPlanService;
+    private AgentRunPartService runPartService;
     private AgentRunProgressProjectionService runProgressProjectionService;
     private AgentTranscriptProjectionService transcriptProjectionService;
     private AgentCompactionService compactionService;
@@ -345,6 +349,12 @@ public class AgentLoopEngine {
     }
 
     @Autowired
+    void setFinalizationRecoveryService(AgentFinalizationRecoveryService finalizationRecoveryService) {
+        this.finalizationRecoveryService = requireRuntimeDependency(
+                finalizationRecoveryService, "finalizationRecoveryService");
+    }
+
+    @Autowired
     void setArtifactService(AgentRunArtifactService artifactService) {
         this.artifactService = requireRuntimeDependency(artifactService, "artifactService");
     }
@@ -376,6 +386,11 @@ public class AgentLoopEngine {
     @Autowired
     void setRunPlanService(AgentRunPlanService runPlanService) {
         this.runPlanService = requireRuntimeDependency(runPlanService, "runPlanService");
+    }
+
+    @Autowired
+    void setRunPartService(AgentRunPartService runPartService) {
+        this.runPartService = requireRuntimeDependency(runPartService, "runPartService");
     }
 
     @Autowired
@@ -772,7 +787,7 @@ public class AgentLoopEngine {
                 // 旧 epoch 行永不修改。全部写入都在 fence 校验之后。
                 this.ensureSnapshotForCurrentEpoch(task, project, executionLease, executionFence);
             }
-            sse.bindRun(this.runLifecycleService, task.getTaskId());
+            sse.bindRun(this.runLifecycleService, task.getTaskId(), executionFence);
             // 取得执行租约后立即注册取消令牌，不能先暴露 preparing/SESSION 再留下不可取消窗口。
             activeCancellation = this.cancellationRegistry.register(
                     request.getSessionId(), studentId, projectId, task.getTaskId());
@@ -920,6 +935,7 @@ public class AgentLoopEngine {
             this.appendRunLog(runLog, "\n## Context orchestration\n\n```json\n" + GSON.toJson(contextStats) + "\n```\n");
             int i = 1;
             AgentLoopGuard loopGuard = new AgentLoopGuard(loopProperties);
+            this.restoreLoopGuardHistory(loopGuard, ctx);
             ContextOverflowRecoveryPolicy overflowRecoveryPolicy = new ContextOverflowRecoveryPolicy();
             int textToolCallRecoveryFailures = 0;
             int nativeToolInputFailureRounds = 0;
@@ -1036,11 +1052,19 @@ public class AgentLoopEngine {
                                                         modelEventPublisher.sendTransient(eventType, data);
                                                     }
                                                 });
-                                        Optional<AgentModelTurnExecutor.ModelTurnResult> admittedTurn = admission == null
-                                                ? Optional.of(this.modelTurnExecutor.execute(modelTurnRequest))
-                                                : this.contextAdmissionGate.invokeIfAllowed(admission,
-                                                        () -> this.modelTurnExecutor.execute(modelTurnRequest));
+                                        this.projectModelStepStarted(sse, conv, ctx, i);
+                                        Optional<AgentModelTurnExecutor.ModelTurnResult> admittedTurn;
+                                        try {
+                                            admittedTurn = admission == null
+                                                    ? Optional.of(this.modelTurnExecutor.execute(modelTurnRequest))
+                                                    : this.contextAdmissionGate.invokeIfAllowed(admission,
+                                                            () -> this.modelTurnExecutor.execute(modelTurnRequest));
+                                        } catch (Exception modelTurnFailure) {
+                                            this.projectModelStepFailed(sse, conv, ctx, i, modelTurnFailure);
+                                            throw modelTurnFailure;
+                                        }
                                         if (admittedTurn.isEmpty()) {
+                                            this.projectModelStepBlocked(sse, conv, ctx, i, "context_admission_blocked");
                                             this.stopForContextLimit(sse, conv, task, project, request, ctx, runLog,
                                                     admission, i, visibleLanguage, emitter);
                                             return;
@@ -1049,9 +1073,11 @@ public class AgentLoopEngine {
                                         lr = modelTurnResult.toMap();
                                         type = (String)lr.get("type");
                                         if (cancellationToken.isCancellationRequested() || "cancelled".equals(type)) {
+                                            this.projectModelStepInterrupted(sse, conv, ctx, i, "cancelled");
                                             this.completeCancelledRun(sse, conv, task, project, runLog, i, visibleLanguage, emitter);
                                             return;
                                         }
+                                        this.projectModelStepCompleted(sse, conv, ctx, i, type);
                                         this.appendRunLog(runLog, "\n- Model response type: `" + this.safeLogText(type) + "`\n");
                                         log.info("Iteration {}, type: {}", i, type);
                                         this.appendRunLog(runLog, this.renderModelTurnOutput(lr));
@@ -1218,7 +1244,8 @@ public class AgentLoopEngine {
                                             }
 
                                             JsonObject loopArguments = this.loopGuardArguments(tn, ta, ctx);
-                                            AgentLoopGuard.ToolDecision loopDecision = loopGuard.beforeToolCall(tn, loopArguments);
+                                            AgentLoopGuard.ToolDecision loopDecision = loopGuard.beforeToolCall(
+                                                    tn, loopArguments, this.refreshLoopGuardProgress(ctx));
                                             if (loopDecision.action() != AgentLoopGuard.ToolAction.ALLOW) {
                                                 String loopMessage = this.loopGuardMessage(loopDecision, tn, visibleLanguage);
                                                 ToolResult blockedResult = this.loopGuardResult(loopDecision, tn, toolCallId, ctx, visibleLanguage, loopMessage);
@@ -1263,7 +1290,7 @@ public class AgentLoopEngine {
                                                 // AgentRunPartService.interruptOpenParts 标记 interrupted），不做部分投影。
                                                 throw staleFence;
                                             }
-                                            loopGuard.recordToolResult(loopDecision.signature(), res.isSuccess());
+                                            this.recordLoopToolResult(loopGuard, sse, conv, ctx, i, tn, loopDecision.signature(), res.isSuccess());
                                             Optional<EnvironmentBlockerClassifier.Blocker> environmentBlocker =
                                                     EnvironmentBlockerClassifier.classify(tn, res);
                                             if (environmentBlocker.isPresent()) {
@@ -1342,7 +1369,7 @@ public class AgentLoopEngine {
                                             boolean anyExecutableInput = nativeAdmissions.stream()
                                                     .anyMatch(NativeToolAdmission::allowed);
                                             if (!anyExecutableInput) {
-                                                loopGuard.recordModelNoProgress();
+                                                this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "native_tool_input_rejected");
                                             }
                                             if (nativeToolInputFailureRounds >= MAX_NATIVE_TOOL_INPUT_FAILURE_ROUNDS) {
                                                 String failureTitle = this.localText(visibleLanguage,
@@ -1414,7 +1441,7 @@ public class AgentLoopEngine {
                                                 i, recoveredTextCall.status(), recoveredTextCall.format(),
                                                 textToolCallRecoveryFailures, MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES);
                                         this.sendThought(sse, conv, i, recoverySummary, recoveredRejection, task.getTaskId());
-                                        loopGuard.recordModelNoProgress();
+                                        this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "text_tool_call_rejected");
                                         this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
                                                 Map.of("role", "assistant", "content", content));
                                         if (textToolCallRecoveryFailures >= MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES) {
@@ -1454,7 +1481,8 @@ public class AgentLoopEngine {
                                     String recoveredToolCallId = this.recoveredToolCallId(ctx, i, invTool, parsedArgs);
                                     this.sendEvent(sse, conv, "TOOL_CALL", Map.of("iteration", i, "tool", invTool, "arguments", publicArgs, "summary", this.toolNarrator.visibleActionSummary(invTool, publicArgs, visibleLanguage), "content", this.toolNarrator.visibleActionDetail(invTool, publicArgs, visibleLanguage), "taskId", task.getTaskId(), "toolCallId", recoveredToolCallId));
                                     this.journalToolPending(executionFence, task.getTaskId(), recoveredToolCallId, invTool, publicArgs, i);
-                                    AgentLoopGuard.ToolDecision recoveredLoopDecision = loopGuard.beforeToolCall(invTool, parsedArgs);
+                                    AgentLoopGuard.ToolDecision recoveredLoopDecision = loopGuard.beforeToolCall(
+                                            invTool, parsedArgs, this.refreshLoopGuardProgress(ctx));
                                     if (recoveredLoopDecision.action() != AgentLoopGuard.ToolAction.ALLOW) {
                                         String loopMessage = this.loopGuardMessage(recoveredLoopDecision, invTool, visibleLanguage);
                                         ToolResult blockedResult = this.loopGuardResult(recoveredLoopDecision, invTool, recoveredToolCallId, ctx, visibleLanguage, loopMessage);
@@ -1489,7 +1517,7 @@ public class AgentLoopEngine {
                                         // 直接 rethrow；失败工具 Part 与剩余 batch 由恢复/接管路径处理。
                                         throw staleFence;
                                     }
-                                    loopGuard.recordToolResult(res.isSuccess());
+                                    this.recordLoopToolResult(loopGuard, sse, conv, ctx, i, invTool, recoveredLoopDecision.signature(), res.isSuccess());
                                      Optional<EnvironmentBlockerClassifier.Blocker> recoveredEnvironmentBlocker =
                                              EnvironmentBlockerClassifier.classify(invTool, res);
                                      if (recoveredEnvironmentBlocker.isPresent()) {
@@ -1535,7 +1563,7 @@ public class AgentLoopEngine {
                                 log.info("Iteration {}: text ({} chars, cleaned={} chars): {}", new Object[]{i, content.length(), cleaned.length(), content.substring(0, Math.min(200, content.length()))});
                                 if (!cleaned.isEmpty()) break block23;
                                 log.info("Iteration {}: empty/marker-only response, nudging model", i);
-                                loopGuard.recordModelNoProgress();
+                                this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "empty_model_response");
                                 this.appendRunLog(runLog, "\n- Model returned empty/marker-only response, requesting continuation.\n");
                                 this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", content));
                                 this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "Task not done. Call tools to execute next step. Do not output plain text ending."));
@@ -1547,7 +1575,7 @@ public class AgentLoopEngine {
                                 ft = cleaned;
                             }
                             if (!this.isPrematureFinal(ft, ctx)) break block24;
-                            loopGuard.recordModelNoProgress();
+                            this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "premature_final_placeholder");
                             this.appendRunLog(runLog, "\n- Model returned mid-placeholder text, rejecting as final, continuing: `" + this.safeLogText(ft) + "`\n");
                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", this.buildContinuationInstruction(ctx)));
@@ -1555,7 +1583,7 @@ public class AgentLoopEngine {
                             break block19;
                         }
                         if (!softSentinelActive && this.hasOpenPlan(ctx)) {
-                            loopGuard.recordModelNoProgress();
+                            this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "unfinished_plan");
                             this.appendRunLog(runLog, "\n- Plan has unfinished tasks, rejecting premature end. Remaining: " + ctx.getPlanSummary() + "\n");
                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
                             String planMsg = "Your plan has unfinished tasks. Cannot end yet. Continue execution:\n" + ctx.getPlanSummary() + "\nUse create_plan complete to mark done items, then continue next item.";
@@ -1567,7 +1595,7 @@ public class AgentLoopEngine {
                             boolean noStructure = !ft.contains("##") && !ft.contains("**") && !ft.contains("- ");
                             boolean noSubstance = !containsFinalSubstance(ft);
                             if (!softSentinelActive && shouldRejectFinalReply(request.getMessage(), ft)) {
-                                loopGuard.recordModelNoProgress();
+                                this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "final_reply_insufficient");
                                 this.appendRunLog(runLog, "\n- Reply quality insufficient (length=" + ft.length() + ", noStructure=" + noStructure + ", noSubstance=" + noSubstance + "), rejecting as final.\n");
                                 this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
                                 this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", "Reply too short to be final. Output complete structured summary:\n## Summary\n**Completed**\n- What was modified\n**Verification**\n- How it was verified\n**Suggestions**\n- Next steps"));
@@ -1577,7 +1605,7 @@ public class AgentLoopEngine {
                                 boolean intentGuardTriggered = isEngineeringTaskRequest(request.getMessage())
                                         && !this.transcriptHasToolMessages(task.getTaskId(), activeExecutionEpoch);
                                 if (intentGuardTriggered) {
-                                    loopGuard.recordModelNoProgress();
+                                    this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "engineering_task_without_tools");
                                     this.appendRunLog(runLog, "\n- Engineering-task request without any tool activity, rejecting text-only final.\n");
                                     this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
                                     this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", this.buildEngineeringIntentInstruction()));
@@ -1590,16 +1618,39 @@ public class AgentLoopEngine {
                                 AgentRunFinalizer.CompletionAssessment completion = softSentinelActive ? null
                                         : this.runFinalizer.assess(
                                                 executionFence, task.getTaskId(), studentId, projectId,
-                                                ctx.hasTrustedVerification());
+                                                ctx.hasTrustedVerification(), ft);
                                 if (completion != null) {
-                                    this.sendEvent(sse, conv, "COMPLETION_EVIDENCE", completion.evidence().toPayload());
+                                    if (completion.evidence() != null) {
+                                        this.sendEvent(sse, conv, "COMPLETION_EVIDENCE", completion.evidence().toPayload());
+                                    }
                                     if (!completion.allowed()) {
-                                        loopGuard.recordModelNoProgress();
-                                        this.appendRunLog(runLog, "\n- Server completion evidence rejected the model final response.\n");
-                                        this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
-                                        this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", completion.guidance()));
-                                        executed = true;
-                                        break block19;
+                                        AgentFinalizationRecoveryService.Decision decision = this.finalizationRecoveryService.decide(
+                                                task.getTaskId(), activeExecutionEpoch, completion.evidence(), ft);
+                                        Map<String, Object> blocker = this.finalizationBlockerPayload(task.getTaskId(),
+                                                activeExecutionEpoch, completion, decision);
+                                        String blockerKey = this.finalizationBlockerKey(task.getTaskId(), activeExecutionEpoch,
+                                                decision.evidenceFingerprint(), decision.recoveryAttempt(), decision.recoveryAllowed());
+                                        this.sendEvent(sse, conv, "FINALIZATION_BLOCKED", blocker, blockerKey);
+                                        if (decision.recoveryAllowed()) {
+                                            this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "completion_evidence_rejected");
+                                            this.appendRunLog(runLog, "\n- Server completion evidence rejected the model final response. code=`"
+                                                    + this.safeLogText(completion.code()) + "`, recovery="
+                                                    + decision.recoveryAttempt() + "/" + decision.recoveryLimit() + ".\n");
+                                            this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
+                                                    Map.of("role", "assistant", "content", ft));
+                                            this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
+                                                    Map.of("role", "user", "content", completion.guidance()));
+                                            executed = true;
+                                            break block19;
+                                        }
+                                        this.projectModelStepBlocked(sse, conv, ctx, i, "finalization_recovery_exhausted");
+                                        this.appendRunLog(runLog, "\n- Finalization recovery exhausted. code=`"
+                                                + this.safeLogText(completion.code()) + "`.\n");
+                                        this.failTaskAndProject(sse, conv, task,
+                                                this.localText(visibleLanguage, "完成证据被拒绝", "Completion evidence rejected"),
+                                                completion.guidance());
+                                        emitter.complete();
+                                        return;
                                     }
                                 }
                                 this.sendEvent(sse, conv, "FINAL", Map.of("content", ft, "summary", this.finalResponseSummary(visibleLanguage)));
@@ -1747,7 +1798,7 @@ public class AgentLoopEngine {
                         }
                     }
                     log.warn("Iteration {} unknown type: {}", i, type);
-                    loopGuard.recordModelNoProgress();
+                    this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "unknown_model_response");
                     this.appendRunLog(runLog, "\n- Unknown response type: `" + this.safeLogText(type) + "`\n");
                     this.sendEvent(sse, conv, "ERROR", Map.of("message", "Unknown response type: " + type));
                     executed = true;
@@ -3447,6 +3498,142 @@ public class AgentLoopEngine {
         return requireRuntimeDependency(this.runPlanService, "runPlanService");
     }
 
+    private void projectModelStepStarted(AgentSsePublisher sse, AgentConversation conversation,
+                                         AgentContext context, int iteration) throws Exception {
+        this.projectModelStep(sse, conversation, context, iteration, "MODEL_STEP_STARTED", "", "");
+    }
+
+    private void projectModelStepCompleted(AgentSsePublisher sse, AgentConversation conversation,
+                                           AgentContext context, int iteration, String resultType) throws Exception {
+        this.projectModelStep(sse, conversation, context, iteration, "MODEL_STEP_COMPLETED", resultType, "");
+    }
+
+    private void projectModelStepFailed(AgentSsePublisher sse, AgentConversation conversation,
+                                        AgentContext context, int iteration, Exception failure) throws Exception {
+        String errorType = failure == null ? "unknown" : failure.getClass().getSimpleName();
+        this.projectModelStep(sse, conversation, context, iteration, "MODEL_STEP_FAILED", "", errorType);
+    }
+
+    private void projectModelStepBlocked(AgentSsePublisher sse, AgentConversation conversation,
+                                         AgentContext context, int iteration, String reason) throws Exception {
+        this.projectModelStep(sse, conversation, context, iteration, "MODEL_STEP_BLOCKED", "", reason);
+    }
+
+    private void projectModelStepInterrupted(AgentSsePublisher sse, AgentConversation conversation,
+                                             AgentContext context, int iteration, String reason) throws Exception {
+        this.projectModelStep(sse, conversation, context, iteration, "MODEL_STEP_INTERRUPTED", "", reason);
+    }
+
+    private void projectModelStep(AgentSsePublisher sse, AgentConversation conversation,
+                                  AgentContext context, int iteration, String eventType,
+                                  String resultType, String reason) throws Exception {
+        if (context == null || context.getTaskId() == null) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("taskId", context.getTaskId());
+        payload.put("executionEpoch", context.getExecutionEpoch());
+        payload.put("iteration", iteration);
+        if (resultType != null && !resultType.isBlank()) {
+            payload.put("resultType", resultType);
+        }
+        if (reason != null && !reason.isBlank()) {
+            payload.put("reason", reason);
+        }
+        this.sendEvent(sse, conversation, eventType, payload);
+    }
+
+    private Map<String, Object> finalizationBlockerPayload(Long taskId, long executionEpoch,
+                                                         AgentRunFinalizer.CompletionAssessment completion,
+                                                         AgentFinalizationRecoveryService.Decision decision) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("taskId", taskId);
+        payload.put("executionEpoch", executionEpoch);
+        payload.put("reasonCode", completion.code());
+        payload.put("guidance", completion.guidance());
+        payload.put("evidenceFingerprint", decision.evidenceFingerprint());
+        payload.put("finalClaimFingerprint", decision.finalClaimFingerprint());
+        payload.put("recoveryAttempt", decision.recoveryAttempt());
+        payload.put("recoveryLimit", decision.recoveryLimit());
+        payload.put("recoveryAllowed", decision.recoveryAllowed());
+        return payload;
+    }
+
+    private String finalizationBlockerKey(Long taskId, long executionEpoch, String evidenceFingerprint,
+                                          int recoveryAttempt, boolean recoveryAllowed) {
+        String phase = recoveryAllowed ? "recovery-" + recoveryAttempt : "exhausted";
+        return "finalization-blocked-" + taskId + "-" + executionEpoch + "-" + evidenceFingerprint + "-" + phase;
+    }
+
+    private void recordLoopNoProgress(AgentLoopGuard loopGuard, AgentSsePublisher sse,
+                                      AgentConversation conversation, AgentContext context, int iteration,
+                                      String reason) throws Exception {
+        loopGuard.recordModelNoProgress();
+        this.projectLoopGuardProgress(loopGuard, sse, conversation, context, iteration, reason, "");
+    }
+
+    private void recordLoopToolResult(AgentLoopGuard loopGuard, AgentSsePublisher sse,
+                                      AgentConversation conversation, AgentContext context, int iteration,
+                                      String toolName, String signature, boolean success) throws Exception {
+        loopGuard.recordToolResult(signature, success);
+        this.projectLoopGuardProgress(loopGuard, sse, conversation, context, iteration,
+                success ? "tool_success" : "tool_failure", toolName);
+    }
+
+    private void projectLoopGuardProgress(AgentLoopGuard loopGuard, AgentSsePublisher sse,
+                                          AgentConversation conversation, AgentContext context, int iteration,
+                                          String reason, String toolName) throws Exception {
+        if (loopGuard == null || context == null || context.getTaskId() == null) {
+            return;
+        }
+        this.sendEvent(sse, conversation, "LOOP_GUARD_PROGRESS", Map.of(
+                "taskId", context.getTaskId(),
+                "executionEpoch", context.getExecutionEpoch(),
+                "iteration", iteration,
+                "reason", reason == null ? "" : reason,
+                "tool", toolName == null ? "" : toolName,
+                "nonProgressIterations", loopGuard.nonProgressIterations()));
+    }
+
+    private void restoreLoopGuardHistory(AgentLoopGuard loopGuard, AgentContext context) {
+        if (loopGuard == null || context == null || context.getTaskId() == null || runPartService == null) {
+            return;
+        }
+        for (AgentRunPart part : runPartService.currentEpochToolHistory(
+                context.getTaskId(), context.getExecutionEpoch())) {
+            JsonObject arguments = durableToolArguments(part == null ? null : part.getInputJson());
+            loopGuard.restoreDurableToolCall(part == null ? "" : part.getToolName(),
+                    this.loopGuardArguments(part == null ? "" : part.getToolName(), arguments, context));
+        }
+        loopGuard.restoreNonProgressIterations(runPartService.currentEpochLoopGuardProgress(
+                context.getTaskId(), context.getExecutionEpoch()));
+    }
+
+    private JsonObject durableToolArguments(String inputJson) {
+        if (inputJson == null || inputJson.isBlank()) {
+            return new JsonObject();
+        }
+        try {
+            JsonElement parsed = JsonParser.parseString(inputJson);
+            return parsed.isJsonObject() ? parsed.getAsJsonObject() : new JsonObject();
+        } catch (RuntimeException ignored) {
+            return new JsonObject();
+        }
+    }
+
+    private String refreshLoopGuardProgress(AgentContext context) {
+        if (context == null || context.getTaskId() == null || this.runProgressProjectionService == null) {
+            return "";
+        }
+        AgentRunProgressProjectionService.Projection progress = this.runProgressProjectionService.load(
+                context.getTaskId(), context.getExecutionEpoch());
+        if (progress == null) {
+            return "";
+        }
+        progress.applyTo(context);
+        return progress.loopGuardProgressFingerprint();
+    }
+
     private AgentRunProgressProjectionService requireRunProgressProjectionService() {
         return requireRuntimeDependency(this.runProgressProjectionService, "runProgressProjectionService");
     }
@@ -4431,6 +4618,11 @@ public class AgentLoopEngine {
 
     private void sendEvent(AgentSsePublisher sse, AgentConversation conv, String type, Object data) throws Exception {
         sse.send(type, data);
+    }
+
+    private void sendEvent(AgentSsePublisher sse, AgentConversation conv, String type, Object data,
+                           String idempotencyKey) throws Exception {
+        sse.send(type, data, idempotencyKey);
     }
 
     /** 计划服务已经提交事件；当前连接只能发送对应 sequence，不能再次追加事件。 */

@@ -60,7 +60,8 @@ public final class AgentToolTurnExecutor {
     }
 
     public ToolResolution resolve(AgentContext context, String toolName, String language) {
-        if (context == null || !context.isToolSelected(toolName)) {
+        String canonicalToolName = registry.canonicalName(toolName);
+        if (context == null || (!context.isToolSelected(toolName) && !context.isToolSelected(canonicalToolName))) {
             return ToolResolution.rejected(ToolResult.failed(local(language,
                     "工具 `" + toolName + "` 未在本轮模型请求中暴露，已拒绝执行。",
                     "Tool '" + toolName + "' was not exposed in this model turn.")));
@@ -101,13 +102,13 @@ public final class AgentToolTurnExecutor {
 
     private ToolInputResolution resolveInput(AgentContext context, String toolName,
                                              JsonObject arguments, String language) {
-        JsonObject normalizedArguments = arguments == null ? new JsonObject() : arguments.deepCopy();
+        JsonObject normalizedArguments = registry.normalizeArguments(toolName, arguments);
         ToolResolution resolution = resolve(context, toolName, language);
         if (!resolution.allowed()) {
             return ToolInputResolution.rejected(normalizedArguments, resolution.rejection(), "tool_not_available");
         }
         ToolArgumentSchemaValidator.Validation validation = argumentSchemaValidator.validate(
-                resolution.tool().definition(), normalizedArguments);
+                resolution.tool().definition(), registry.argumentsForSchemaValidation(toolName, normalizedArguments));
         if (validation.valid()) {
             return ToolInputResolution.allowed(normalizedArguments, resolution.tool());
         }

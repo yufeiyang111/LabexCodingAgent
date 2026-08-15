@@ -102,6 +102,47 @@ class AgentLoopGuardTest {
     }
 
     @Test
+    void allowsAFailedPlanCompletionToRetryAfterDurableVerificationProgresses() {
+        AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());
+        JsonObject complete = new JsonObject();
+        complete.addProperty("action", "complete");
+        complete.addProperty("task_index", 3);
+
+        AgentLoopGuard.ToolDecision first = guard.beforeToolCall("create_plan", complete, "verification=0");
+        guard.recordToolResult(first.signature(), false);
+        AgentLoopGuard.ToolDecision second = guard.beforeToolCall("create_plan", complete, "verification=0");
+        guard.recordToolResult(second.signature(), false);
+
+        assertEquals(AgentLoopGuard.ToolAction.ALLOW,
+                guard.beforeToolCall("create_plan", complete, "verification=1;source=run_tests").action());
+    }
+
+    @Test
+    void restoresDurableNonProgressBudgetBeforeTheNextIteration() {
+        AgentLoopProperties properties = new AgentLoopProperties();
+        properties.setMaxNonProgressIterations(3);
+        AgentLoopGuard guard = new AgentLoopGuard(properties);
+
+        guard.restoreNonProgressIterations(3);
+
+        assertEquals(AgentLoopGuard.IterationAction.STOP, guard.beforeIteration(1).action());
+        assertEquals(3, guard.beforeIteration(1).nonProgressIterations());
+    }
+
+    @Test
+    void restoresRecentDurableAttemptsBeforeEvaluatingTheNextCall() {
+        AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());
+        JsonObject args = new JsonObject();
+        args.addProperty("path", "src/App.vue");
+
+        guard.restoreDurableToolCall("read_file", args);
+        guard.restoreDurableToolCall("read_file", args);
+
+        assertEquals(AgentLoopGuard.ToolAction.SWITCH_STRATEGY,
+                guard.beforeToolCall("read_file", args).action());
+    }
+
+    @Test
     void canonicalSignatureIgnoresJsonObjectInsertionOrder() {
         AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());
         JsonObject first = new JsonObject();

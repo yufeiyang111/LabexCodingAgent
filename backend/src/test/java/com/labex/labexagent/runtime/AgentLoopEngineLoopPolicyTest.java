@@ -27,6 +27,32 @@ class AgentLoopEngineLoopPolicyTest {
         assertTrue(engine.contains("this.askUserQuestion("));
     }
 
+    @Test
+    void restoresCurrentEpochNonProgressBudgetAndDurablyProjectsEveryUpdate() {
+        assertTrue(engine.contains("currentEpochLoopGuardProgress("));
+        assertTrue(engine.contains("restoreNonProgressIterations("));
+        assertTrue(engine.contains("LOOP_GUARD_PROGRESS"));
+        assertTrue(engine.contains("recordLoopNoProgress("));
+    }
+
+    @Test
+    void durablyProjectsEachModelInvocationAsARecoverableStepBoundary() {
+        assertTrue(engine.contains("MODEL_STEP_STARTED"));
+        assertTrue(engine.contains("MODEL_STEP_COMPLETED"));
+        assertTrue(engine.contains("MODEL_STEP_FAILED"));
+        assertTrue(engine.contains("MODEL_STEP_BLOCKED"));
+        assertTrue(engine.contains("MODEL_STEP_INTERRUPTED"));
+        assertTrue(engine.contains("projectModelStepStarted("));
+        assertTrue(engine.contains("projectModelStepCompleted("));
+    }
+
+    @Test
+    void restoresTheCurrentEpochToolSuffixBeforeResumingTheModelLoop() {
+        assertTrue(engine.contains("this.restoreLoopGuardHistory(loopGuard, ctx);"));
+        assertTrue(engine.contains("currentEpochToolHistory("));
+        assertTrue(engine.contains("restoreDurableToolCall("));
+    }
+
     private static int occurrences(String text, String needle) {
         int count = 0;
         int offset = 0;
@@ -50,6 +76,14 @@ class AgentLoopEngineLoopPolicyTest {
         args.addProperty("action", "complete");
         assertTrue(AgentLoopEngine.isMissingPlanCompletion(
                 "create_plan", args, com.labex.labexagent.tool.ToolResult.failed("failure_code=PLAN_MISSING")));
+    }
+
+    @Test
+    void boundsCompletionEvidenceRejectionsBeforeTheGenericLoopFuse() {
+        assertTrue(engine.contains("FINALIZATION_BLOCKED"));
+        assertTrue(engine.contains("finalizationRecoveryService.decide("));
+        assertTrue(engine.contains("finalization_recovery_exhausted"));
+        assertTrue(config.contains("finalization-recovery-limit: ${LABEX_AGENT_FINALIZATION_RECOVERY_LIMIT:1}"));
     }
 
 }

@@ -11,8 +11,10 @@ import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.runtime.AgentToolCallIdPolicy;
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -174,6 +176,20 @@ public class AgentRunPartService {
             case "RUN_PROGRESS_MIGRATED" ->
                     upsertPart(taskId, messageId, "progress:migration", "progress", "completed",
                             null, null, data, GSON.toJson(data), sequence);
+            case "LOOP_GUARD_PROGRESS" ->
+                    upsertPart(taskId, messageId, "loop-guard:progress", "loop_guard_progress", "completed",
+                            null, null, data, GSON.toJson(data), sequence);
+            case "FINALIZATION_BLOCKED" -> {
+                String fingerprint = text(data, "evidenceFingerprint");
+                boolean recoveryAllowed = Boolean.TRUE.equals(data.get("recoveryAllowed"));
+                yield upsertPart(taskId, messageId, "finalization:" + (fingerprint.isBlank() ? sequence : fingerprint),
+                        "finalization_blocker", recoveryAllowed ? "waiting" : "error", null, null,
+                        data, GSON.toJson(data), sequence);
+            }
+            case "MODEL_STEP_STARTED", "MODEL_STEP_COMPLETED", "MODEL_STEP_FAILED",
+                 "MODEL_STEP_BLOCKED", "MODEL_STEP_INTERRUPTED" ->
+                    upsertPart(taskId, messageId, "model-step:" + eventIteration(data), "model_step",
+                            modelStepStatus(eventType), null, null, data, GSON.toJson(data), sequence);
             case "RUN_STATE_WAITING_APPROVAL", "RUN_STATE_WAITING_USER",
                  "RUN_INTERACTION_RESUME_QUEUED", "RUN_INTERACTION_TIMED_OUT" ->
                     upsertPart(taskId, messageId, "interaction:" + sequence, "interaction",
@@ -298,6 +314,111 @@ public class AgentRunPartService {
                 .orderByAsc(AgentRunPart::getPartId));
     }
 
+    public List<AgentRunPart> currentEpochToolHistory(Long taskId, long executionEpoch) {
+        if (taskId == null || taskId <= 0 || executionEpoch < 0) return List.of();
+        return history(taskId).stream()
+                .filter(this::isTerminalToolPart)
+                .filter(part -> belongsToEpoch(part, executionEpoch))
+                .toList();
+    }
+
+    private boolean isTerminalToolPart(AgentRunPart part) {
+        if (part == null || !"tool".equals(part.getPartType())) {
+            return false;
+        }
+        String status = part.getStatus() == null ? "" : part.getStatus().trim().toLowerCase(Locale.ROOT);
+        return "completed".equals(status) || "error".equals(status) || "blocked".equals(status)
+                || "skipped".equals(status) || "interrupted".equals(status);
+    }
+
+    private boolean belongsToEpoch(AgentRunPart part, long expectedEpoch) {
+        if (part == null || part.getMetadata() == null || part.getMetadata().isBlank()) {
+            return false;
+        }
+        try {
+            Object parsed = GSON.fromJson(part.getMetadata(), Object.class);
+            if (!(parsed instanceof Map<?, ?> metadata)) {
+                return false;
+            }
+            Object raw = metadata.get("executionEpoch");
+            if (raw instanceof Number number) {
+                return number.longValue() == expectedEpoch;
+            }
+            return raw != null && Long.parseLong(String.valueOf(raw)) == expectedEpoch;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    public int currentEpochFinalizationRecoveryAttempts(Long taskId, long executionEpoch, String evidenceFingerprint) {
+        if (taskId == null || taskId <= 0 || executionEpoch < 0 || evidenceFingerprint == null
+                || evidenceFingerprint.isBlank()) {
+            return 0;
+        }
+        return history(taskId).stream()
+                .filter(part -> part != null && "finalization_blocker".equals(part.getPartType()))
+                .filter(part -> belongsToEpoch(part, executionEpoch))
+                .filter(part -> evidenceFingerprint.equals(eventText(part, "evidenceFingerprint")))
+                .max(Comparator.comparingLong(part -> part.getSequenceNumber() == null ? 0L : part.getSequenceNumber()))
+                .map(part -> eventNonNegativeInteger(part, "recoveryAttempt"))
+                .orElse(0);
+    }
+
+    private String eventText(AgentRunPart part, String field) {
+        Object value = eventValue(part, field);
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private int eventNonNegativeInteger(AgentRunPart part, String field) {
+        Object value = eventValue(part, field);
+        if (value instanceof Number number) {
+            return Math.max(0, Math.min(100_000, number.intValue()));
+        }
+        try {
+            return Math.max(0, Math.min(100_000, Integer.parseInt(String.valueOf(value))));
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
+    }
+
+    private Object eventValue(AgentRunPart part, String field) {
+        if (part == null || part.getInputJson() == null || part.getInputJson().isBlank()) {
+            return null;
+        }
+        try {
+            Object parsed = GSON.fromJson(part.getInputJson(), Object.class);
+            if (!(parsed instanceof Map<?, ?> data)) {
+                return null;
+            }
+            return data.get(field);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    public int currentEpochLoopGuardProgress(Long taskId, long executionEpoch) {
+        if (taskId == null || taskId <= 0 || executionEpoch < 0) return 0;
+        return history(taskId).stream()
+                .filter(part -> part != null && "loop_guard_progress".equals(part.getPartType()))
+                .filter(part -> belongsToEpoch(part, executionEpoch))
+                .max(Comparator.comparingLong(part -> part.getSequenceNumber() == null ? 0L : part.getSequenceNumber()))
+                .map(this::nonProgressIterations)
+                .orElse(0);
+    }
+
+    private int nonProgressIterations(AgentRunPart part) {
+        if (part == null || part.getInputJson() == null || part.getInputJson().isBlank()) return 0;
+        try {
+            Object parsed = GSON.fromJson(part.getInputJson(), Object.class);
+            if (!(parsed instanceof Map<?, ?> data)) return 0;
+            Object value = data.get("nonProgressIterations");
+            if (value instanceof Number number) return Math.max(0, Math.min(100_000, number.intValue()));
+            return value == null ? 0 : Math.max(0, Math.min(100_000, Integer.parseInt(String.valueOf(value))));
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
+    }
+
     public List<Map<String, Object>> publicHistory(Long taskId) {
         return history(taskId).stream().map(this::publicPayload).toList();
     }
@@ -373,10 +494,12 @@ public class AgentRunPartService {
         part.setInputJson(input == null ? "{}" : GSON.toJson(input));
         part.setOutputText(output);
         part.setSequenceNumber(sequence);
+        long executionEpoch = task == null || task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch();
         part.setMetadata(GSON.toJson(Map.of(
                 "sequence", sequence,
                 "partType", partType,
-                "status", part.getStatus())));
+                "status", part.getStatus(),
+                "executionEpoch", executionEpoch)));
         part.setUpdateTime(now);
         if (part.getPartId() == null) {
             partMapper.insert(part);
@@ -400,6 +523,29 @@ public class AgentRunPartService {
         }
     }
 
+    private long eventIteration(Map<String, Object> data) {
+        Object raw = data.get("iteration");
+        if (raw instanceof Number number) {
+            return Math.max(0L, number.longValue());
+        }
+        try {
+            return raw == null ? 0L : Math.max(0L, Long.parseLong(String.valueOf(raw)));
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
+    }
+
+    private String modelStepStatus(String eventType) {
+        return switch (eventType) {
+            case "MODEL_STEP_STARTED" -> "running";
+            case "MODEL_STEP_COMPLETED" -> "completed";
+            case "MODEL_STEP_FAILED" -> "error";
+            case "MODEL_STEP_BLOCKED" -> "blocked";
+            case "MODEL_STEP_INTERRUPTED" -> "interrupted";
+            default -> "unknown";
+        };
+    }
+
     private boolean supportsEventPart(String eventType) {
         return switch (eventType) {
             case "THINK", "FINAL", "ERROR", "COMPLETION_EVIDENCE",
@@ -413,7 +559,9 @@ public class AgentRunPartService {
                  "RUN_CANCELLED", "RUN_STATE_CANCELLED", "INTERRUPTED",
                  "COMMAND_EXECUTION_INTERRUPTED", "RUN_MODEL_RETRY_SCHEDULED",
                  "RUN_MODEL_RETRY_STARTED", "RUN_RECOVERY_TAKEOVER",
-                 "RUN_STATE_RECOVERING", "RUN_PROGRESS_MIGRATED", "DONE", "RUN_STATE_COMPLETED",
+                 "RUN_STATE_RECOVERING", "RUN_PROGRESS_MIGRATED", "LOOP_GUARD_PROGRESS", "FINALIZATION_BLOCKED",
+                 "MODEL_STEP_STARTED", "MODEL_STEP_COMPLETED", "MODEL_STEP_FAILED",
+                 "MODEL_STEP_BLOCKED", "MODEL_STEP_INTERRUPTED", "DONE", "RUN_STATE_COMPLETED",
                  "RUN_STATE_FAILED",
                  "CONFIG_PROPOSAL_CREATED", "CONFIG_PROPOSAL_DECIDED",
                  "CONFIG_REVISION_APPLIED", "CONFIG_PROPOSAL_FAILED" -> true;

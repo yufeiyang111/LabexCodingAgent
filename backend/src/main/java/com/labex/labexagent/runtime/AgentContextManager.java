@@ -1,16 +1,25 @@
 package com.labex.labexagent.runtime;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.run.AgentToolOutputProperties;
 import com.labex.labexagent.service.ProjectIndexService;
 import java.util.Locale;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AgentContextManager {
     private final ProjectIndexService projectIndexService;
+    private final ModelToolOutputProjection modelToolOutputProjection;
+
+    @Autowired
+    public AgentContextManager(ProjectIndexService projectIndexService, AgentToolOutputProperties toolOutputProperties) {
+        this.projectIndexService = projectIndexService;
+        this.modelToolOutputProjection = new ModelToolOutputProjection(toolOutputProperties);
+    }
 
     public AgentContextManager(ProjectIndexService projectIndexService) {
-        this.projectIndexService = projectIndexService;
+        this(projectIndexService, new AgentToolOutputProperties());
     }
 
     public String buildInitialContext(StudentProject project, String activePath, String activeFileContent, String toolDefinitions, String userMessage) {
@@ -68,10 +77,8 @@ public class AgentContextManager {
      * The durable Tool Part remains the authoritative raw-output record.
      */
     public ToolResultProjection compactToolResultProjection(String toolName, String text, boolean success) {
-        String safeTool = this.normalizeTool(toolName);
-        String source = text == null ? "" : text;
-        return new ToolResultProjection(this.pruneToolResult(safeTool, source, success, true),
-                this.isModelProjectionTruncated(safeTool, source, success));
+        ModelToolOutputProjection.Result projection = this.modelToolOutputProjection.project(toolName, text, success);
+        return new ToolResultProjection(projection.content(), projection.truncated());
     }
 
     public record ToolResultProjection(String content, boolean truncated) {
@@ -106,28 +113,6 @@ public class AgentContextManager {
             return this.withPruneHeader("write", safeTool, this.smartLimit(text, Math.min(maxChars, forModel ? 3200 : 5200), forModel ? 1400 : 2200));
         }
         return this.withPruneHeader("generic", safeTool, this.smartLimit(text, Math.min(maxChars, forModel ? 3600 : 6200), forModel ? 1600 : 2600));
-    }
-
-    private boolean isModelProjectionTruncated(String safeTool, String text, boolean success) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        if (!success) {
-            return text.length() > 3_600;
-        }
-        if (this.isReadTool(safeTool)) {
-            return text.length() > 5_200;
-        }
-        if (this.isSearchTool(safeTool)) {
-            return text.length() > 4_500 || text.split("\\R").length > 90;
-        }
-        if (this.isShellTool(safeTool)) {
-            return text.length() > 4_200;
-        }
-        if (this.isWriteTool(safeTool)) {
-            return text.length() > 3_200;
-        }
-        return text.length() > 3_600;
     }
 
     private boolean isReadTool(String safeTool) {

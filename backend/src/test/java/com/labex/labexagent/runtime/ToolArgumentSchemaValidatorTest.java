@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
 import com.labex.labexagent.tool.ToolDefinition;
+import com.labex.labexagent.tool.impl.TaskTool;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -55,6 +56,21 @@ class ToolArgumentSchemaValidatorTest {
         assertEquals("unknown_field", unknown.code());
         assertFalse(wrongType.valid());
         assertEquals("type_mismatch", wrongType.code());
+    }
+
+    @Test
+    void taskToolAcceptsBooleanBackgroundAndDoesNotAdvertiseUnusedTaskId() {
+        ToolDefinition definition = new TaskTool(null, null).definition();
+        JsonObject arguments = new JsonObject();
+        arguments.addProperty("description", "research tool contracts");
+        arguments.addProperty("background", true);
+
+        ToolArgumentSchemaValidator.Validation result = validator.validate(definition, arguments);
+
+        assertTrue(result.valid());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> properties = (Map<String, Object>) definition.getInputSchema().get("properties");
+        assertFalse(properties.containsKey("task_id"));
     }
 
     @Test

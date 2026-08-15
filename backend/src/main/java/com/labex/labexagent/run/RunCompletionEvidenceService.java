@@ -7,9 +7,11 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.labex.entity.AgentFileChange;
+import com.labex.entity.AgentPreviewRun;
 import com.labex.entity.AgentRunArtifact;
 import com.labex.entity.AgentVerification;
 import com.labex.mapper.AgentFileChangeMapper;
+import com.labex.mapper.AgentPreviewRunMapper;
 import com.labex.mapper.AgentVerificationMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -29,6 +31,7 @@ public class RunCompletionEvidenceService {
     private final AgentFileChangeMapper fileChangeMapper;
     private final AgentVerificationMapper verificationMapper;
     private final AgentRunArtifactService artifactService;
+    private final AgentPreviewRunMapper previewRunMapper;
     private final AgentRunExecutionLeaseService leaseService;
     private final RunCompletionPolicy policy = new RunCompletionPolicy();
 
@@ -36,17 +39,26 @@ public class RunCompletionEvidenceService {
     public RunCompletionEvidenceService(AgentFileChangeMapper fileChangeMapper,
                                         AgentVerificationMapper verificationMapper,
                                         AgentRunArtifactService artifactService,
+                                        AgentPreviewRunMapper previewRunMapper,
                                         AgentRunExecutionLeaseService leaseService) {
         this.fileChangeMapper = fileChangeMapper;
         this.verificationMapper = verificationMapper;
         this.artifactService = artifactService;
+        this.previewRunMapper = previewRunMapper;
         this.leaseService = leaseService;
     }
 
     public RunCompletionEvidenceService(AgentFileChangeMapper fileChangeMapper,
                                         AgentVerificationMapper verificationMapper,
+                                        AgentRunArtifactService artifactService,
+                                        AgentRunExecutionLeaseService leaseService) {
+        this(fileChangeMapper, verificationMapper, artifactService, null, leaseService);
+    }
+
+    public RunCompletionEvidenceService(AgentFileChangeMapper fileChangeMapper,
+                                        AgentVerificationMapper verificationMapper,
                                         AgentRunArtifactService artifactService) {
-        this(fileChangeMapper, verificationMapper, artifactService, null);
+        this(fileChangeMapper, verificationMapper, artifactService, null, null);
     }
 
     public RunCompletionEvidence evaluateAndPersist(Long taskId, Integer studentId, Integer projectId,
@@ -105,9 +117,10 @@ public class RunCompletionEvidenceService {
                 unresolvedRisks.add("post-edit diagnostics failed");
             }
         }
+        PreviewEvidence preview = latestPreview(taskId, studentId, projectId);
         RunCompletionEvidence evidence = policy.evaluate(new RunCompletionPolicy.Input(
                 taskId, changedFiles, passed, failed, environmentVerifications, manualFileVerification, runState,
-                unresolvedRisks));
+                unresolvedRisks, preview));
         RunCompletionEvidence existing = latest(taskId);
         if (sameEvidenceVersion(existing, evidence)) {
             return existing;
@@ -137,7 +150,33 @@ public class RunCompletionEvidenceService {
                 stringList(payload.getAsJsonArray("unresolvedRisks")),
                 criteria(payload.getAsJsonArray("criteria")),
                 payload.has("satisfied") && payload.get("satisfied").getAsBoolean(),
+                preview(payload.get("preview")),
                 parseGeneratedAt(payload.get("generatedAt")));
+    }
+
+    private PreviewEvidence latestPreview(Long taskId, Integer studentId, Integer projectId) {
+        if (previewRunMapper == null) {
+            return new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", "");
+        }
+        List<AgentPreviewRun> previews = previewRunMapper.selectList(new LambdaQueryWrapper<AgentPreviewRun>()
+                .eq(AgentPreviewRun::getTaskId, taskId)
+                .eq(AgentPreviewRun::getStudentId, studentId)
+                .eq(AgentPreviewRun::getProjectId, projectId)
+                .orderByDesc(AgentPreviewRun::getUpdateTime)
+                .orderByDesc(AgentPreviewRun::getCreateTime));
+        return previews == null || previews.isEmpty()
+                ? new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", "")
+                : PreviewEvidence.from(previews.get(0));
+    }
+
+    private PreviewEvidence preview(JsonElement value) {
+        if (value == null || value.isJsonNull() || !value.isJsonObject()) {
+            return new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", "");
+        }
+        JsonObject item = value.getAsJsonObject();
+        return new PreviewEvidence(PreviewEvidence.Status.from(stringValue(item.get("status"))),
+                stringValue(item.get("publicUrl")), stringValue(item.get("failureCode")),
+                stringValue(item.get("outputPath")));
     }
 
     private List<String> optionalStringList(JsonElement value) {
@@ -188,6 +227,7 @@ public class RunCompletionEvidenceService {
                 && Objects.equals(left.successfulVerifications(), right.successfulVerifications())
                 && Objects.equals(left.failedVerifications(), right.failedVerifications())
                 && Objects.equals(left.environmentVerifications(), right.environmentVerifications())
+                && Objects.equals(left.preview(), right.preview())
                 && Objects.equals(left.unresolvedRisks(), right.unresolvedRisks())
                 && Objects.equals(left.criteria(), right.criteria())
                 && left.satisfied() == right.satisfied();

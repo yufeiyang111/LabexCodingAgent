@@ -80,6 +80,13 @@ public final class AgentToolNarrator {
         String target = this.toolTarget(tool, args);
         String content = result == null ? "" : result.getContent();
         String compact = this.limitForThought(content, 180);
+        if (this.isCompletedNonZeroShellResult(result)) {
+            String exit = String.valueOf(result.getExecutionExitCode());
+            return this.isChineseLanguage(visibleLanguage)
+                    ? "命令已执行完毕，但退出码为 " + exit + "；需要结合输出判断下一步，不能直接视为验证通过。"
+                    : "The command completed with exit code " + exit
+                            + "; inspect its output before treating it as a successful verification.";
+        }
         if (this.isChineseLanguage(visibleLanguage)) {
             if (result == null || !result.isSuccess()) {
                 String err = compact.isBlank() ? "没有输出" : compact;
@@ -91,6 +98,9 @@ public final class AgentToolNarrator {
                 return failVariants[(int)(System.nanoTime() % failVariants.length)];
             }
             if (result.getPendingChangeId() != null) {
+                if (this.isVerificationAction(tool)) {
+                    return "\u547d\u4ee4\u5df2\u4fee\u6539\u5de5\u4f5c\u533a\u6587\u4ef6\uff0c\u53d8\u66f4\u5df2\u8bb0\u5f55\uff0c\u4e0b\u4e00\u6b65\u505a\u9a8c\u8bc1\u3002";
+                }
                 return "文件已修改" + this.withTarget(target) + "，变更已记录，下一步做验证。";
             }
             if (this.isWriteAction(tool)) {
@@ -127,6 +137,9 @@ public final class AgentToolNarrator {
             return failVariants[(int)(System.nanoTime() % failVariants.length)];
         }
         if (result.getPendingChangeId() != null) {
+            if (this.isVerificationAction(tool)) {
+                return "Command modified workspace files. Changes applied. Will verify next.";
+            }
             return "File modified" + this.withTarget(target) + ". Changes applied. Will verify next.";
         }
         if (this.isWriteAction(tool)) {
@@ -347,6 +360,12 @@ public final class AgentToolNarrator {
         return compact.length() <= max ? compact : compact.substring(0, max) + "...";
     }
 
+    private boolean isCompletedNonZeroShellResult(ToolResult result) {
+        return result != null && result.isSuccess()
+                && "failed".equals(result.getExecutionStatus())
+                && result.getExecutionExitCode() != null && result.getExecutionExitCode() != 0
+                && result.getContent() != null && result.getContent().contains("outcome=non_zero_exit");
+    }
     private boolean isChineseLanguage(String visibleLanguage) {
         return "zh".equalsIgnoreCase(visibleLanguage);
     }

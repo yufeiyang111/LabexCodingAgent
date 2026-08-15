@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -49,6 +50,7 @@ class AgentRunPartServiceTest {
         assertThat(result.getStatus()).isEqualTo("running");
         assertThat(result.getConversationId()).isEqualTo("conversation-7");
         assertThat(result.getInputJson()).contains("strategy").contains("test");
+        assertThat(result.getMetadata()).contains("executionEpoch").contains("4");
         verify(parts).insert(any(AgentRunPart.class));
     }
 
@@ -371,12 +373,135 @@ class AgentRunPartServiceTest {
         return task;
     }
 
+    @Test
+    void currentEpochToolHistoryExcludesPendingAndPreviousEpochParts() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentRunPart current = new AgentRunPart();
+        current.setTaskId(7L);
+        current.setPartType("tool");
+        current.setStatus("completed");
+        current.setMetadata("{\"executionEpoch\":4}");
+        AgentRunPart previous = new AgentRunPart();
+        previous.setTaskId(7L);
+        previous.setPartType("tool");
+        previous.setStatus("completed");
+        previous.setMetadata("{\"executionEpoch\":3}");
+        AgentRunPart pending = new AgentRunPart();
+        pending.setTaskId(7L);
+        pending.setPartType("tool");
+        pending.setStatus("pending");
+        pending.setMetadata("{\"executionEpoch\":4}");
+        when(parts.selectList(any())).thenReturn(List.of(current, previous, pending));
+
+        List<AgentRunPart> history = new AgentRunPartService(parts, mock(AgentTaskMapper.class), messageService())
+                .currentEpochToolHistory(7L, 4L);
+
+        assertThat(history).containsExactly(current);
+    }
+
+    @Test
+    void projectsLoopGuardProgressAsAStableCurrentEpochPart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(45L);
+        when(messages.recordEventMessage(anyLong(), anyString(), any(), anyLong())).thenReturn(message);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "LOOP_GUARD_PROGRESS", Map.of(
+                        "nonProgressIterations", 3,
+                        "reason", "unfinished_plan"), 30L);
+
+        assertThat(result.getPartKey()).isEqualTo("loop-guard:progress");
+        assertThat(result.getPartType()).isEqualTo("loop_guard_progress");
+        assertThat(result.getInputJson()).contains("nonProgressIterations").contains("3");
+        assertThat(result.getMetadata()).contains("executionEpoch").contains("4");
+    }
+
+    @Test
+    void projectsEachModelStepLifecycleOntoOneStablePart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(47L);
+        java.util.concurrent.atomic.AtomicReference<AgentRunPart> stored = new java.util.concurrent.atomic.AtomicReference<>();
+        when(messages.recordEventMessage(anyLong(), anyString(), any(), anyLong())).thenReturn(message);
+        when(parts.selectOne(any())).thenAnswer(invocation -> stored.get());
+        when(parts.insert(any(AgentRunPart.class))).thenAnswer(invocation -> {
+            AgentRunPart part = invocation.getArgument(0);
+            part.setPartId(92L);
+            stored.set(part);
+            return 1;
+        });
+        when(parts.updateById(any(AgentRunPart.class))).thenReturn(1);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        AgentRunPart started = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "MODEL_STEP_STARTED", Map.of(
+                        "iteration", 5, "executionEpoch", 4L), 40L);
+        AgentRunPart completed = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "MODEL_STEP_COMPLETED", Map.of(
+                        "iteration", 5, "executionEpoch", 4L, "resultType", "tool_call"), 41L);
+
+        assertThat(started.getPartId()).isEqualTo(92L);
+        assertThat(completed.getPartKey()).isEqualTo("model-step:5");
+        assertThat(completed.getPartType()).isEqualTo("model_step");
+        assertThat(completed.getStatus()).isEqualTo("completed");
+        assertThat(completed.getInputJson()).contains("resultType").contains("tool_call");
+        assertThat(completed.getMetadata()).contains("executionEpoch").contains("4");
+        verify(parts, times(1)).insert(any(AgentRunPart.class));
+        verify(parts, times(1)).updateById(any(AgentRunPart.class));
+    }
+
+    @Test
+    void recoveryInterruptsAnOpenModelStepPart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentRunPart open = new AgentRunPart();
+        open.setPartType("model_step");
+        open.setStatus("running");
+        when(parts.selectList(any())).thenReturn(List.of(open));
+        when(parts.updateById(open)).thenReturn(1);
+
+        int interrupted = new AgentRunPartService(parts, mock(AgentTaskMapper.class), messageService())
+                .interruptOpenParts(7L, "recovery restarted");
+
+        assertEquals(1, interrupted);
+        assertThat(open.getStatus()).isEqualTo("interrupted");
+        assertThat(open.getOutputText()).isEqualTo("recovery restarted");
+    }
+
+    @Test
+    void restoresLatestCurrentEpochLoopGuardProgressFromDurableEventParts() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentRunPart current = new AgentRunPart();
+        current.setPartType("loop_guard_progress");
+        current.setSequenceNumber(31L);
+        current.setMetadata("{\"executionEpoch\":4}");
+        current.setInputJson("{\"nonProgressIterations\":3}");
+        AgentRunPart previous = new AgentRunPart();
+        previous.setPartType("loop_guard_progress");
+        previous.setSequenceNumber(32L);
+        previous.setMetadata("{\"executionEpoch\":3}");
+        previous.setInputJson("{\"nonProgressIterations\":8}");
+        when(parts.selectList(any())).thenReturn(List.of(previous, current));
+
+        int restored = new AgentRunPartService(parts, mock(AgentTaskMapper.class), messageService())
+                .currentEpochLoopGuardProgress(7L, 4L);
+
+        assertEquals(3, restored);
+    }
+
     private AgentTask task() {
         AgentTask task = new AgentTask();
         task.setTaskId(7L);
         task.setConversationId("conversation-7");
         task.setStudentId(11);
         task.setProjectId(22);
+        task.setExecutionEpoch(4L);
         return task;
     }
 
@@ -470,6 +595,47 @@ class AgentRunPartServiceTest {
         assertThat(result.getInputJson()).contains("Visible summary");
         assertThat(result.getInputJson()).doesNotContain("private title");
         assertThat(result.getInputJson()).doesNotContainIgnoringCase("<think");
+    }
+
+    @Test
+    void persistsFinalizationBlockerAsOneStableCurrentEpochPart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(46L);
+        when(messages.recordEventMessage(anyLong(), anyString(), any(), anyLong())).thenReturn(message);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "FINALIZATION_BLOCKED", Map.of(
+                        "evidenceFingerprint", "evidence-a", "recoveryAttempt", 1, "recoveryAllowed", true), 24L);
+
+        assertThat(result.getPartType()).isEqualTo("finalization_blocker");
+        assertThat(result.getPartKey()).isEqualTo("finalization:evidence-a");
+        assertThat(result.getStatus()).isEqualTo("waiting");
+    }
+
+    @Test
+    void restoresFinalizationRecoveryAttemptsOnlyFromTheCurrentEpoch() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentRunPart current = new AgentRunPart();
+        current.setPartType("finalization_blocker");
+        current.setSequenceNumber(31L);
+        current.setMetadata("{\"executionEpoch\":4}");
+        current.setInputJson("{\"evidenceFingerprint\":\"evidence-a\",\"recoveryAttempt\":1}");
+        AgentRunPart previous = new AgentRunPart();
+        previous.setPartType("finalization_blocker");
+        previous.setSequenceNumber(32L);
+        previous.setMetadata("{\"executionEpoch\":3}");
+        previous.setInputJson("{\"evidenceFingerprint\":\"evidence-a\",\"recoveryAttempt\":8}");
+        when(parts.selectList(any())).thenReturn(List.of(previous, current));
+
+        int restored = new AgentRunPartService(parts, mock(AgentTaskMapper.class), messageService())
+                .currentEpochFinalizationRecoveryAttempts(7L, 4L, "evidence-a");
+
+        assertEquals(1, restored);
     }
 
 }

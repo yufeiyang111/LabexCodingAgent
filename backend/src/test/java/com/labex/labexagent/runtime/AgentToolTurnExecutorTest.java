@@ -14,6 +14,7 @@ import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolRegistry;
+import com.labex.labexagent.tool.impl.LspTool;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.List;
@@ -180,6 +181,80 @@ class AgentToolTurnExecutorTest {
         assertFalse(resolution.allowed());
         assertTrue(resolution.rejection().getContent().contains("参数"));
         assertEquals(0, calls.get());
+    }
+
+    @Test
+    void admitsLegacyAliasWhenItsCanonicalToolWasSelectedForTheTurn() {
+        AtomicInteger calls = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry(List.of(requiredStringTool("read_file", "file_path", calls)));
+        AgentContext context = context();
+        context.setSelectedToolNames(List.of("read_file"));
+        AgentToolTurnExecutor executor = new AgentToolTurnExecutor(registry);
+
+        var admission = executor.resolveNative(context,
+                new AgentModelTurnExecutor.NativeToolCall("read", "{\"file_path\":\"README.md\"}", "call-read", 0),
+                "en");
+
+        assertTrue(admission.allowed());
+        assertEquals("read_file", admission.tool().definition().getName());
+        assertEquals("README.md", admission.arguments().get("file_path").getAsString());
+    }
+
+    @Test
+    void normalizesLegacyShellArgumentsBeforeCanonicalSchemaValidation() {
+        AtomicInteger calls = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry(List.of(new AgentTool() {
+            public ToolDefinition definition() {
+                return ToolDefinition.builder().name("shell").description("shell")
+                        .stringProperty("command", "command", true)
+                        .stringProperty("workdir", "workdir", false)
+                        .intProperty("timeout", "timeout", false)
+                        .build();
+            }
+
+            public ToolResult execute(AgentContext context, JsonObject args) {
+                calls.incrementAndGet();
+                return ToolResult.ok("ok");
+            }
+        }));
+        AgentContext context = context();
+        context.setSelectedToolNames(List.of("shell"));
+        AgentToolTurnExecutor executor = new AgentToolTurnExecutor(registry);
+
+        var admission = executor.resolveNative(context,
+                new AgentModelTurnExecutor.NativeToolCall("shell",
+                        "{\"cmd\":\"pwd\",\"workingDirectory\":\"backend\",\"timeout_seconds\":5,\"network\":true}",
+                        "call-shell", 0),
+                "en");
+
+        assertTrue(admission.allowed());
+        assertEquals("pwd", admission.arguments().get("command").getAsString());
+        assertEquals("backend", admission.arguments().get("workdir").getAsString());
+        assertEquals(5_000, admission.arguments().get("timeout").getAsInt());
+        assertFalse(admission.arguments().has("cmd"));
+        assertFalse(admission.arguments().has("workingDirectory"));
+        assertFalse(admission.arguments().has("timeout_seconds"));
+        assertTrue(admission.arguments().get("network").getAsBoolean());
+    }
+
+    @Test
+    void mapsLegacyLspSymbolsCallsToTheCanonicalLspSchema() {
+        ToolRegistry registry = new ToolRegistry(List.of(new LspTool(null)));
+        AgentContext context = context();
+        context.setSelectedToolNames(List.of("lsp"));
+        AgentToolTurnExecutor executor = new AgentToolTurnExecutor(registry);
+
+        var admission = executor.resolveNative(context,
+                new AgentModelTurnExecutor.NativeToolCall("lsp_symbols",
+                        "{\"file_path\":\"src/Main.java\",\"max_symbols\":7,\"includeDeclaration\":\"false\"}", "call-symbols", 0),
+                "en");
+
+        assertTrue(admission.allowed());
+        assertEquals("lsp", admission.tool().definition().getName());
+        assertEquals("documentSymbol", admission.arguments().get("action").getAsString());
+        assertEquals(7, admission.arguments().get("max_results").getAsInt());
+        assertFalse(admission.arguments().get("include_declaration").getAsBoolean());
+        assertFalse(admission.arguments().has("max_symbols"));
     }
 
     @Test

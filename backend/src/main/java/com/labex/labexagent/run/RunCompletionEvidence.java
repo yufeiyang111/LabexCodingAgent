@@ -14,6 +14,7 @@ public record RunCompletionEvidence(
         List<String> unresolvedRisks,
         List<Criterion> criteria,
         boolean satisfied,
+        PreviewEvidence preview,
         LocalDateTime generatedAt) {
 
     private static final int MAX_ITEMS = 100;
@@ -26,7 +27,17 @@ public record RunCompletionEvidence(
         environmentVerifications = bounded(environmentVerifications);
         unresolvedRisks = bounded(unresolvedRisks);
         criteria = List.copyOf(criteria == null ? List.of() : criteria.stream().limit(MAX_ITEMS).toList());
+        preview = preview == null ? new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", "") : preview;
         generatedAt = generatedAt == null ? LocalDateTime.now() : generatedAt;
+    }
+
+    public RunCompletionEvidence(Long taskId, List<String> changedFiles, List<String> successfulVerifications,
+                                 List<String> failedVerifications, List<String> environmentVerifications,
+                                 List<String> unresolvedRisks, List<Criterion> criteria, boolean satisfied,
+                                 LocalDateTime generatedAt) {
+        this(taskId, changedFiles, successfulVerifications, failedVerifications, environmentVerifications,
+                unresolvedRisks, criteria, satisfied,
+                new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", ""), generatedAt);
     }
 
     public Map<String, Object> toPayload() {
@@ -38,6 +49,11 @@ public record RunCompletionEvidence(
         payload.put("environmentVerifications", environmentVerifications);
         payload.put("unresolvedRisks", unresolvedRisks);
         payload.put("criteria", criteria.stream().map(Criterion::toPayload).toList());
+        payload.put("preview", Map.of(
+                "status", preview.status().name().toLowerCase(java.util.Locale.ROOT),
+                "publicUrl", preview.publicUrl(),
+                "failureCode", preview.failureCode(),
+                "outputPath", preview.outputPath()));
         payload.put("satisfied", satisfied);
         payload.put("generatedAt", generatedAt.toString());
         return payload;

@@ -47,6 +47,23 @@ class EnvironmentBlockerClassifierTest {
     }
 
     @Test
+    void stillClassifiesNodeEnotfoundAsDnsFailure() {
+        var blocker = EnvironmentBlockerClassifier.classify("shell",
+                ToolResult.failed("npm ERR! code ENOTFOUND\nnpm ERR! request to https://registry.npmjs.org/example failed"));
+
+        assertThat(blocker).isPresent();
+        assertThat(blocker.orElseThrow().code()).isEqualTo("DNS_UNAVAILABLE");
+    }
+
+    @Test
+    void doesNotMisclassifyPythonFileNotFoundErrorAsNodeDnsFailure() {
+        var blocker = EnvironmentBlockerClassifier.classify("run_tests",
+                ToolResult.failed("Traceback (most recent call last):\nFileNotFoundError: [Errno 2] No such file or directory: 'Python'"));
+
+        assertThat(blocker).isEmpty();
+    }
+
+    @Test
     void doesNotBlockSuccessfulOrUnrelatedToolResults() {
         assertThat(EnvironmentBlockerClassifier.classify("run_tests", ToolResult.ok("exit=0"))).isEmpty();
         assertThat(EnvironmentBlockerClassifier.classify("web_search", ToolResult.failed("Unknown host api.example"))).isEmpty();

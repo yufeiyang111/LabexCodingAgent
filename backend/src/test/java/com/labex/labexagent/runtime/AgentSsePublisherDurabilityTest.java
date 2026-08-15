@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentRunEvent;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import java.io.IOException;
 import java.util.Map;
@@ -55,6 +56,23 @@ class AgentSsePublisherDurabilityTest {
         InOrder order = inOrder(lifecycle, emitter);
         order.verify(lifecycle).appendEvent(eq(71L), eq("THINK"), any(), anyString());
         order.verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+
+    @Test
+    void persistsWithTheBoundExecutionFence() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        ExecutionFence fence = new ExecutionFence(71L, "worker-a", 4L);
+        AgentRunEvent event = new AgentRunEvent();
+        event.setSequenceNumber(41L);
+        when(lifecycle.appendEvent(eq(fence), eq(71L), eq("THINK"), any(), anyString())).thenReturn(event);
+
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter);
+        publisher.bindRun(lifecycle, 71L, fence);
+        publisher.send("THINK", Map.of("content", "Inspecting the project"));
+
+        verify(lifecycle).appendEvent(eq(fence), eq(71L), eq("THINK"), any(), anyString());
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
     }
 
     @Test
@@ -229,4 +247,22 @@ class AgentSsePublisherDurabilityTest {
                 .map(item -> String.valueOf(item.getData()))
                 .collect(java.util.stream.Collectors.joining());
     }
+    @Test
+    void preservesACallerSuppliedStableIdempotencyKeyForFinalizationBlockers() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        ExecutionFence fence = new ExecutionFence(71L, "worker-a", 4L);
+        AgentRunEvent event = new AgentRunEvent();
+        event.setSequenceNumber(43L);
+        String key = "finalization-blocked-71-4-evidence-a-recovery-1";
+        when(lifecycle.appendEvent(eq(fence), eq(71L), eq("FINALIZATION_BLOCKED"), any(), eq(key)))
+                .thenReturn(event);
+
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter);
+        publisher.bindRun(lifecycle, 71L, fence);
+        publisher.send("FINALIZATION_BLOCKED", Map.of("reasonCode", "preview_url_mismatch"), key);
+
+        verify(lifecycle).appendEvent(eq(fence), eq(71L), eq("FINALIZATION_BLOCKED"), any(), eq(key));
+    }
+
 }

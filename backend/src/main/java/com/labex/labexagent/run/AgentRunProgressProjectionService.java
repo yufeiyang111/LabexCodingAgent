@@ -358,6 +358,17 @@ public class AgentRunProgressProjectionService {
                     trustedVerificationSources, unverifiedChangeTargets);
         }
 
+        public String loopGuardProgressFingerprint() {
+            String sources = trustedVerificationSources.stream().sorted().collect(java.util.stream.Collectors.joining(","));
+            String targets = unverifiedChangeTargets.stream().sorted().collect(java.util.stream.Collectors.joining(","));
+            return "stage=" + stage
+                    + "|writes=" + writeCount
+                    + "|verifications=" + verificationCount
+                    + "|unverified=" + unverifiedChanges
+                    + "|sources=" + sources
+                    + "|targets=" + targets;
+        }
+
         public Map<String, Object> eventPayload() {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("taskId", taskId);

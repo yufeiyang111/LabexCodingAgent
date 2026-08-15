@@ -143,6 +143,8 @@ Each plan item MUST be:
 - Verifiable: you can confirm completion by reading the file or running a command
 - Atomic: one logical change per item, not "do everything"
 - Bounded: has a clear done condition
+- Verification steps must name the evidence type (test, build, lint, or HTTP preview) and include `target=<path-or-module>` when the target is narrower than the whole workspace.
+- Homepage or URL availability can only be completed after the dedicated preview reports HTTP readiness; a unit test does not prove a server is reachable.
 
 GOOD plan items:
 - "Read app.py to understand current route structure"
@@ -302,7 +304,9 @@ Do not reveal internal tool names, function names, or system implementation deta
         return """
 <tools>
 ## Tool usage guidelines
-- Prefer structured tools over shell for file operations
+- Prefer structured tools over shell for file operations: use grep, glob, list_files, and read_file before shell searches
+- If a workspace path is uncertain, use glob or list_files before retrying read_file or grep
+- A shell command with a non-zero exit code is not a successful test or build; inspect exit and output before making a completion claim
 - Use planning tools for multi-step tasks
 - Read files before editing (once per file per task)
 - Use repository mapping before reading many files in an unfamiliar codebase

@@ -3,9 +3,12 @@ package com.labex.labexagent.run;
 import com.labex.labexagent.tool.ToolResult;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /** 识别依赖下载、DNS 和网络基础设施失败，禁止 Agent 把环境故障当成代码故障反复修改。 */
 public final class EnvironmentBlockerClassifier {
+    private static final Pattern NODE_DNS_NOT_FOUND = Pattern.compile("\\benotfound\\b");
+
     private EnvironmentBlockerClassifier() { }
 
     public static Optional<Blocker> classify(String toolName, ToolResult result) {
@@ -20,7 +23,8 @@ public final class EnvironmentBlockerClassifier {
                     "同一外部环境阻塞已经被熔断；请先恢复环境或显式切换到离线验证策略"));
         }
         if (containsAny(output, "unknown host", "could not resolve host", "temporary failure in name resolution",
-                "getaddrinfo", "enotfound", "name or service not known", "unknownhostexception")) {
+                "getaddrinfo", "name or service not known", "unknownhostexception")
+                || NODE_DNS_NOT_FOUND.matcher(output).find()) {
             return Optional.of(new Blocker("DNS_UNAVAILABLE",
                     "依赖仓库域名无法解析，请先恢复 DNS/网络后再重试。"));
         }

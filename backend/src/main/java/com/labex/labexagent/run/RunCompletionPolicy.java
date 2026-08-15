@@ -9,7 +9,8 @@ import java.util.Locale;
 public final class RunCompletionPolicy {
     public RunCompletionEvidence evaluate(Input input) {
         Input safe = input == null
-                ? new Input(null, List.of(), List.of(), List.of(), List.of(), false, "unknown", List.of())
+                ? new Input(null, List.of(), List.of(), List.of(), List.of(), false, "unknown", List.of(),
+                new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", ""))
                 : input;
         List<String> risks = new ArrayList<>(safe.unresolvedRisks());
         String state = safe.runState() == null ? "unknown" : safe.runState().toLowerCase(Locale.ROOT);
@@ -34,28 +35,40 @@ public final class RunCompletionPolicy {
                         safe.environmentVerifications().isEmpty() ? "none" : String.join(", ", safe.environmentVerifications())),
                 new RunCompletionEvidence.Criterion("unresolved_risks", "没有未解决风险", safe.unresolvedRisks().isEmpty(),
                         safe.unresolvedRisks().isEmpty() ? "none" : String.join(", ", safe.unresolvedRisks())),
+                new RunCompletionEvidence.Criterion("preview_fact", "预览状态已持久化", true,
+                        safe.preview().status().name().toLowerCase(Locale.ROOT)),
                 new RunCompletionEvidence.Criterion("changed_files_verified", "改动已验证", !hasChanges || verified,
                         hasChanges ? (verified ? "verified" : "missing verification") : "informational task"));
         return new RunCompletionEvidence(safe.taskId(), safe.changedFiles(), safe.successfulVerifications(),
                 safe.failedVerifications(), safe.environmentVerifications(), risks, criteria, risks.isEmpty(),
-                LocalDateTime.now());
+                safe.preview(), LocalDateTime.now());
     }
 
     public record Input(Long taskId, List<String> changedFiles, List<String> successfulVerifications,
                         List<String> failedVerifications, List<String> environmentVerifications,
                         boolean manualFileVerification, String runState,
-                        List<String> unresolvedRisks) {
+                        List<String> unresolvedRisks, PreviewEvidence preview) {
+        public Input(Long taskId, List<String> changedFiles, List<String> successfulVerifications,
+                     List<String> failedVerifications, List<String> environmentVerifications,
+                     boolean manualFileVerification, String runState, List<String> unresolvedRisks) {
+            this(taskId, changedFiles, successfulVerifications, failedVerifications, environmentVerifications,
+                    manualFileVerification, runState, unresolvedRisks,
+                    new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", ""));
+        }
+
         public Input(Long taskId, List<String> changedFiles, List<String> successfulVerifications,
                      List<String> failedVerifications, boolean manualFileVerification, String runState) {
             this(taskId, changedFiles, successfulVerifications, failedVerifications, List.of(),
-                    manualFileVerification, runState, List.of());
+                    manualFileVerification, runState, List.of(),
+                    new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", ""));
         }
 
         public Input(Long taskId, List<String> changedFiles, List<String> successfulVerifications,
                      List<String> failedVerifications, boolean manualFileVerification, String runState,
                      List<String> unresolvedRisks) {
             this(taskId, changedFiles, successfulVerifications, failedVerifications, List.of(),
-                    manualFileVerification, runState, unresolvedRisks);
+                    manualFileVerification, runState, unresolvedRisks,
+                    new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", ""));
         }
 
         public Input {
@@ -64,6 +77,7 @@ public final class RunCompletionPolicy {
             failedVerifications = List.copyOf(failedVerifications == null ? List.of() : failedVerifications);
             environmentVerifications = List.copyOf(environmentVerifications == null ? List.of() : environmentVerifications);
             unresolvedRisks = List.copyOf(unresolvedRisks == null ? List.of() : unresolvedRisks);
+            preview = preview == null ? new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", "") : preview;
         }
     }
 }

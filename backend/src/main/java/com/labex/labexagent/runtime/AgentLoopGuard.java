@@ -29,6 +29,7 @@ public final class AgentLoopGuard {
     private final Map<String, Integer> failedToolSignatures = new HashMap<>();
     private int automaticStrategySwitches;
     private int nonProgressIterations;
+    private String progressFingerprint;
 
     public AgentLoopGuard(AgentLoopProperties properties) {
         if (properties == null) {
@@ -60,6 +61,14 @@ public final class AgentLoopGuard {
         nonProgressIterations = Math.min(100_000, nonProgressIterations + 1);
     }
 
+    public void restoreNonProgressIterations(int durableCount) {
+        nonProgressIterations = Math.max(0, Math.min(100_000, durableCount));
+    }
+
+    public int nonProgressIterations() {
+        return nonProgressIterations;
+    }
+
     public void recordToolResult(boolean success) {
         recordToolResult("", success);
     }
@@ -78,7 +87,17 @@ public final class AgentLoopGuard {
         }
     }
 
+    public void restoreDurableToolCall(String toolName, JsonObject arguments) {
+        recentToolSignatures.addLast(canonicalSignature(toolName, arguments));
+        trimHistory();
+    }
+
     public ToolDecision beforeToolCall(String toolName, JsonObject arguments) {
+        return beforeToolCall(toolName, arguments, "");
+    }
+
+    public ToolDecision beforeToolCall(String toolName, JsonObject arguments, String durableProgressFingerprint) {
+        resetAttemptHistoryWhenProgressChanges(durableProgressFingerprint);
         String signature = canonicalSignature(toolName, arguments);
         recentToolSignatures.addLast(signature);
         trimHistory();
@@ -130,6 +149,21 @@ public final class AgentLoopGuard {
                 "The agent retried an equivalent failed tool call after a required strategy change.",
                 1,
                 patternKey);
+    }
+
+    private void resetAttemptHistoryWhenProgressChanges(String durableProgressFingerprint) {
+        String next = durableProgressFingerprint == null ? "" : durableProgressFingerprint.strip();
+        if (next.isBlank()) {
+            return;
+        }
+        if (progressFingerprint != null && !progressFingerprint.equals(next)) {
+            recentToolSignatures.clear();
+            challengedPatterns.clear();
+            failedToolSignatures.clear();
+            automaticStrategySwitches = 0;
+            nonProgressIterations = 0;
+        }
+        progressFingerprint = next;
     }
 
     private void trimHistory() {
