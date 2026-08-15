@@ -21,9 +21,9 @@ public class ImageUnderstandingTool implements AgentTool {
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("understand_image")
-                .description("读取并分析图片内容，支持 data URL、HTTP/HTTPS 图片 URL 或本地图片路径。适合识别截图、OCR文字、图表、代码和报错。")
-                .stringProperty("prompt", "对图片的提问或分析要求", true)
-                .stringProperty("image_url", "图片来源，支持 data URL、HTTP/HTTPS URL 或本地图片路径", true)
+                .description("Analyze image content from a data URL, an HTTP(S) image URL, or a local image path. Use it for screenshots, OCR text, charts, code, and error messages.")
+                .stringProperty("prompt", "Question or analysis request for the image", true)
+                .stringProperty("image_url", "Image source: a data URL, HTTP(S) URL, or local image path", true)
                 .build();
     }
 

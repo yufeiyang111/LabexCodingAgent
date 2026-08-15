@@ -5,6 +5,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunPlanService;
+import com.labex.labexagent.run.AgentRunProgressProjectionService;
+import com.labex.labexagent.run.PlanVerificationEvidenceService;
 import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.AgentTool;
@@ -27,9 +29,25 @@ public class CreatePlanTool implements AgentTool {
             "全部测试", "修好一切");
 
     private final AgentRunPlanService planService;
+    private final AgentRunProgressProjectionService progressProjectionService;
+    private final PlanVerificationEvidenceService verificationEvidenceService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public CreatePlanTool(AgentRunPlanService planService,
+                          AgentRunProgressProjectionService progressProjectionService,
+                          PlanVerificationEvidenceService verificationEvidenceService) {
+        this.planService = planService;
+        this.progressProjectionService = progressProjectionService;
+        this.verificationEvidenceService = verificationEvidenceService;
+    }
+
+    public CreatePlanTool(AgentRunPlanService planService,
+                          AgentRunProgressProjectionService progressProjectionService) {
+        this(planService, progressProjectionService, null);
+    }
 
     public CreatePlanTool(AgentRunPlanService planService) {
-        this.planService = planService;
+        this(planService, null, null);
     }
 
     @Override
@@ -37,17 +55,17 @@ public class CreatePlanTool implements AgentTool {
         Map<String, Object> taskItem = Map.of(
                 "type", "object",
                 "properties", Map.of(
-                        "title", Map.of("type", "string", "description", "任务标题"),
-                        "description", Map.of("type", "string", "description", "任务描述")),
+                        "title", Map.of("type", "string", "description", "Task title"),
+                        "description", Map.of("type", "string", "description", "Task description")),
                 "required", List.of("title"));
         return ToolDefinition.builder()
                 .name("create_plan")
-                .description("创建或管理当前 Agent task 的持久化执行计划。完成一步后应立即标记完成。")
-                .stringProperty("action", "操作类型: create, complete, update", false)
-                .arrayProperty("tasks", "任务列表（create 时必填）", taskItem, false)
-                .intProperty("task_index", "任务序号（complete/update 时使用，从 1 开始）", false)
-                .stringProperty("title", "更新后的任务标题（update 时使用）", false)
-                .stringProperty("description", "更新后的任务描述（update 时使用）", false)
+                .description("Create or manage the durable execution plan for the current agent task. Mark each step complete promptly after its work is finished.")
+                .stringProperty("action", "Operation: create, complete, or update", false)
+                .arrayProperty("tasks", "Task list (required for create)", taskItem, false)
+                .intProperty("task_index", "Task index (used by complete or update; starts at 1)", false)
+                .stringProperty("title", "Updated task title (used by update)", false)
+                .stringProperty("description", "Updated task description (used by update)", false)
                 .build();
     }
 
@@ -123,7 +141,16 @@ public class CreatePlanTool implements AgentTool {
             return ToolResult.failed("task_index 超出范围，有效范围: 1-" + current.items().size());
         }
         AgentRunPlanService.PlanItem item = current.items().get(index);
-        if (requiresVerification(item) && !context.hasTrustedVerification()) {
+        refreshDurableProgress(context);
+        if (verificationEvidenceService != null) {
+            PlanVerificationEvidenceService.Assessment assessment = verificationEvidenceService.assess(
+                    context.getTaskId(), context.getExecutionEpoch(), item);
+            if (assessment.required() && !assessment.satisfied()) {
+                return ToolResult.failed("verification_required\nreason=" + assessment.reasonCode()
+                        + "\nrequirement_kind=" + assessment.requirementKind()
+                        + "\nrequired_target=" + assessment.requiredTarget());
+            }
+        } else if (requiresVerification(item) && !context.hasTrustedVerification()) {
             return ToolResult.failed("Verification task cannot be completed before a successful test, build, or manual file verification.");
         }
         AgentRunPlanService.Projection updated = planService.complete(
@@ -179,6 +206,17 @@ public class CreatePlanTool implements AgentTool {
                     AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.INVALID_FENCE);
         }
         return fence;
+    }
+
+    private void refreshDurableProgress(AgentContext context) {
+        if (progressProjectionService == null || context == null || context.getTaskId() == null) {
+            return;
+        }
+        AgentRunProgressProjectionService.Projection projection = progressProjectionService.load(
+                context.getTaskId(), context.getExecutionEpoch());
+        if (projection != null) {
+            projection.applyTo(context);
+        }
     }
 
     private boolean requiresVerification(AgentRunPlanService.PlanItem item) {

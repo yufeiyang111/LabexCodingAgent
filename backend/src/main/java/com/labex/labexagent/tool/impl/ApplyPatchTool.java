@@ -32,15 +32,15 @@ public class ApplyPatchTool implements AgentTool {
 
     public ToolDefinition definition() {
         Map<String, Object> changeItem = Map.of("type", "object", "properties", Map.of(
-                "path", Map.of("type", "string", "description", "文件路径"),
-                "operation", Map.of("type", "string", "description", "操作: create/replace/delete"),
-                "content", Map.of("type", "string", "description", "文件内容（create 时必填）"),
-                "old_string", Map.of("type", "string", "description", "旧内容（replace 时必填且必须唯一匹配）"),
-                "new_string", Map.of("type", "string", "description", "新内容（replace 时必填）")),
+                "path", Map.of("type", "string", "description", "File path"),
+                "operation", Map.of("type", "string", "description", "Operation: create, replace, or delete"),
+                "content", Map.of("type", "string", "description", "File content (required for create)"),
+                "old_string", Map.of("type", "string", "description", "Existing content (required for replace and must match exactly once)"),
+                "new_string", Map.of("type", "string", "description", "Replacement content (required for replace)")),
                 "required", List.of("path", "operation"));
         return ToolDefinition.builder().name("apply_patch")
-                .description("批量创建/修改/删除文件，文件会自动应用并记录变更历史，支持回退。适合一次提交多个文件变更。")
-                .arrayProperty("changes", "变更列表", changeItem, true).build();
+                .description("Create, replace, or delete multiple files in one operation. Changes are applied immediately, recorded in history, and can be reverted.")
+                .arrayProperty("changes", "List of file changes", changeItem, true).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
@@ -146,10 +146,10 @@ public class ApplyPatchTool implements AgentTool {
 
     private String inferredOperation(JsonObject change) {
         String explicit = stringValue(change, "operation");
-        if (!explicit.isBlank()) return explicit;
-        if (change.has("old_string") && change.has("new_string")) return "replace";
-        if (change.has("content")) return "create";
-        return "";
+        if (explicit.isBlank()) {
+            throw new IllegalArgumentException("operation is required");
+        }
+        return explicit;
     }
 
     private String stringValue(JsonObject object, String name) {

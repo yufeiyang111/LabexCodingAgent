@@ -68,10 +68,28 @@ public class ToolResult {
      */
     public static ToolResult fromProcessExecution(
             ProcessExecutionResult execution, String shell, String workdir, String displayOutputPath) {
+        return fromProcessExecution(execution, shell, workdir, displayOutputPath, false);
+    }
+
+    /**
+     * Shell 的非零退出码是模型需要解释的命令结果，而不是 Worker 已失效的证据。
+     * 专用验证工具仍应使用 {@link #fromProcessExecution(ProcessExecutionResult, String, String, String)}。
+     */
+    public static ToolResult fromObservedProcessExecution(
+            ProcessExecutionResult execution, String shell, String workdir, String displayOutputPath) {
+        return fromProcessExecution(execution, shell, workdir, displayOutputPath, true);
+    }
+
+    private static ToolResult fromProcessExecution(
+            ProcessExecutionResult execution, String shell, String workdir, String displayOutputPath,
+            boolean observeCompletedNonZeroExit) {
         if (execution == null) {
             return ToolResult.failed("Process execution result is unavailable");
         }
         String status = execution.status().name().toLowerCase(java.util.Locale.ROOT);
+        boolean completedNonZeroExit = observeCompletedNonZeroExit
+                && execution.status() == com.labex.labexagent.execution.ExecutionStatus.FAILED
+                && execution.exitCode() != null;
         String safeOutputPath = displayOutputPath == null || displayOutputPath.isBlank()
                 ? null : displayOutputPath;
         String visibleOutput = execution.output();
@@ -80,6 +98,10 @@ public class ToolResult {
                     safeOutputPath == null ? "<workspace-artifact>" : safeOutputPath);
         }
         StringBuilder content = new StringBuilder();
+        if (completedNonZeroExit) {
+            content.append("execution=completed\n");
+            content.append("outcome=non_zero_exit\n");
+        }
         content.append("exit=").append(execution.exitCode() == null ? "none" : execution.exitCode()).append('\n');
         content.append("status=").append(status).append('\n');
         content.append("duration_ms=").append(execution.durationMs()).append('\n');
@@ -97,7 +119,8 @@ public class ToolResult {
         if (!visibleOutput.isBlank()) {
             content.append('\n').append(visibleOutput);
         }
-        ToolResult result = execution.succeeded() ? ToolResult.ok(content.toString()) : ToolResult.failed(content.toString());
+        ToolResult result = execution.succeeded() || completedNonZeroExit
+                ? ToolResult.ok(content.toString()) : ToolResult.failed(content.toString());
         result.executionStatus = status;
         result.executionExitCode = execution.exitCode();
         result.executionDurationMs = execution.durationMs();

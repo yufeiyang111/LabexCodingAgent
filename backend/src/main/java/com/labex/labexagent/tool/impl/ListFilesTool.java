@@ -27,9 +27,9 @@ public class ListFilesTool implements AgentTool {
     }
 
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("list_files").description("递归列出目录树，忽略常见构建/依赖/缓存目录。")
-                .stringProperty("path", "目录路径（默认当前项目根目录）", false)
-                .intProperty("max_depth", "最大递归深度（默认3）", false).build();
+        return ToolDefinition.builder().name("list_files").description("Recursively list a directory tree while ignoring common build, dependency, and cache directories.")
+                .stringProperty("path", "Directory path; defaults to the workspace root", false)
+                .intProperty("max_depth", "Maximum recursion depth; default 3", false).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {

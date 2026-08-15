@@ -18,6 +18,8 @@ import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.AgentRunPlanService;
 import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.runtime.AgentContext;
+import com.labex.labexagent.run.AgentRunProgressProjectionService;
+import com.labex.labexagent.run.PlanVerificationEvidenceService;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,7 +46,12 @@ class CreatePlanToolVerificationTest {
         when(plans.replace(eq(fence), eq(71L), eq(4L), Mockito.anyList(), eq("create_plan"))).thenReturn(active);
         when(plans.load(71L)).thenReturn(active);
         when(plans.complete(eq(fence), eq(71L), eq(4L), eq(0), eq("create_plan"))).thenReturn(completed);
-        CreatePlanTool tool = new CreatePlanTool(plans);
+        AgentRunProgressProjectionService progress = Mockito.mock(AgentRunProgressProjectionService.class);
+        when(progress.load(71L, 4L)).thenReturn(progressProjection(java.util.Set.of()));
+        PlanVerificationEvidenceService evidence = Mockito.mock(PlanVerificationEvidenceService.class);
+        when(evidence.assess(eq(71L), eq(4L), any())).thenReturn(
+                new PlanVerificationEvidenceService.Assessment(true, false, "verification_missing", "build", "", ""));
+        CreatePlanTool tool = new CreatePlanTool(plans, progress, evidence);
         AgentContext context = new AgentContext("session-1", 7, null, "conversation-1", 71L, workspace,
                 new ArrayList<>(), 0);
         context.setExecutionEpoch(4L);
@@ -68,13 +75,12 @@ class CreatePlanToolVerificationTest {
         complete.addProperty("action", "complete");
         complete.addProperty("task_index", 1);
         assertThat(tool.execute(context, complete).isSuccess()).isFalse();
-        context.applyExecutionProgressProjection("verify", 0, 1, false,
-                java.util.Set.of(), java.util.Set.of());
         assertThat(tool.execute(context, complete).isSuccess()).isFalse();
         verify(plans, never()).complete(eq(fence), eq(71L), eq(4L), eq(0), eq("create_plan"));
 
-        context.applyExecutionProgressProjection("verify", 0, 1, false,
-                java.util.Set.of("run_tests"), java.util.Set.of());
+        when(progress.load(71L, 4L)).thenReturn(progressProjection(java.util.Set.of("run_tests")));
+        when(evidence.assess(eq(71L), eq(4L), any())).thenReturn(
+                new PlanVerificationEvidenceService.Assessment(true, true, "", "build", "", "run_tests"));
         assertThat(tool.execute(context, complete).isSuccess()).isTrue();
         verify(plans).complete(eq(fence), eq(71L), eq(4L), eq(0), eq("create_plan"));
         assertThat(context.getPlan().get(0).isCompleted()).isTrue();
@@ -82,10 +88,18 @@ class CreatePlanToolVerificationTest {
         assertThat(context.getPlanRevision()).isEqualTo(2L);
     }
 
+
+    private AgentRunProgressProjectionService.Projection progressProjection(java.util.Set<String> trustedSources) {
+        return new AgentRunProgressProjectionService.Projection(
+                71L, 4L, "verify", 0, trustedSources.isEmpty() ? 0 : 1, false,
+                trustedSources, java.util.Set.of(), "call-1", "run_tests", "success", "",
+                "", "running", "", "", "", 1L, 1L, "agent_run_part_event");
+    }
+
     @Test
     void rejectsPlanWriteWithoutAnActiveFenceBeforeCallingThePlanService() throws Exception {
         AgentRunPlanService plans = Mockito.mock(AgentRunPlanService.class);
-        CreatePlanTool tool = new CreatePlanTool(plans);
+        CreatePlanTool tool = new CreatePlanTool(plans, Mockito.mock(AgentRunProgressProjectionService.class));
         AgentContext context = new AgentContext("session-1", 7, null, "conversation-1", 71L, workspace,
                 new ArrayList<>(), 0);
         context.setExecutionEpoch(4L);

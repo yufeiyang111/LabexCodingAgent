@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
 public class SearchCodeTool
 implements AgentTool {
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("search_code").description("\u5728\u6587\u4ef6\u5185\u5bb9\u4e2d\u641c\u7d22\u6307\u5b9a\u6587\u672c\uff0c\u8fd4\u56de\u6587\u4ef6\u548c\u884c\u53f7").stringProperty("query", "\u641c\u7d22\u5173\u952e\u8bcd", true).stringProperty("include_pattern", "\u6587\u4ef6\u8fc7\u6ee4\u6a21\u5f0f\uff08\u5982 '*.java'\uff09", false).intProperty("max_results", "\u6700\u5927\u8fd4\u56de\u7ed3\u679c\u6570\uff08\u9ed8\u8ba420\uff09", false).build();
+        return ToolDefinition.builder().name("search_code").description("Search for text in file contents and return paths and line numbers").stringProperty("query", "Search keywords", true).stringProperty("include_pattern", "File filter pattern, for example '*.java'", false).intProperty("max_results", "Maximum result count; default 20", false).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {

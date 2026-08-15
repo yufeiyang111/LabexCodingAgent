@@ -56,17 +56,11 @@ public class RunCommandTool implements AgentTool {
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("shell")
-                .description("在 Worker 中执行完整 Bash 或 PowerShell 命令；请优先使用 workdir，不要用 cd 替代工作目录参数。")
-                .stringProperty("command", "完整 Shell 命令字符串", true)
-                .intProperty("timeout", "超时毫秒数，默认按命令类别计算", false)
-                .stringProperty("workdir", "workspace 内相对工作目录，不填则使用根目录", false)
-                .stringProperty("description", "简短的人类可读执行说明，5-10 个词", false)
-                // 兼容旧模型输入；系统提示词使用 workdir/timeout。
-                .stringProperty("working_directory", "兼容字段：映射到 workdir", false)
-                .stringProperty("workingDirectory", "兼容字段：映射到 workdir", false)
-                .stringProperty("cwd", "兼容字段：映射到 workdir", false)
-                .intProperty("timeout_seconds", "兼容字段：映射到 timeout 毫秒", false)
-                .booleanProperty("network", "兼容字段；opencode profile 由执行配置决定网络能力", false)
+                .description("Run a complete Bash or PowerShell command in the worker. Prefer workdir instead of using cd to select the working directory.")
+                .stringProperty("command", "Complete shell command string", true)
+                .intProperty("timeout", "Timeout in milliseconds; defaults by command category", false)
+                .stringProperty("workdir", "Workspace-relative working directory; defaults to the workspace root", false)
+                .stringProperty("description", "Short human-readable execution summary, 5-10 words", false)
                 .build();
     }
 
@@ -109,7 +103,7 @@ public class RunCommandTool implements AgentTool {
         WorkerShellExecutor.PreparedExecution prepared = shellExecutor.prepare(
                 descriptor, command, workingPath, Duration.ofMillis(timeoutMs),
                 MAX_OUTPUT_CHARS, artifact.absolutePath());
-        return ToolResult.fromProcessExecution(shellExecutor.execute(run, prepared, context.getCancellationToken()),
+        return ToolResult.fromObservedProcessExecution(shellExecutor.execute(run, prepared, context.getCancellationToken()),
                 descriptor.shellName(), relativeWorkdir(context, workingPath), artifact.relativePath());
     }
 
@@ -133,7 +127,7 @@ public class RunCommandTool implements AgentTool {
             List<String> argv = DirectCommandTokenizer.tokenize(classification.normalizedCommand().canonicalCommand());
             ToolSupport.ProcessOutputArtifact artifact = ToolSupport.processOutputArtifact(
                     context, definition().getName(), currentToolCallId());
-            return ToolResult.fromProcessExecution(sandboxWorker.execute(run, new ProcessExecutionRequest(
+            return ToolResult.fromObservedProcessExecution(sandboxWorker.execute(run, new ProcessExecutionRequest(
                     argv, workingPath, Duration.ofMillis(timeoutMs), MAX_OUTPUT_CHARS,
                     artifact.absolutePath()), context.getCancellationToken()),
                     "direct", relativeWorkdir(context, workingPath), artifact.relativePath());

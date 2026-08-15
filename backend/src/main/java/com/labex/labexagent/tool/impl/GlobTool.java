@@ -22,9 +22,9 @@ public class GlobTool implements AgentTool {
     }
 
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("glob").description("按 glob 模式查找文件路径。适合先定位文件，避免读取整个项目。")
+        return ToolDefinition.builder().name("glob").description("Find paths by glob pattern. Use it to locate candidate files before reading and avoid broad project reads.")
                 .stringProperty("pattern", "glob pattern, e.g. **/*.java or frontend/src/**/*.vue", true)
-                .intProperty("max_results", "最大返回条数，默认80", false).build();
+                .intProperty("max_results", "Maximum result count; default 80", false).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {

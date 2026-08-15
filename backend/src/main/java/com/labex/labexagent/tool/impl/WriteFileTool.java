@@ -31,9 +31,9 @@ public class WriteFileTool implements AgentTool {
 
     public ToolDefinition definition() {
         return ToolDefinition.builder().name("write_file")
-                .description("\u521b\u5efa\u65b0\u6587\u4ef6\u6216\u5b8c\u5168\u8986\u76d6\u5df2\u6709\u6587\u4ef6\u7684\u5185\u5bb9\uff0c\u6587\u4ef6\u4f1a\u81ea\u52a8\u5199\u5165\u5e76\u8bb0\u5f55\u53d8\u66f4\u5386\u53f2\uff0c\u652f\u6301\u56de\u9000")
-                .stringProperty("file_path", "\u6587\u4ef6\u8def\u5f84", true)
-                .stringProperty("content", "\u6587\u4ef6\u5185\u5bb9", true)
+                .description("Create a new file or replace the entire content of an existing file. Changes are applied immediately, recorded in history, and can be reverted.")
+                .stringProperty("file_path", "File path", true)
+                .stringProperty("content", "File content", true)
                 .build();
     }
 

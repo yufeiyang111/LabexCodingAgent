@@ -116,7 +116,7 @@ class EditFileToolTest {
         ToolResult result = tool.execute(context(), args("file_path", "Main.java", "old_string", "placeholder", "new_string", "placeholder"));
 
         assertFalse(result.isSuccess());
-        assertEquals("未找到要替换的内容", result.getContent());
+        assertEquals("code=NO_OP_EDIT\nmessage=new_string is identical to the matched old_string", result.getContent());
         verifyNoInteractions(diffService);
     }
 

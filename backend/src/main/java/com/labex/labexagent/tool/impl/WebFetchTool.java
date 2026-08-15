@@ -36,7 +36,7 @@ implements AgentTool {
     }
 
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("web_fetch").description("\u6293\u53d6\u4e00\u4e2a\u7f51\u9875\u6216\u539f\u59cb\u6587\u672c URL \u7684\u5185\u5bb9\u3002\u7528\u4e8e\u8bfb\u53d6\u6587\u6863\u3001README\u3001raw \u6587\u4ef6\u3002").stringProperty("url", "URL to fetch", true).intProperty("max_chars", "\u6700\u5927\u8fd4\u56de\u5b57\u7b26\u6570\uff0c\u9ed8\u8ba412000", false).build();
+        return ToolDefinition.builder().name("web_fetch").description("Fetch content from a webpage or raw-text URL. Use it to read documentation, README files, and raw files.").stringProperty("url", "URL to fetch", true).intProperty("max_chars", "Maximum characters to return; default 12000", false).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {

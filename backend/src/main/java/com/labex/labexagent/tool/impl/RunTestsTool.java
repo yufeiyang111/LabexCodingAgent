@@ -88,10 +88,10 @@ public class RunTestsTool implements AgentTool {
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("run_tests")
-                .description("按服务端验证策略运行受限的直接 argv 命令；支持 auto/test/compile/build/offline_test/manual。")
-                .stringProperty("strategy", "验证策略：auto、test、compile、build、offline_test 或 manual；不传则使用服务端配置。", false)
-                .stringProperty("target_path", "需要验证的项目内文件或模块路径；跨模块改动时应分别调用。", false)
-                .intProperty("timeout_seconds", "超时时间；默认按构建工具动态选择（Maven/Gradle 300 秒，Node 240 秒，Python 180 秒）。", false)
+                .description("Run a restricted direct argv command under the server verification policy. Supports auto, test, compile, build, offline_test, and manual.")
+                .stringProperty("strategy", "Verification strategy: auto, test, compile, build, offline_test, or manual; defaults to server configuration", false)
+                .stringProperty("target_path", "Project file or module path to verify; call separately for changes spanning multiple modules", false)
+                .intProperty("timeout_seconds", "Timeout in seconds; defaults by build tool: Maven/Gradle 300, Node 240, Python 180", false)
                 .build();
     }
 

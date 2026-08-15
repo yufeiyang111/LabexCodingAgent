@@ -29,13 +29,13 @@ class ShellToolContractTest {
     Path workspace;
 
     @Test
-    void exposesOpenCodeShellArgumentsAndKeepsLegacyAliases() {
+    void exposesOnlyCanonicalShellArgumentsToTheModel() {
         ToolDefinition definition = new RunCommandTool(mock(SandboxWorker.class)).definition();
 
         @SuppressWarnings("unchecked")
         Map<String, Object> properties = (Map<String, Object>) definition.getInputSchema().get("properties");
         assertThat(properties).containsKeys("command", "workdir", "timeout", "description");
-        assertThat(properties).containsKeys("working_directory", "timeout_seconds");
+        assertThat(properties).doesNotContainKeys("working_directory", "workingDirectory", "cwd", "timeout_seconds", "network");
     }
 
     @Test
@@ -103,7 +103,26 @@ class ShellToolContractTest {
     }
 
     @Test
-    void preservesFailureMetadataForTheModel() throws Exception {
+    void treatsAnObservedNonZeroShellExitAsACompletedToolCall() throws Exception {
+        SandboxWorker worker = mock(SandboxWorker.class);
+        when(worker.usesLinuxShell()).thenReturn(true);
+        when(worker.execute(any(), any(), any())).thenReturn(
+                new ProcessExecutionResult(ExecutionStatus.FAILED, 1, 7, "no matching process", false));
+        JsonObject args = new JsonObject();
+        args.addProperty("command", "ps aux | grep [p]ython");
+
+        ToolResult result = new RunCommandTool(worker).execute(context(), args);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getExecutionStatus()).isEqualTo("failed");
+        assertThat(result.getExecutionExitCode()).isEqualTo(1);
+        assertThat(result.getContent())
+                .contains("execution=completed")
+                .contains("outcome=non_zero_exit")
+                .contains("exit=1");
+    }
+    @Test
+    void preservesNonZeroExitMetadataForTheModel() throws Exception {
         SandboxWorker worker = mock(SandboxWorker.class);
         when(worker.usesLinuxShell()).thenReturn(true);
         when(worker.execute(any(), any(), any())).thenReturn(
@@ -113,8 +132,10 @@ class ShellToolContractTest {
 
         ToolResult result = new RunCommandTool(worker).execute(context(), args);
 
-        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.isSuccess()).isTrue();
         assertThat(result.getContent())
+                .contains("execution=completed")
+                .contains("outcome=non_zero_exit")
                 .contains("exit=17")
                 .contains("status=failed")
                 .contains("duration_ms=42")
@@ -127,4 +148,3 @@ class ShellToolContractTest {
                 workspace, new ArrayList<>(), 0);
     }
 }
-

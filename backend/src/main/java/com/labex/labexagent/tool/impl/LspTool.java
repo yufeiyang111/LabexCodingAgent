@@ -32,7 +32,7 @@ public class LspTool implements AgentTool {
                 .intProperty("line", "1-based line number for definition/references/hover", false)
                 .intProperty("character", "1-based column for definition/references/hover, default 1", false)
                 .intProperty("max_results", "max locations/symbols, default 50", false)
-                .stringProperty("include_declaration", "references only: true/false, default true", false)
+                .booleanProperty("include_declaration", "references only; default true", false)
                 .build();
     }
 
@@ -114,8 +114,8 @@ public class LspTool implements AgentTool {
         if (!position.valid()) {
             return ToolResult.failed("line is required for real LSP references lookup; character is optional and defaults to 1.");
         }
-        String includeRaw = ToolSupport.stringArgMulti(args, "true", "include_declaration", "includeDeclaration");
-        boolean includeDeclaration = !"false".equalsIgnoreCase(includeRaw);
+        boolean includeDeclaration = !args.has("include_declaration") || args.get("include_declaration").isJsonNull()
+                || args.get("include_declaration").getAsBoolean();
         LspSessionManager.LspLocationsResult result = lspSessionManager.references(root, file, position.zeroBasedLine(), position.zeroBasedCharacter(), includeDeclaration);
         return locationsResult("references", result, pathArg, position, args);
     }

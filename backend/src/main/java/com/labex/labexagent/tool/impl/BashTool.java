@@ -33,7 +33,7 @@ implements AgentTool {
     }
 
     public ToolDefinition definition() {
-        return ToolDefinition.builder().name("bash").description("Execute one restricted direct command in the student workspace; pipes, redirection, variables, quoting, and command chaining are not supported. Dangerous commands require approval.").stringProperty("command", "command to execute", true).intProperty("timeout_seconds", "timeout seconds, default 60", false).booleanProperty("network", "\u8bf7\u6c42\u5f53\u524d\u547d\u4ee4\u542f\u7528\u7f51\u7edc\uff1b\u542f\u7528\u524d\u5fc5\u987b\u7ecf\u7528\u6237\u4e00\u6b21\u6027\u5ba1\u6279", false).build();
+        return ToolDefinition.builder().name("bash").description("Execute one restricted direct command in the student workspace; pipes, redirection, variables, quoting, and command chaining are not supported. Dangerous commands require approval.").stringProperty("command", "command to execute", true).intProperty("timeout_seconds", "timeout seconds, default 60", false).booleanProperty("network", "Request network access for this command; requires one-time user approval", false).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {

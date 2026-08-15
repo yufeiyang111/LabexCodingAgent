@@ -46,6 +46,49 @@ class WorkspaceScanToolsTest {
 
 
     @Test
+    void grepSchemaAcceptsTheWorkspaceRelativePathUsedByTheCapturedLog() {
+        var definition = new GrepTool(new WorkspaceScanner()).definition();
+        JsonObject args = new JsonObject();
+        args.addProperty("pattern", "循环保护");
+        args.addProperty("path", ".labex/agent-logs");
+        args.addProperty("include", "*.md");
+        args.addProperty("max_results", 40);
+
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> properties = (java.util.Map<String, Object>) definition.getInputSchema()
+                .get("properties");
+
+        assertThat(properties).containsKey("path");
+        assertThat(args.get("path").getAsString()).isEqualTo(".labex/agent-logs");
+    }
+
+    @Test
+    void grepRestrictsTheSearchToTheRequestedWorkspaceDirectory() throws Exception {
+        write("src/App.java", "String marker = \"outside-needle\";");
+        write("logs/target.md", "inside-needle");
+
+        JsonObject args = new JsonObject();
+        args.addProperty("pattern", "needle");
+        args.addProperty("path", "logs");
+        var result = new GrepTool(new WorkspaceScanner()).execute(context(), args);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getContent()).contains("logs/target.md:1:");
+        assertThat(result.getContent()).doesNotContain("src/App.java");
+    }
+
+    @Test
+    void grepRejectsAPathOutsideTheWorkspace() throws Exception {
+        JsonObject args = new JsonObject();
+        args.addProperty("pattern", "needle");
+        args.addProperty("path", "../outside");
+
+        var result = new GrepTool(new WorkspaceScanner()).execute(context(), args);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getContent()).contains("code=SEARCH_PATH_INVALID");
+    }
+    @Test
     void grepSkipsCacheAndProfileDirectories() throws Exception {
         write("src/App.java", "class App { String marker = \"needle\"; }");
         write("npm-cache/content-v2/sha512/00/cache.txt", "needle");
@@ -83,6 +126,21 @@ class WorkspaceScanToolsTest {
 
         assertThat(result.getContent()).contains("Listing truncated: entry limit reached (max_entries=500).");
         assertThat(result.getContent().lines().filter(line -> line.startsWith("  [F]")).count()).isEqualTo(499);
+    }
+
+    @Test
+    void grepReportsAnInvalidRegularExpressionAsStructuredToolFailure() throws Exception {
+        var result = new GrepTool(new WorkspaceScanner()).execute(context(), args("["));
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getContent()).contains("code=INVALID_REGEX")
+                .contains("message=");
+    }
+
+    private JsonObject args(String pattern) {
+        JsonObject args = new JsonObject();
+        args.addProperty("pattern", pattern);
+        return args;
     }
 
     private ToolResultView executeGlob(String pattern, int maxResults) throws Exception {

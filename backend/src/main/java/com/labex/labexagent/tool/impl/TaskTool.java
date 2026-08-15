@@ -9,7 +9,6 @@ import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
 import java.util.Locale;
-import java.util.UUID;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -30,8 +29,7 @@ implements AgentTool {
                 .stringProperty("description", "short 3-8 word task title", true)
                 .stringProperty("prompt", "full task for the subagent", false)
                 .stringProperty("subagent_type", "general, explore, or scout; default general", false)
-                .stringProperty("task_id", "optional previous task id to resume in the caller's context", false)
-                .stringProperty("background", "true to run without blocking the parent agent", false)
+                .booleanProperty("background", "run without blocking the parent agent", false)
                 .build();
     }
 
@@ -49,16 +47,12 @@ implements AgentTool {
         }
 
         String subagentType = normalizeSubagentType(ToolSupport.stringArg(args, "subagent_type", "general"));
-        String subtaskId = ToolSupport.stringArg(args, "task_id", "");
-        if (subtaskId.isBlank()) {
-            subtaskId = UUID.randomUUID().toString();
-        }
-
         try {
             String digest = projectIndexService.buildProjectDigest(context.getProject(), prompt);
             String instructions = buildSubagentPrompt(subagentType) + "\n\nSubtask title: " + description
                     + "\n\nSubtask request:\n" + prompt + "\n\nProject digest:\n" + ToolSupport.limit(digest, 16000);
-            boolean background = args.has("background") && Boolean.parseBoolean(args.get("background").getAsString());
+            boolean background = args.has("background") && !args.get("background").isJsonNull()
+                    && args.get("background").getAsBoolean();
             var dispatch = dispatchService.dispatch(
                     context.getSessionId(), context.getStudentId(), context.getProject(), context.getConversationId(), context.getTaskId(),
                     subagentType, instructions, null, 4096, "[]", "[]", background);
@@ -70,7 +64,12 @@ implements AgentTool {
             if (content == null || content.isBlank()) return ToolResult.failed("Subtask returned no content.");
             return ToolResult.ok(formatSubtaskOutput(String.valueOf(dispatch.subagent().getSubagentId()), subagentType, description, content));
         } catch (Exception e) {
-            return ToolResult.failed("Subtask failed: " + e.getMessage());
+            String detail = e.getMessage();
+            return ToolResult.failed("code=SUBTASK_FAILED\n"
+                    + "error_type=" + e.getClass().getSimpleName() + "\n"
+                    + "message=" + (detail == null || detail.isBlank()
+                    ? "subtask dispatch failed"
+                    : ToolSupport.limit(detail, 512)));
         }
     }
 

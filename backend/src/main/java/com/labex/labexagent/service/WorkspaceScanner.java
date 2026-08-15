@@ -21,11 +21,17 @@ public class WorkspaceScanner {
 
     public ScanResult scan(SecureWorkspacePath paths, ScanBudget budget, CancellationToken cancellationToken,
                            FileHandler fileHandler) throws IOException {
+        return scan(paths, paths == null ? null : paths.workspaceRoot(), budget, cancellationToken, fileHandler);
+    }
+
+    /** 在已校验的 workspace 子目录内扫描，调用方不能借此绕过 SecureWorkspacePath 边界。 */
+    public ScanResult scan(SecureWorkspacePath paths, Path requestedRoot, ScanBudget budget,
+                           CancellationToken cancellationToken, FileHandler fileHandler) throws IOException {
         Objects.requireNonNull(paths, "paths");
         Objects.requireNonNull(budget, "budget");
         Objects.requireNonNull(fileHandler, "fileHandler");
         CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
-        Path root = paths.workspaceRoot();
+        Path root = resolveDirectoryRoot(paths, requestedRoot);
         ProjectScanPolicy.ScanIgnoreRules ignoreRules = ProjectScanPolicy.loadIgnoreRules(paths);
         ScanState state = new ScanState(System.nanoTime());
 
@@ -69,6 +75,19 @@ public class WorkspaceScanner {
         return state.result();
     }
 
+    private Path resolveDirectoryRoot(SecureWorkspacePath paths, Path requestedRoot) {
+        Path workspaceRoot = paths.workspaceRoot();
+        Path candidate = requestedRoot == null ? workspaceRoot : requestedRoot.toAbsolutePath().normalize();
+        if (!candidate.startsWith(workspaceRoot)) {
+            throw new IllegalArgumentException("scan root escapes workspace");
+        }
+        String relative = workspaceRoot.relativize(candidate).toString();
+        Path verified = paths.resolveExisting(relative.isBlank() ? "." : relative);
+        if (!Files.isDirectory(verified, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("scan root must be a directory");
+        }
+        return verified;
+    }
     public ProjectScanPolicy.ScanIgnoreRules ignoreRules(SecureWorkspacePath paths) {
         return ProjectScanPolicy.loadIgnoreRules(paths);
     }

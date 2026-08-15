@@ -32,7 +32,7 @@ public class TodoWriteTool implements AgentTool {
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("todo_write")
-                .description("用 Markdown 或纯文本整体替换当前 task 的持久化短 Todo 列表。")
+                .description("Replace the current task durable short todo list with Markdown or plain text.")
                 .stringProperty("todos", "Markdown or plain text todo list", true)
                 .build();
     }

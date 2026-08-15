@@ -78,7 +78,7 @@ public class ProposeProjectConfigTool implements AgentTool {
         schema.put("properties", properties);
         schema.put("required", java.util.List.of("candidate"));
         return new ToolDefinition(TOOL_NAME,
-                "为项目提交配置变更 proposal 并等待项目所有者批准或拒绝；不直接修改任何受保护配置。",
+                "Submit project configuration changes as a proposal and wait for the project owner to approve or reject it; do not directly modify protected configuration.",
                 schema);
     }
 

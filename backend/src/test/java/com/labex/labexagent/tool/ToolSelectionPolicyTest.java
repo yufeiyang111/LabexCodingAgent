@@ -19,16 +19,15 @@ class ToolSelectionPolicyTest {
         ToolSelectionPolicy.Capabilities all = new ToolSelectionPolicy.Capabilities(true, true, true, true);
 
         assertEquals(List.of(
-                "read_file", "write_file", "understand_image", "image", "web_search", "websearch",
-                "web_fetch", "webfetch", "mcp_call", "create_plan", "plan_exit", "question", "mcp_weather"),
+                "read_file", "write_file", "understand_image", "web_search", "web_fetch",
+                "mcp_call", "create_plan", "plan_exit", "question", "mcp_weather"),
                 names(policy.select(registry, "build", all)));
         assertEquals(List.of(
-                "read_file", "understand_image", "image", "web_search", "websearch",
-                "web_fetch", "webfetch", "mcp_call", "create_plan", "plan_exit", "question"),
+                "read_file", "understand_image", "web_search", "web_fetch",
+                "mcp_call", "create_plan", "plan_exit", "question"),
                 names(policy.select(registry, "plan", all)));
         assertEquals(List.of(
-                "read_file", "understand_image", "image", "web_search", "websearch",
-                "web_fetch", "webfetch", "question"),
+                "read_file", "understand_image", "web_search", "web_fetch", "question"),
                 names(policy.select(registry, "explore", all)));
         assertTrue(policy.select(registry, "unknown", all).isEmpty());
     }
@@ -50,8 +49,8 @@ class ToolSelectionPolicyTest {
 
     private static ToolRegistry registry() {
         return new ToolRegistry(List.of(
-                tool("read_file"), tool("write_file"), tool("understand_image"), tool("image"),
-                tool("web_search"), tool("websearch"), tool("web_fetch"), tool("webfetch"),
+                tool("read_file"), tool("write_file"), tool("understand_image"),
+                tool("web_search"), tool("web_fetch"),
                 tool("mcp_call"), tool("create_plan"), tool("plan_exit"), tool("question")));
     }
 

@@ -21,9 +21,9 @@ public class ContextNoteTool implements AgentTool {
     public ToolDefinition definition() {
         return ToolDefinition.builder()
                 .name("context_note")
-                .description("记录长期工程上下文，例如架构决策、关键约束、验证结论。后续任务会自动读取这些记忆。")
-                .stringProperty("title", "简短标题", true)
-                .stringProperty("content", "要长期记住的工程事实或决策", true)
+                .description("Save durable engineering context, such as architectural decisions, constraints, and verification findings. Future tasks can retrieve these notes.")
+                .stringProperty("title", "Short title", true)
+                .stringProperty("content", "Engineering fact or decision to retain", true)
                 .build();
     }
 

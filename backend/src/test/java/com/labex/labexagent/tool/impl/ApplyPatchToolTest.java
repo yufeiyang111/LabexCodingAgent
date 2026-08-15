@@ -137,11 +137,8 @@ class ApplyPatchToolTest {
     }
 
     @Test
-    void infersReplaceWhenModelOmitsOperationButProvidesOldAndNewStrings() throws Exception {
-        Files.writeString(workspace.resolve("AdminPage.jsx"), "status === 'PUBLISHED'");
+    void rejectsCanonicalPatchWhenOperationIsOmitted() throws Exception {
         DiffService diffService = mock(DiffService.class);
-        when(diffService.stageAndApplyBatchDeferred(eq(7), same(project), eq("conversation"), eq(1L), any()))
-                .thenReturn(List.of(pendingChange("replace-id", "diff")));
         JsonObject change = new JsonObject();
         change.addProperty("path", "AdminPage.jsx");
         change.addProperty("old_string", "PUBLISHED");
@@ -149,7 +146,9 @@ class ApplyPatchToolTest {
 
         ToolResult result = new ApplyPatchTool(diffService).execute(context(), args(change));
 
-        assertTrue(result.isSuccess());
+        assertFalse(result.isSuccess());
+        assertEquals("operation is required", result.getContent());
+        verifyNoInteractions(diffService);
     }
 
     @Test

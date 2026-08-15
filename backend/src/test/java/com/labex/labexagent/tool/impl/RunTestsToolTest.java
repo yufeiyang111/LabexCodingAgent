@@ -39,6 +39,24 @@ class RunTestsToolTest {
     Path workspace;
 
     @Test
+    void keepsANonZeroTestExitAsAFailedVerification() throws Exception {
+        SandboxWorker worker = mock(SandboxWorker.class);
+        when(worker.usesLinuxShell()).thenReturn(true);
+        when(worker.execute(any(), any(), any())).thenReturn(new ProcessExecutionResult(
+                ExecutionStatus.FAILED, 1, 10, "test failure", false));
+        Files.writeString(workspace.resolve("package.json"),
+                "{\"scripts\":{\"test\":\"node -e 'process.exit(1)'\"}}");
+        RunTestsTool tool = new RunTestsTool(worker);
+        ReflectionTestUtils.setField(tool, "acceptanceAutoApproveVerification", true);
+        JsonObject args = new JsonObject();
+        args.addProperty("strategy", "test");
+
+        ToolResult result = tool.execute(context(), args);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getContent()).contains("exit=1", "status=failed");
+    }
+    @Test
     void exposesNoModelControlledCommandProperty() {
         RunTestsTool tool = new RunTestsTool(mock(SandboxWorker.class));
 
