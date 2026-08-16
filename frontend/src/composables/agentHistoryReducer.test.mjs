@@ -553,3 +553,55 @@ test('replays a finalization blocker as completion feedback', () => {
   assert.equal(target.completionBlockedEvidence.reasonCode, 'preview_url_mismatch')
   assert.equal(target.pendingFinalContent, '')
 })
+
+test('replays a durable workspace change through the explicit workspace projection seam', () => {
+  const target = message()
+  target.taskId = 71
+  const projected = []
+  const data = { projectId: 12, taskId: 71, workspaceChangeId: 'approval-71:workspace-changed' }
+
+  reduceHistoryEvent('WORKSPACE_CHANGED', data, target, {
+    onWorkspaceChanged: event => projected.push(event)
+  })
+
+  assert.deepEqual(projected, [{ eventId: null, data, message: target }])
+})
+
+
+test('history replay keeps a native unverified final visible after the failed terminal state', () => {
+  const target = message()
+
+  reduceHistoryEvent('COMPLETION_EVIDENCE', {
+    taskId: 9,
+    satisfied: false,
+    finalResponseVisible: true,
+    changedFiles: ['skills/SKILL.md'],
+    successfulVerifications: [],
+    unresolvedRisks: ['尚未记录成功验证']
+  }, target)
+  reduceHistoryEvent('FINAL', { taskId: 9, content: '已删除 skill，仍需要补充验证。' }, target)
+  reduceHistoryEvent('RUN_STATE_FAILED', { taskId: 9, state: 'failed' }, target)
+
+  assert.equal(target.content, '已删除 skill，仍需要补充验证。')
+  assert.equal(target.runState, 'failed')
+  assert.equal(target.error ?? null, null)
+  assert.equal(target.completionBlockedEvidence.finalResponseVisible, true)
+})
+
+test('history replay keeps evidence details when finalization blocks a generated summary', () => {
+  const target = message()
+  reduceHistoryEvent('COMPLETION_EVIDENCE', {
+    taskId: 9, satisfied: false, changedFiles: ['skills/SKILL.md'],
+    successfulVerifications: [], failedVerifications: [], unresolvedRisks: ['存在文件改动，但没有成功验证证据']
+  }, target)
+  reduceHistoryEvent('FINALIZATION_BLOCKED', {
+    taskId: 9, reasonCode: 'completion_evidence_unsatisfied',
+    guidance: 'Run a server-recognized verification after the latest change.', recoveryAllowed: false
+  }, target)
+
+  assert.equal(target.completionEvidence, null)
+  assert.equal(target.completionBlockedEvidence.satisfied, false)
+  assert.deepEqual(target.completionBlockedEvidence.changedFiles, ['skills/SKILL.md'])
+  assert.deepEqual(target.completionBlockedEvidence.unresolvedRisks, ['存在文件改动，但没有成功验证证据'])
+  assert.equal(target.completionBlockedEvidence.reasonCode, 'completion_evidence_unsatisfied')
+})

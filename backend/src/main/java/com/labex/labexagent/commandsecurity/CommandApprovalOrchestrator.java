@@ -4,6 +4,9 @@ import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentTask;
 import com.labex.entity.CommandApproval;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.diff.DiffService;
+import com.labex.labexagent.diff.GitSnapshotService;
+import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
@@ -23,6 +26,7 @@ import com.labex.labexagent.service.AgentTaskService;
 import com.labex.service.StudentProjectService;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.slf4j.Logger;
@@ -52,6 +56,8 @@ public class CommandApprovalOrchestrator {
     private AgentRunExecutionLeaseService executionLeaseService;
     private AgentRunLeaseHeartbeatService leaseHeartbeatService;
     private AgentVerificationRecorder verificationRecorder;
+    private GitSnapshotService snapshotService;
+    private DiffService diffService;
 
     @org.springframework.beans.factory.annotation.Autowired
     public CommandApprovalOrchestrator(CommandApprovalService approvalService, CommandAuditService auditService,
@@ -98,6 +104,12 @@ public class CommandApprovalOrchestrator {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setVerificationRecorder(AgentVerificationRecorder verificationRecorder) {
         this.verificationRecorder = verificationRecorder;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setWorkspaceChangeEvidenceServices(GitSnapshotService snapshotService, DiffService diffService) {
+        this.snapshotService = snapshotService;
+        this.diffService = diffService;
     }
 
     public DecisionResult decide(Integer studentId, Integer projectId, String approvalId,
@@ -166,14 +178,18 @@ public class CommandApprovalOrchestrator {
             auditService.recordExecutionStarted(approval);
             log.info("COMMAND_APPROVAL_PROCESS_STARTED taskId={} projectId={} approvalId={} workingDirectory={}",
                     approval.getTaskId(), projectId, approval.getApprovalId(), approval.getWorkingDirectory());
+            GitSnapshotService.Snapshot beforeWorkspaceSnapshot = captureWorkspaceSnapshot(
+                    project, approval, "before approved command ");
             long processStartedNanos = System.nanoTime();
             ProcessExecutionResult result = executor.execute(approval, project, activeRun,
                     identity -> recordExecutionProcessBound(approval, identity));
             long orchestrationDurationMs = elapsedMs(processStartedNanos);
             long processDurationMs = result.durationMs();
+            WorkspaceChangeEvidence workspaceEvidence = recordWorkspaceChangeEvidence(
+                    approval, project, beforeWorkspaceSnapshot);
             if (result.status() == ExecutionStatus.CANCELLED) {
                 return completeCancelledExecution(approval, result, studentId, projectId,
-                        processDurationMs, orchestrationDurationMs, requestStartedNanos);
+                        processDurationMs, orchestrationDurationMs, requestStartedNanos, workspaceEvidence);
             }
             auditService.recordExecutionOutcome(approval, result, processDurationMs);
             recordVerificationOutcome(approval, result, "approved_command");
@@ -220,7 +236,14 @@ public class CommandApprovalOrchestrator {
                             "durationMs", processDurationMs,
                             "resumeAgentLoop", resumeAgentLoop)),
                     lifecycleKey(approval, "execution-outcome:" + executionStatus));
-            closeApprovedToolCall(approval, succeeded, result);
+            if (succeeded || workspaceEvidence.hasChanges()) {
+                // 刷新事实必须携带 snapshot 产生的目标身份；失败命令若已部分改动工作区也需要刷新，
+                // 但 executionStatus 仍保持 failed，不能被 UI 或模型误投影为完成。
+                lifecycleService.appendEvent(approval.getTaskId(), "WORKSPACE_CHANGED",
+                        workspaceChangedPayload(approval, executionStatus, workspaceEvidence, resumeAgentLoop),
+                        lifecycleKey(approval, "workspace-changed"));
+            }
+            closeApprovedToolCall(approval, succeeded, result, workspaceEvidence);
             releaseExecutionLease(executionLease);
             executionLease = null;
             if (resumeAgentLoop) {
@@ -467,10 +490,22 @@ public class CommandApprovalOrchestrator {
                                                        Integer studentId, Integer projectId,
                                                        long processDurationMs, long orchestrationDurationMs,
                                                        long requestStartedNanos) {
+        return completeCancelledExecution(approval, result, studentId, projectId, processDurationMs,
+                orchestrationDurationMs, requestStartedNanos, WorkspaceChangeEvidence.unavailable());
+    }
+
+    private ExecutionResult completeCancelledExecution(CommandApproval approval, ProcessExecutionResult result,
+                                                       Integer studentId, Integer projectId,
+                                                       long processDurationMs, long orchestrationDurationMs,
+                                                       long requestStartedNanos,
+                                                       WorkspaceChangeEvidence workspaceEvidence) {
+        WorkspaceChangeEvidence evidence = workspaceEvidence == null
+                ? WorkspaceChangeEvidence.unavailable() : workspaceEvidence;
         String output = result.output() == null ? "" : CommandRedactor.redact(result.output());
         String detail = "status=interrupted\nexecution_status=cancelled\nexit="
                 + (result.exitCode() == null ? "none" : result.exitCode())
-                + (output.isBlank() ? "" : "\n" + output);
+                + (output.isBlank() ? "" : "\n" + output)
+                + evidence.toolResultDetail();
         Exception projectionFailure = null;
         projectionFailure = runCancellationProjection(approval, projectId, "audit", projectionFailure,
                 () -> auditService.recordExecutionInterrupted(approval, "user_cancellation"));
@@ -487,6 +522,14 @@ public class CommandApprovalOrchestrator {
                                 "durationMs", processDurationMs,
                                 "resumeAgentLoop", false)),
                         lifecycleKey(approval, "execution-outcome:cancelled")));
+        if (evidence.hasChanges()) {
+            // 与正常执行一致：进程被取消并不等于其先前写入不存在，必须先持久化目标证据再刷新 UI。
+            projectionFailure = runCancellationProjection(approval, projectId, "workspace_changed", projectionFailure,
+                    () -> lifecycleService.appendEvent(approval.getTaskId(), "WORKSPACE_CHANGED",
+                            workspaceChangedPayload(approval, "cancelled", evidence, false),
+                            lifecycleKey(approval, "workspace-changed")));
+        }
+
 
         boolean finalized = false;
         try {
@@ -661,12 +704,56 @@ public class CommandApprovalOrchestrator {
     }
 
     private void closeApprovedToolCall(CommandApproval approval, boolean succeeded, ProcessExecutionResult result) {
+        closeApprovedToolCall(approval, succeeded, result, WorkspaceChangeEvidence.unavailable());
+    }
+
+    private void closeApprovedToolCall(CommandApproval approval, boolean succeeded, ProcessExecutionResult result,
+                                       WorkspaceChangeEvidence workspaceEvidence) {
         if (approval == null) return;
         String output = result == null ? "" : CommandRedactor.redact(result.output());
         String detail = "status=" + (succeeded ? "completed" : "failed")
                 + "\nexit=" + (result == null || result.exitCode() == null ? "none" : result.exitCode())
-                + (output == null || output.isBlank() ? "" : "\n" + output);
+                + (output == null || output.isBlank() ? "" : "\n" + output)
+                + (workspaceEvidence == null ? "" : workspaceEvidence.toolResultDetail());
         resolveApprovedToolCall(approval, detail);
+    }
+
+    private GitSnapshotService.Snapshot captureWorkspaceSnapshot(StudentProject project, CommandApproval approval,
+                                                                  String labelPrefix) {
+        if (snapshotService == null || project == null || approval == null) {
+            return null;
+        }
+        try {
+            return snapshotService.capture(project, labelPrefix + approval.getApprovalId());
+        } catch (RuntimeException exception) {
+            log.warn("COMMAND_APPROVAL_SNAPSHOT_CAPTURE_FAILED taskId={} approvalId={} phase={} errorType={}",
+                    approval.getTaskId(), approval.getApprovalId(), labelPrefix.trim(),
+                    exception.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    private WorkspaceChangeEvidence recordWorkspaceChangeEvidence(CommandApproval approval, StudentProject project,
+                                                                    GitSnapshotService.Snapshot beforeSnapshot) {
+        if (snapshotService == null || diffService == null || approval == null || project == null
+                || beforeSnapshot == null || !beforeSnapshot.available()) {
+            return WorkspaceChangeEvidence.unavailable();
+        }
+        try {
+            GitSnapshotService.Snapshot afterSnapshot = captureWorkspaceSnapshot(project, approval,
+                    "after approved command ");
+            if (afterSnapshot == null || !afterSnapshot.available()) {
+                return WorkspaceChangeEvidence.unavailable();
+            }
+            List<PendingChange> changes = diffService.recordSnapshotDiffWithoutTaskProjection(
+                    approval.getStudentId(), project, approval.getConversationId(), approval.getTaskId(),
+                    "command_approval", beforeSnapshot, afterSnapshot);
+            return WorkspaceChangeEvidence.from(changes);
+        } catch (RuntimeException exception) {
+            log.warn("COMMAND_APPROVAL_SNAPSHOT_EVIDENCE_FAILED taskId={} approvalId={} errorType={}",
+                    approval.getTaskId(), approval.getApprovalId(), exception.getClass().getSimpleName());
+            return WorkspaceChangeEvidence.unavailable();
+        }
     }
 
     private void failApprovedToolCall(CommandApproval approval, String detail) {
@@ -739,6 +826,50 @@ public class CommandApprovalOrchestrator {
         payload.put("resumeAgentLoop", true);
         payload.putAll(additional);
         return payload;
+    }
+
+    private Map<String, Object> workspaceChangedPayload(CommandApproval approval, String executionStatus,
+                                                         WorkspaceChangeEvidence evidence, boolean resumeAgentLoop) {
+        Map<String, Object> additional = new LinkedHashMap<>();
+        additional.put("projectId", approval.getProjectId());
+        additional.put("source", "command_approval");
+        additional.put("workspaceChangeId", approval.getApprovalId() + ":workspace-changed");
+        additional.put("workingDirectory", approval.getWorkingDirectory());
+        additional.put("executionStatus", executionStatus);
+        additional.put("evidenceStatus", evidence.status());
+        additional.put("changedFileCount", evidence.changedFileCount());
+        additional.put("changedPaths", evidence.changedPaths());
+        additional.put("resumeAgentLoop", resumeAgentLoop);
+        return publicPayload(approval, additional);
+    }
+
+    private record WorkspaceChangeEvidence(String status, int changedFileCount, List<String> changedPaths) {
+        private static WorkspaceChangeEvidence unavailable() {
+            return new WorkspaceChangeEvidence("unavailable", 0, List.of());
+        }
+
+        private static WorkspaceChangeEvidence from(List<PendingChange> changes) {
+            if (changes == null || changes.isEmpty()) {
+                return new WorkspaceChangeEvidence("no_change", 0, List.of());
+            }
+            List<String> paths = changes.stream()
+                    .map(PendingChange::getRelativePath)
+                    .filter(path -> path != null && !path.isBlank())
+                    .distinct()
+                    .sorted()
+                    .limit(40)
+                    .toList();
+            return new WorkspaceChangeEvidence("captured", changes.size(), List.copyOf(paths));
+        }
+
+        private boolean hasChanges() {
+            return changedFileCount > 0;
+        }
+
+        private String toolResultDetail() {
+            String detail = "\nworkspace_evidence=" + status + "\nchanged_file_count=" + changedFileCount;
+            return changedPaths.isEmpty() ? detail : detail + "\nchanged_paths=" + String.join(",", changedPaths);
+        }
     }
 
     public record DecisionResult(boolean available, CommandApproval approval, boolean resumeAgentLoop) {

@@ -109,6 +109,20 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
+    void emitsDurableWorkspaceChangedForFileToolsSoTheFrontendTreeRefreshes() {
+        // 文件类工具（write_file/edit_file/apply_patch）返回 diff/pendingChangeId 时，
+        // 必须补发 WORKSPACE_CHANGED，否则前端文件树没有响应式刷新触发源。
+        assertTrue(source.contains("this.sendEvent(sse, conv, \"WORKSPACE_CHANGED\", workspace, workspaceKey);"));
+        assertTrue(source.contains("if (r.getDiff() != null || r.getPendingChangeId() != null) {"));
+        assertTrue(source.contains("workspace.put(\"workspaceChangeId\", \"tool:\" + (toolCallId == null ? \"unknown\" : toolCallId));"));
+        assertTrue(source.contains("String workspaceKey = toolCallId == null || toolCallId.isBlank() ? \"\" : \"tool-workspace-changed:\" + toolCallId;"));
+        int observe = source.indexOf("this.sendEvent(sse, conv, \"OBSERVE\", o);");
+        int workspaceChanged = source.indexOf("this.sendEvent(sse, conv, \"WORKSPACE_CHANGED\", workspace, workspaceKey);");
+        assertTrue(observe >= 0);
+        assertTrue(workspaceChanged > observe);
+    }
+
+    @Test
     void projectsResolvedInteractionAsCompletedToolResultOnResume() {
         assertTrue(source.contains("projectResolvedInteraction(sse, conv, task, executionFence, preclaimedInteraction, visibleLanguage)"));
         assertTrue(source.contains("toolCallJournalService.completed(executionFence, task.getTaskId(), toolCallId, \"question\""));

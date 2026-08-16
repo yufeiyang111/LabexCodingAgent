@@ -61,6 +61,23 @@ test('exposes failed root tree pages as actionable state', async () => {
   assert.match(files.treeError.value, /重启后端/)
 })
 
+test('bumps treeRefreshKey after every successful root reload', async () => {
+  const { files } = controller({ api: { getTreePage: async () => ({ data: { entries: [{ path: 'a.txt', name: 'a.txt', type: 'file' }], nextOffset: null } }) } })
+  const before = files.treeRefreshKey.value
+  assert.equal(await files.loadRoot(), true)
+  assert.equal(files.treeRefreshKey.value, before + 1)
+  assert.equal(files.treeRefreshKey.value, before + 1)
+  assert.equal(await files.loadRoot(), true)
+  assert.equal(files.treeRefreshKey.value, before + 2)
+})
+
+test('does not bump treeRefreshKey when a reload fails', async () => {
+  const { files } = controller({ api: { getTreePage: async () => { const error = new Error('missing'); error.response = { status: 404 }; throw error } } })
+  const before = files.treeRefreshKey.value
+  await files.loadRoot()
+  assert.equal(files.treeRefreshKey.value, before)
+})
+
 test('requires confirmation before closing a dirty tab', async () => {
   let confirmed = false
   const { files } = controller({ confirmAction: async () => { confirmed = true; throw 'cancel' } })

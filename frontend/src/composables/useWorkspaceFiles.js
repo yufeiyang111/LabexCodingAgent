@@ -28,6 +28,7 @@ export function useWorkspaceFiles(options) {
   const treeNextOffset = ref(null)
   const treeLoadingMore = ref(false)
   const treeLoading = ref(false)
+  const treeRefreshKey = ref(0)
   const activePath = ref('')
   const fileContent = ref('')
   const fileContentDirty = ref(false)
@@ -71,6 +72,7 @@ export function useWorkspaceFiles(options) {
       if (generation !== rootGeneration) return false
       fileTree.value = response.data?.entries || []
       treeNextOffset.value = response.data?.nextOffset ?? null
+      treeRefreshKey.value++
       return true
     } catch (error) {
       if (generation === rootGeneration) {
@@ -328,7 +330,7 @@ export function useWorkspaceFiles(options) {
   }
 
   return {
-    fileTree, treeError, treeNextOffset, treeLoadingMore, treeLoading,
+    fileTree, treeError, treeNextOffset, treeLoadingMore, treeLoading, treeRefreshKey,
     activePath, fileContent, fileContentDirty, activeFileReadOnly, savingFile, editorReady,
     openFiles, activeTabIndex, detectedLang,
     showNewModal, newModalType, newItemParent, newItemName,

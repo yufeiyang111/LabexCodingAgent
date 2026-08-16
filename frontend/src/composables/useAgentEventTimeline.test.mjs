@@ -46,7 +46,8 @@ function harness() {
     tokenUsage,
     sessionHistory,
     currentSessionName: { value: '会话 A' },
-    onTokenUsageProjected: data => calls.push(['tokenUsageProjected', data])
+    onTokenUsageProjected: data => calls.push(['tokenUsageProjected', data]),
+    onWorkspaceChanged: event => calls.push(['workspaceChanged', event])
   })
   return { ...timeline, calls, currentAgentSession, agentLoading, contextUsageStatus, tokenUsage, sessionHistory, changesRefreshKey }
 }
@@ -528,4 +529,65 @@ test('projects a finalization blocker as durable completion feedback', () => {
   assert.equal(assistant.completionEvidence, null)
   assert.equal(assistant.completionBlockedEvidence.reasonCode, 'preview_url_mismatch')
   assert.equal(assistant.pendingFinalContent, '')
+})
+
+test('forwards durable workspace changes through the explicit workspace projection seam', () => {
+  const state = harness()
+  const assistant = message()
+  assistant.taskId = 71
+  const event = {
+    type: 'WORKSPACE_CHANGED',
+    eventId: 404,
+    data: { projectId: 12, taskId: 71, workspaceChangeId: 'approval-71:workspace-changed' }
+  }
+
+  state.handleAgentEvent(event, assistant)
+
+  assert.deepEqual(state.calls.filter(call => call[0] === 'workspaceChanged'), [
+    ['workspaceChanged', { eventId: 404, data: event.data, message: assistant }]
+  ])
+})
+
+
+test('keeps a native unverified final visible after the failed terminal state', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({ type: 'COMPLETION_EVIDENCE', data: {
+    taskId: 9,
+    satisfied: false,
+    finalResponseVisible: true,
+    changedFiles: ['skills/SKILL.md'],
+    successfulVerifications: [],
+    unresolvedRisks: ['尚未记录成功验证']
+  } }, assistant)
+  state.handleAgentEvent({ type: 'FINAL', data: {
+    taskId: 9,
+    content: '已删除 skill，仍需要补充验证。'
+  } }, assistant)
+  state.handleAgentEvent({ type: 'RUN_STATE_FAILED', data: { taskId: 9, state: 'failed' } }, assistant)
+
+  assert.equal(assistant.content, '已删除 skill，仍需要补充验证。')
+  assert.equal(assistant.runState, 'failed')
+  assert.equal(assistant.error, null)
+  assert.equal(assistant.completionBlockedEvidence.finalResponseVisible, true)
+})
+
+test('keeps durable evidence visible when finalization blocks a generated summary', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({ type: 'COMPLETION_EVIDENCE', data: {
+    taskId: 9, satisfied: false, changedFiles: ['skills/SKILL.md'],
+    successfulVerifications: [], failedVerifications: [], unresolvedRisks: ['存在文件改动，但没有成功验证证据']
+  } }, assistant)
+  state.handleAgentEvent({ type: 'FINALIZATION_BLOCKED', data: {
+    taskId: 9, reasonCode: 'completion_evidence_unsatisfied',
+    guidance: 'Run a server-recognized verification after the latest change.', recoveryAllowed: false
+  } }, assistant)
+
+  assert.equal(assistant.completionEvidence, null)
+  assert.equal(assistant.completionBlockedEvidence.satisfied, false)
+  assert.deepEqual(assistant.completionBlockedEvidence.changedFiles, ['skills/SKILL.md'])
+  assert.deepEqual(assistant.completionBlockedEvidence.unresolvedRisks, ['存在文件改动，但没有成功验证证据'])
+  assert.equal(assistant.completionBlockedEvidence.reasonCode, 'completion_evidence_unsatisfied')
 })

@@ -26,6 +26,7 @@
         :selected-path="activePath"
         :load-children="loadChildren"
         :show-actions="true"
+        :refresh-key="refreshKey"
         @select="p => $emit('select', p)"
         @new-item="(p, t) => $emit('new-item', p, t)"
         @rename="(p, n) => $emit('rename', p, n)"
@@ -76,6 +77,7 @@ defineProps({
   treeNextOffset: { type: [Number, null], default: null },
   activePath: { type: String, default: '' },
   loadChildren: { type: Function, default: null },
+  refreshKey: { type: [Number, String], default: 0 },
   showNewModal: { type: Boolean, default: false },
   newModalType: { type: String, default: 'file' },
   showRenameModal: { type: Boolean, default: false }

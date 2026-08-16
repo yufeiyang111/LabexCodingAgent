@@ -652,6 +652,26 @@ public class DiffService {
     }
 
     public List<PendingChange> recordSnapshotDiff(Integer studentId, StudentProject project, String conversationId, Long taskId, String source, GitSnapshotService.Snapshot beforeSnapshot, GitSnapshotService.Snapshot afterSnapshot) {
+        return recordSnapshotDiffInternal(studentId, project, conversationId, taskId, source, beforeSnapshot, afterSnapshot, true);
+    }
+
+    /**
+     * 记录审批后 shell 的实际文件变更，但不写入 AgentTask 状态。
+     * 审批恢复期间任务仍处于 waiting_approval，状态只能由 AgentRunLifecycleService 推进；
+     * 这里仅补充 change-set 与文件快照事实，避免 change projection 抢占运行生命周期。
+     */
+    public List<PendingChange> recordSnapshotDiffWithoutTaskProjection(Integer studentId, StudentProject project,
+                                                                        String conversationId, Long taskId, String source,
+                                                                        GitSnapshotService.Snapshot beforeSnapshot,
+                                                                        GitSnapshotService.Snapshot afterSnapshot) {
+        return recordSnapshotDiffInternal(studentId, project, conversationId, taskId, source, beforeSnapshot, afterSnapshot, false);
+    }
+
+    private List<PendingChange> recordSnapshotDiffInternal(Integer studentId, StudentProject project, String conversationId,
+                                                            Long taskId, String source,
+                                                            GitSnapshotService.Snapshot beforeSnapshot,
+                                                            GitSnapshotService.Snapshot afterSnapshot,
+                                                            boolean projectTaskProgress) {
         if (!this.snapshotService.usablePair(beforeSnapshot, afterSnapshot)) {
             return List.of();
         }
@@ -699,9 +719,12 @@ public class DiffService {
             this.fileChangeMapper.insert(fileChange);
             recorded.add(this.toPendingChange(fileChange));
         }
-        this.taskService.incrementChangeCount(changeSet.getChangeSetId());
         if (!recorded.isEmpty()) {
-            this.taskService.updateTask(taskId, "running", "\u8bb0\u5f55\u547d\u4ee4\u53d8\u66f4", (source == null ? "tool" : source) + " modified " + recorded.size() + " file(s)");
+            this.taskService.incrementChangeCount(changeSet.getChangeSetId());
+            if (projectTaskProgress) {
+                this.taskService.updateTask(taskId, "running", "记录命令变更",
+                        (source == null ? "tool" : source) + " modified " + recorded.size() + " file(s)");
+            }
         }
         return recorded;
     }

@@ -33,6 +33,7 @@
           :tree-next-offset="treeNextOffset"
           :active-path="activePath"
           :load-children="loadChildren"
+          :refresh-key="treeRefreshKey"
           :show-new-modal="showNewModal"
           :new-modal-type="newModalType"
           v-model:new-item-name="newItemName"
@@ -331,8 +332,8 @@
                     </div>
                     <!-- Token Usage (on last assistant message) -->
                     <CompletionEvidenceCard
-                      v-if="msg.role === 'assistant' && msg.completionEvidence"
-                      :evidence="msg.completionEvidence"
+                      v-if="msg.role === 'assistant' && (msg.completionEvidence || msg.completionBlockedEvidence)"
+                      :evidence="msg.completionEvidence || msg.completionBlockedEvidence"
                     />
                     <PlanDisplay v-if="msg.role === 'assistant' && (msg.plan || msg.planJson)" :plan="msg.plan" :plan-json="msg.planJson" />
                     <TokenChart v-if="i === messages.length - 1 && msg.role === 'assistant' && tokenUsage.totalTokens > 0"
@@ -853,6 +854,7 @@ import { createConversationSelectionGuard } from '@/composables/conversationSele
 import { useAgentInteraction } from '@/composables/useAgentInteraction'
 import { useAgentExtensions } from '@/composables/useAgentExtensions'
 import { useWorkspaceFiles } from '@/composables/useWorkspaceFiles'
+import { createWorkspaceMutationProjection } from '@/composables/workspaceMutationProjection'
 import { useChangeSetState } from '@/composables/useChangeSetState'
 import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
 import { applyCommandExecutionResponseState, attachCommandApprovalState as attachCommandApproval, findCommandApprovalToolCall as commandApprovalToolCall, updateCommandApprovalState as updateCommandApprovalLifecycle } from '@/composables/agentCommandApprovalState'
@@ -908,6 +910,7 @@ const {
   loadMoreRoot,
   handleTreeScroll,
   loadChildren,
+  treeRefreshKey,
   openFile,
   switchTab,
   closeFile,
@@ -1647,6 +1650,10 @@ const selectedModelConfigId = ref(null)
 const modelConfigs = ref([])
 const sessionChanges = ref([])
 const changesRefreshKey = ref(0)
+const { projectWorkspaceChange } = createWorkspaceMutationProjection({
+  projectId,
+  loadRoot
+})
 
 const modelConfigDialogState = reactive({
   showModelConfig, mcTemplateSelecting, mcTemplateOptions, mcEditing, modelConfigs,
@@ -1756,7 +1763,8 @@ const {
   tokenUsage,
   sessionHistory,
   currentSessionName,
-  onTokenUsageProjected: invalidateTokenStatsProjection
+  onTokenUsageProjected: invalidateTokenStatsProjection,
+  onWorkspaceChanged: event => { void projectWorkspaceChange(event) }
 }))
 
 const {
@@ -2296,7 +2304,8 @@ function replayHistoryEvent(type, data, message) {
       applyTokenUsageEvent(tokenUsage.value, usage)
       invalidateTokenStatsProjection()
     },
-    onContextStatus: status => { contextUsageStatus.value = status }
+    onContextStatus: status => { contextUsageStatus.value = status },
+    onWorkspaceChanged: event => { void projectWorkspaceChange(event) }
   })
 }
 

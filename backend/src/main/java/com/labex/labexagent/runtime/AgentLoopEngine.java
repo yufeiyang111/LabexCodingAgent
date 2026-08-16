@@ -245,6 +245,7 @@ public class AgentLoopEngine {
     private AgentTaskEventSubscriptionService taskEventSubscriptionService;
     private AgentRunFinalizer runFinalizer;
     private AgentFinalizationRecoveryService finalizationRecoveryService;
+    private LabexNativeCompletionProjector nativeCompletionProjector;
     private AgentRunArtifactService artifactService;
     private AgentToolCallJournalService toolCallJournalService;
     private AgentRunTranscriptService transcriptService;
@@ -366,6 +367,12 @@ public class AgentLoopEngine {
     void setFinalizationRecoveryService(AgentFinalizationRecoveryService finalizationRecoveryService) {
         this.finalizationRecoveryService = requireRuntimeDependency(
                 finalizationRecoveryService, "finalizationRecoveryService");
+    }
+
+    @Autowired
+    void setNativeCompletionProjector(LabexNativeCompletionProjector nativeCompletionProjector) {
+        this.nativeCompletionProjector = requireRuntimeDependency(
+                nativeCompletionProjector, "nativeCompletionProjector");
     }
 
     @Autowired
@@ -609,8 +616,6 @@ public class AgentLoopEngine {
                 project, activePath, activeFileContent, toolDefinitions, draft, projectIndex, false, previewContext);
         String recentRunLog = "";
         String checkpoint = "";
-        String globalSkills = this.skillService.buildPromptContext(studentId);
-        String mcpContext = this.mcpServerService.buildPromptContext(studentId);
         String modePolicy = this.buildModePolicy(mode);
         // 预览的"下一条请求估算"必须与真实 Provider 请求一致（瘦身消息）；
         // orchestrator 的完整 bundle 只作为诊断信息放进 previewMetadata，不参与估算。
@@ -963,6 +968,7 @@ public class AgentLoopEngine {
                     boolean softSentinelActive;
                     block21: {
                         String ft;
+                        boolean legacyTextFinalGuards;
                         block24: {
                             String cleaned;
                             String content;
@@ -1595,7 +1601,9 @@ public class AgentLoopEngine {
                             if (ft.isEmpty()) {
                                 ft = cleaned;
                             }
-                            if (!isPrematureFinal(ft)) break block24;
+                            legacyTextFinalGuards = this.requireNativeCompletionProjector()
+                                    .usesLegacyTextFinalGuards(executionRuntimeProfile);
+                            if (!legacyTextFinalGuards || !isPrematureFinal(ft)) break block24;
                             this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "premature_final_placeholder");
                             this.appendRunLog(runLog, "\n- Model returned mid-placeholder text, rejecting as final, continuing: `" + this.safeLogText(ft) + "`\n");
                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
@@ -1604,10 +1612,11 @@ public class AgentLoopEngine {
                             break block19;
                         }
                         {
-                            boolean tooShort = ft.length() < 80;
-                            boolean noStructure = !ft.contains("##") && !ft.contains("**") && !ft.contains("- ");
-                            boolean noSubstance = !containsFinalSubstance(ft);
-                            if (!softSentinelActive && shouldRejectFinalReply(request.getMessage(), ft)) {
+                            if (legacyTextFinalGuards && !softSentinelActive
+                                    && shouldRejectFinalReply(request.getMessage(), ft)) {
+                                boolean tooShort = ft.length() < 80;
+                                boolean noStructure = !ft.contains("##") && !ft.contains("**") && !ft.contains("- ");
+                                boolean noSubstance = !containsFinalSubstance(ft);
                                 this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "final_reply_insufficient");
                                 this.appendRunLog(runLog, "\n- Reply quality insufficient (length=" + ft.length() + ", noStructure=" + noStructure + ", noSubstance=" + noSubstance + "), rejecting as final.\n");
                                 this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
@@ -1615,7 +1624,8 @@ public class AgentLoopEngine {
                                 executed = true;
                                 break block19;
                             } else {
-                                boolean intentGuardTriggered = isEngineeringTaskRequest(request.getMessage())
+                                boolean intentGuardTriggered = legacyTextFinalGuards
+                                        && isEngineeringTaskRequest(request.getMessage())
                                         && !this.transcriptHasToolMessages(task.getTaskId(), activeExecutionEpoch);
                                 if (intentGuardTriggered) {
                                     this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "engineering_task_without_tools");
@@ -1632,11 +1642,20 @@ public class AgentLoopEngine {
                                         : this.runFinalizer.assess(
                                                 executionFence, task.getTaskId(), studentId, projectId,
                                                 ctx.hasTrustedVerification(), ft);
+                                LabexNativeCompletionProjector.Projection completionProjection = this
+                                        .requireNativeCompletionProjector().project(executionRuntimeProfile, completion);
                                 if (completion != null) {
                                     if (completion.evidence() != null) {
-                                        this.sendEvent(sse, conv, "COMPLETION_EVIDENCE", completion.evidence().toPayload());
+                                        Map<String, Object> completionEvidencePayload = new LinkedHashMap<>(
+                                                completion.evidence().toPayload());
+                                        if (completionProjection.disposition()
+                                                == LabexNativeCompletionProjector.Disposition.VISIBLE_UNVERIFIED) {
+                                            completionEvidencePayload.put("finalResponseVisible", true);
+                                            completionEvidencePayload.put("finalizationStatus", "unverified");
+                                        }
+                                        this.sendEvent(sse, conv, "COMPLETION_EVIDENCE", completionEvidencePayload);
                                     }
-                                    if (!completion.allowed()) {
+                                    if (completionProjection.requiresModelRecovery()) {
                                         AgentFinalizationRecoveryService.Decision decision = this.finalizationRecoveryService.decide(
                                                 task.getTaskId(), activeExecutionEpoch, completion.evidence(), ft);
                                         Map<String, Object> blocker = this.finalizationBlockerPayload(task.getTaskId(),
@@ -1665,6 +1684,15 @@ public class AgentLoopEngine {
                                         emitter.complete();
                                         return;
                                     }
+                                }
+                                if (completionProjection.disposition()
+                                        == LabexNativeCompletionProjector.Disposition.VISIBLE_UNVERIFIED) {
+                                    this.appendRunLog(runLog, "\n- Native final response remained visible while server completion evidence was unsatisfied.\n");
+                                    ctx.setStage("final");
+                                    this.completeWithVisibleUnverifiedNativeFinal(sse, conv, task, ft,
+                                            visibleLanguage, i);
+                                    emitter.complete();
+                                    return;
                                 }
                                 this.sendEvent(sse, conv, "FINAL", Map.of("content", ft, "summary", this.finalResponseSummary(visibleLanguage)));
                                 AgentRunEvent completedEvent = this.taskService.updateTask(task.getTaskId(), "completed",
@@ -3125,6 +3153,18 @@ public class AgentLoopEngine {
         o.put("toolCallId", toolCallId == null ? "" : toolCallId);
         o.put("summary", r.isSuccess() ? "Observed result from " + tn : "Tool failed: " + tn);
         this.sendEvent(sse, conv, "OBSERVE", o);
+        if (r.getDiff() != null || r.getPendingChangeId() != null) {
+            // 文件类工具（write_file/edit_file/apply_patch）改动工作区后，补发 durable
+            // WORKSPACE_CHANGED，前端据此响应式刷新文件树；命令审批路径已各自发出该事件。
+            LinkedHashMap<String, Object> workspace = new LinkedHashMap<>();
+            workspace.put("projectId", conv.getProjectId());
+            workspace.put("taskId", tid);
+            workspace.put("toolCallId", toolCallId == null ? "" : toolCallId);
+            workspace.put("source", "agent_tool");
+            workspace.put("workspaceChangeId", "tool:" + (toolCallId == null ? "unknown" : toolCallId));
+            String workspaceKey = toolCallId == null || toolCallId.isBlank() ? "" : "tool-workspace-changed:" + toolCallId;
+            this.sendEvent(sse, conv, "WORKSPACE_CHANGED", workspace, workspaceKey);
+        }
     }
 
     private String cleanModelOutput(String content) {
@@ -3406,9 +3446,17 @@ public class AgentLoopEngine {
                 log.warn("Unable to resolve MCP capability for student {}: {}", studentId, lookupFailure.getMessage());
             }
         }
-        // Web Search / Fetch 保持现有启用行为；这里只收敛未配置的图片和 MCP 能力。
+        boolean skillCatalogAvailable = false;
+        if (runtimeProfile == AgentRuntimeProfile.LABEX_NATIVE && this.skillService != null) {
+            try {
+                skillCatalogAvailable = this.skillService.hasEnabledSkills(studentId);
+            } catch (RuntimeException lookupFailure) {
+                log.warn("Unable to resolve Skill capability for student {}: {}", studentId, lookupFailure.getMessage());
+            }
+        }
+        // Web Search / Fetch 保持现有启用行为；图片、MCP 与按需 Skill 依据实际能力挂载。
         ToolSelectionPolicy.Capabilities capabilities = new ToolSelectionPolicy.Capabilities(
-                imageInputEnabled, mcpEnabled, true, true);
+                imageInputEnabled, mcpEnabled, true, true, skillCatalogAvailable);
         return this.toolSelectionPolicy.select(this.toolRegistry, mode, capabilities, runtimeProfile);
     }
 
@@ -3626,6 +3674,10 @@ public class AgentLoopEngine {
 
     private LabexNativeToolBatchExecutor requireNativeToolBatchExecutor() {
         return requireRuntimeDependency(this.nativeToolBatchExecutor, "nativeToolBatchExecutor");
+    }
+
+    private LabexNativeCompletionProjector requireNativeCompletionProjector() {
+        return requireRuntimeDependency(this.nativeCompletionProjector, "nativeCompletionProjector");
     }
 
     private AgentProviderTranscriptAppender requireProviderTranscriptAppender() {
@@ -4911,6 +4963,27 @@ public class AgentLoopEngine {
     }
 
     /** 将生命周期已持久化的事件投影到当前连接，不能再次追加同名运行事件。 */
+    /** 原生 profile 将模型答复和未满足的验证事实同时投影，避免把答复吞成“对话截断”。 */
+    private void completeWithVisibleUnverifiedNativeFinal(AgentSsePublisher sse, AgentConversation conv,
+                                                          AgentTask task, String finalText,
+                                                          String visibleLanguage, int iteration) throws Exception {
+        String title = this.localText(visibleLanguage, "已结束，验证未满足", "Finished with verification outstanding");
+        String summary = this.localText(visibleLanguage,
+                "模型答复已展示，但服务器验证尚未满足。请查看验证卡片后再确认结果。",
+                "The model reply is shown, but server verification is still outstanding. Review the evidence before confirming the result.");
+        this.sendEvent(sse, conv, "FINAL", Map.of(
+                "content", finalText,
+                "summary", this.localText(visibleLanguage, "已展示模型答复，服务器验证未满足",
+                        "Model reply shown; server verification is outstanding"),
+                "completionStatus", "unverified"));
+        this.failTaskAndProject(sse, conv, task, title, summary);
+        this.sendEvent(sse, conv, "DONE", Map.of(
+                "message", title,
+                "iterations", iteration,
+                "taskStatus", "failed",
+                "completionStatus", "unverified"));
+    }
+
     private void failTaskAndProject(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
                                     String currentStep, String summary) throws Exception {
         AgentRunEvent failedEvent = this.taskService.updateTask(

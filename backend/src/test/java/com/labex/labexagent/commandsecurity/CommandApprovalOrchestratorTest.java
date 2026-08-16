@@ -26,6 +26,9 @@ import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.runtime.CancellationToken;
 import com.labex.labexagent.service.AgentTaskService;
+import com.labex.labexagent.diff.DiffService;
+import com.labex.labexagent.diff.GitSnapshotService;
+import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionIdentity;
 import com.labex.labexagent.execution.ProcessExecutionObserver;
@@ -66,6 +69,104 @@ class CommandApprovalOrchestratorTest {
                 eq("Command approval was rejected"));
         verify(toolCalls).completedExisting(eq(71L), eq("tool-71"),
                 eq("Command approval was rejected"));
+    }
+
+    @Test
+    void successfulApprovedMutationPublishesWorkspaceChangedBeforeResumingTheAgentLoop() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        StudentProjectService projects = mock(StudentProjectService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        CommandApproval approval = approval("approved");
+        approval.setCanonicalCommand("rm -rf skills");
+        approval.setDisplayCommand("rm -rf skills");
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        when(projects.getOwnedProject(7, 12)).thenReturn(project);
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
+        when(approvals.consume(any())).thenReturn(true);
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class)))
+                .thenReturn(new ProcessExecutionResult(ExecutionStatus.SUCCEEDED, 0, 12L, "removed skills", false));
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        when(resumeScheduler.resumeIfWaiting(approval)).thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
+                projects, lifecycle, mock(AgentProjectMetadataRefreshScheduler.class), resumeScheduler, null,
+                mock(AgentToolCallJournalService.class), mock(AgentRunTranscriptService.class),
+                new AgentCancellationRegistry(), mock(AgentTaskService.class));
+
+        CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
+
+        org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("resuming");
+        org.mockito.InOrder eventOrder = org.mockito.Mockito.inOrder(lifecycle, resumeScheduler);
+        eventOrder.verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_COMPLETED"), any(), any());
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> workspacePayload = org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        eventOrder.verify(lifecycle).appendEvent(eq(71L), eq("WORKSPACE_CHANGED"), workspacePayload.capture(),
+                eq("command-lifecycle:v1:approval-71:workspace-changed"));
+        org.assertj.core.api.Assertions.assertThat(workspacePayload.getValue())
+                .containsEntry("projectId", 12)
+                .containsEntry("taskId", 71L)
+                .containsEntry("workspaceChangeId", "approval-71:workspace-changed");
+        eventOrder.verify(resumeScheduler).resumeIfWaiting(approval);
+    }
+
+    @Test
+    void approvedDeletionPersistsSnapshotTargetEvidenceBeforeWorkspaceEventAndResume() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        StudentProjectService projects = mock(StudentProjectService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        CommandApproval approval = approval("approved");
+        approval.setCanonicalCommand("rm -rf skills");
+        approval.setDisplayCommand("rm -rf skills");
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        when(projects.getOwnedProject(7, 12)).thenReturn(project);
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
+        when(approvals.consume(any())).thenReturn(true);
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class)))
+                .thenReturn(new ProcessExecutionResult(ExecutionStatus.SUCCEEDED, 0, 12L, "removed skills", false));
+        when(resumeScheduler.resumeIfWaiting(approval)).thenReturn(CommandApprovalResumeScheduler.ResumeResult.RESUMED);
+        GitSnapshotService snapshots = mock(GitSnapshotService.class);
+        GitSnapshotService.Snapshot before = new GitSnapshotService.Snapshot(true, "before-71", "tree", "");
+        GitSnapshotService.Snapshot after = new GitSnapshotService.Snapshot(true, "after-71", "tree", "");
+        when(snapshots.capture(eq(project), eq("before approved command approval-71"))).thenReturn(before);
+        when(snapshots.capture(eq(project), eq("after approved command approval-71"))).thenReturn(after);
+        DiffService diffs = mock(DiffService.class);
+        PendingChange deleted = new PendingChange("change-71", 7, 12, "conversation-71", 71L, 99L,
+                "skills/SKILL.md", "delete", "skill instructions\n", "",
+                "diff --git a/skills/SKILL.md b/skills/SKILL.md", "applied");
+        when(diffs.recordSnapshotDiffWithoutTaskProjection(7, project, "conversation-71", 71L,
+                "command_approval", before, after)).thenReturn(java.util.List.of(deleted));
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
+                projects, lifecycle, metadataRefresh, resumeScheduler, null,
+                mock(AgentToolCallJournalService.class), mock(AgentRunTranscriptService.class),
+                new AgentCancellationRegistry(), mock(AgentTaskService.class));
+        orchestrator.setWorkspaceChangeEvidenceServices(snapshots, diffs);
+
+        CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
+
+        org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("resuming");
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(snapshots, executor, diffs, lifecycle, resumeScheduler);
+        order.verify(snapshots).capture(project, "before approved command approval-71");
+        order.verify(executor).execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class));
+        order.verify(snapshots).capture(project, "after approved command approval-71");
+        order.verify(diffs).recordSnapshotDiffWithoutTaskProjection(7, project, "conversation-71", 71L,
+                "command_approval", before, after);
+        order.verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_COMPLETED"), any(), any());
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> workspacePayload = org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        order.verify(lifecycle).appendEvent(eq(71L), eq("WORKSPACE_CHANGED"), workspacePayload.capture(),
+                eq("command-lifecycle:v1:approval-71:workspace-changed"));
+        org.assertj.core.api.Assertions.assertThat(workspacePayload.getValue())
+                .containsEntry("evidenceStatus", "captured")
+                .containsEntry("changedFileCount", 1)
+                .containsEntry("changedPaths", java.util.List.of("skills/SKILL.md"));
+        order.verify(resumeScheduler).resumeIfWaiting(approval);
     }
 
     @Test
@@ -140,6 +241,71 @@ class CommandApprovalOrchestratorTest {
                 org.mockito.ArgumentMatchers.contains("tests passed"));
         org.assertj.core.api.Assertions.assertThat(cancellations.findCancellationTarget("session-71", 7, 12).status())
                 .isEqualTo(AgentCancellationRegistry.CancellationStatus.NOT_FOUND);
+    }
+
+    @Test
+    void cancelledApprovedCommandWithPartialMutationPersistsEvidenceAndRefreshesWorkspace() {
+        CommandApprovalService approvals = mock(CommandApprovalService.class);
+        CommandAuditService audit = mock(CommandAuditService.class);
+        AgentApprovedCommandExecutor executor = mock(AgentApprovedCommandExecutor.class);
+        StudentProjectService projects = mock(StudentProjectService.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentProjectMetadataRefreshScheduler metadataRefresh = mock(AgentProjectMetadataRefreshScheduler.class);
+        CommandApprovalResumeScheduler resumeScheduler = mock(CommandApprovalResumeScheduler.class);
+        AgentToolCallJournalService toolCalls = mock(AgentToolCallJournalService.class);
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        CommandApproval approval = approval("approved");
+        approval.setCanonicalCommand("rm -rf skills && sleep 10");
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        when(projects.getOwnedProject(7, 12)).thenReturn(project);
+        when(approvals.findOwned(7, 12, "approval-71")).thenReturn(approval);
+        when(approvals.findLatestForTask(7, 12, 71L)).thenReturn(approval);
+        when(approvals.consume(any())).thenReturn(true);
+        when(tasks.finalizeCancellation(eq(71L), any(), any())).thenReturn(true);
+        when(executor.execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class)))
+                .thenReturn(new ProcessExecutionResult(ExecutionStatus.CANCELLED, null, 48L, "cancelled after delete", false));
+        GitSnapshotService snapshots = mock(GitSnapshotService.class);
+        GitSnapshotService.Snapshot before = mock(GitSnapshotService.Snapshot.class);
+        GitSnapshotService.Snapshot after = mock(GitSnapshotService.Snapshot.class);
+        when(before.available()).thenReturn(true);
+        when(after.available()).thenReturn(true);
+        when(snapshots.capture(project, "before approved command approval-71")).thenReturn(before);
+        when(snapshots.capture(project, "after approved command approval-71")).thenReturn(after);
+        DiffService diffs = mock(DiffService.class);
+        PendingChange deleted = new PendingChange("change-71", 7, 12, "conversation-71", 71L, 99L,
+                "skills/SKILL.md", "delete", "skill instructions\n", "",
+                "diff --git a/skills/SKILL.md b/skills/SKILL.md", "applied");
+        when(diffs.recordSnapshotDiffWithoutTaskProjection(7, project, "conversation-71", 71L,
+                "command_approval", before, after)).thenReturn(java.util.List.of(deleted));
+        CommandApprovalOrchestrator orchestrator = new CommandApprovalOrchestrator(approvals, audit, executor,
+                projects, lifecycle, metadataRefresh, resumeScheduler, null, toolCalls, transcript,
+                new AgentCancellationRegistry(), tasks);
+        orchestrator.setWorkspaceChangeEvidenceServices(snapshots, diffs);
+
+        CommandApprovalOrchestrator.ExecutionResult result = orchestrator.execute(7, 12, "approval-71");
+
+        org.assertj.core.api.Assertions.assertThat(result.status()).isEqualTo("cancelled");
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(snapshots, executor, diffs, lifecycle, tasks);
+        order.verify(snapshots).capture(project, "before approved command approval-71");
+        order.verify(executor).execute(eq(approval), eq(project), any(CancellationToken.class), any(ProcessExecutionObserver.class));
+        order.verify(snapshots).capture(project, "after approved command approval-71");
+        order.verify(diffs).recordSnapshotDiffWithoutTaskProjection(7, project, "conversation-71", 71L,
+                "command_approval", before, after);
+        order.verify(lifecycle).appendEvent(eq(71L), eq("COMMAND_EXECUTION_CANCELLED"), any(), any());
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> workspacePayload = org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        order.verify(lifecycle).appendEvent(eq(71L), eq("WORKSPACE_CHANGED"), workspacePayload.capture(),
+                eq("command-lifecycle:v1:approval-71:workspace-changed"));
+        org.assertj.core.api.Assertions.assertThat(workspacePayload.getValue())
+                .containsEntry("executionStatus", "cancelled")
+                .containsEntry("evidenceStatus", "captured")
+                .containsEntry("changedFileCount", 1)
+                .containsEntry("changedPaths", java.util.List.of("skills/SKILL.md"));
+        verify(transcript).appendDeferredToolResult(eq(71L), eq("tool-71"), eq(""),
+                org.mockito.ArgumentMatchers.contains("workspace_evidence=captured"));
+        verify(tasks).finalizeCancellation(eq(71L), eq("Cancelled"), any());
+        verify(resumeScheduler, never()).resumeIfWaiting(any());
     }
 
     @Test

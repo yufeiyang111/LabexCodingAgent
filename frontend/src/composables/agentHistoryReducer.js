@@ -6,6 +6,7 @@ import { attachDurableInteraction, resolveDurableInteraction } from './agentInte
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 import { projectVisibleAgentError } from './agentErrorProjection.js'
 import { modelStepStatusForEvent, upsertModelStepState } from './agentRunPartState.js'
+import { mergeFinalizationBlockedEvidence } from './completionEvidenceProjection.js'
 
 function nextOrder(message) {
   message._nextOrder = (message._nextOrder || 0) + 1
@@ -332,6 +333,9 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       if (data.pendingChangeId) callbacks.onPendingChange?.()
       break
     }
+    case 'WORKSPACE_CHANGED':
+      callbacks.onWorkspaceChanged?.({ eventId: null, data, message })
+      break
     case 'COMMAND_APPROVAL_REQUIRED':
       attachCommandApprovalState(message, data)
       break
@@ -391,7 +395,9 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
     case 'FINALIZATION_BLOCKED':
       message.taskId = data.taskId || message.taskId || null
       message.completionEvidence = null
-      message.completionBlockedEvidence = data
+      message.completionBlockedEvidence = mergeFinalizationBlockedEvidence(
+        message.completionBlockedEvidence, data
+      )
       message.pendingFinalContent = ''
       message.hasPendingFinalDraft = false
       break

@@ -303,6 +303,68 @@ class DiffServiceCasTest {
         verifyNoInteractions(invalidator);
     }
 
+    @Test
+    void capturesARealDeletedSkillFileAsDurableSnapshotEvidence() throws Exception {
+        Path skill = workspace.resolve("skills/SKILL.md");
+        Files.createDirectories(skill.getParent());
+        Files.writeString(skill, "# skill instructions\n");
+        StudentProject project = project();
+        GitSnapshotService snapshots = new GitSnapshotService();
+        GitSnapshotService.Snapshot before = snapshots.capture(project, "before delete skill");
+        Files.delete(skill);
+        Files.delete(skill.getParent());
+        GitSnapshotService.Snapshot after = snapshots.capture(project, "after delete skill");
+        assertTrue(snapshots.usablePair(before, after));
+
+        AtomicReference<AgentFileChange> stored = new AtomicReference<>();
+        AgentFileChangeMapper fileChanges = mock(AgentFileChangeMapper.class);
+        doAnswer(invocation -> {
+            stored.set(invocation.getArgument(0));
+            return 1;
+        }).when(fileChanges).insert(any(AgentFileChange.class));
+        AgentTaskService tasks = taskService();
+        DiffService service = service(mock(StudentProjectService.class), tasks, fileChanges, snapshots,
+                WorkspaceContextInvalidator.noop());
+
+        List<PendingChange> recorded = service.recordSnapshotDiffWithoutTaskProjection(
+                7, project, "conversation", 1L, "command_approval", before, after);
+
+        assertEquals(1, recorded.size());
+        assertEquals("skills/SKILL.md", recorded.get(0).getRelativePath());
+        assertEquals("delete", recorded.get(0).getChangeType());
+        assertEquals("# skill instructions\n", stored.get().getBeforeContent());
+        assertEquals("", stored.get().getAfterContent());
+        assertEquals("captured", stored.get().getSnapshotStatus());
+        assertEquals("applied", stored.get().getStatus());
+        verify(tasks, never()).updateTask(eq(1L), any(), any(), any());
+    }
+
+    @Test
+    void recordsApprovedCommandSnapshotEvidenceWithoutMutatingWaitingTaskStatus() {
+        AgentFileChangeMapper fileChanges = mock(AgentFileChangeMapper.class);
+        StudentProjectService projectService = mock(StudentProjectService.class);
+        AgentTaskService tasks = taskService();
+        GitSnapshotService snapshots = mock(GitSnapshotService.class);
+        StudentProject project = project();
+        GitSnapshotService.Snapshot before = new GitSnapshotService.Snapshot(true, "before-71", "tree", "");
+        GitSnapshotService.Snapshot after = new GitSnapshotService.Snapshot(true, "after-71", "tree", "");
+        GitSnapshotService.ChangedFile deleted = new GitSnapshotService.ChangedFile("D", "", "skills/SKILL.md");
+        when(snapshots.usablePair(before, after)).thenReturn(true);
+        when(snapshots.changedFiles(project, before, after)).thenReturn(List.of(deleted));
+        when(snapshots.readTextAt(project, "before-71", "skills/SKILL.md")).thenReturn("skill instructions\n");
+        when(snapshots.readTextAt(project, "after-71", "skills/SKILL.md")).thenReturn("");
+        when(snapshots.diffForFile(project, before, after, deleted)).thenReturn("diff --git a/skills/SKILL.md b/skills/SKILL.md");
+        DiffService service = service(projectService, tasks, fileChanges, snapshots, WorkspaceContextInvalidator.noop());
+
+        List<PendingChange> recorded = service.recordSnapshotDiffWithoutTaskProjection(
+                7, project, "conversation", 1L, "command_approval", before, after);
+
+        assertEquals(1, recorded.size());
+        assertEquals("skills/SKILL.md", recorded.get(0).getRelativePath());
+        assertEquals("delete", recorded.get(0).getChangeType());
+        verify(tasks, never()).updateTask(eq(1L), any(), any(), any());
+    }
+
     private DiffService service(StudentProjectService projectService, AgentTaskService taskService,
                                 AgentFileChangeMapper fileChangeMapper, GitSnapshotService snapshots,
                                 WorkspaceContextInvalidator invalidator) {

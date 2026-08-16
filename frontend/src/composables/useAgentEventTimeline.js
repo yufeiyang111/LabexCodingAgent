@@ -6,6 +6,7 @@ import { applyTokenUsageEvent } from './cacheTelemetryStatus.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 import { projectVisibleAgentError } from './agentErrorProjection.js'
 import { modelStepStatusForEvent, upsertModelStepState } from './agentRunPartState.js'
+import { mergeFinalizationBlockedEvidence } from './completionEvidenceProjection.js'
 
 function toolResultStatus(success, result) {
   if (success === false) return 'error'
@@ -43,7 +44,8 @@ export function useAgentEventTimeline(options) {
     tokenUsage,
     sessionHistory,
     currentSessionName,
-    onTokenUsageProjected
+    onTokenUsageProjected,
+    onWorkspaceChanged
   } = options
 
   function handleAgentEvent(event, assistantMsg) {
@@ -176,6 +178,9 @@ export function useAgentEventTimeline(options) {
         }
         scheduleAgentRender()
         break
+      case 'WORKSPACE_CHANGED':
+        onWorkspaceChanged?.({ eventId: event.eventId ?? null, data, message: assistantMsg })
+        break
       case 'COMMAND_APPROVAL_REQUIRED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
         assistantMsg.resumeTaskEventsAfterStream = true
@@ -265,7 +270,9 @@ export function useAgentEventTimeline(options) {
       case 'FINALIZATION_BLOCKED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
         assistantMsg.completionEvidence = null
-        assistantMsg.completionBlockedEvidence = data
+        assistantMsg.completionBlockedEvidence = mergeFinalizationBlockedEvidence(
+          assistantMsg.completionBlockedEvidence, data
+        )
         assistantMsg.pendingFinalContent = ''
         assistantMsg.hasPendingFinalDraft = false
         scheduleAgentRender()
