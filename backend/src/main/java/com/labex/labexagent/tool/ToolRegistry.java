@@ -39,7 +39,7 @@ public class ToolRegistry {
             "read_file", "read_tool_output", "glob", "grep", "list_files",
             "project_overview", "repo_map", "lsp", "retrieve_context",
             "web_fetch", "web_search", "understand_image",
-            "create_plan", "plan_exit", "question", "skill", "mcp_call", "task", "context_note"
+            "create_plan", "todo_write", "plan_exit", "question", "skill", "mcp_call", "task", "context_note"
         ),
         // explore 模式：只读
         "explore", Set.of(

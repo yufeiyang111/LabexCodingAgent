@@ -322,6 +322,7 @@ class AgentRunInteractionDispatchClaimTest {
                         title VARCHAR(256),
                         mode VARCHAR(32),
                         model_config_id INT DEFAULT NULL,
+                        runtime_profile VARCHAR(32),
                         status VARCHAR(32) NOT NULL,
                         current_step VARCHAR(256),
                         summary VARCHAR(1024),

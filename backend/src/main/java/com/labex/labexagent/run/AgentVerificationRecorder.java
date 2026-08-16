@@ -7,13 +7,15 @@ import com.labex.labexagent.tool.ToolResult;
 import com.labex.mapper.AgentVerificationMapper;
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
- * 持久化 Agent 验证结果的唯一入口，保证直接 run_tests 和审批后执行共用同一证据契约。
+ * 持久化 Agent 验证结果的唯一入口，保证 shell、专用验证和审批后执行共用同一证据契约。
  *
  * <p>执行器发起的写入（fenced overload）在 INSERT 前验证 {@link ExecutionFence}，
  * stale fence 抛出 typed failure 且零写入；控制面（审批后重放）继续使用 legacy overload。</p>
@@ -21,6 +23,16 @@ import org.springframework.stereotype.Service;
 @Service
 public class AgentVerificationRecorder {
     private static final Logger log = LoggerFactory.getLogger(AgentVerificationRecorder.class);
+    private static final Pattern PACKAGE_SCRIPT = Pattern.compile(
+            "(?i)(?:^|(?:&&|\\|\\||;)\\s*)(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?(?<kind>test|lint|build)\\b");
+    private static final Pattern MAVEN_GOAL = Pattern.compile(
+            "(?i)(?:^|(?:&&|\\|\\||;)\\s*)(?:mvn|mvnw(?:\\.cmd)?|\\./mvnw)"
+                    + "(?:\\s+[^\\s;&|]+)*?\\s+(?<kind>test|verify|package|compile|checkstyle:check)\\b");
+    private static final Pattern GRADLE_GOAL = Pattern.compile(
+            "(?i)(?:^|(?:&&|\\|\\||;)\\s*)(?:gradle|gradlew(?:\\.bat)?|\\./gradlew)"
+                    + "(?:\\s+[^\\s;&|]+)*?\\s+(?<kind>test|check|build|assemble|classes)\\b");
+    private static final Pattern LANGUAGE_TOOL = Pattern.compile(
+            "(?i)(?:^|(?:&&|\\|\\||;)\\s*)(?<kind>pytest|go\\s+test|cargo\\s+test|dotnet\\s+test|phpunit|rspec)\\b");
 
     private final AgentVerificationMapper verificationMapper;
     private final AgentRunArtifactService artifactService;
@@ -64,10 +76,21 @@ public class AgentVerificationRecorder {
     }
 
     public boolean recordToolResult(Long taskId, Integer studentId, Integer projectId,
-                                    String command, String strategy, ToolResult result) {
+                                     String command, String strategy, ToolResult result) {
         if (result == null) return false;
         return record(null, taskId, studentId, projectId, command, strategy, result.getExecutionStatus(),
-                result.isSuccess() ? 0 : 1, result.getContent());
+                exitCode(result), result.getContent());
+    }
+
+    /**
+     * 将通用 shell 的真实测试、构建或静态检查结果投影为 durable verification evidence。
+     * 安装依赖、拉取代码和普通开发命令不会被误记为验证，也不会增加新的审批门槛。
+     */
+    public boolean recordShellToolResult(Long taskId, Integer studentId, Integer projectId,
+                                         String command, ToolResult result) {
+        return shellVerificationStrategy(command)
+                .map(strategy -> recordToolResult(taskId, studentId, projectId, command, strategy, result))
+                .orElse(false);
     }
 
     /**
@@ -78,7 +101,66 @@ public class AgentVerificationRecorder {
                                     String command, String strategy, ToolResult result) {
         if (result == null) return false;
         return record(fence, taskId, studentId, projectId, command, strategy, result.getExecutionStatus(),
-                result.isSuccess() ? 0 : 1, result.getContent());
+                exitCode(result), result.getContent());
+    }
+
+    /** Executor-fenced shell evidence projection，保持工具执行 epoch/lease 语义。 */
+    public boolean recordShellToolResult(ExecutionFence fence, Long taskId, Integer studentId, Integer projectId,
+                                         String command, ToolResult result) {
+        return shellVerificationStrategy(command)
+                .map(strategy -> recordToolResult(fence, taskId, studentId, projectId, command, strategy, result))
+                .orElse(false);
+    }
+
+    static Optional<String> shellVerificationStrategy(String command) {
+        if (command == null || command.isBlank()) {
+            return Optional.empty();
+        }
+        String normalized = command.trim();
+        Optional<String> packageKind = matcherKind(PACKAGE_SCRIPT, normalized);
+        if (packageKind.isPresent()) {
+            return packageKind;
+        }
+        Optional<String> mavenKind = matcherKind(MAVEN_GOAL, normalized);
+        if (mavenKind.isPresent()) {
+            return mavenKind;
+        }
+        Optional<String> gradleKind = matcherKind(GRADLE_GOAL, normalized);
+        if (gradleKind.isPresent()) {
+            return gradleKind.map(AgentVerificationRecorder::normalizeBuildKind);
+        }
+        Optional<String> languageKind = matcherKind(LANGUAGE_TOOL, normalized);
+        if (languageKind.isPresent()) {
+            return Optional.of("test");
+        }
+        return Optional.empty();
+    }
+
+    private static Optional<String> matcherKind(Pattern pattern, String command) {
+        java.util.regex.Matcher matcher = pattern.matcher(command);
+        if (!matcher.find()) {
+            return Optional.empty();
+        }
+        return Optional.of(normalizeBuildKind(matcher.group("kind")));
+    }
+
+    private static String normalizeBuildKind(String kind) {
+        if (kind == null || kind.isBlank()) {
+            return "build";
+        }
+        String normalized = kind.toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "test", "lint", "build" -> normalized;
+            case "checkstyle:check" -> "lint";
+            case "pytest", "go test", "cargo test", "dotnet test", "phpunit", "rspec" -> "test";
+            default -> "build";
+        };
+    }
+
+    private Integer exitCode(ToolResult result) {
+        return result.getExecutionExitCode() == null
+                ? (result.isSuccess() ? 0 : 1)
+                : result.getExecutionExitCode();
     }
 
     private boolean record(ExecutionFence fence, Long taskId, Integer studentId, Integer projectId,

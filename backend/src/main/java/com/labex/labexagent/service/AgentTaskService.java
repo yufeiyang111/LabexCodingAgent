@@ -15,6 +15,7 @@ import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.run.AgentRunTransitionKey;
 import com.labex.labexagent.run.BackgroundRunWorktreeService;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
 import com.labex.labexagent.projectconfig.AgentRunConfigSnapshotService;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.mapper.AgentChangeSetMapper;
@@ -96,9 +97,21 @@ public class AgentTaskService {
     public AgentTask createTask(Integer studentId, StudentProject project, String conversationId, String sessionId,
                                 String mode, String message, String displayMessage, String activePath,
                                 Integer modelConfigId, boolean backgroundRun, LocalDateTime submittedAt) {
+        return createTask(studentId, project, conversationId, sessionId, mode, message, displayMessage, activePath,
+                modelConfigId, AgentRuntimeProfile.LABEX_LEGACY, backgroundRun, submittedAt);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AgentTask createTask(Integer studentId, StudentProject project, String conversationId, String sessionId,
+                                String mode, String message, String displayMessage, String activePath,
+                                Integer modelConfigId, AgentRuntimeProfile runtimeProfile,
+                                boolean backgroundRun, LocalDateTime submittedAt) {
+        AgentRuntimeProfile effectiveRuntimeProfile = runtimeProfile == null
+                ? AgentRuntimeProfile.LABEX_LEGACY
+                : runtimeProfile;
         String visibleMessage = displayMessage == null || displayMessage.isBlank() ? message : displayMessage;
         Map<String, Object> payload = this.taskPayload(studentId, project, conversationId, sessionId, mode, message,
-                visibleMessage, activePath, modelConfigId);
+                visibleMessage, activePath, modelConfigId, effectiveRuntimeProfile);
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime effectiveSubmittedAt = submittedAt == null ? now : submittedAt;
         AgentTask task = new AgentTask();
@@ -109,8 +122,9 @@ public class AgentTaskService {
         task.setTitle(this.title(visibleMessage));
         task.setMode(mode);
         task.setModelConfigId(modelConfigId);
+        task.setRuntimeProfile(effectiveRuntimeProfile.persistedValue());
         task.setStatus(AgentRunState.QUEUED.persistedStatus());
-        task.setCurrentStep("\u5206\u6790\u4efb\u52a1");
+        task.setCurrentStep("分析任务");
         task.setSummary("");
         task.setRunVersion(0L);
         task.setLastEventSequence(0L);
@@ -555,7 +569,8 @@ public class AgentTaskService {
 
     private Map<String, Object> taskPayload(Integer studentId, StudentProject project, String conversationId,
                                              String sessionId, String mode, String message, String displayMessage,
-                                             String activePath, Integer modelConfigId) {
+                                             String activePath, Integer modelConfigId,
+                                             AgentRuntimeProfile runtimeProfile) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("studentId", studentId);
         payload.put("projectId", project.getProjectId());
@@ -565,6 +580,7 @@ public class AgentTaskService {
         payload.put("message", message);
         payload.put("displayMessage", displayMessage);
         payload.put("activePath", activePath == null ? "" : activePath);
+        payload.put("runtimeProfile", runtimeProfile.persistedValue());
         if (modelConfigId != null) payload.put("modelConfigId", modelConfigId);
         return payload;
     }

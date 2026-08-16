@@ -71,11 +71,9 @@ class AgentLoopEngineLoopPolicyTest {
         }
     }
     @Test
-    void treatsCompletingAMissingPlanAsABatchBlockingPreconditionFailure() {
-        com.google.gson.JsonObject args = new com.google.gson.JsonObject();
-        args.addProperty("action", "complete");
-        assertTrue(AgentLoopEngine.isMissingPlanCompletion(
-                "create_plan", args, com.labex.labexagent.tool.ToolResult.failed("failure_code=PLAN_MISSING")));
+    void doesNotTreatTodoOrPlanCompletionAsABatchBlockingPrecondition() {
+        assertFalse(engine.contains("isMissingPlanCompletion("));
+        assertFalse(engine.contains("unfinished_plan"));
     }
 
     @Test

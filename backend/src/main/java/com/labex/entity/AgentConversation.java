@@ -23,6 +23,8 @@ public class AgentConversation {
     private String provider;
     @TableField(value="model")
     private String model;
+    @TableField(value="runtime_profile")
+    private String runtimeProfile;
     @TableField(value="summary")
     private String summary;
     @TableField(value="parent_conversation_id")
@@ -70,6 +72,10 @@ public class AgentConversation {
 
     public String getModel() {
         return this.model;
+    }
+
+    public String getRuntimeProfile() {
+        return this.runtimeProfile;
     }
 
     /**
@@ -143,6 +149,10 @@ public class AgentConversation {
 
     public void setModel(String model) {
         this.model = model;
+    }
+
+    public void setRuntimeProfile(String runtimeProfile) {
+        this.runtimeProfile = runtimeProfile;
     }
 
     /**
@@ -240,6 +250,11 @@ public class AgentConversation {
         if (this$model == null ? other$model != null : !this$model.equals(other$model)) {
             return false;
         }
+        String this$runtimeProfile = this.getRuntimeProfile();
+        String other$runtimeProfile = other.getRuntimeProfile();
+        if (this$runtimeProfile == null ? other$runtimeProfile != null : !this$runtimeProfile.equals(other$runtimeProfile)) {
+            return false;
+        }
         LocalDateTime this$createTime = this.getCreateTime();
         LocalDateTime other$createTime = other.getCreateTime();
         if (this$createTime == null ? other$createTime != null : !(this$createTime).equals(other$createTime)) {
@@ -273,6 +288,8 @@ public class AgentConversation {
         result = result * 59 + ($provider == null ? 43 : $provider.hashCode());
         String $model = this.getModel();
         result = result * 59 + ($model == null ? 43 : $model.hashCode());
+        String $runtimeProfile = this.getRuntimeProfile();
+        result = result * 59 + ($runtimeProfile == null ? 43 : $runtimeProfile.hashCode());
         LocalDateTime $createTime = this.getCreateTime();
         result = result * 59 + ($createTime == null ? 43 : ($createTime).hashCode());
         LocalDateTime $updateTime = this.getUpdateTime();
@@ -281,6 +298,6 @@ public class AgentConversation {
     }
 
     public String toString() {
-        return "AgentConversation(conversationId=" + this.getConversationId() + ", studentId=" + this.getStudentId() + ", projectId=" + this.getProjectId() + ", title=" + this.getTitle() + ", mode=" + this.getMode() + ", provider=" + this.getProvider() + ", model=" + this.getModel() + ", status=" + this.getStatus() + ", createTime=" + String.valueOf(this.getCreateTime()) + ", updateTime=" + String.valueOf(this.getUpdateTime()) + ")";
+        return "AgentConversation(conversationId=" + this.getConversationId() + ", studentId=" + this.getStudentId() + ", projectId=" + this.getProjectId() + ", title=" + this.getTitle() + ", mode=" + this.getMode() + ", provider=" + this.getProvider() + ", model=" + this.getModel() + ", runtimeProfile=" + this.getRuntimeProfile() + ", status=" + this.getStatus() + ", createTime=" + String.valueOf(this.getCreateTime()) + ", updateTime=" + String.valueOf(this.getUpdateTime()) + ")";
     }
 }

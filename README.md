@@ -94,6 +94,7 @@ Agent 不会把所有失败都当成代码错误。命令失败会先识别 DNS/
 | `LABEX_AGENT_MAX_TOOL_CYCLE_LENGTH` | `3` | 可识别的交替工具调用循环最大长度，例如 `A-B-A-B-A-B`。 |
 | `LABEX_AGENT_MAX_AUTOMATIC_STRATEGY_SWITCHES` | `1` | 同一循环模式允许 Agent 自动切换策略的次数；之后升级为持久化用户问题。 |
 | `LABEX_AGENT_MAX_NON_PROGRESS_ITERATIONS` | `8` | 连续没有成功工具进展的模型回合上限；防止空答复、反复失败或策略无效时无限消耗请求。 |
+| `LABEX_AGENT_RUNTIME_PROFILE_DEFAULT` | `labex-legacy` | 仅影响新建对话的运行时 profile；已有对话和恢复 task 始终使用已持久化的 snapshot。当前可选 `labex-legacy`、`labex-native`。 |
 | `LABEX_AGENT_FINALIZATION_RECOVERY_LIMIT` | `1` | 同一份 durable 完成证据下，最终答复被服务端拒绝后允许的自动纠正次数；`0` 表示直接以明确失败结束。 |
 | `LABEX_AGENT_LEGACY_REMOVAL_VERSION` | `1.1.0` | 旧版 history/checkpoint reader 达到删除门槛后的目标版本；为空时永远不报告可删除。 |
 | `LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS` | `14` | 旧 reader pending 存量归零且无新命中后的连续观察天数；任何新命中都会重置观察起点。 |
@@ -164,6 +165,7 @@ For a server deployment, switch to the Docker Worker:
 |---|---|---|
 | `SPRING_PROFILES_ACTIVE` | `production` | Disables the local WSL Worker and enables production startup validation. |
 | `LABEX_AGENT_WORKER_DOCKER_IMAGE` | `registry.example.com/labex-agent-sandbox:2026-07` | Required prebuilt OCI image containing the shell, language runtimes, package managers, and LSP tools. |
+| `LABEX_AGENT_PERMISSION_PROFILE` | `labex-standard` | 默认受管 Worker Shell 权限 profile；`safe` 仅保留 direct-command 兼容，`full_access` 还需要显式 unsafe-local opt-in。 |
 | `LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED` | `true` | 沙箱网络开关。默认 `true`：WSL 不带 `--unshare-net`、Docker 用 `--network bridge`，网络命令无需审批；`false` 恢复无网络沙箱。 |
 
 The Docker daemon must be available. The Docker Worker mounts only the current project workspace, uses a read-only root filesystem, applies CPU/memory/PID limits, and removes ordinary terminal or command containers after completion. Its network is `bridge` by default and becomes isolated only when `LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED=false`. Do not bake model API keys, JWT secrets, or database credentials into the image.

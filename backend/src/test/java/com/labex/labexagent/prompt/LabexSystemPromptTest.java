@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.WorkerShellDescriptor;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
 import org.junit.jupiter.api.Test;
 
 class LabexSystemPromptTest {
@@ -20,13 +21,22 @@ class LabexSystemPromptTest {
     }
 
     @Test
+    void defaultPromptUsesTheLabexStandardPermissionProfile() {
+        String prompt = LabexSystemPrompt.buildSystemPrompt(
+                project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools");
+
+        assertThat(prompt)
+                .contains("Permission profile: labex-standard")
+                .doesNotContain("Permission profile: opencode");
+    }
+    @Test
     void systemPromptIsStableWhenSessionFactsMatchAndProjectTreeChanges() {
         StudentProject project = project("PromptWorkspace", "D:/workspaces/prompt", "first tree");
         WorkerShellDescriptor descriptor = WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true);
 
-        String first = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh", descriptor, "opencode");
+        String first = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh", descriptor, "labex-standard");
         project.setStructureJson("second tree with different files");
-        String second = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh", descriptor, "opencode");
+        String second = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh", descriptor, "labex-standard");
 
         assertThat(first)
                 .isEqualTo(second)
@@ -42,7 +52,7 @@ class LabexSystemPromptTest {
     void systemPromptKeepsVisibleLanguageAndWorkerFactsAtSystemPriority() {
         String prompt = LabexSystemPrompt.buildSystemPrompt(
                 project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools", "zh",
-                WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true), "opencode");
+                WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true), "labex-standard");
 
         assertThat(prompt)
                 .startsWith("<visible_language>")
@@ -54,7 +64,7 @@ class LabexSystemPromptTest {
                 .contains("network: enabled")
                 .contains("project_name: PromptWorkspace")
                 .contains("<command_policy>")
-                .contains("Permission profile: opencode")
+                .contains("Permission profile: labex-standard")
                 .doesNotContain("project_structure_summary");
     }
 
@@ -62,7 +72,7 @@ class LabexSystemPromptTest {
     void systemPromptChangesWhenSessionRuntimeFactsChange() {
         StudentProject project = project("PromptWorkspace", "D:/workspaces/prompt", "{}");
         String linuxChinese = LabexSystemPrompt.buildSystemPrompt(project, "tools", "zh",
-                WorkerShellDescriptor.bash("linux", "/bin/bash", "/workspace", true), "opencode");
+                WorkerShellDescriptor.bash("linux", "/bin/bash", "/workspace", true), "labex-standard");
         String windowsEnglish = LabexSystemPrompt.buildSystemPrompt(project, "tools", "en",
                 WorkerShellDescriptor.powerShell("windows", "pwsh.exe", "C:/sandbox", false), "safe");
 
@@ -77,10 +87,10 @@ class LabexSystemPromptTest {
     }
 
     @Test
-    void systemPromptExplainsTheOpenCodeRealShellContract() {
+    void systemPromptExplainsTheLabexStandardRealShellContract() {
         String prompt = LabexSystemPrompt.buildSystemPrompt(
                 project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools", "zh",
-                WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true), "opencode");
+                WorkerShellDescriptor.bash("linux-wsl", "/bin/bash", "/workspace", true), "labex-standard");
 
         assertThat(prompt)
                 .contains("Bash/PowerShell syntax is supported")
@@ -116,6 +126,19 @@ class LabexSystemPromptTest {
     }
 
     @Test
+    void systemPromptTreatsTodoAsOptionalProgressAndDoesNotRequireCreatePlanOrDedicatedTestTools() {
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools");
+
+        assertThat(prompt)
+                .contains("For multi-step work, update the optional todo list when it improves clarity")
+                .doesNotContain("start with create_plan")
+                .doesNotContain("use create_plan to break task")
+                .doesNotContain("Plan created and all tasks marked complete")
+                .doesNotContain("use create_plan(action=\"complete\"")
+                .doesNotContain("run_tests");
+    }
+
+    @Test
     void systemPromptNoLongerRecommendsCurlForVerification() {
         String prompt = LabexSystemPrompt.buildSystemPrompt(project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools");
 
@@ -124,6 +147,22 @@ class LabexSystemPromptTest {
                 .contains("Check `git status` to confirm only intended files changed");
     }
 
+    @Test
+    void nativeProfileAddsTheEvidenceDrivenDirectExecutionContract() {
+        StudentProject project = project("PromptWorkspace", "D:/workspaces/prompt", "{}");
+        WorkerShellDescriptor descriptor = WorkerShellDescriptor.bash("linux", "/bin/bash", "/workspace", true);
+
+        String legacy = LabexSystemPrompt.buildSystemPrompt(project, "tools", "en", descriptor,
+                "labex-standard", AgentRuntimeProfile.LABEX_LEGACY);
+        String nativePrompt = LabexSystemPrompt.buildSystemPrompt(project, "tools", "en", descriptor,
+                "labex-standard", AgentRuntimeProfile.LABEX_NATIVE);
+
+        assertThat(legacy).doesNotContain("<labex_native_runtime>");
+        assertThat(nativePrompt)
+                .contains("<labex_native_runtime>")
+                .contains("actual tool and verification evidence")
+                .contains("Progress is a harness projection");
+    }
     private static StudentProject project(String name, String workspacePath, String structureJson) {
         StudentProject project = new StudentProject();
         project.setProjectName(name);

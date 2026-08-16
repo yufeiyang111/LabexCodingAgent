@@ -29,6 +29,7 @@ import com.labex.labexagent.projectconfig.AgentRunConfigSnapshotService;
 import com.labex.labexagent.run.BackgroundRunWorktreeService;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -205,5 +206,23 @@ class AgentTaskServiceTest {
         return new AgentTaskService(taskMapper, changeSetMapper, fileChangeMapper,
                 lifecycle, mock(AgentRunExecutionLeaseService.class),
                 mock(BackgroundRunWorktreeService.class));
+    }
+
+    @Test
+    void persistsTheRuntimeProfileSnapshotForTheTask() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTaskService service = newTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class));
+        StudentProject project = new StudentProject();
+        project.setProjectId(3);
+
+        AgentTask task = service.createTask(7, project, "conversation", "session", "build",
+                "message", "display", "src/App.vue", 17, AgentRuntimeProfile.LABEX_NATIVE,
+                false, LocalDateTime.of(2026, 8, 16, 10, 30));
+
+        Map<?, ?> payload = new Gson().fromJson(task.getRequestPayload(), Map.class);
+        assertEquals("labex-native", task.getRuntimeProfile());
+        assertEquals("labex-native", payload.get("runtimeProfile"));
+        verify(taskMapper).insert(task);
     }
 }

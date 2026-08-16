@@ -56,6 +56,8 @@ labex-agent:
   legacy-migration:
     target-removal-version: ${LABEX_AGENT_LEGACY_REMOVAL_VERSION:1.1.0}
     observation-window-days: ${LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS:14}
+  runtime-profile:
+    default-profile: ${LABEX_AGENT_RUNTIME_PROFILE_DEFAULT:labex-legacy}
   history:
     max-page-events-budget: ${LABEX_AGENT_HISTORY_MAX_PAGE_EVENTS_BUDGET:1000}
     max-part-output-chars: ${LABEX_AGENT_HISTORY_MAX_PART_OUTPUT_CHARS:4000}
@@ -85,7 +87,7 @@ labex-agent:
   acceptance:
     auto-approve-verification: ${LABEX_AGENT_ACCEPTANCE_AUTO_APPROVE_VERIFICATION:true}
   execution:
-    permission-profile: ${LABEX_AGENT_PERMISSION_PROFILE:opencode}
+    permission-profile: ${LABEX_AGENT_PERMISSION_PROFILE:labex-standard}
     network-default-enabled: ${LABEX_AGENT_NETWORK_DEFAULT_ENABLED:true}
     allow-full-access: ${LABEX_AGENT_ALLOW_FULL_ACCESS:false}
   preview:

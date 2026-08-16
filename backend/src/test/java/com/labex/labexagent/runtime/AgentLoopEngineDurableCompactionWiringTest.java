@@ -29,8 +29,9 @@ class AgentLoopEngineDurableCompactionWiringTest {
 
         assertTrue(source.contains("AgentTranscriptProjectionService durableProjector = this.requireTranscriptProjectionService()"));
         assertTrue(source.contains("durableProjector.loadDurableProjection(task.getTaskId())"));
+        assertTrue(source.contains("void setProviderTranscriptAppender"));
         assertTrue(source.contains("private void appendProviderMessage("));
-        assertTrue(source.contains("transcriptService.appendMessage("));
+        assertTrue(source.contains("this.requireProviderTranscriptAppender().append(executionFence"));
         assertFalse(source.contains("TranscriptMessageList"));
         assertTrue(source.contains("compactionService.start("));
         assertTrue(source.contains("compactionService.complete("));

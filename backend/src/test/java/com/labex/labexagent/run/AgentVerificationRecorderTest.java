@@ -83,6 +83,38 @@ class AgentVerificationRecorderTest {
     }
 
     @Test
+    void classifiesOnlyActualShellVerificationCommands() {
+        assertThat(AgentVerificationRecorder.shellVerificationStrategy("npm test -- --runInBand"))
+                .contains("test");
+        assertThat(AgentVerificationRecorder.shellVerificationStrategy("mvn -q verify"))
+                .contains("build");
+        assertThat(AgentVerificationRecorder.shellVerificationStrategy("pnpm lint"))
+                .contains("lint");
+        assertThat(AgentVerificationRecorder.shellVerificationStrategy("npm install"))
+                .isEmpty();
+        assertThat(AgentVerificationRecorder.shellVerificationStrategy("git clone https://example.test/repo.git"))
+                .isEmpty();
+    }
+
+    @Test
+    void observedNonZeroShellVerificationIsRecordedAsFailed() {
+        AgentVerificationMapper mapper = mock(AgentVerificationMapper.class);
+        AgentRunArtifactService artifacts = mock(AgentRunArtifactService.class);
+        AgentVerificationRecorder recorder = new AgentVerificationRecorder(mapper, artifacts);
+        ToolResult observed = ToolResult.ok("execution=completed\noutcome=non_zero_exit\nexit=1");
+        observed.setExecutionStatus("failed");
+        observed.setExecutionExitCode(1);
+
+        boolean recorded = recorder.recordShellToolResult(71L, 7, 12, "npm test", observed);
+
+        assertThat(recorded).isTrue();
+        ArgumentCaptor<AgentVerification> verification = ArgumentCaptor.forClass(AgentVerification.class);
+        verify(mapper).insert(verification.capture());
+        assertThat(verification.getValue().getStatus()).isEqualTo("failed");
+        assertThat(verification.getValue().getExitCode()).isEqualTo(1);
+    }
+
+    @Test
     void onlyRealExitZeroCountsAsPassed() {
         AgentVerificationMapper mapper = mock(AgentVerificationMapper.class);
         AgentRunArtifactService artifacts = mock(AgentRunArtifactService.class);

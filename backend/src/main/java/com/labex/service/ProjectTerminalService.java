@@ -38,7 +38,7 @@ public class ProjectTerminalService {
     private final AgentExecutionProperties executionProperties;
     private final Map<String, TerminalSession> sessions = new ConcurrentHashMap<>();
 
-    /** Compatibility constructor: managed terminal uses the OpenCode-first Shell profile. */
+    /** Compatibility constructor: managed terminal uses the Labex standard Shell profile. */
     public ProjectTerminalService(SandboxWorker sandboxWorker) {
         this(sandboxWorker, new AgentExecutionProperties());
     }

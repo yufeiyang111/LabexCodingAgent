@@ -7,7 +7,7 @@ import org.springframework.stereotype.Service;
 
 /**
  * Command classification is a control-plane decision only; execution remains inside SandboxWorker.
- * The explicit direct/safe profile retains the legacy small grammar. The default OpenCode profile
+ * The explicit direct/safe profile retains the legacy small grammar. The default Labex standard profile
  * accepts complete Bash/PowerShell syntax and only blocks control-plane escape or host-danger intent.
  * Network access is enabled by default in the isolated Worker; only destructive operations
  * (bulk deletion, git history/working-tree overwrite, force push) require approval.

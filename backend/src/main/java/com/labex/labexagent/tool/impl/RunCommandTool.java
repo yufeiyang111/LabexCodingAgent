@@ -11,6 +11,7 @@ import com.labex.labexagent.commandsecurity.DirectCommandWorkingDirectory;
 import com.labex.labexagent.execution.ProcessExecutionRequest;
 import com.labex.labexagent.execution.WorkerShellDescriptor;
 import com.labex.labexagent.execution.WorkerShellExecutor;
+import com.labex.labexagent.run.AgentVerificationRecorder;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.runtime.AgentExecutionProperties;
 import com.labex.labexagent.tool.AgentTool;
@@ -28,7 +29,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * OpenCode-first Shell Tool. The model command is deliberately passed as one complete Shell payload;
+ * Labex standard Shell Tool. The model command is deliberately passed as one complete Shell payload;
  * command parsing belongs to the selected Bash/PowerShell implementation, never to Java whitespace splitting.
  */
 @Component
@@ -39,17 +40,25 @@ public class RunCommandTool implements AgentTool {
 
     private final SandboxWorker sandboxWorker;
     private final AgentExecutionProperties executionProperties;
+    private final AgentVerificationRecorder verificationRecorder;
     private final CommandClassifier commandClassifier = new CommandClassifier();
 
     /** Compatibility constructor for focused tests and legacy callers. */
     public RunCommandTool(SandboxWorker sandboxWorker) {
-        this(sandboxWorker, new AgentExecutionProperties());
+        this(sandboxWorker, new AgentExecutionProperties(), null);
+    }
+
+    /** Compatibility constructor for focused tests and worker smoke coverage. */
+    public RunCommandTool(SandboxWorker sandboxWorker, AgentExecutionProperties executionProperties) {
+        this(sandboxWorker, executionProperties, null);
     }
 
     @Autowired
-    public RunCommandTool(SandboxWorker sandboxWorker, AgentExecutionProperties executionProperties) {
+    public RunCommandTool(SandboxWorker sandboxWorker, AgentExecutionProperties executionProperties,
+                          AgentVerificationRecorder verificationRecorder) {
         this.sandboxWorker = sandboxWorker;
         this.executionProperties = executionProperties == null ? new AgentExecutionProperties() : executionProperties;
+        this.verificationRecorder = verificationRecorder;
     }
 
     @Override
@@ -103,8 +112,11 @@ public class RunCommandTool implements AgentTool {
         WorkerShellExecutor.PreparedExecution prepared = shellExecutor.prepare(
                 descriptor, command, workingPath, Duration.ofMillis(timeoutMs),
                 MAX_OUTPUT_CHARS, artifact.absolutePath());
-        return ToolResult.fromObservedProcessExecution(shellExecutor.execute(run, prepared, context.getCancellationToken()),
+        ToolResult result = ToolResult.fromObservedProcessExecution(
+                shellExecutor.execute(run, prepared, context.getCancellationToken()),
                 descriptor.shellName(), relativeWorkdir(context, workingPath), artifact.relativePath());
+        recordVerificationIfRelevant(context, command, result);
+        return result;
     }
 
     private ToolResult executeRestrictedDirectCommand(AgentContext context, String command, String requestedWorkdir,
@@ -127,13 +139,31 @@ public class RunCommandTool implements AgentTool {
             List<String> argv = DirectCommandTokenizer.tokenize(classification.normalizedCommand().canonicalCommand());
             ToolSupport.ProcessOutputArtifact artifact = ToolSupport.processOutputArtifact(
                     context, definition().getName(), currentToolCallId());
-            return ToolResult.fromObservedProcessExecution(sandboxWorker.execute(run, new ProcessExecutionRequest(
-                    argv, workingPath, Duration.ofMillis(timeoutMs), MAX_OUTPUT_CHARS,
-                    artifact.absolutePath()), context.getCancellationToken()),
+            ToolResult result = ToolResult.fromObservedProcessExecution(
+                    sandboxWorker.execute(run, new ProcessExecutionRequest(
+                            argv, workingPath, Duration.ofMillis(timeoutMs), MAX_OUTPUT_CHARS,
+                            artifact.absolutePath()), context.getCancellationToken()),
                     "direct", relativeWorkdir(context, workingPath), artifact.relativePath());
+            recordVerificationIfRelevant(context, command, result);
+            return result;
         } catch (IllegalArgumentException exception) {
             return ToolResult.failed(exception.getMessage());
         }
+    }
+
+    private void recordVerificationIfRelevant(AgentContext context, String command, ToolResult result) {
+        if (verificationRecorder == null || context == null || context.getTaskId() == null
+                || context.getStudentId() == null || context.getProject() == null
+                || context.getProject().getProjectId() == null) {
+            return;
+        }
+        if (context.getExecutionFence() == null) {
+            verificationRecorder.recordShellToolResult(
+                    context.getTaskId(), context.getStudentId(), context.getProject().getProjectId(), command, result);
+            return;
+        }
+        verificationRecorder.recordShellToolResult(context.getExecutionFence(), context.getTaskId(),
+                context.getStudentId(), context.getProject().getProjectId(), command, result);
     }
 
     private ToolResult policyFailure(CommandClassification classification) {

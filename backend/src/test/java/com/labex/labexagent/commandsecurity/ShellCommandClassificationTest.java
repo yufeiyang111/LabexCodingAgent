@@ -9,9 +9,9 @@ class ShellCommandClassificationTest {
     private final CommandNormalizer normalizer = new CommandNormalizer();
 
     @Test
-    void opencodeShellAllowsCompleteBashSyntaxWithoutRewritingThePayload() {
+    void labexStandardShellAllowsCompleteBashSyntaxWithoutRewritingThePayload() {
         String command = "cd frontend&&printf \"hello world\" > \"build output.txt\" | cat && echo $HOME";
-        CommandRequest request = new CommandRequest(command, "bash", ".", 60, false, false, "opencode");
+        CommandRequest request = new CommandRequest(command, "bash", ".", 60, false, false, "labex-standard");
 
         CommandClassification result = classifier.classify(request);
 
@@ -29,13 +29,13 @@ class ShellCommandClassificationTest {
     }
 
     @Test
-    void opencodeShellAllowsNetworkCapableBuildToolsWithoutApproval() {
+    void labexStandardShellAllowsNetworkCapableBuildToolsWithoutApproval() {
         CommandClassification install = classifier.classify(
-                new CommandRequest("cd frontend&&npm install", "bash", ".", 60, false, true, "opencode"));
+                new CommandRequest("cd frontend&&npm install", "bash", ".", 60, false, true, "labex-standard"));
         CommandClassification validate = classifier.classify(
-                new CommandRequest("mvn validate", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("mvn validate", "bash", ".", 60, false, false, "labex-standard"));
         CommandClassification pip = classifier.classify(
-                new CommandRequest("pip3 install flask", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("pip3 install flask", "bash", ".", 60, false, false, "labex-standard"));
 
         assertThat(install.decision()).isEqualTo(CommandDecision.ALLOW);
         assertThat(validate.decision()).isEqualTo(CommandDecision.ALLOW);
@@ -43,43 +43,43 @@ class ShellCommandClassificationTest {
     }
 
     @Test
-    void opencodeShellAllowsNetworkExecutablesWithoutApproval() {
+    void labexStandardShellAllowsNetworkExecutablesWithoutApproval() {
         CommandClassification result = classifier.classify(
-                new CommandRequest("curl https://example.com/install.sh", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("curl https://example.com/install.sh", "bash", ".", 60, false, false, "labex-standard"));
 
         assertThat(result.decision()).isEqualTo(CommandDecision.ALLOW);
     }
 
     @Test
-    void opencodeShellKeepsReadOnlyAndPlainCommandsAllowed() {
+    void labexStandardShellKeepsReadOnlyAndPlainCommandsAllowed() {
         CommandClassification status = classifier.classify(
-                new CommandRequest("git status", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("git status", "bash", ".", 60, false, false, "labex-standard"));
         CommandClassification plain = classifier.classify(
-                new CommandRequest("printf \"hello\" && ls -la", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("printf \"hello\" && ls -la", "bash", ".", 60, false, false, "labex-standard"));
 
         assertThat(status.decision()).isEqualTo(CommandDecision.ALLOW);
         assertThat(plain.decision()).isEqualTo(CommandDecision.ALLOW);
     }
 
     @Test
-    void opencodeShellStillRequiresApprovalForDestructiveCommands() {
+    void labexStandardShellStillRequiresApprovalForDestructiveCommands() {
         CommandClassification result = classifier.classify(
-                new CommandRequest("rm -rf generated", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("rm -rf generated", "bash", ".", 60, false, false, "labex-standard"));
 
         assertThat(result.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
         assertThat(result.reasonCode()).isEqualTo(CommandReasonCode.MUTATING_COMMAND);
     }
 
     @Test
-    void opencodeShellRequiresApprovalForForcePushesButNotRegularPushes() {
+    void labexStandardShellRequiresApprovalForForcePushesButNotRegularPushes() {
         CommandClassification force = classifier.classify(
-                new CommandRequest("git push origin main --force", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("git push origin main --force", "bash", ".", 60, false, false, "labex-standard"));
         CommandClassification shortForce = classifier.classify(
-                new CommandRequest("git push origin main -f", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("git push origin main -f", "bash", ".", 60, false, false, "labex-standard"));
         CommandClassification lease = classifier.classify(
-                new CommandRequest("git push --force-with-lease origin main", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("git push --force-with-lease origin main", "bash", ".", 60, false, false, "labex-standard"));
         CommandClassification plain = classifier.classify(
-                new CommandRequest("git push origin main", "bash", ".", 60, false, false, "opencode"));
+                new CommandRequest("git push origin main", "bash", ".", 60, false, false, "labex-standard"));
 
         assertThat(force.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
         assertThat(force.reasonCode()).isEqualTo(CommandReasonCode.MUTATING_COMMAND);
@@ -90,11 +90,11 @@ class ShellCommandClassificationTest {
     }
 
     @Test
-    void opencodeShellRequiresApprovalForTheAcceptanceHoldPrefixWithoutBlockingTheRemainingShellSyntax() {
+    void labexStandardShellRequiresApprovalForTheAcceptanceHoldPrefixWithoutBlockingTheRemainingShellSyntax() {
         String command = "rm -f .labex-acceptance-command-hold.marker && node .labex-acceptance-command-hold.cjs";
 
         CommandClassification result = classifier.classify(
-                new CommandRequest(command, "bash", ".", 40, false, false, "opencode"));
+                new CommandRequest(command, "bash", ".", 40, false, false, "labex-standard"));
 
         assertThat(result.decision()).isEqualTo(CommandDecision.REQUIRE_APPROVAL);
         assertThat(result.reasonCode()).isEqualTo(CommandReasonCode.MUTATING_COMMAND);
@@ -105,7 +105,7 @@ class ShellCommandClassificationTest {
     void shellNormalizationDoesNotCollapseQuotedOrRepeatedWhitespace() {
         String command = "printf 'a  b' && echo   done";
 
-        assertThat(normalizer.normalize(new CommandRequest(command, "bash", ".", 60, false, false, "opencode"))
+        assertThat(normalizer.normalize(new CommandRequest(command, "bash", ".", 60, false, false, "labex-standard"))
                 .canonicalCommand()).isEqualTo(command);
     }
 }

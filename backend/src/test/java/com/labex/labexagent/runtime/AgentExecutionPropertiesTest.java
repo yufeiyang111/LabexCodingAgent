@@ -7,10 +7,10 @@ import org.junit.jupiter.api.Test;
 class AgentExecutionPropertiesTest {
 
     @Test
-    void defaultsToOpenCodeWithWorkerNetworkEnabled() {
+    void defaultsToLabexStandardWithWorkerNetworkEnabled() {
         AgentExecutionProperties properties = new AgentExecutionProperties();
 
-        assertThat(properties.getPermissionProfile()).isEqualTo("opencode");
+        assertThat(properties.getPermissionProfile()).isEqualTo("labex-standard");
         assertThat(properties.isNetworkDefaultEnabled()).isTrue();
     }
 
@@ -28,13 +28,13 @@ class AgentExecutionPropertiesTest {
         AgentExecutionProperties properties = new AgentExecutionProperties();
         properties.setPermissionProfile("full_access");
 
-        assertThat(properties.getPermissionProfile()).isEqualTo("opencode");
+        assertThat(properties.getPermissionProfile()).isEqualTo("labex-standard");
         properties.setAllowFullAccess(true);
         assertThat(properties.getPermissionProfile()).isEqualTo("full_access");
     }
 
     @Test
-    void productionAlwaysDowngradesFullAccessToOpenCode() {
+    void productionAlwaysDowngradesFullAccessToLabexStandard() {
         AgentExecutionProperties properties = new AgentExecutionProperties();
         properties.setPermissionProfile("full_access");
         properties.setAllowFullAccess(true);
@@ -45,7 +45,7 @@ class AgentExecutionPropertiesTest {
 
         properties.setEnvironment(environment);
 
-        assertThat(properties.getPermissionProfile()).isEqualTo("opencode");
+        assertThat(properties.getPermissionProfile()).isEqualTo("labex-standard");
         assertThat(properties.isFullAccessProfile()).isFalse();
     }
 }

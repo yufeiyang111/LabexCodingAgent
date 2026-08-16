@@ -36,7 +36,7 @@ public class ProductionStartupValidator {
     @Value("${labex-agent.secret-store.master-key:}")
     private String secretStoreMasterKey;
 
-    @Value("${labex-agent.execution.permission-profile:opencode}")
+    @Value("${labex-agent.execution.permission-profile:labex-standard}")
     private String rawPermissionProfile;
 
     @Value("${labex-agent.cors.allowed-origins:}")
@@ -81,7 +81,7 @@ public class ProductionStartupValidator {
         }
         String profile = rawPermissionProfile == null ? "" : rawPermissionProfile.trim().toLowerCase(Locale.ROOT);
         if ("full_access".equals(profile)) {
-            problems.add("生产环境禁止 permission-profile=full_access：只能使用 opencode（或显式 safe）。"
+            problems.add("生产环境禁止 permission-profile=full_access：只能使用 labex-standard（或显式 safe）。"
                     + "full_access 仅限显式 unsafe-local 本地诊断环境。");
         }
         List<String> problemsFromOrigins = validateHttpsOrigins(corsAllowedOrigins, "labex-agent.cors.allowed-origins");

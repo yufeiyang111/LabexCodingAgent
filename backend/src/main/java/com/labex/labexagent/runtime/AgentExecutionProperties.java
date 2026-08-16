@@ -7,13 +7,17 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 
 /**
- * Agent 执行配置：OpenCode-first 是默认 profile，safe 保留 direct-command 兼容，
+ * Agent 执行配置：Labex 标准 profile 是默认值，safe 保留 direct-command 兼容，
  * full_access 只允许显式 unsafe-local 使用。
  */
 @Configuration
 @ConfigurationProperties(prefix = "labex-agent.execution")
 public class AgentExecutionProperties implements EnvironmentAware {
-    private String permissionProfile = "opencode";
+    public static final String STANDARD_PROFILE = "labex-standard";
+    public static final String SAFE_PROFILE = "safe";
+    public static final String FULL_ACCESS_PROFILE = "full_access";
+
+    private String permissionProfile = STANDARD_PROFILE;
     private boolean networkDefaultEnabled = true;
     private boolean allowFullAccess;
     private Environment environment;
@@ -23,20 +27,20 @@ public class AgentExecutionProperties implements EnvironmentAware {
      * unsafe-local profile 才允许开启 full_access。
      */
     public String getPermissionProfile() {
-        if (!"full_access".equals(permissionProfile)) {
+        if (!FULL_ACCESS_PROFILE.equals(permissionProfile)) {
             return permissionProfile;
         }
         if (!allowFullAccess || isProductionEnvironment() || !isUnsafeLocalEnvironment()) {
-            return "opencode";
+            return STANDARD_PROFILE;
         }
-        return "full_access";
+        return FULL_ACCESS_PROFILE;
     }
 
     public void setPermissionProfile(String value) {
         String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         permissionProfile = switch (normalized) {
-            case "safe", "opencode", "full_access" -> normalized;
-            default -> "opencode";
+            case SAFE_PROFILE, STANDARD_PROFILE, FULL_ACCESS_PROFILE -> normalized;
+            default -> STANDARD_PROFILE;
         };
     }
 
@@ -48,7 +52,7 @@ public class AgentExecutionProperties implements EnvironmentAware {
         networkDefaultEnabled = value;
     }
 
-    /** full_access 是否被显式允许；production/prod 仍会降级为 opencode。 */
+    /** full_access 是否被显式允许；production/prod 仍会降级为 Labex 标准 profile。 */
     public boolean isAllowFullAccess() {
         return allowFullAccess;
     }
@@ -62,16 +66,16 @@ public class AgentExecutionProperties implements EnvironmentAware {
         this.environment = environment;
     }
 
-    public boolean isOpenCodeProfile() {
-        return "opencode".equals(getPermissionProfile());
+    public boolean isStandardProfile() {
+        return STANDARD_PROFILE.equals(getPermissionProfile());
     }
 
     public boolean isFullAccessProfile() {
-        return "full_access".equals(getPermissionProfile());
+        return FULL_ACCESS_PROFILE.equals(getPermissionProfile());
     }
 
     public boolean isSafeProfile() {
-        return "safe".equals(getPermissionProfile());
+        return SAFE_PROFILE.equals(getPermissionProfile());
     }
 
     private boolean isProductionEnvironment() {

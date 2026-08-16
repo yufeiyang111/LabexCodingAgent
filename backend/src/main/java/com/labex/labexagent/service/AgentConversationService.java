@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentModelConfig;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfileProperties;
 import com.labex.mapper.AgentConversationMapper;
 import com.labex.rag.config.RagConfig;
 import java.time.LocalDateTime;
@@ -22,6 +24,7 @@ public class AgentConversationService {
     private final AgentConversationForkBoundaryService forkBoundaries;
     private final AgentConversationMemoryProjectionService durableMemoryProjection;
     private final AgentConversationHistoryProjectionService historyProjection;
+    private AgentRuntimeProfileProperties runtimeProfileProperties = new AgentRuntimeProfileProperties();
 
     @Autowired
     public AgentConversationService(AgentConversationMapper conversationMapper,
@@ -36,6 +39,14 @@ public class AgentConversationService {
         this.historyProjection = historyProjection;
     }
 
+    @Autowired
+    void setRuntimeProfileProperties(AgentRuntimeProfileProperties runtimeProfileProperties) {
+        if (runtimeProfileProperties == null) {
+            throw new IllegalArgumentException("runtimeProfileProperties is required");
+        }
+        this.runtimeProfileProperties = runtimeProfileProperties;
+    }
+
     public AgentConversation ensureConversation(Integer studentId, StudentProject project,
                                                 String conversationId, String mode, String firstMessage) {
         return ensureConversation(studentId, project, conversationId, mode, firstMessage, null);
@@ -44,9 +55,21 @@ public class AgentConversationService {
     public AgentConversation ensureConversation(Integer studentId, StudentProject project,
                                                 String conversationId, String mode, String firstMessage,
                                                 AgentModelConfig modelConfig) {
+        return ensureConversation(studentId, project, conversationId, mode, firstMessage, modelConfig, null);
+    }
+
+    /**
+     * 确保会话存在，并在新会话创建时固定其运行时 profile。
+     * 已存在会话的 profile 不可修改；只有显式传入不一致 profile 时才拒绝请求。
+     */
+    public AgentConversation ensureConversation(Integer studentId, StudentProject project,
+                                                String conversationId, String mode, String firstMessage,
+                                                AgentModelConfig modelConfig,
+                                                AgentRuntimeProfile requestedRuntimeProfile) {
         AgentConversation existing;
         if (conversationId != null && !conversationId.isBlank()
                 && (existing = getOwnedConversation(studentId, project.getProjectId(), conversationId)) != null) {
+            assertRequestedProfileMatches(existing, requestedRuntimeProfile);
             applyModelMetadata(existing, modelConfig);
             return existing;
         }
@@ -63,6 +86,7 @@ public class AgentConversationService {
                 ? ("ollama".equalsIgnoreCase(ragConfig.getLlmProvider())
                     ? ragConfig.getOllamaModel() : ragConfig.getMiniMaxModel())
                 : normalizeModel(modelConfig.getModelName()));
+        conversation.setRuntimeProfile(resolveNewConversationProfile(requestedRuntimeProfile).persistedValue());
         conversation.setHistoryProjectionVersion(AgentLegacyConversationHistoryMigrationService.DURABLE_VERSION);
         conversation.setHistoryMigratedAt(now);
         conversation.setStatus(1);
@@ -72,6 +96,22 @@ public class AgentConversationService {
             throw new IllegalStateException("Unable to persist Agent conversation");
         }
         return conversation;
+    }
+
+    private AgentRuntimeProfile resolveNewConversationProfile(AgentRuntimeProfile requestedRuntimeProfile) {
+        return requestedRuntimeProfile == null ? runtimeProfileProperties.resolveDefaultProfile() : requestedRuntimeProfile;
+    }
+
+    private void assertRequestedProfileMatches(AgentConversation conversation,
+                                               AgentRuntimeProfile requestedRuntimeProfile) {
+        if (requestedRuntimeProfile == null) {
+            return;
+        }
+        AgentRuntimeProfile existingProfile = AgentRuntimeProfile.fromPersisted(conversation.getRuntimeProfile());
+        if (existingProfile != requestedRuntimeProfile) {
+            throw new IllegalArgumentException("Conversation runtime profile is immutable: "
+                    + existingProfile.persistedValue());
+        }
     }
 
     private void applyModelMetadata(AgentConversation conversation, AgentModelConfig modelConfig) {
@@ -188,6 +228,8 @@ public class AgentConversationService {
         child.setMode(source.getMode());
         child.setProvider(source.getProvider());
         child.setModel(source.getModel());
+        // 分支是原对话的持久化延续，必须继承 source 的 profile snapshot；历史空值兼容为 legacy。
+        child.setRuntimeProfile(AgentRuntimeProfile.fromPersisted(source.getRuntimeProfile()).persistedValue());
         child.setParentConversationId(source.getConversationId());
         child.setForkedFromMessageId(messageId);
         child.setForkedFromTaskId(forkedFromTaskId);

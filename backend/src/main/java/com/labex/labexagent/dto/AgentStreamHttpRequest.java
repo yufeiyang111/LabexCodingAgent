@@ -2,6 +2,7 @@ package com.labex.labexagent.dto;
 
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
 import java.time.LocalDateTime;
 
 /**
@@ -17,6 +18,7 @@ public class AgentStreamHttpRequest {
     private String sessionId;
     private String conversationId;
     private String mode;
+    private String runtimeProfile;
     private String message;
     private String displayMessage;
     private String activePath;
@@ -39,6 +41,7 @@ public class AgentStreamHttpRequest {
         internal.setSessionId(this.sessionId);
         internal.setConversationId(this.conversationId);
         internal.setMode(this.mode);
+        internal.setRuntimeProfile(this.runtimeProfile);
         internal.setMessage(this.message);
         internal.setDisplayMessage(this.displayMessage);
         internal.setActivePath(this.activePath);
@@ -58,6 +61,10 @@ public class AgentStreamHttpRequest {
 
     public String getMode() {
         return this.mode;
+    }
+
+    public String getRuntimeProfile() {
+        return this.runtimeProfile;
     }
 
     public String getMessage() {
@@ -94,6 +101,12 @@ public class AgentStreamHttpRequest {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public void setRuntimeProfile(String runtimeProfile) {
+        this.runtimeProfile = runtimeProfile == null || runtimeProfile.isBlank()
+                ? null
+                : AgentRuntimeProfile.requireKnown(runtimeProfile).persistedValue();
     }
 
     public void setMessage(String message) {

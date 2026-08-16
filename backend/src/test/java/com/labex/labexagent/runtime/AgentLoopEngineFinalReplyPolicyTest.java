@@ -21,6 +21,12 @@ class AgentLoopEngineFinalReplyPolicyTest {
         assertTrue(AgentLoopEngine.shouldRejectFinalReply("Fix the login problem and verify it", "OK"));
     }
     @Test
+    void doesNotTreatTodoProgressAsAFinalReplyGate() {
+        assertFalse(AgentLoopEngine.isPrematureFinal(
+                "已完成仓库下载，目标目录已创建并且 Git 状态检查成功。"));
+    }
+
+    @Test
     void serverCompletionEvidenceIsTheSingleUnverifiedChangeGate() throws Exception {
         String source = Files.readString(Path.of(
                 "src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));

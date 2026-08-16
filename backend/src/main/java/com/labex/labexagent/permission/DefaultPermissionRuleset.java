@@ -88,7 +88,7 @@ public class DefaultPermissionRuleset {
     );
 
     public static List<PermissionRule> getRulesForAgent(String mode) {
-        return getRulesForAgent(mode, "opencode");
+        return getRulesForAgent(mode, "labex-standard");
     }
 
     /** Profile only changes unrestricted build/agent policy; plan and explore remain capability-restricted. */

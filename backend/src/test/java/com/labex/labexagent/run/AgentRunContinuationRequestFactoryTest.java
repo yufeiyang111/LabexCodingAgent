@@ -33,6 +33,20 @@ class AgentRunContinuationRequestFactoryTest {
     }
 
     @Test
+    void rebuildsContinuationWithTheDurableTaskRuntimeProfileInsteadOfPayloadValue() {
+        AgentTask task = new AgentTask();
+        task.setTaskId(75L);
+        task.setSessionId("session-5");
+        task.setConversationId("conversation-5");
+        task.setMode("build");
+        task.setRuntimeProfile("labex-native");
+        task.setRequestPayload("{\"message\":\"resume native task\",\"runtimeProfile\":\"labex-legacy\"}");
+
+        AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task, "Resume.");
+
+        assertThat(request.getRuntimeProfile()).isEqualTo("labex-native");
+    }
+    @Test
     void fallsBackSafelyWhenAnOlderTaskHasNoStructuredPayload() {
         AgentTask task = new AgentTask();
         task.setTaskId(72L);

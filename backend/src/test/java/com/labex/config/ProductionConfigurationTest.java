@@ -21,7 +21,7 @@ class ProductionConfigurationTest {
         properties.put("spring.datasource.password", "production-password");
         properties.put("jwt.secret", LONG_JWT_SECRET);
         properties.put("labex-agent.secret-store.master-key", MASTER_KEY);
-        properties.put("labex-agent.execution.permission-profile", "opencode");
+        properties.put("labex-agent.execution.permission-profile", "labex-standard");
         properties.put("labex-agent.cors.allowed-origins", "https://agent.example.com");
         properties.put("labex-agent.websocket.allowed-origins", "https://agent.example.com");
         properties.put("labex-agent.project-base-path", "/srv/labex-agent/workspaces");

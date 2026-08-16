@@ -1,5 +1,8 @@
 package com.labex.labexagent.runtime;
 
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfileResolver;
+
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -191,6 +194,8 @@ public class AgentLoopEngine {
     private final AgentCancellationRegistry cancellationRegistry;
     private AgentModelTurnExecutor modelTurnExecutor;
     private AgentToolCallBatchProtocol toolCallBatchProtocol;
+    private LabexNativeToolBatchExecutor nativeToolBatchExecutor;
+    private AgentProviderTranscriptAppender providerTranscriptAppender;
     private AgentProviderMessageProjector providerMessageProjector;
     private AgentToolNarrator toolNarrator;
     private ToolSelectionPolicy toolSelectionPolicy;
@@ -244,7 +249,6 @@ public class AgentLoopEngine {
     private AgentToolCallJournalService toolCallJournalService;
     private AgentRunTranscriptService transcriptService;
     private AgentRunInteractionService runInteractionService;
-    private AgentRunPlanService runPlanService;
     private AgentRunPartService runPartService;
     private AgentRunProgressProjectionService runProgressProjectionService;
     private AgentTranscriptProjectionService transcriptProjectionService;
@@ -339,6 +343,16 @@ public class AgentLoopEngine {
     }
 
     @Autowired
+    void setNativeToolBatchExecutor(LabexNativeToolBatchExecutor nativeToolBatchExecutor) {
+        this.nativeToolBatchExecutor = requireProcessor(nativeToolBatchExecutor, "nativeToolBatchExecutor");
+    }
+
+    @Autowired
+    void setProviderTranscriptAppender(AgentProviderTranscriptAppender providerTranscriptAppender) {
+        this.providerTranscriptAppender = requireProcessor(providerTranscriptAppender, "providerTranscriptAppender");
+    }
+
+    @Autowired
     void setTaskEventSubscriptionService(AgentTaskEventSubscriptionService taskEventSubscriptionService) {
         this.taskEventSubscriptionService = requireRuntimeDependency(taskEventSubscriptionService, "taskEventSubscriptionService");
     }
@@ -381,11 +395,6 @@ public class AgentLoopEngine {
     @Autowired
     void setRunInteractionService(AgentRunInteractionService runInteractionService) {
         this.runInteractionService = requireRuntimeDependency(runInteractionService, "runInteractionService");
-    }
-
-    @Autowired
-    void setRunPlanService(AgentRunPlanService runPlanService) {
-        this.runPlanService = requireRuntimeDependency(runPlanService, "runPlanService");
     }
 
     @Autowired
@@ -656,10 +665,7 @@ public class AgentLoopEngine {
     /** Provider 消息只写入 durable transcript；下一次读取统一经过 projector。 */
     private void appendProviderMessage(ExecutionFence executionFence, Long taskId, long executionEpoch,
                                        Map<String, Object> message) {
-        Map<String, Object> durableCopy = this.providerMessageProjector.copyMessage(message);
-        AgentRunTranscriptService transcriptService = this.requireTranscriptService();
-        transcriptService.appendMessage(executionFence, taskId, executionEpoch,
-                transcriptService.nextSequence(taskId), durableCopy);
+        this.requireProviderTranscriptAppender().append(executionFence, taskId, executionEpoch, message);
     }
 
     private void appendProviderMessages(ExecutionFence executionFence, Long taskId, long executionEpoch,
@@ -735,20 +741,29 @@ public class AgentLoopEngine {
             } else {
                 userVisibleMessage = request.userVisibleMessage();
                 mode = AgentMode.normalize(request.getMode());
+                AgentRuntimeProfile requestedRuntimeProfile = request.getRuntimeProfile() == null
+                        || request.getRuntimeProfile().isBlank()
+                        ? null
+                        : AgentRuntimeProfile.requireKnown(request.getRuntimeProfile());
                 conv = this.conversationService.ensureConversation(studentId, project, request.getConversationId(), mode,
-                        userVisibleMessage, modelConfig);
+                        userVisibleMessage, modelConfig, requestedRuntimeProfile);
                 request.setConversationId(conv.getConversationId());
                 memoryContext = this.conversationService.buildMemoryContext(studentId, projectId, conv.getConversationId());
                 visibleLanguage = this.visibleLanguage(userVisibleMessage, memoryContext);
+                AgentRuntimeProfile taskRuntimeProfile = AgentRuntimeProfile.fromPersisted(conv.getRuntimeProfile());
                 task = this.taskService.createTask(studentId, project, conv.getConversationId(), request.getSessionId(), mode,
                         request.getMessage(), userVisibleMessage, request.getActivePath(), modelConfig.getConfigId(),
-                        request.isBackgroundRun(), request.getSubmittedAt());
+                        taskRuntimeProfile, request.isBackgroundRun(), request.getSubmittedAt());
                 if (!request.getAttachmentIds().isEmpty()) {
                     this.requireAttachmentService().bindToTask(studentId, projectId, task.getTaskId(),
                             conv.getConversationId(), request.getAttachmentIds());
                 }
                 this.conversationService.touchActivity(conv);
             }
+            // task 的 profile snapshot 是执行边界唯一权威来源：新建任务已从 conversation 复制，
+            // 恢复任务则必须覆盖浏览器或历史 payload 上携带的任何值。
+            AgentRuntimeProfile executionRuntimeProfile = AgentRuntimeProfileResolver.resolveExecutionProfile(task);
+            request.setRuntimeProfile(executionRuntimeProfile.persistedValue());
             RunLogTarget runLogTarget = this.resolveRunLog(project, request, task, resumedRun);
             runLog = runLogTarget.path();
             this.appendRunLog(runLog, this.runLogHeader(project, studentId, request, task,
@@ -808,6 +823,7 @@ public class AgentLoopEngine {
                     "sessionId", request.getSessionId(),
                     "conversationId", conv.getConversationId(),
                     "taskId", task.getTaskId(),
+                    "runtimeProfile", executionRuntimeProfile.persistedValue(),
                     "iterationLimit", "none",
                     "logPath", this.workspaceRelativeLogPath(project, runLog)));
             this.sendThought(sse, conv, 0,
@@ -872,10 +888,10 @@ public class AgentLoopEngine {
             if (restoredPlan.eventSequence() > 0L) {
                 this.projectPersistedPlanUpdate(sse, ctx);
             }
-            this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Iteration policy: `" + this.iterationPolicyDescription() + "`\n");
+            this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Runtime profile: `" + executionRuntimeProfile.persistedValue() + "`\n- Iteration policy: `" + this.iterationPolicyDescription() + "`\n");
             long contextBuildStartedAt = System.nanoTime();
             RunRuntimeProjection runtimeProjection = this.buildRunRuntimeProjection(
-                    studentId, conv.getConversationId(), project, mode, modelConfig, llmConfig, visibleLanguage);
+                    studentId, conv.getConversationId(), project, mode, modelConfig, llmConfig, visibleLanguage, executionRuntimeProfile);
             List<ToolDefinition> selectedToolDefinitions = runtimeProjection.selectedTools();
             ctx.setSelectedToolNames(this.toolSelectionPolicy.selectedNames(selectedToolDefinitions));
             String toolDefinitions = runtimeProjection.toolDefinitions();
@@ -998,7 +1014,7 @@ public class AgentLoopEngine {
                                         // prompt-cache key 保持当前 conversation 与模型路由作用域。
                                         if (!runtimeProjection.mode().equals(ctx.getMode())) {
                                             RunRuntimeProjection fresh = this.buildRunRuntimeProjection(
-                                                    studentId, conv.getConversationId(), project, ctx.getMode(), modelConfig, llmConfig, visibleLanguage);
+                                                    studentId, conv.getConversationId(), project, ctx.getMode(), modelConfig, llmConfig, visibleLanguage, executionRuntimeProfile);
                                             runtimeProjection = fresh;
                                             sysPrompt = fresh.systemPrompt();
                                             tools = fresh.tools();
@@ -1154,6 +1170,21 @@ public class AgentLoopEngine {
                                                         runLog, i, call == null ? "unknown" : call.toolName(), visibleLanguage, emitter);
                                                 return;
                                             }
+                                        }
+                                        if (executionRuntimeProfile == AgentRuntimeProfile.LABEX_NATIVE) {
+                                            String nativeModelContent = lr.get("content") == null ? "" : lr.get("content").toString();
+                                            String nativeModelThinkingRaw = lr.get("thinking") != null ? lr.get("thinking").toString() : "";
+                                            NativeToolBatchProcessingOutcome nativeBatchOutcome = this.processLabexNativeToolBatch(
+                                                    sse, conv, task, project, request, ctx, runLog, i, transcriptEpoch,
+                                                    visibleLanguage, emitter, loopGuard, cancellationToken, nativeToolCalls,
+                                                    nativeModelContent, this.cleanModelOutput(nativeModelThinkingRaw),
+                                                    nativeToolInputFailureRounds);
+                                            nativeToolInputFailureRounds = nativeBatchOutcome.nativeToolInputFailureRounds();
+                                            if (nativeBatchOutcome.stopRun()) {
+                                                return;
+                                            }
+                                            executed = true;
+                                            break block19;
                                         }
 
                                         List<NativeToolAdmission> nativeAdmissions = new ArrayList<>();
@@ -1347,23 +1378,13 @@ public class AgentLoopEngine {
                                             this.sendObserve(sse, conv, i, tn, res, task.getTaskId(), toolCallId);
                                             this.sendThought(sse, conv, i, this.localText(visibleLanguage, "\u68c0\u67e5\u7ed3\u679c", "Check result"),
                                                     this.toolNarrator.buildResultThought(tn, ta, res, visibleLanguage), task.getTaskId());
-                                            String planStatus = ctx.getPlanSummary();
-                                            String planNote = planStatus.isEmpty() ? "" : "\nCurrent plan progress:\n" + planStatus;
+                                            String todoStatus = ctx.getPlanSummary();
+                                            String todoNote = todoStatus.isEmpty() ? "" : "\nOptional todo progress:\n" + todoStatus;
                                             String stageNote = "\nCurrent engineering stage: " + ctx.getStage();
                                             String resultForModel = "[Tool " + tn + " result]\n"
-                                                    + this.compactToolResultForModel(tn, res, toolCallId) + planNote + stageNote
-                                                    + "\nContinue using tools when needed. Only output the final summary after all plan tasks are complete and verified.";
+                                                    + this.compactToolResultForModel(tn, res, toolCallId) + todoNote + stageNote
+                                                    + "\nContinue using tools only when they are needed to resolve the request. Finish when the available evidence supports the result.";
                                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, this.toolCallBatchProtocol.toolResultMessage(call, resultForModel));
-                                            if (isMissingPlanCompletion(tn, ta, res)) {
-                                                String skippedMessage = "Skipped because completing a plan requires an existing plan.";
-                                                this.journalRemainingBatchSkipped(executionFence, task.getTaskId(), nativeAdmissions, batchIndex + 1, i, skippedMessage);
-                                                this.appendRemainingBatchToolResults(executionFence, task.getTaskId(), transcriptEpoch,
-                                                        nativeAdmissions, batchIndex + 1, skippedMessage);
-                                                this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content",
-                                                        "No execution plan exists. Create a plan before completing plan items; do not submit more complete actions in the same turn."));
-                                                executed = true;
-                                                break block19;
-                                            }
                                         }
                                         if (nativeInputRejected) {
                                             boolean anyExecutableInput = nativeAdmissions.stream()
@@ -1574,7 +1595,7 @@ public class AgentLoopEngine {
                             if (ft.isEmpty()) {
                                 ft = cleaned;
                             }
-                            if (!this.isPrematureFinal(ft, ctx)) break block24;
+                            if (!isPrematureFinal(ft)) break block24;
                             this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "premature_final_placeholder");
                             this.appendRunLog(runLog, "\n- Model returned mid-placeholder text, rejecting as final, continuing: `" + this.safeLogText(ft) + "`\n");
                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
@@ -1582,15 +1603,7 @@ public class AgentLoopEngine {
                             executed = true;
                             break block19;
                         }
-                        if (!softSentinelActive && this.hasOpenPlan(ctx)) {
-                            this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i, "unfinished_plan");
-                            this.appendRunLog(runLog, "\n- Plan has unfinished tasks, rejecting premature end. Remaining: " + ctx.getPlanSummary() + "\n");
-                            this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "assistant", "content", ft));
-                            String planMsg = "Your plan has unfinished tasks. Cannot end yet. Continue execution:\n" + ctx.getPlanSummary() + "\nUse create_plan complete to mark done items, then continue next item.";
-                            this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch, Map.of("role", "user", "content", planMsg));
-                            executed = true;
-                            break block19;
-                        } else {
+                        {
                             boolean tooShort = ft.length() < 80;
                             boolean noStructure = !ft.contains("##") && !ft.contains("**") && !ft.contains("- ");
                             boolean noSubstance = !containsFinalSubstance(ft);
@@ -2100,7 +2113,6 @@ public class AgentLoopEngine {
         }
         String guardedCommand = this.commandForGuard(name, args, ctx);
         String guardedWorkingDirectory = this.commandWorkingDirectoryForArgs(name, ctx.getWorkspaceRoot(), args, ctx);
-        boolean opencodeShell = this.usesOpenCodeShellContract(name);
         // 网络访问默认开启：不再为网络命令创建一次性审批，也不存在离线优先执行。
         if (this.isCommandPolicyTool(name)) {
             String networkCommand = this.commandForGuard(name, args, ctx);
@@ -2440,17 +2452,6 @@ public class AgentLoopEngine {
         }
     }
 
-    static boolean isMissingPlanCompletion(String toolName, JsonObject arguments, ToolResult result) {
-        String normalized = toolName == null ? "" : toolName.trim().toLowerCase(Locale.ROOT);
-        if (!("create_plan".equals(normalized) || "plan".equals(normalized))) return false;
-        String action = arguments != null && arguments.has("action")
-                ? arguments.get("action").getAsString() : "";
-        if (!"complete".equalsIgnoreCase(action) || result == null || result.isSuccess()) return false;
-        String content = result.getContent() == null ? "" : result.getContent();
-        return content.contains("failure_code=PLAN_MISSING")
-                || content.contains("\u5f53\u524d\u6ca1\u6709\u6267\u884c\u8ba1\u5212");
-    }
-
     private String iterationPolicyDescription() {
         int hardMax = loopProperties == null ? 0 : loopProperties.getHardMaxIterations();
         return hardMax > 0
@@ -2768,7 +2769,7 @@ public class AgentLoopEngine {
                 toolName, context.getWorkspaceRoot(), args, context);
         if (command.isBlank()) return null;
         int timeout = this.commandTimeout(toolName, args, context);
-        String shell = this.usesOpenCodeShellContract(toolName) ? "shell" : "direct";
+        String shell = this.usesWorkerShellContract(toolName) ? "shell" : "direct";
         return this.commandClassifier.classify(new CommandRequest(
                 command, shell, workingDirectory, timeout, this.isPreviewTool(toolName), this.isPreviewTool(toolName),
                 this.executionProperties.getPermissionProfile()));
@@ -2946,13 +2947,13 @@ public class AgentLoopEngine {
     }
 
     /** 默认 profile 使用完整 Worker Shell 语义；safe 仅保留为旧 direct-command 兼容开关。 */
-    private boolean usesOpenCodeShellContract(String name) {
+    private boolean usesWorkerShellContract(String name) {
         return (this.isShellTool(name) || this.isPreviewTool(name)) && this.executionProperties != null
                 && !this.executionProperties.isSafeProfile();
     }
 
     private String commandApprovalShell(String toolName) {
-        return this.usesOpenCodeShellContract(toolName) ? "shell" : "direct";
+        return this.usesWorkerShellContract(toolName) ? "shell" : "direct";
     }
 
     private boolean shouldSnapshotCommandTool(String name) {
@@ -3186,8 +3187,9 @@ public class AgentLoopEngine {
     private String buildEngineeringIntentInstruction() {
         return "Intent rule: when a request could be interpreted as either a question to answer or a task to complete, treat it as a task. "
                 + "Your request contains engineering action words, but no tool has been called in this task yet. "
-                + "Do not end with text only. First create a plan with create_plan, then use read/search/edit/run tools "
-                + "to actually do the work and verify it. If the user only wants an explanation, confirm with the question tool before ending.";
+                + "Do not end with an ungrounded text-only promise. Use the most relevant available tool to do the work. "
+                + "For multi-step work, todo_write is optional progress display, not a prerequisite. "
+                + "If the user only wants an explanation, confirm with the question tool before ending.";
     }
 
     /**
@@ -3215,7 +3217,7 @@ public class AgentLoopEngine {
         return false;
     }
 
-    private boolean isPrematureFinal(String text, AgentContext ctx) {
+    static boolean isPrematureFinal(String text) {
         if (text == null || text.isBlank()) {
             return true;
         }
@@ -3223,19 +3225,7 @@ public class AgentLoopEngine {
         if (normalized.matches("^(next step )?operation complete[.!?]*$")) { return true; }
         if (normalized.matches("^task complete[.!?]*$")) { return true; }
         if (normalized.matches("^done[.!?]*$")) { return true; }
-        if (normalized.matches("^(ok|okay|OK|good|great|done|finished).*")) { return true; }
-        if (normalized.length() < 50 && ctx != null && this.hasOpenPlan(ctx)) {
-            return true;
-        }
-        if (ctx != null && this.hasOpenPlan(ctx)) {
-            if (!(text.contains("##") || text.contains("complete") || text.contains("modified") || text.contains("file") || text.contains("Summary"))) {
-                return true;
-            }
-            if (text.length() < 80 && !text.contains("## Summary")) {
-                return true;
-            }
-        }
-        return false;
+        return normalized.matches("^(ok|okay|OK|good|great|done|finished).*");
     }
 
     static boolean shouldRejectFinalReply(String userRequest, String finalText) {
@@ -3280,24 +3270,12 @@ public class AgentLoopEngine {
         return false;
     }
 
-    private boolean hasOpenPlan(AgentContext ctx) {
-        if (ctx == null || ctx.getTaskId() == null) {
-            return false;
-        }
-        this.requireRunPlanService().load(ctx.getTaskId()).applyTo(ctx);
-        if (ctx.getPlan() == null || ctx.getPlan().isEmpty()) {
-            return false;
-        }
-        return ctx.getPlan().stream().anyMatch(item -> !item.isCompleted());
-    }
-
     private String buildContinuationInstruction(AgentContext ctx) {
-        String plan;
-        String string = plan = ctx == null ? "" : ctx.getPlanSummary();
-        if (plan == null || plan.isBlank()) {
-            return "Task not started! Do not output plain text ending. Create a plan with create_plan first, then execute step by step with tools.";
-        }
-        return "Task not done! Do not output plain text ending. Current plan:\n" + plan + "\nCall tools to execute next step. Only output final summary after all tasks complete and verified.";
+        String todo = ctx == null ? "" : ctx.getPlanSummary();
+        String todoNote = todo == null || todo.isBlank() ? "" : " Optional todo progress:\n" + todo;
+        return "Task is not finished yet. Use the most relevant available tool for the next concrete step. "
+                + "Do not add unrelated installs, broad tests, or preview work unless the request or evidence requires them."
+                + todoNote;
     }
 
     private String buildRecoverableErrorGuidance(String errMsg, int retryCount, long delayMs) {
@@ -3353,9 +3331,15 @@ public class AgentLoopEngine {
     }
 
     private String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage) {
-        String permissionProfile = this.executionProperties == null ? "opencode" : this.executionProperties.getPermissionProfile();
+        return buildSystemPrompt(project, toolDefinitions, visibleLanguage, AgentRuntimeProfile.LABEX_LEGACY);
+    }
+
+    private String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage,
+                                     AgentRuntimeProfile runtimeProfile) {
+        String permissionProfile = this.executionProperties == null
+                ? AgentExecutionProperties.STANDARD_PROFILE : this.executionProperties.getPermissionProfile();
         return LabexSystemPrompt.buildSystemPrompt(project, toolDefinitions, visibleLanguage,
-                this.shellPromptDescriptor(project), permissionProfile);
+                this.shellPromptDescriptor(project), permissionProfile, runtimeProfile);
     }
 
     private WorkerShellDescriptor shellPromptDescriptor(StudentProject project) {
@@ -3388,10 +3372,11 @@ public class AgentLoopEngine {
     private RunRuntimeProjection buildRunRuntimeProjection(Integer studentId, String conversationId, StudentProject project, String mode,
                                                            AgentModelConfig modelConfig,
                                                            LlmProvider.LlmConfig baseLlmConfig,
-                                                           String visibleLanguage) {
-        List<ToolDefinition> selectedTools = this.selectToolDefinitions(studentId, mode, modelConfig);
+                                                           String visibleLanguage,
+                                                           AgentRuntimeProfile runtimeProfile) {
+        List<ToolDefinition> selectedTools = this.selectToolDefinitions(studentId, mode, modelConfig, runtimeProfile);
         String toolDefinitions = this.buildToolDefinitions(selectedTools);
-        String systemPrompt = this.buildSystemPrompt(project, toolDefinitions, visibleLanguage);
+        String systemPrompt = this.buildSystemPrompt(project, toolDefinitions, visibleLanguage, runtimeProfile);
         List<Map<String, Object>> tools = new ArrayList<>(this.buildToolsList(selectedTools));
         LlmProvider.LlmConfig configured = baseLlmConfig == null ? null : baseLlmConfig.withPromptCacheKey(
                 PromptCacheKeyFactory.forConversation(studentId, modelConfig.getConfigId(),
@@ -3407,6 +3392,11 @@ public class AgentLoopEngine {
     }
 
     private List<ToolDefinition> selectToolDefinitions(Integer studentId, String mode, AgentModelConfig modelConfig) {
+        return selectToolDefinitions(studentId, mode, modelConfig, AgentRuntimeProfile.LABEX_LEGACY);
+    }
+
+    private List<ToolDefinition> selectToolDefinitions(Integer studentId, String mode, AgentModelConfig modelConfig,
+                                                        AgentRuntimeProfile runtimeProfile) {
         boolean imageInputEnabled = modelConfig != null && Integer.valueOf(1).equals(modelConfig.getImageInputEnabled());
         boolean mcpEnabled = this.toolRegistry.getDynamicToolCount() > 0;
         if (!mcpEnabled && this.mcpServerService != null) {
@@ -3419,7 +3409,7 @@ public class AgentLoopEngine {
         // Web Search / Fetch 保持现有启用行为；这里只收敛未配置的图片和 MCP 能力。
         ToolSelectionPolicy.Capabilities capabilities = new ToolSelectionPolicy.Capabilities(
                 imageInputEnabled, mcpEnabled, true, true);
-        return this.toolSelectionPolicy.select(this.toolRegistry, mode, capabilities);
+        return this.toolSelectionPolicy.select(this.toolRegistry, mode, capabilities, runtimeProfile);
     }
 
     private String buildToolDefinitions(Collection<ToolDefinition> definitions) {
@@ -3492,10 +3482,6 @@ public class AgentLoopEngine {
     private AgentLegacyCheckpointMigrationService requireLegacyCheckpointMigrationService() {
         return requireRuntimeDependency(
                 this.legacyCheckpointMigrationService, "legacyCheckpointMigrationService");
-    }
-
-    private AgentRunPlanService requireRunPlanService() {
-        return requireRuntimeDependency(this.runPlanService, "runPlanService");
     }
 
     private void projectModelStepStarted(AgentSsePublisher sse, AgentConversation conversation,
@@ -3636,6 +3622,14 @@ public class AgentLoopEngine {
 
     private AgentRunProgressProjectionService requireRunProgressProjectionService() {
         return requireRuntimeDependency(this.runProgressProjectionService, "runProgressProjectionService");
+    }
+
+    private LabexNativeToolBatchExecutor requireNativeToolBatchExecutor() {
+        return requireRuntimeDependency(this.nativeToolBatchExecutor, "nativeToolBatchExecutor");
+    }
+
+    private AgentProviderTranscriptAppender requireProviderTranscriptAppender() {
+        return requireRuntimeDependency(this.providerTranscriptAppender, "providerTranscriptAppender");
     }
 
     private AgentRunTranscriptService requireTranscriptService() {
@@ -4088,6 +4082,279 @@ public class AgentLoopEngine {
         }
     }
 
+    /**
+     * Native profile 的 structured tool batch 入口。
+     *
+     * <p>生命周期、SSE 和现有工具执行包装仍由 Engine 持有；批内 tool-call 协议、提前 durable
+     * 落库、确定性串行执行、审批/取消后的显式收尾委托给 {@link LabexNativeToolBatchExecutor}。</p>
+     */
+    private NativeToolBatchProcessingOutcome processLabexNativeToolBatch(
+            AgentSsePublisher sse, AgentConversation conversation, AgentTask task, StudentProject project,
+            AgentStreamRequest request, AgentContext context, Path runLog, int iteration, long transcriptEpoch,
+            String visibleLanguage, SseEmitter emitter, AgentLoopGuard loopGuard, CancellationToken cancellationToken,
+            List<AgentModelTurnExecutor.NativeToolCall> nativeToolCalls, String modelContent, String modelThinking,
+            int nativeToolInputFailureRounds) throws Exception {
+        List<LabexNativeToolBatchExecutor.Admission> admissions = new ArrayList<>();
+        for (AgentModelTurnExecutor.NativeToolCall call : nativeToolCalls) {
+            AgentToolTurnExecutor.ToolInputResolution input = this.toolTurnExecutor.resolveNative(
+                    context, call, visibleLanguage);
+            JsonObject publicArguments = this.publicToolArguments(call.toolName(), input.arguments());
+            admissions.add(new LabexNativeToolBatchExecutor.Admission(call, input, publicArguments));
+        }
+        boolean nativeInputRejected = admissions.stream().anyMatch(admission -> !admission.allowed());
+        int nextInputFailureRounds = nativeInputRejected
+                ? nativeToolInputFailureRounds + 1 : 0;
+
+        // 当前连接只作展示投影；真正的 pending Part 由 batch executor 在执行任何工具前完整持久化。
+        for (LabexNativeToolBatchExecutor.Admission admission : admissions) {
+            AgentModelTurnExecutor.NativeToolCall call = admission.call();
+            String eventSummary = admission.allowed()
+                    ? this.toolNarrator.visibleActionSummary(call.toolName(), admission.publicArguments(), visibleLanguage)
+                    : this.localText(visibleLanguage, "工具调用已拒绝", "Tool call rejected");
+            String eventContent = admission.allowed()
+                    ? this.toolNarrator.visibleActionDetail(call.toolName(), admission.publicArguments(), visibleLanguage)
+                    : admission.rejection().getContent();
+            this.sendEvent(sse, conversation, "TOOL_CALL", Map.of(
+                    "iteration", iteration,
+                    "tool", call.toolName(),
+                    "arguments", admission.publicArguments(),
+                    "summary", eventSummary,
+                    "content", eventContent,
+                    "taskId", task.getTaskId(),
+                    "toolCallId", call.toolCallId(),
+                    "toolCallIndex", call.toolCallIndex()));
+        }
+
+        Map<String, AgentLoopGuard.ToolDecision> loopDecisions = new LinkedHashMap<>();
+        LabexNativeToolBatchExecutor.BatchResult batchResult = this.requireNativeToolBatchExecutor().execute(
+                new LabexNativeToolBatchExecutor.BatchRequest(
+                        context.getExecutionFence(), task.getTaskId(), transcriptEpoch, iteration,
+                        modelContent, admissions,
+                        cancellationToken == null ? () -> false : cancellationToken::isCancellationRequested),
+                admission -> {
+                    AgentModelTurnExecutor.NativeToolCall call = admission.call();
+                    String toolName = call.toolName();
+                    JsonObject arguments = admission.arguments();
+                    JsonObject publicArguments = admission.publicArguments();
+                    String toolCallId = call.toolCallId();
+                    this.appendRunLog(runLog, "\n### Tool call\n\n- Tool: `" + this.safeLogText(toolName)
+                            + "`\n- Args:\n\n```json\n" + GSON.toJson((JsonElement) publicArguments) + "\n```\n");
+                    if (modelThinking.isBlank()) {
+                        this.sendThought(sse, conversation, iteration,
+                                this.toolNarrator.visibleActionSummary(toolName, publicArguments, visibleLanguage),
+                                this.toolNarrator.buildToolThought(toolName, publicArguments, false, visibleLanguage),
+                                task.getTaskId());
+                    }
+
+                    JsonObject loopArguments = this.loopGuardArguments(toolName, arguments, context);
+                    AgentLoopGuard.ToolDecision loopDecision = loopGuard.beforeToolCall(
+                            toolName, loopArguments, this.refreshLoopGuardProgress(context));
+                    if (loopDecision.action() != AgentLoopGuard.ToolAction.ALLOW) {
+                        String loopMessage = this.loopGuardMessage(loopDecision, toolName, visibleLanguage);
+                        ToolResult blockedResult = this.loopGuardResult(
+                                loopDecision, toolName, toolCallId, context, visibleLanguage, loopMessage);
+                        loopDecisions.put(toolCallId, loopDecision);
+                        return LabexNativeToolBatchExecutor.CallExecution.loopGuardBlocked(blockedResult);
+                    }
+
+                    this.journalToolRunning(context.getExecutionFence(), task.getTaskId(), toolCallId, toolName,
+                            publicArguments, iteration);
+                    ToolResult result = this.execTool(toolName, arguments, context, sse, conversation,
+                            visibleLanguage, toolCallId, runLog);
+                    this.recordLoopToolResult(loopGuard, sse, conversation, context, iteration, toolName,
+                            loopDecision.signature(), result.isSuccess());
+                    return LabexNativeToolBatchExecutor.CallExecution.completed(result);
+                },
+                this::nativeBatchToolResultForModel);
+
+        for (LabexNativeToolBatchExecutor.Outcome outcome : batchResult.outcomes()) {
+            this.projectLabexNativeToolBatchOutcome(sse, conversation, task, context, runLog, iteration,
+                    visibleLanguage, outcome);
+        }
+
+        if (batchResult.terminal() == LabexNativeToolBatchExecutor.Terminal.CONTINUE && nativeInputRejected) {
+            boolean anyExecutableInput = admissions.stream().anyMatch(LabexNativeToolBatchExecutor.Admission::allowed);
+            if (!anyExecutableInput) {
+                this.recordLoopNoProgress(loopGuard, sse, conversation, context, iteration,
+                        "native_tool_input_rejected");
+            }
+            if (nextInputFailureRounds >= MAX_NATIVE_TOOL_INPUT_FAILURE_ROUNDS) {
+                String failureTitle = this.localText(visibleLanguage,
+                        "原生工具调用参数连续无效", "Native tool-call arguments repeatedly invalid");
+                String failureReason = this.localText(visibleLanguage,
+                        "模型连续返回无法安全解析或不符合 schema 的原生工具参数，运行已停止，避免误执行或无限重试。",
+                        "The model repeatedly returned native tool arguments that could not be parsed or did not match the exposed schema. The run stopped to prevent unsafe execution or an infinite retry.");
+                this.sendEvent(sse, conversation, "ERROR", Map.of(
+                        "message", failureTitle,
+                        "iteration", iteration,
+                        "reasonCode", "native_tool_input_recovery_exhausted"));
+                this.streamFinal(sse, conversation,
+                        this.buildStopFinal(failureTitle, failureReason, project, runLog, visibleLanguage),
+                        visibleLanguage);
+                this.failTaskAndProject(sse, conversation, task, failureTitle, failureReason);
+                this.sendEvent(sse, conversation, "DONE", Map.of(
+                        "message", failureTitle,
+                        "iterations", iteration,
+                        "reasonCode", "native_tool_input_recovery_exhausted"));
+                emitter.complete();
+                return NativeToolBatchProcessingOutcome.stopped(nextInputFailureRounds);
+            }
+            this.appendProviderMessage(context.getExecutionFence(), task.getTaskId(), transcriptEpoch,
+                    Map.of("role", "user", "content",
+                            "One or more native tool calls were rejected before execution because their arguments were missing, malformed, not a JSON object, unavailable in this turn, or incompatible with the exposed schema. "
+                                    + "Retry with complete JSON object arguments that exactly match the selected tool schema. Do not repeat rejected arguments."));
+        }
+
+        LabexNativeToolBatchExecutor.Outcome terminalOutcome = batchResult.terminalOutcome();
+        switch (batchResult.terminal()) {
+            case CONTINUE:
+                return NativeToolBatchProcessingOutcome.continues(nextInputFailureRounds);
+            case CANCELLED:
+                this.completeCancelledRun(sse, conversation, task, project, runLog, iteration, visibleLanguage, emitter);
+                return NativeToolBatchProcessingOutcome.stopped(nextInputFailureRounds);
+            case ENVIRONMENT_BLOCKED:
+                if (terminalOutcome == null) {
+                    throw new IllegalStateException("Environment-blocked native batch has no terminal tool outcome");
+                }
+                EnvironmentBlockerClassifier.Blocker blocker = EnvironmentBlockerClassifier.classify(
+                                terminalOutcome.admission().call().toolName(), terminalOutcome.result())
+                        .orElseThrow(() -> new IllegalStateException("Environment blocker classification was lost"));
+                this.stopForEnvironmentBlocker(sse, conversation, task, project, request, context, runLog, iteration,
+                        terminalOutcome.admission().call().toolName(), terminalOutcome.result(), blocker,
+                        visibleLanguage, emitter);
+                return NativeToolBatchProcessingOutcome.stopped(nextInputFailureRounds);
+            case WAITING_APPROVAL:
+                if (terminalOutcome == null) {
+                    throw new IllegalStateException("Approval-waiting native batch has no terminal tool outcome");
+                }
+                this.stopForCommandApproval(sse, conversation, task, project, request, context, runLog, iteration,
+                        terminalOutcome.admission().call().toolCallId(), terminalOutcome.admission().call().toolName(),
+                        terminalOutcome.result(), visibleLanguage, emitter);
+                return NativeToolBatchProcessingOutcome.stopped(nextInputFailureRounds);
+            case WAITING_USER:
+                if (terminalOutcome == null) {
+                    throw new IllegalStateException("User-interaction native batch has no terminal tool outcome");
+                }
+                ToolResult interactionResult = terminalOutcome.result();
+                AgentInteractionPauser.Pause pause = this.interactionPauser.pause(
+                        task.getTaskId(), interactionResult, visibleLanguage);
+                this.publishUserQuestion(sse, conversation, interactionResult);
+                this.appendRunLog(runLog, "\n- Durable user interaction pending: type=`"
+                        + this.safeLogText(interactionResult.getInteractionType()) + "`, requestId=`"
+                        + this.safeLogText(interactionResult.getInteractionRequestId()) + "`\n");
+                this.publishInteractionPause(sse, conversation, task.getTaskId(), interactionResult, pause, iteration);
+                emitter.complete();
+                return NativeToolBatchProcessingOutcome.stopped(nextInputFailureRounds);
+            case LOOP_GUARD:
+                if (terminalOutcome == null) {
+                    throw new IllegalStateException("Loop-guard native batch has no terminal tool outcome");
+                }
+                AgentModelTurnExecutor.NativeToolCall loopCall = terminalOutcome.admission().call();
+                AgentLoopGuard.ToolDecision loopDecision = loopDecisions.get(loopCall.toolCallId());
+                if (loopDecision == null) {
+                    throw new IllegalStateException("Loop-guard native batch lost its decision");
+                }
+                String loopMessage = terminalOutcome.result().getContent() == null
+                        ? this.loopGuardMessage(loopDecision, loopCall.toolName(), visibleLanguage)
+                        : terminalOutcome.result().getContent();
+                String visibleSignature = loopCall.toolName() + ":" + this.toolNarrator.toolTarget(
+                        this.safeTool(loopCall.toolName()), terminalOutcome.admission().publicArguments());
+                this.appendRunLog(runLog, "\n- " + loopMessage + "\n");
+                this.sendThought(sse, conversation, iteration,
+                        this.localText(visibleLanguage, "检测到重复操作", "Loop detected"),
+                        loopMessage, task.getTaskId());
+                this.sendEvent(sse, conversation, "LOOP_GUARD", Map.of(
+                        "iteration", iteration,
+                        "tool", loopCall.toolName(),
+                        "signature", visibleSignature,
+                        "action", loopDecision.action().name().toLowerCase(Locale.ROOT),
+                        "cycleLength", loopDecision.cycleLength(),
+                        "message", loopMessage));
+                this.metricsService.recordLoopGuard(context, visibleSignature, iteration);
+                if (terminalOutcome.result().isInteractionRequired()) {
+                    AgentInteractionPauser.Pause loopPause = this.interactionPauser.pause(
+                            task.getTaskId(), terminalOutcome.result(), visibleLanguage);
+                    this.publishUserQuestion(sse, conversation, terminalOutcome.result());
+                    this.publishInteractionPause(sse, conversation, task.getTaskId(), terminalOutcome.result(),
+                            loopPause, iteration);
+                    emitter.complete();
+                    return NativeToolBatchProcessingOutcome.stopped(nextInputFailureRounds);
+                }
+                this.appendProviderMessage(context.getExecutionFence(), task.getTaskId(), transcriptEpoch,
+                        Map.of("role", "user", "content", "[Loop guard]\n" + loopMessage
+                                + "\nDo not repeat the blocked pattern. Change the tool, target, scope, or verification method; use existing evidence; or finish if the task is complete."));
+                return NativeToolBatchProcessingOutcome.continues(nextInputFailureRounds);
+        }
+        throw new IllegalStateException("Unhandled native tool batch terminal state: " + batchResult.terminal());
+    }
+
+    private String nativeBatchToolResultForModel(LabexNativeToolBatchExecutor.Admission admission,
+                                                  ToolResult result,
+                                                  LabexNativeToolBatchExecutor.ProjectionKind kind) {
+        String toolName = admission == null || admission.call() == null ? "unknown" : admission.call().toolName();
+        String toolCallId = admission == null || admission.call() == null ? "" : admission.call().toolCallId();
+        if (kind == LabexNativeToolBatchExecutor.ProjectionKind.LOOP_GUARD
+                || kind == LabexNativeToolBatchExecutor.ProjectionKind.SKIPPED
+                || kind == LabexNativeToolBatchExecutor.ProjectionKind.INTERRUPTED) {
+            return result == null || result.getContent() == null ? "" : result.getContent();
+        }
+        String compact = this.compactToolResultForModel(toolName, result, toolCallId);
+        if (kind == LabexNativeToolBatchExecutor.ProjectionKind.RESULT) {
+            return compact + "\nContinue using tools only when they are needed to resolve the request. Finish when the available evidence supports the result.";
+        }
+        return compact;
+    }
+
+    private void projectLabexNativeToolBatchOutcome(AgentSsePublisher sse, AgentConversation conversation,
+                                                    AgentTask task, AgentContext context, Path runLog, int iteration,
+                                                    String visibleLanguage,
+                                                    LabexNativeToolBatchExecutor.Outcome outcome) throws Exception {
+        if (outcome == null || outcome.admission() == null || outcome.admission().call() == null) {
+            return;
+        }
+        AgentModelTurnExecutor.NativeToolCall call = outcome.admission().call();
+        String toolName = call.toolName();
+        String toolCallId = call.toolCallId();
+        ToolResult result = outcome.result() == null ? ToolResult.failed("Tool returned no result") : outcome.result();
+        switch (outcome.status()) {
+            case REJECTED:
+                this.appendRunLog(runLog, "\n- Native input rejected: `"
+                        + this.safeLogText(outcome.admission().reasonCode()) + "`\n");
+                this.sendThought(sse, conversation, iteration,
+                        this.localText(visibleLanguage, "拒绝非法原生工具调用", "Rejected invalid native tool call"),
+                        result.getContent() == null ? "" : result.getContent(), task.getTaskId());
+                this.appendToolResult(runLog, result);
+                this.sendObserve(sse, conversation, iteration, toolName, result, task.getTaskId(), toolCallId);
+                return;
+            case COMPLETED:
+                this.appendToolResult(runLog, result);
+                this.sendObserve(sse, conversation, iteration, toolName, result, task.getTaskId(), toolCallId);
+                this.sendThought(sse, conversation, iteration,
+                        this.localText(visibleLanguage, "检查结果", "Check result"),
+                        this.toolNarrator.buildResultThought(toolName, outcome.admission().arguments(), result,
+                                visibleLanguage), task.getTaskId());
+                return;
+            case LOOP_GUARD_BLOCKED:
+            case ENVIRONMENT_BLOCKED:
+            case WAITING_APPROVAL:
+            case WAITING_USER:
+            case INTERRUPTED:
+                this.appendToolResult(runLog, result);
+                return;
+            case SKIPPED:
+                return;
+        }
+    }
+
+    private record NativeToolBatchProcessingOutcome(boolean stopRun, int nativeToolInputFailureRounds) {
+        private static NativeToolBatchProcessingOutcome continues(int nativeToolInputFailureRounds) {
+            return new NativeToolBatchProcessingOutcome(false, nativeToolInputFailureRounds);
+        }
+
+        private static NativeToolBatchProcessingOutcome stopped(int nativeToolInputFailureRounds) {
+            return new NativeToolBatchProcessingOutcome(true, nativeToolInputFailureRounds);
+        }
+    }
     private record NativeToolAdmission(AgentModelTurnExecutor.NativeToolCall call,
                                        AgentToolTurnExecutor.ToolInputResolution input,
                                        JsonObject publicArguments) {

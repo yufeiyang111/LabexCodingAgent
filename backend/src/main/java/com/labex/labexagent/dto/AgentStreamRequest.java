@@ -8,6 +8,8 @@ public class AgentStreamRequest {
     private String sessionId;
     private String conversationId;
     private String mode;
+    /** 新建对话可显式选择的 Labex 运行时 profile；恢复请求不依赖该字段。 */
+    private String runtimeProfile;
     private String message;
     private String displayMessage;
     private String activePath;
@@ -46,6 +48,10 @@ public class AgentStreamRequest {
         return this.mode;
     }
 
+    public String getRuntimeProfile() {
+        return this.runtimeProfile;
+    }
+
     public String getMessage() {
         return this.message;
     }
@@ -74,6 +80,10 @@ public class AgentStreamRequest {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public void setRuntimeProfile(String runtimeProfile) {
+        this.runtimeProfile = runtimeProfile;
     }
 
     public void setMessage(String message) {
@@ -178,6 +188,11 @@ public class AgentStreamRequest {
         if (this$mode == null ? other$mode != null : !this$mode.equals(other$mode)) {
             return false;
         }
+        String this$runtimeProfile = this.getRuntimeProfile();
+        String other$runtimeProfile = other.getRuntimeProfile();
+        if (this$runtimeProfile == null ? other$runtimeProfile != null : !this$runtimeProfile.equals(other$runtimeProfile)) {
+            return false;
+        }
         String this$message = this.getMessage();
         String other$message = other.getMessage();
         if (this$message == null ? other$message != null : !this$message.equals(other$message)) {
@@ -201,6 +216,8 @@ public class AgentStreamRequest {
         result = result * 59 + ($conversationId == null ? 43 : $conversationId.hashCode());
         String $mode = this.getMode();
         result = result * 59 + ($mode == null ? 43 : $mode.hashCode());
+        String $runtimeProfile = this.getRuntimeProfile();
+        result = result * 59 + ($runtimeProfile == null ? 43 : $runtimeProfile.hashCode());
         String $message = this.getMessage();
         result = result * 59 + ($message == null ? 43 : $message.hashCode());
         String $activePath = this.getActivePath();
@@ -209,6 +226,6 @@ public class AgentStreamRequest {
     }
 
     public String toString() {
-        return "AgentStreamRequest(sessionId=" + this.getSessionId() + ", conversationId=" + this.getConversationId() + ", mode=" + this.getMode() + ", message=" + this.getMessage() + ", activePath=" + this.getActivePath() + ", resumeTaskId=" + this.getResumeTaskId() + ", resumeInteractionId=" + this.getResumeInteractionId() + ")";
+        return "AgentStreamRequest(sessionId=" + this.getSessionId() + ", conversationId=" + this.getConversationId() + ", mode=" + this.getMode() + ", runtimeProfile=" + this.getRuntimeProfile() + ", message=" + this.getMessage() + ", activePath=" + this.getActivePath() + ", resumeTaskId=" + this.getResumeTaskId() + ", resumeInteractionId=" + this.getResumeInteractionId() + ")";
     }
 }

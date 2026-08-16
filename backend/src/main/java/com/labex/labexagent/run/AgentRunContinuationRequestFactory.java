@@ -3,6 +3,7 @@ package com.labex.labexagent.run;
 import com.google.gson.Gson;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.dto.AgentStreamRequest;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
 import java.util.Map;
 
 /** Rebuilds a resume request from the durable task objective instead of replacing it. */
@@ -19,6 +20,8 @@ public final class AgentRunContinuationRequestFactory {
         request.setSessionId(task.getSessionId());
         request.setConversationId(task.getConversationId());
         request.setMode(nonBlank(text(payload.get("mode")), task.getMode()));
+        // 恢复只能读取 task 的不可变 profile snapshot，绝不信任旧 payload 或调用方当前选择。
+        request.setRuntimeProfile(AgentRuntimeProfile.fromPersisted(task.getRuntimeProfile()).persistedValue());
         request.setResumeTaskId(task.getTaskId());
         request.setActivePath(text(payload.get("activePath")));
         // 优先使用 durable 的 t_agent_task.model_config_id 列；payload 回退仅用于兼容旧任务与展示目的。

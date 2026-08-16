@@ -24,6 +24,8 @@ public class AgentTask {
     private String mode;
     @TableField(value="model_config_id")
     private Integer modelConfigId;
+    @TableField(value="runtime_profile")
+    private String runtimeProfile;
     @TableField(value="status")
     private String status;
     @TableField(value="current_step")
@@ -105,6 +107,10 @@ public class AgentTask {
 
     public Integer getModelConfigId() {
         return this.modelConfigId;
+    }
+
+    public String getRuntimeProfile() {
+        return this.runtimeProfile;
     }
 
     public String getStatus() {
@@ -237,6 +243,10 @@ public class AgentTask {
 
     public void setModelConfigId(Integer modelConfigId) {
         this.modelConfigId = modelConfigId;
+    }
+
+    public void setRuntimeProfile(String runtimeProfile) {
+        this.runtimeProfile = runtimeProfile;
     }
 
     public void setStatus(String status) {
@@ -385,6 +395,11 @@ public class AgentTask {
         if (this$mode == null ? other$mode != null : !this$mode.equals(other$mode)) {
             return false;
         }
+        String this$runtimeProfile = this.getRuntimeProfile();
+        String other$runtimeProfile = other.getRuntimeProfile();
+        if (this$runtimeProfile == null ? other$runtimeProfile != null : !this$runtimeProfile.equals(other$runtimeProfile)) {
+            return false;
+        }
         String this$status = this.getStatus();
         String other$status = other.getStatus();
         if (this$status == null ? other$status != null : !this$status.equals(other$status)) {
@@ -431,6 +446,8 @@ public class AgentTask {
         result = result * 59 + ($title == null ? 43 : $title.hashCode());
         String $mode = this.getMode();
         result = result * 59 + ($mode == null ? 43 : $mode.hashCode());
+        String $runtimeProfile = this.getRuntimeProfile();
+        result = result * 59 + ($runtimeProfile == null ? 43 : $runtimeProfile.hashCode());
         String $status = this.getStatus();
         result = result * 59 + ($status == null ? 43 : $status.hashCode());
         String $currentStep = this.getCurrentStep();
@@ -445,6 +462,6 @@ public class AgentTask {
     }
 
     public String toString() {
-        return "AgentTask(taskId=" + this.getTaskId() + ", conversationId=" + this.getConversationId() + ", sessionId=" + this.getSessionId() + ", studentId=" + this.getStudentId() + ", projectId=" + this.getProjectId() + ", title=" + this.getTitle() + ", mode=" + this.getMode() + ", status=" + this.getStatus() + ", currentStep=" + this.getCurrentStep() + ", summary=" + this.getSummary() + ", createTime=" + String.valueOf(this.getCreateTime()) + ", updateTime=" + String.valueOf(this.getUpdateTime()) + ")";
+        return "AgentTask(taskId=" + this.getTaskId() + ", conversationId=" + this.getConversationId() + ", sessionId=" + this.getSessionId() + ", studentId=" + this.getStudentId() + ", projectId=" + this.getProjectId() + ", title=" + this.getTitle() + ", mode=" + this.getMode() + ", runtimeProfile=" + this.getRuntimeProfile() + ", status=" + this.getStatus() + ", currentStep=" + this.getCurrentStep() + ", summary=" + this.getSummary() + ", createTime=" + String.valueOf(this.getCreateTime()) + ", updateTime=" + String.valueOf(this.getUpdateTime()) + ")";
     }
 }

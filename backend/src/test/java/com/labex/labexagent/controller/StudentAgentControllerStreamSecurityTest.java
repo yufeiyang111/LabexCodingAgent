@@ -150,4 +150,22 @@ class StudentAgentControllerStreamSecurityTest {
             return request;
         };
     }
+
+    @Test
+    void publicStreamBodyRejectsUnknownRuntimeProfile() throws Exception {
+        AgentLoopEngine engine = mock(AgentLoopEngine.class);
+        AgentCommandService commands = mock(AgentCommandService.class);
+        MockMvc mockMvc = mockMvc(engine, commands);
+
+        mockMvc.perform(post("/student/projects/12/agent/stream")
+                        .with(authenticatedAs(7))
+                        .contentType("application/json")
+                        .content("""
+                                {"sessionId":"session-1","message":"hello","runtimeProfile":"not-a-profile"}
+                                """))
+                .andExpect(status().is4xxClientError());
+
+        verify(engine, never()).start(anyInt(), anyInt(), any(AgentStreamRequest.class));
+        verify(commands, never()).prepareAgentStreamRequest(anyInt(), anyInt(), any(AgentStreamRequest.class));
+    }
 }

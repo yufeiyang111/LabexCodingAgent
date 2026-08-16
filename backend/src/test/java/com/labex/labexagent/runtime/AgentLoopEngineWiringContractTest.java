@@ -59,9 +59,11 @@ class AgentLoopEngineWiringContractTest {
         assertFalse(source.contains("new ExecutionFence(request"));
         assertFalse(source.contains("new ExecutionFence(task.getExecutionEpoch"));
 
-        // Transcript, completion and tool-turn call sites must forward the same fence.
+        // Provider transcript 统一经唯一追加器转发同一个 fence；Engine 不得保留第二套序号/写入逻辑。
+        assertTrue(source.contains("void setProviderTranscriptAppender"));
+        assertTrue(source.contains("this.providerTranscriptAppender = requireProcessor"));
         assertTrue(source.contains("appendProviderMessage(ExecutionFence executionFence"));
-        assertTrue(source.contains("transcriptService.appendMessage(executionFence"));
+        assertTrue(source.contains("this.requireProviderTranscriptAppender().append(executionFence"));
         assertTrue(source.contains("executionFence, task.getTaskId(), studentId, projectId,"));
         assertTrue(source.contains("toolTurnExecutor.execute(t, ctx, args, name, toolCallId)"));
     }
