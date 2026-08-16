@@ -14,8 +14,11 @@ import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.labexagent.workspace.WorkspaceLeaseService;
 import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.service.StudentProjectService;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileAttribute;
@@ -45,6 +48,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class DiffService {
     private static final Logger log = LoggerFactory.getLogger(DiffService.class);
+    private static final int HASH_BUFFER_BYTES = 8192;
 
     private final Map<String, PendingChange> pendingChanges = new ConcurrentHashMap();
     private final Map<String, PendingChange> appliedChanges = new ConcurrentHashMap();
@@ -79,6 +83,12 @@ public class DiffService {
     public ApplyTelemetry consumeLastApplyTelemetry() {
         ApplyTelemetry telemetry = this.lastApplyTelemetry.get();
         this.lastApplyTelemetry.remove();
+        return telemetry == null ? ApplyTelemetry.empty() : telemetry;
+    }
+
+    /** 供直接文件工具投影同一次受租约保护的写后验证事实；Engine 仍负责随后 consume。 */
+    public ApplyTelemetry peekLastApplyTelemetry() {
+        ApplyTelemetry telemetry = this.lastApplyTelemetry.get();
         return telemetry == null ? ApplyTelemetry.empty() : telemetry;
     }
 
@@ -147,6 +157,7 @@ public class DiffService {
                         taskId, project.getProjectId(), elapsedMs(leaseStartedNanos));
                 List<PendingChange> changes = new ArrayList<>();
                 List<AgentFileChange> fileChanges = new ArrayList<>();
+                Map<String, Object> workspaceVerification = Map.of();
 
                 phase = "stage_and_persist";
                 long stageStartedNanos = System.nanoTime();
@@ -196,6 +207,7 @@ public class DiffService {
                     for (PendingChange change : changes) {
                         this.writeChange(project, change);
                     }
+                    workspaceVerification = this.verifyAppliedChanges(project, changes);
                 } catch (Exception e) {
                     this.restoreBatchWrites(project, changes);
                     this.markPendingBatchFailed(fileChanges, changes, e);
@@ -226,7 +238,7 @@ public class DiffService {
                     timingMs.put("contextInvalidationMs", contextInvalidationElapsedMs);
                     long totalElapsedMs = elapsedMs(totalStartedNanos);
                     timingMs.put("totalMs", totalElapsedMs);
-                    this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs)));
+                    this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs), workspaceVerification));
                     log.info("DIFF_APPLY_DEFERRED taskId={} projectId={} changeCount={} beforeSnapshotMs={} writeMs={} deferredRecordMs={} metadataRefreshDispatchMs={} contextInvalidationMs={} totalMs={}",
                             taskId, project.getProjectId(), changes.size(), beforeSnapshotElapsedMs, writeElapsedMs,
                             deferredRecordElapsedMs, metadataRefreshElapsedMs, contextInvalidationElapsedMs, totalElapsedMs);
@@ -269,7 +281,7 @@ public class DiffService {
                 timingMs.put("refreshAndInvalidateMs", refreshElapsedMs);
                 long totalElapsedMs = elapsedMs(totalStartedNanos);
                 timingMs.put("totalMs", totalElapsedMs);
-                this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs)));
+                this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs), workspaceVerification));
                 log.info("DIFF_APPLY_COMPLETE taskId={} projectId={} totalMs={} stageMs={} verifyMs={} beforeSnapshotMs={} writeMs={} afterSnapshotMs={} snapshotDiffMs={} recordsMs={} refreshMs={}",
                         taskId, project.getProjectId(), totalElapsedMs, stageElapsedMs, verifyElapsedMs,
                         beforeSnapshotElapsedMs, writeElapsedMs, afterSnapshotElapsedMs, snapshotDiffElapsedMs,
@@ -280,7 +292,7 @@ public class DiffService {
         } catch (Exception failure) {
             long totalElapsedMs = elapsedMs(totalStartedNanos);
             timingMs.put("totalMs", totalElapsedMs);
-            this.lastApplyTelemetry.set(new ApplyTelemetry(phase, Map.copyOf(timingMs)));
+            this.lastApplyTelemetry.set(new ApplyTelemetry(phase, Map.copyOf(timingMs), Map.of()));
             log.warn("DIFF_APPLY_FAILED taskId={} projectId={} phase={} elapsedMs={} errorType={} error={}",
                     taskId, project.getProjectId(), phase, totalElapsedMs,
                     failure.getClass().getSimpleName(), failure.getMessage());
@@ -341,6 +353,47 @@ public class DiffService {
         }
         Files.createDirectories(file.getParent(), new FileAttribute[0]);
         Files.writeString(file, change.getAfterContent(), StandardCharsets.UTF_8, new OpenOption[0]);
+    }
+
+    /**
+     * 写入完成后仍处于 workspace lease 内，以实际文件状态验证目标后置条件。
+     * 这避免 tool 仅凭“没有抛异常”向模型宣称删除或写入已经完成。
+     */
+    private Map<String, Object> verifyAppliedChanges(StudentProject project, List<PendingChange> changes) throws Exception {
+        List<Map<String, Object>> targets = new ArrayList<>();
+        for (PendingChange change : changes) {
+            Path file = this.resolveChangePath(project, change.getRelativePath());
+            Map<String, Object> target = new LinkedHashMap<>();
+            target.put("path", change.getRelativePath());
+            if ("delete".equalsIgnoreCase(change.getChangeType())) {
+                boolean absent = !Files.exists(file, LinkOption.NOFOLLOW_LINKS);
+                target.put("expectedState", "absent");
+                target.put("observedState", absent ? "absent" : "present");
+                targets.add(Map.copyOf(target));
+                if (!absent) {
+                    throw new IOException("Post-write verification failed for deleted target: " + change.getRelativePath());
+                }
+                continue;
+            }
+
+            boolean regularFile = Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS);
+            String expectedHash = this.sha256(change.getAfterContent());
+            long expectedBytes = (change.getAfterContent() == null ? "" : change.getAfterContent())
+                    .getBytes(StandardCharsets.UTF_8).length;
+            long observedBytes = regularFile ? Files.size(file) : -1L;
+            String observedHash = regularFile && observedBytes == expectedBytes
+                    ? this.sha256(file) : "";
+            boolean matched = regularFile && observedBytes == expectedBytes && expectedHash.equals(observedHash);
+            target.put("expectedState", "present");
+            target.put("observedState", regularFile ? "present" : "missing_or_not_regular");
+            target.put("expectedSha256", expectedHash);
+            target.put("observedSha256", observedHash);
+            targets.add(Map.copyOf(target));
+            if (!matched) {
+                throw new IOException("Post-write verification failed for target: " + change.getRelativePath());
+            }
+        }
+        return Map.of("state", "verified", "targets", List.copyOf(targets));
     }
 
     private void restoreBatchWrites(StudentProject project, List<PendingChange> changes) {
@@ -791,16 +844,38 @@ public class DiffService {
     private String sha256(String content) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest((content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
-            StringBuilder builder = new StringBuilder();
-            for (byte b : hash) {
-                builder.append(String.format("%02x", b));
-            }
-            return builder.toString();
+            return hex(digest.digest((content == null ? "" : content).getBytes(StandardCharsets.UTF_8)));
         }
         catch (Exception e) {
             return "";
         }
+    }
+
+    /** 以流式摘要验证写后文件，避免把非工具调用方提交的大文件整体读入内存。 */
+    private String sha256(Path file) throws IOException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (InputStream input = Files.newInputStream(file)) {
+                byte[] buffer = new byte[HASH_BUFFER_BYTES];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    if (read > 0) {
+                        digest.update(buffer, 0, read);
+                    }
+                }
+            }
+            return hex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
+    }
+
+    private String hex(byte[] hash) {
+        StringBuilder builder = new StringBuilder();
+        for (byte b : hash) {
+            builder.append(String.format("%02x", b));
+        }
+        return builder.toString();
     }
 
     private void verifyBeforeHash(AgentFileChange fileChange, PendingChange change, Path file) throws Exception {
@@ -892,9 +967,10 @@ public class DiffService {
         }
     }
 
-    public record ApplyTelemetry(String phase, Map<String, Long> timingMs) {
+    public record ApplyTelemetry(String phase, Map<String, Long> timingMs,
+                                 Map<String, Object> workspaceVerification) {
         static ApplyTelemetry empty() {
-            return new ApplyTelemetry("none", Map.of());
+            return new ApplyTelemetry("none", Map.of(), Map.of());
         }
     }
 

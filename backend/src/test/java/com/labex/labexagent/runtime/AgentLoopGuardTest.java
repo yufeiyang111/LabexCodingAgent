@@ -4,6 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 import com.google.gson.JsonObject;
+import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.tool.ToolResult;
 import org.junit.jupiter.api.Test;
 
 class AgentLoopGuardTest {
@@ -156,6 +159,42 @@ class AgentLoopGuardTest {
                 guard.beforeToolCall("read_file", first).signature(),
                 guard.beforeToolCall("read_file", second).signature());
     }
+    @Test
+    void observedNonZeroShellExitFeedsRepeatedFailureProtection() {
+        AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());
+        JsonObject arguments = new JsonObject();
+        arguments.addProperty("command", "npm run build");
+        ToolResult observedNonZero = ToolResult.fromObservedProcessExecution(
+                new ProcessExecutionResult(ExecutionStatus.FAILED, 1, 20, "build failed", false),
+                "bash", ".", null);
+
+        AgentLoopGuard.ToolDecision first = guard.beforeToolCall("shell", arguments);
+        guard.recordToolResult(first.signature(), observedNonZero);
+        AgentLoopGuard.ToolDecision second = guard.beforeToolCall("shell", arguments);
+        guard.recordToolResult(second.signature(), observedNonZero);
+
+        assertEquals(AgentLoopGuard.ToolAction.SWITCH_STRATEGY,
+                guard.beforeToolCall("shell", arguments).action());
+    }
+
+    @Test
+    void distinctFailedToolCallsDoNotTripTheModelNoProgressFuse() {
+        AgentLoopProperties properties = new AgentLoopProperties();
+        properties.setMaxNonProgressIterations(3);
+        AgentLoopGuard guard = new AgentLoopGuard(properties);
+
+        for (int attempt = 0; attempt < 4; attempt++) {
+            JsonObject arguments = new JsonObject();
+            arguments.addProperty("path", "src/missing-" + attempt + ".java");
+            AgentLoopGuard.ToolDecision decision = guard.beforeToolCall("read_file", arguments);
+            assertEquals(AgentLoopGuard.ToolAction.ALLOW, decision.action());
+            guard.recordToolResult(decision.signature(), false);
+        }
+
+        assertEquals(0, guard.nonProgressIterations());
+        assertEquals(AgentLoopGuard.IterationAction.CONTINUE, guard.beforeIteration(1).action());
+    }
+
     @Test
     void stopsAfterConfigurableConsecutiveNoProgressTurns() {
         AgentLoopGuard guard = new AgentLoopGuard(new AgentLoopProperties());

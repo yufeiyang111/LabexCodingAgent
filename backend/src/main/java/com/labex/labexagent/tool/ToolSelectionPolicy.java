@@ -21,8 +21,16 @@ public final class ToolSelectionPolicy {
     private static final Set<String> WEB_SEARCH_TOOLS = Set.of("web_search", "websearch");
     private static final Set<String> WEB_FETCH_TOOLS = Set.of("web_fetch", "webfetch");
     private static final Set<String> MCP_ENTRY_TOOLS = Set.of("mcp_call");
+    private static final Set<String> SKILL_TOOLS = Set.of("skill");
     /** native 运行时将这些 Harness 控制概念保留为 UI/持久化投影，不放入模型 schema。 */
     private static final Set<String> NATIVE_HARNESS_CONTROL_TOOLS = Set.of("todo_write", "plan_exit", "create_plan");
+    /** native 运行时按能力挂载的扩展工具；底层模式白名单仍是最终约束。 */
+    private static final Set<String> NATIVE_ON_DEMAND_TOOLS = Set.of("lsp", "skill");
+    /** 旧会话仍可回放精确文本替换；新 schema 只暴露统一的 patch 契约。 */
+    private static final Set<String> NATIVE_LEGACY_COMPATIBILITY_TOOLS = Set.of("edit_file");
+    /** native 只在 build 模式增加完整的文件 patch 能力，避免读模式获得 mutation。 */
+    private static final Map<String, Set<String>> NATIVE_MODE_ADDITIONAL_TOOLS = Map.of(
+            "build", Set.of("apply_patch"));
 
     /**
      * 默认 profile 故意不包含计划创建、验证、预览、RAG、项目摘要和配置提案等控制面工具。
@@ -61,13 +69,16 @@ public final class ToolSelectionPolicy {
         List<ToolDefinition> selected = new ArrayList<>();
         Collection<ToolDefinition> staticDefinitions = registry.staticDefinitionsForMode(mode);
         for (ToolDefinition definition : staticDefinitions == null ? List.<ToolDefinition>of() : staticDefinitions) {
-            if (profile.contains(definition.getName())
+            if (isSelectedByModeProfile(definition.getName(), mode, profile, effectiveRuntimeProfile)
                     && isCapabilityAvailable(definition.getName(), safeCapabilities)
                     && isVisibleInRuntimeProfile(definition.getName(), effectiveRuntimeProfile)) {
                 selected.add(definition);
             }
         }
-        if (safeCapabilities.mcpEnabled() && AgentMode.isUnrestricted(mode)) {
+        // native 的用户级 MCP 由 ToolExposurePlanner 按 task/student 作用域挂载，
+        // 绝不能从单例 ToolRegistry 的全局 dynamic map 读取。
+        if (safeCapabilities.mcpEnabled() && AgentMode.isUnrestricted(mode)
+                && effectiveRuntimeProfile != AgentRuntimeProfile.LABEX_NATIVE) {
             Collection<ToolDefinition> dynamicDefinitions = registry.dynamicDefinitions();
             (dynamicDefinitions == null ? java.util.stream.Stream.<ToolDefinition>empty() : dynamicDefinitions.stream())
                     .filter(definition -> isCapabilityAvailable(definition.getName(), safeCapabilities))
@@ -89,6 +100,16 @@ public final class ToolSelectionPolicy {
         return Set.copyOf(names);
     }
 
+    private boolean isSelectedByModeProfile(String toolName, String mode, Set<String> modeProfile,
+                                            AgentRuntimeProfile runtimeProfile) {
+        if (runtimeProfile != AgentRuntimeProfile.LABEX_NATIVE) {
+            return modeProfile.contains(toolName);
+        }
+        return (modeProfile.contains(toolName) && !NATIVE_LEGACY_COMPATIBILITY_TOOLS.contains(toolName))
+                || NATIVE_ON_DEMAND_TOOLS.contains(toolName)
+                || NATIVE_MODE_ADDITIONAL_TOOLS.getOrDefault(mode, Set.of()).contains(toolName);
+    }
+
     private boolean isVisibleInRuntimeProfile(String toolName, AgentRuntimeProfile runtimeProfile) {
         return runtimeProfile != AgentRuntimeProfile.LABEX_NATIVE
                 || !NATIVE_HARNESS_CONTROL_TOOLS.contains(toolName);
@@ -97,15 +118,22 @@ public final class ToolSelectionPolicy {
     private boolean isCapabilityAvailable(String toolName, Capabilities capabilities) {
         if (IMAGE_TOOLS.contains(toolName)) return capabilities.imageInputEnabled();
         if (MCP_ENTRY_TOOLS.contains(toolName)) return false;
+        if (SKILL_TOOLS.contains(toolName)) return capabilities.skillCatalogAvailable();
         if (WEB_SEARCH_TOOLS.contains(toolName)) return capabilities.webSearchEnabled();
         if (WEB_FETCH_TOOLS.contains(toolName)) return capabilities.webFetchEnabled();
         return true;
     }
 
     public record Capabilities(boolean imageInputEnabled, boolean mcpEnabled,
-                               boolean webSearchEnabled, boolean webFetchEnabled) {
+                               boolean webSearchEnabled, boolean webFetchEnabled,
+                               boolean skillCatalogAvailable) {
+        public Capabilities(boolean imageInputEnabled, boolean mcpEnabled,
+                            boolean webSearchEnabled, boolean webFetchEnabled) {
+            this(imageInputEnabled, mcpEnabled, webSearchEnabled, webFetchEnabled, false);
+        }
+
         public static Capabilities none() {
-            return new Capabilities(false, false, false, false);
+            return new Capabilities(false, false, false, false, false);
         }
     }
 }

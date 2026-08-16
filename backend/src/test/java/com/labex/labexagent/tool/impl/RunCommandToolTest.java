@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.execution.ExecutionStatus;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 
 class RunCommandToolTest {
+    private static final Gson GSON = new Gson();
     @TempDir
     Path workspace;
 
@@ -65,6 +67,37 @@ class RunCommandToolTest {
         assertThat(result.isSuccess()).isTrue();
         verify(verificationRecorder).recordShellToolResult(
                 eq(71L), eq(7), eq(12), eq("npm test"), any(ToolResult.class));
+    }
+
+    @Test
+    void projectsSafeWorkspaceIdentityIntoTheNativeShellResult() throws Exception {
+        SandboxWorker worker = mock(SandboxWorker.class);
+        when(worker.execute(any(), any(), any())).thenReturn(new ProcessExecutionResult(
+                ExecutionStatus.SUCCEEDED, 0, 5, "ok", false));
+        Path nested = Files.createDirectories(workspace.resolve("frontend/components"));
+        StudentProject project = new StudentProject();
+        project.setProjectId(12);
+        AgentContext context = new AgentContext(
+                "session-1", 7, project, "conversation-1", 71L, workspace, new ArrayList<>(), 0);
+        context.setExecutionEpoch(6L);
+        JsonObject args = new JsonObject();
+        args.addProperty("command", "npm test");
+        args.addProperty("workdir", "frontend/components");
+        AgentExecutionProperties safe = new AgentExecutionProperties();
+        safe.setPermissionProfile("safe");
+
+        ToolResult result = new RunCommandTool(worker, safe).execute(context, args);
+
+        assertThat(result.getWorkspaceIdentity())
+                .containsEntry("taskId", 71L)
+                .containsEntry("executionEpoch", 6L)
+                .containsEntry("workingDirectory", "frontend/components")
+                .containsEntry("relativePaths", List.of());
+        assertThat(GSON.toJson(result.getWorkspaceIdentity()))
+                .doesNotContain(workspace.toAbsolutePath().normalize().toString());
+        ArgumentCaptor<ProcessExecutionRequest> request = ArgumentCaptor.forClass(ProcessExecutionRequest.class);
+        verify(worker).execute(any(), request.capture(), any());
+        assertThat(request.getValue().workingDirectory()).isEqualTo(nested);
     }
 
     @Test

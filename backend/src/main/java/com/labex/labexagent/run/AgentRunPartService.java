@@ -64,6 +64,17 @@ public class AgentRunPartService {
     @Transactional(rollbackFor = Exception.class)
     public AgentRunPart upsertToolCall(Long taskId, String toolCallId, String status, String toolName,
                                        Object arguments, int iteration, String detail) {
+        return upsertToolCall(taskId, toolCallId, status, toolName, arguments, iteration, detail, Map.of());
+    }
+
+    /**
+     * 为实际工具结果附加结构化 durable metadata。调用方不能覆盖 task/Part 自己生成的
+     * sequence、status、partType 或 executionEpoch。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunPart upsertToolCall(Long taskId, String toolCallId, String status, String toolName,
+                                       Object arguments, int iteration, String detail,
+                                       Map<String, Object> resultMetadata) {
         if (taskId == null || taskId <= 0 || !AgentToolCallIdPolicy.isValid(toolCallId)) {
             return null;
         }
@@ -77,7 +88,7 @@ public class AgentRunPartService {
         AgentRunMessage message = messageService.upsertAssistantTurn(taskId, iteration, messageStatus);
         return upsertPart(taskId, message.getRunMessageId(),
                 "tool:" + toolCallId, "tool", status, toolCallId,
-                toolName, arguments, detail, iteration);
+                toolName, arguments, detail, iteration, resultMetadata);
     }
 
     /**
@@ -89,8 +100,15 @@ public class AgentRunPartService {
     @Transactional(rollbackFor = Exception.class)
     public AgentRunPart upsertToolCall(ExecutionFence fence, Long taskId, String toolCallId, String status,
                                        String toolName, Object arguments, int iteration, String detail) {
+        return upsertToolCall(fence, taskId, toolCallId, status, toolName, arguments, iteration, detail, Map.of());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunPart upsertToolCall(ExecutionFence fence, Long taskId, String toolCallId, String status,
+                                       String toolName, Object arguments, int iteration, String detail,
+                                       Map<String, Object> resultMetadata) {
         requireFence(fence);
-        return upsertToolCall(taskId, toolCallId, status, toolName, arguments, iteration, detail);
+        return upsertToolCall(taskId, toolCallId, status, toolName, arguments, iteration, detail, resultMetadata);
     }
 
     /** 同步 Provider tool_call Part 的生命周期，保证等待交互在 JVM 重启后仍可恢复。 */
@@ -112,6 +130,19 @@ public class AgentRunPartService {
     /** 更新已存在的工具 Part，用于命令审批等延后终态的持久化。 */
     @Transactional(rollbackFor = Exception.class)
     public AgentRunPart resolveExistingToolCall(Long taskId, String toolCallId, String status, String detail) {
+        return resolveExistingToolCall(taskId, toolCallId, status, detail, Map.of());
+    }
+
+    /**
+     * 将控制面延后得到的工具结果回写同一 Durable Part。
+     *
+     * <p>审批、离线重试等路径不应因为离开 AgentLoopEngine 就把结构化执行、工作区 identity、
+     * mutation 或写后验证压回纯文本。调用者只能补充 ToolResult 的安全 metadata，Part 自己的
+     * sequence、partType、status 与执行 epoch 仍由本服务维护。</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunPart resolveExistingToolCall(Long taskId, String toolCallId, String status, String detail,
+                                                Map<String, Object> resultMetadata) {
         if (taskId == null || taskId <= 0 || !AgentToolCallIdPolicy.isValid(toolCallId)) return null;
         syncProviderToolCallState(taskId, toolCallId, status, detail);
         AgentRunPart part = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
@@ -129,6 +160,9 @@ public class AgentRunPartService {
         if (part == null) return null;
         part.setStatus(status == null || status.isBlank() ? "error" : status);
         part.setOutputText(detail);
+        if (resultMetadata != null && !resultMetadata.isEmpty()) {
+            part.setMetadata(mergeExistingToolMetadata(part, taskId, resultMetadata));
+        }
         part.setUpdateTime(LocalDateTime.now());
         partMapper.updateById(part);
         if (part.getSequenceNumber() != null) {
@@ -145,8 +179,15 @@ public class AgentRunPartService {
     @Transactional(rollbackFor = Exception.class)
     public AgentRunPart resolveExistingToolCall(ExecutionFence fence, Long taskId, String toolCallId,
                                                 String status, String detail) {
+        return resolveExistingToolCall(fence, taskId, toolCallId, status, detail, Map.of());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunPart resolveExistingToolCall(ExecutionFence fence, Long taskId, String toolCallId,
+                                                String status, String detail,
+                                                Map<String, Object> resultMetadata) {
         requireFence(fence);
-        return resolveExistingToolCall(taskId, toolCallId, status, detail);
+        return resolveExistingToolCall(taskId, toolCallId, status, detail, resultMetadata);
     }
 
     @Transactional(propagation = Propagation.NESTED, rollbackFor = Exception.class)
@@ -179,6 +220,14 @@ public class AgentRunPartService {
             case "LOOP_GUARD_PROGRESS" ->
                     upsertPart(taskId, messageId, "loop-guard:progress", "loop_guard_progress", "completed",
                             null, null, data, GSON.toJson(data), sequence);
+            case "TOOL_EXPOSURE" -> {
+                String profile = text(data, "runtimeProfile");
+                String mode = text(data, "mode");
+                String key = "tool-exposure:" + (profile.isBlank() ? "unknown" : profile)
+                        + ":" + (mode.isBlank() ? "build" : mode);
+                yield upsertPart(taskId, messageId, key, "tool_exposure", "completed", null, null,
+                        data, GSON.toJson(data), sequence);
+            }
             case "FINALIZATION_BLOCKED" -> {
                 String fingerprint = text(data, "evidenceFingerprint");
                 boolean recoveryAllowed = Boolean.TRUE.equals(data.get("recoveryAllowed"));
@@ -465,9 +514,71 @@ public class AgentRunPartService {
                 .toList();
     }
 
+    /** 合并控制面 ToolResult metadata，保留 Part 自己的权威 lifecycle 字段。 */
+    private String mergeExistingToolMetadata(AgentRunPart part, Long taskId,
+                                             Map<String, Object> resultMetadata) {
+        Map<String, Object> metadata = parseMetadata(part == null ? null : part.getMetadata());
+        mergeResultMetadata(metadata, resultMetadata);
+        long executionEpoch = existingExecutionEpoch(metadata, taskId);
+        metadata.put("sequence", part == null || part.getSequenceNumber() == null ? 0L : part.getSequenceNumber());
+        metadata.put("partType", part == null || part.getPartType() == null ? "tool" : part.getPartType());
+        metadata.put("status", part == null || part.getStatus() == null ? "unknown" : part.getStatus());
+        metadata.put("executionEpoch", executionEpoch);
+        return GSON.toJson(metadata);
+    }
+
+    private Map<String, Object> parseMetadata(String rawMetadata) {
+        if (rawMetadata == null || rawMetadata.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Object parsed = GSON.fromJson(rawMetadata, Object.class);
+            if (parsed instanceof Map<?, ?> map) {
+                return copyMap(map);
+            }
+        } catch (RuntimeException ignored) {
+            // 存量脏 metadata 不能阻断一次真实的延后工具结果；只重建安全元数据。
+        }
+        return new LinkedHashMap<>();
+    }
+
+    private long existingExecutionEpoch(Map<String, Object> metadata, Long taskId) {
+        Object rawEpoch = metadata.get("executionEpoch");
+        if (rawEpoch instanceof Number number) {
+            return Math.max(0L, number.longValue());
+        }
+        if (rawEpoch != null) {
+            try {
+                return Math.max(0L, Long.parseLong(String.valueOf(rawEpoch)));
+            } catch (NumberFormatException ignored) {
+                // 后备读取 task 的当前 epoch。
+            }
+        }
+        AgentTask task = taskId == null ? null : taskMapper.selectById(taskId);
+        return task == null || task.getExecutionEpoch() == null ? 0L : Math.max(0L, task.getExecutionEpoch());
+    }
+
+    private void mergeResultMetadata(Map<String, Object> target, Map<String, Object> resultMetadata) {
+        if (target == null || resultMetadata == null) return;
+        resultMetadata.forEach((key, value) -> {
+            if (key != null && !key.isBlank() && value != null
+                    && !"sequence".equals(key) && !"partType".equals(key)
+                    && !"status".equals(key) && !"executionEpoch".equals(key)) {
+                target.put(key, value);
+            }
+        });
+    }
+
     private AgentRunPart upsertPart(Long taskId, Long messageId, String partKey, String partType, String status,
                                     String toolCallId, String toolName, Object input,
                                     String output, long sequence) {
+        return upsertPart(taskId, messageId, partKey, partType, status, toolCallId, toolName, input, output,
+                sequence, Map.of());
+    }
+
+    private AgentRunPart upsertPart(Long taskId, Long messageId, String partKey, String partType, String status,
+                                    String toolCallId, String toolName, Object input,
+                                    String output, long sequence, Map<String, Object> resultMetadata) {
         LocalDateTime now = LocalDateTime.now();
         AgentRunPart part = partMapper.selectOne(new LambdaQueryWrapper<AgentRunPart>()
                 .eq(AgentRunPart::getTaskId, taskId)
@@ -495,11 +606,13 @@ public class AgentRunPartService {
         part.setOutputText(output);
         part.setSequenceNumber(sequence);
         long executionEpoch = task == null || task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch();
-        part.setMetadata(GSON.toJson(Map.of(
-                "sequence", sequence,
-                "partType", partType,
-                "status", part.getStatus(),
-                "executionEpoch", executionEpoch)));
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        mergeResultMetadata(metadata, resultMetadata);
+        metadata.put("sequence", sequence);
+        metadata.put("partType", partType);
+        metadata.put("status", part.getStatus());
+        metadata.put("executionEpoch", executionEpoch);
+        part.setMetadata(GSON.toJson(metadata));
         part.setUpdateTime(now);
         if (part.getPartId() == null) {
             partMapper.insert(part);
@@ -548,7 +661,7 @@ public class AgentRunPartService {
 
     private boolean supportsEventPart(String eventType) {
         return switch (eventType) {
-            case "THINK", "FINAL", "ERROR", "COMPLETION_EVIDENCE",
+            case "THINK", "FINAL", "ERROR", "COMPLETION_EVIDENCE", "TOOL_EXPOSURE",
                  "CONTEXT_STATUS", "CONTEXT_STATS", "COMPACTION_STARTED",
                  "COMPACTION_COMPLETED", "COMPACTION_FAILED", "CONTEXT_PRUNED",
                  "RUN_STATE_WAITING_APPROVAL", "RUN_STATE_WAITING_USER",

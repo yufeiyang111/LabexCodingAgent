@@ -10,6 +10,7 @@ import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
+import com.labex.labexagent.workspace.WorkspaceOperationIdentity;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -32,15 +33,14 @@ public class ApplyPatchTool implements AgentTool {
 
     public ToolDefinition definition() {
         Map<String, Object> changeItem = Map.of("type", "object", "properties", Map.of(
-                "path", Map.of("type", "string", "description", "File path"),
-                "operation", Map.of("type", "string", "description", "Operation: create, replace, or delete"),
-                "content", Map.of("type", "string", "description", "File content (required for create)"),
-                "old_string", Map.of("type", "string", "description", "Existing content (required for replace and must match exactly once)"),
-                "new_string", Map.of("type", "string", "description", "Replacement content (required for replace)")),
+                "path", Map.of("type", "string", "description", "Workspace-relative file path"),
+                "operation", Map.of("type", "string", "description", "Operation: replace an exact text block or delete an existing file"),
+                "old_string", Map.of("type", "string", "description", "Exact existing text for replace; it must match once and preserve surrounding file content"),
+                "new_string", Map.of("type", "string", "description", "Replacement text for replace")),
                 "required", List.of("path", "operation"));
         return ToolDefinition.builder().name("apply_patch")
-                .description("Create, replace, or delete multiple files in one operation. Changes are applied immediately, recorded in history, and can be reverted.")
-                .arrayProperty("changes", "List of file changes", changeItem, true).build();
+                .description("Apply precise contextual replacements or delete existing files, including a batch of related changes. Use write_file to create a file or intentionally replace an entire file.")
+                .arrayProperty("changes", "Existing-file patch operations", changeItem, true).build();
     }
 
     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
@@ -81,8 +81,15 @@ public class ApplyPatchTool implements AgentTool {
             appendLimited(combinedDiff, pending.getDiff());
         }
         String firstChangeId = pendingChanges.isEmpty() ? null : pendingChanges.get(0).getId();
+        DiffService.ApplyTelemetry telemetry = this.diffService.peekLastApplyTelemetry();
+        Map<String, Object> workspaceVerification = telemetry == null ? Map.of() : telemetry.workspaceVerification();
         return ToolResult.ok("已自动应用 " + pendingChanges.size() + " 个文件变更（可随时回退）")
-                .withDiff(combinedDiff.toString()).withPendingChangeId(firstChangeId);
+                .withDiff(combinedDiff.toString()).withPendingChangeId(firstChangeId)
+                .withWorkspaceChangeEvidence(
+                        WorkspaceOperationIdentity.forContext(context, context.getWorkspaceRoot(),
+                                requests.stream().map(DiffService.ChangeRequest::relativePath).toList()),
+                        pendingChanges.stream().map(PendingChange::getId).toList())
+                .withWorkspaceVerification(workspaceVerification);
     }
 
     private PreparedChange prepareChange(AgentContext context, JsonObject change) throws Exception {
@@ -92,15 +99,15 @@ public class ApplyPatchTool implements AgentTool {
         if (cleaned.isEmpty()) {
             throw new IllegalArgumentException("Unsafe file path");
         }
-        if (!"create".equals(operation) && !"replace".equals(operation) && !"delete".equals(operation)) {
+        if ("create".equals(operation)) {
+            throw new IllegalArgumentException("operation create is not supported; use write_file to create a file");
+        }
+        if (!"replace".equals(operation) && !"delete".equals(operation)) {
             throw new IllegalArgumentException("Unsupported patch operation: " + operation);
         }
-        Path file = "create".equals(operation)
-                ? ToolSupport.resolveForCreate(context, cleaned)
-                : ToolSupport.resolve(context, cleaned);
+        Path file = ToolSupport.resolve(context, cleaned);
         String beforeContent = readExistingText(file);
         return switch (operation) {
-            case "create" -> new PreparedChange(cleaned, "", requireEditableContent(stringValue(change, "content")), "create");
             case "delete" -> new PreparedChange(cleaned, beforeContent, "", "delete");
             case "replace" -> replaceChange(cleaned, beforeContent, stringValue(change, "old_string"),
                     stringValue(change, "new_string"));
@@ -118,6 +125,9 @@ public class ApplyPatchTool implements AgentTool {
         }
         if (beforeContent.indexOf(oldString, firstMatch + oldString.length()) >= 0) {
             throw new IllegalArgumentException("old_string must match exactly once: " + path);
+        }
+        if (oldString.equals(beforeContent)) {
+            throw new IllegalArgumentException("replace must preserve surrounding content; use write_file for an intentional full-file replacement: " + path);
         }
         String afterContent = beforeContent.substring(0, firstMatch) + newString
                 + beforeContent.substring(firstMatch + oldString.length());

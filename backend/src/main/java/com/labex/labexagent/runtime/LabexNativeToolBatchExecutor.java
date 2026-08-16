@@ -203,7 +203,7 @@ public final class LabexNativeToolBatchExecutor {
         } else if (result != null && result.isSuccess()) {
             this.toolCallJournalService.completed(request.executionFence(), request.taskId(),
                     admission.call().toolCallId(), admission.call().toolName(), admission.publicArguments(),
-                    request.iteration(), detail);
+                    request.iteration(), result);
         } else if (isCancelledResult(result)) {
             this.toolCallJournalService.interrupted(request.executionFence(), request.taskId(),
                     admission.call().toolCallId(), admission.call().toolName(), admission.publicArguments(),
@@ -215,7 +215,7 @@ public final class LabexNativeToolBatchExecutor {
         } else {
             this.toolCallJournalService.failed(request.executionFence(), request.taskId(),
                     admission.call().toolCallId(), admission.call().toolName(), admission.publicArguments(),
-                    request.iteration(), detail);
+                    request.iteration(), result);
         }
     }
 

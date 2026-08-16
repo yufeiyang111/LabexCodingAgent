@@ -129,6 +129,8 @@ class AgentLoopEngineNextPreviewTest {
         assertFalse(payload.toString().contains("FOREIGN_CHECKPOINT_SENTINEL"));
         verify(conversations, never()).touchActivity(any(AgentConversation.class));
         verify(conversations, never()).markCompacted(any(AgentConversation.class));
+        verify(skills, never()).buildPromptContext(7);
+        verify(mcp, never()).buildPromptContext(7);
         verifyNoInteractions(providers, tasks, usageRegistry);
     }
 }

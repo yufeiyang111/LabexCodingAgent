@@ -18,4 +18,16 @@ class ApplyPatchToolContractTest {
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.getContent()).isEqualTo("operation is required");
     }
+
+    @Test
+    void reservesNewFileCreationForWriteFileInsteadOfApplyingAPatch() throws Exception {
+        JsonObject arguments = JsonParser.parseString("""
+                {"changes":[{"path":"src/Main.java","operation":"create","content":"class Main {}"}]}
+                """).getAsJsonObject();
+
+        var result = new ApplyPatchTool(null).execute(null, arguments);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getContent()).isEqualTo("operation create is not supported; use write_file to create a file");
+    }
 }

@@ -1,13 +1,19 @@
 package com.labex.labexagent.mcp;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.worker.WorkerRunSpec;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * MCP 工具适配器
@@ -57,28 +63,56 @@ public class McpToolAdapter implements AgentTool {
 
     @Override
     public ToolDefinition definition() {
-        ToolDefinition.Builder builder = ToolDefinition.builder()
-            .name(toolInfo.getUniqueId())
-            .description("[MCP:" + toolInfo.getServerName() + "] " + toolInfo.getDescription());
+        return new ToolDefinition(toolInfo.getUniqueId(),
+                "[MCP:" + toolInfo.getServerName() + "] " + toolInfo.getDescription(),
+                copyInputSchema(toolInfo.getInputSchema()));
+    }
 
-        // 从 inputSchema 提取属性定义
-        JsonObject schema = toolInfo.getInputSchema();
-        if (schema != null && schema.has("properties")) {
-            JsonObject properties = schema.getAsJsonObject("properties");
-            List<String> required = new java.util.ArrayList<>();
-            if (schema.has("required")) {
-                schema.getAsJsonArray("required").forEach(e -> required.add(e.getAsString()));
-            }
-
-            for (String key : properties.keySet()) {
-                JsonObject prop = properties.getAsJsonObject(key);
-                String desc = prop.has("description") ? prop.get("description").getAsString() : key;
-                boolean isRequired = required.contains(key);
-                builder = builder.stringProperty(key, desc, isRequired);
-            }
+    /**
+     * MCP server 的 JSON Schema 是本工具调用契约，不能为了通用展示而把所有字段降级为 string。
+     */
+    private Map<String, Object> copyInputSchema(JsonObject source) {
+        Map<String, Object> schema = source == null ? new LinkedHashMap<>() : toMap(source);
+        if (!schema.containsKey("type")) {
+            schema.put("type", "object");
         }
+        if (!schema.containsKey("properties")) {
+            schema.put("properties", new LinkedHashMap<>());
+        }
+        return schema;
+    }
 
-        return builder.build();
+    private Map<String, Object> toMap(JsonObject source) {
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonElement> entry : source.entrySet()) {
+            result.put(entry.getKey(), toJavaValue(entry.getValue()));
+        }
+        return result;
+    }
+
+    private Object toJavaValue(JsonElement value) {
+        if (value == null || value.isJsonNull()) {
+            return null;
+        }
+        if (value.isJsonObject()) {
+            return toMap(value.getAsJsonObject());
+        }
+        if (value.isJsonArray()) {
+            JsonArray array = value.getAsJsonArray();
+            List<Object> result = new ArrayList<>(array.size());
+            for (JsonElement item : array) {
+                result.add(toJavaValue(item));
+            }
+            return result;
+        }
+        JsonPrimitive primitive = value.getAsJsonPrimitive();
+        if (primitive.isBoolean()) {
+            return primitive.getAsBoolean();
+        }
+        if (primitive.isNumber()) {
+            return primitive.getAsNumber();
+        }
+        return primitive.getAsString();
     }
 
     @Override

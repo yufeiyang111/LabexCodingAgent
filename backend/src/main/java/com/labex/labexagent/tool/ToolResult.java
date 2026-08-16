@@ -2,6 +2,10 @@ package com.labex.labexagent.tool;
 
 import com.labex.labexagent.commandsecurity.CommandRedactor;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import com.labex.labexagent.workspace.WorkspaceOperationIdentity;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /*
@@ -31,6 +35,11 @@ public class ToolResult {
     private String executionOutputPath;
     private String executionShell;
     private String executionWorkdir;
+    /** 稳定失败分类供 durable Part/Event、恢复和 UI 使用；不包含宿主错误细节。 */
+    private String failureClass;
+    private Map<String, Object> workspaceIdentity = Map.of();
+    private Map<String, Object> workspaceMutation = Map.of();
+    private Map<String, Object> workspaceVerification = Map.of();
 
     public ToolResult() {
     }
@@ -45,12 +54,17 @@ public class ToolResult {
     }
 
     public static ToolResult failed(String content) {
-        return new ToolResult(false, content);
+        ToolResult result = new ToolResult(false, content);
+        result.failureClass = "tool_error";
+        return result;
     }
 
     public static ToolResult fromProcessExit(int exitCode, String output) {
         String content = "exit=" + exitCode + "\n" + (output == null ? "" : output);
-        return exitCode == 0 ? ToolResult.ok(content) : ToolResult.failed(content);
+        if (exitCode == 0) {
+            return ToolResult.ok(content);
+        }
+        return ToolResult.failed(content).withFailureClass("non_zero_exit");
     }
 
     public static ToolResult fromProcessExecution(ProcessExecutionResult execution) {
@@ -129,12 +143,29 @@ public class ToolResult {
         result.executionOutputPath = safeOutputPath;
         result.executionShell = shell;
         result.executionWorkdir = workdir;
+        result.failureClass = executionFailureClass(execution);
         return result;
+    }
+
+    private static String executionFailureClass(ProcessExecutionResult execution) {
+        if (execution == null || execution.succeeded()) {
+            return "";
+        }
+        if (execution.exitCode() != null && execution.exitCode() != 0) {
+            return "non_zero_exit";
+        }
+        return switch (execution.status()) {
+            case TIMED_OUT -> "timed_out";
+            case CANCELLED -> "cancelled";
+            case INFRASTRUCTURE_ERROR -> "infrastructure_error";
+            case FAILED, SUCCEEDED -> "execution_failed";
+        };
     }
 
     public static ToolResult approvalRequired(String content, String command) {
         ToolResult result = ToolResult.failed((String)content);
         result.setApprovalRequired(true);
+        result.failureClass = "";
         result.setApprovalCommand(command);
         return result;
     }
@@ -143,6 +174,7 @@ public class ToolResult {
                                                      String riskLevel, String reasonCode, String expiresTime) {
         ToolResult result = ToolResult.failed(content);
         result.setApprovalRequired(true);
+        result.failureClass = "";
         result.setApprovalId(approvalId);
         result.setApprovalDisplayCommand(displayCommand);
         result.setApprovalRiskLevel(riskLevel);
@@ -154,6 +186,7 @@ public class ToolResult {
     public static ToolResult interactionRequired(String content, String requestId, String interactionType) {
         ToolResult result = ToolResult.failed(content);
         result.setInteractionRequired(true);
+        result.failureClass = "";
         result.setInteractionRequestId(requestId);
         result.setInteractionType(interactionType);
         return result;
@@ -162,6 +195,70 @@ public class ToolResult {
     public ToolResult withInteractionPayload(Map<String, Object> payload) {
         this.interactionPayload = payload == null ? Map.of() : Map.copyOf(payload);
         return this;
+    }
+
+    public ToolResult withWorkspaceIdentity(WorkspaceOperationIdentity identity) {
+        this.workspaceIdentity = identity == null ? Map.of() : identity.toPayload();
+        return this;
+    }
+
+    /** 记录已实际写入 workspace 的变更；变更 ID 可回链到 durable change-set 证据。 */
+    public ToolResult withWorkspaceChangeEvidence(WorkspaceOperationIdentity identity, List<String> changeIds) {
+        this.workspaceIdentity = identity == null ? Map.of() : identity.toPayload();
+        List<String> appliedChangeIds = new ArrayList<>();
+        if (changeIds != null) {
+            for (String changeId : changeIds) {
+                if (changeId != null && !changeId.isBlank()) {
+                    appliedChangeIds.add(changeId.trim());
+                }
+            }
+        }
+        this.workspaceMutation = appliedChangeIds.isEmpty() ? Map.of() : Map.of(
+                "state", "applied",
+                "changeIds", List.copyOf(appliedChangeIds));
+        return this;
+    }
+
+    /** 写后验证由 workspace 写入所有者生成，只投影安全的相对目标和摘要。 */
+    public ToolResult withWorkspaceVerification(Map<String, Object> verification) {
+        this.workspaceVerification = verification == null || verification.isEmpty() ? Map.of() : Map.copyOf(verification);
+        return this;
+    }
+
+    /** 返回可写入 durable Tool Part 的结构化结果，不包含宿主绝对路径。 */
+    public Map<String, Object> durableResultMetadata() {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        if (this.executionStatus != null && !this.executionStatus.isBlank()) {
+            Map<String, Object> execution = new LinkedHashMap<>();
+            execution.put("status", this.executionStatus);
+            if (this.executionExitCode != null) execution.put("exitCode", this.executionExitCode);
+            if (this.executionDurationMs != null) execution.put("durationMs", this.executionDurationMs);
+            execution.put("outputTruncated", this.executionOutputTruncated);
+            if (this.executionOutputChars != null) execution.put("outputChars", this.executionOutputChars);
+            if (this.executionShell != null && !this.executionShell.isBlank()) {
+                execution.put("shell", this.executionShell);
+            }
+            if (this.executionWorkdir != null && !this.executionWorkdir.isBlank()) {
+                execution.put("workdir", this.executionWorkdir);
+            }
+            if (this.executionOutputPath != null && !this.executionOutputPath.isBlank()) {
+                execution.put("outputPath", this.executionOutputPath);
+            }
+            metadata.put("execution", Map.copyOf(execution));
+        }
+        if (this.failureClass != null && !this.failureClass.isBlank()) {
+            metadata.put("failureClass", this.failureClass);
+        }
+        if (this.workspaceIdentity != null && !this.workspaceIdentity.isEmpty()) {
+            metadata.put("workspaceIdentity", this.workspaceIdentity);
+        }
+        if (this.workspaceMutation != null && !this.workspaceMutation.isEmpty()) {
+            metadata.put("workspaceMutation", this.workspaceMutation);
+        }
+        if (this.workspaceVerification != null && !this.workspaceVerification.isEmpty()) {
+            metadata.put("workspaceVerification", this.workspaceVerification);
+        }
+        return metadata.isEmpty() ? Map.of() : Map.copyOf(metadata);
     }
 
     public ToolResult withDiff(String diff) {
@@ -176,6 +273,21 @@ public class ToolResult {
 
     public boolean isSuccess() {
         return this.success;
+    }
+
+    /**
+     * 区分“工具调用已完成、模型可以看到输出”与“命令/验证实际成功”。
+     * shell 的非零 exit 会保留为成功的工具 transport 结果，但不能重置循环保护或充当验证成功证据。
+     */
+    public boolean isSuccessfulExecutionOutcome() {
+        if (!this.success) {
+            return false;
+        }
+        if (this.executionStatus == null || this.executionStatus.isBlank()) {
+            return true;
+        }
+        return "succeeded".equalsIgnoreCase(this.executionStatus)
+                && (this.executionExitCode == null || this.executionExitCode == 0);
     }
 
     public String getContent() {
@@ -266,6 +378,23 @@ public class ToolResult {
         return this.executionWorkdir;
     }
 
+    public String getFailureClass() {
+        return this.failureClass;
+    }
+
+    public ToolResult withFailureClass(String failureClass) {
+        this.failureClass = failureClass == null ? "" : failureClass.trim();
+        return this;
+    }
+
+    public Map<String, Object> getWorkspaceIdentity() {
+        return this.workspaceIdentity == null ? Map.of() : this.workspaceIdentity;
+    }
+
+    public Map<String, Object> getWorkspaceVerification() {
+        return this.workspaceVerification == null ? Map.of() : this.workspaceVerification;
+    }
+
     public void setSuccess(boolean success) {
         this.success = success;
     }
@@ -352,6 +481,10 @@ public class ToolResult {
 
     public void setExecutionWorkdir(String executionWorkdir) {
         this.executionWorkdir = executionWorkdir;
+    }
+
+    public void setFailureClass(String failureClass) {
+        this.failureClass = failureClass;
     }
 
     public boolean equals(Object o) {

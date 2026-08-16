@@ -1,0 +1,543 @@
+diff --git a/backend/src/main/java/com/labex/labexagent/tool/impl/GrepTool.java b/backend/src/main/java/com/labex/labexagent/tool/impl/GrepTool.java
+index 5801a30..b2bf15d 100644
+--- a/backend/src/main/java/com/labex/labexagent/tool/impl/GrepTool.java
++++ b/backend/src/main/java/com/labex/labexagent/tool/impl/GrepTool.java
+@@ -1,96 +1,168 @@
+ package com.labex.labexagent.tool.impl;
+ 
+ import com.google.gson.JsonObject;
+ import com.labex.labexagent.runtime.AgentContext;
+ import com.labex.labexagent.service.WorkspaceScanner;
+ import com.labex.labexagent.tool.AgentTool;
+ import com.labex.labexagent.tool.ToolDefinition;
+ import com.labex.labexagent.tool.ToolResult;
+ import com.labex.labexagent.tool.ToolSupport;
++import com.labex.labexagent.workspace.SecureWorkspacePath;
+ import java.io.BufferedReader;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
++import java.nio.file.LinkOption;
+ import java.nio.file.Path;
++import java.nio.file.attribute.BasicFileAttributes;
+ import java.util.ArrayList;
++import java.util.Locale;
+ import java.util.regex.Pattern;
++import java.util.regex.PatternSyntaxException;
+ import org.springframework.stereotype.Component;
+ 
+ @Component
+ public class GrepTool implements AgentTool {
+     private static final long MAX_FILE_BYTES = 300_000;
+     private static final long MAX_TOTAL_BYTES = 8_000_000;
+     private final WorkspaceScanner workspaceScanner;
+ 
+     public GrepTool(WorkspaceScanner workspaceScanner) {
+         this.workspaceScanner = workspaceScanner;
+     }
+ 
+     public ToolDefinition definition() {
+-        return ToolDefinition.builder().name("grep").description("用正则搜索代码内容，返回路径、行号和短上下文。适合替代大范围 read_file。")
++        return ToolDefinition.builder().name("grep")
++                .description("Search code with a regular expression and return paths, line numbers, and brief context. Prefer it to broad read_file calls.")
+                 .stringProperty("pattern", "regex pattern", true)
+-                .stringProperty("include", "可选文件后缀或 glob 片段，如 .java、.vue、Controller", false)
+-                .intProperty("max_results", "最大返回条数，默认50", false).build();
++                .stringProperty("path", "Optional workspace-relative file or directory path; defaults to the workspace root", false)
++                .stringProperty("include", "Optional file suffix or glob fragment, for example .java, .vue, or Controller", false)
++                .intProperty("max_results", "Maximum result count; default 50", false)
++                .build();
+     }
+ 
+     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
+         String patternText = ToolSupport.stringArgMulti(args, "", "pattern", "regex", "query");
+-        if (patternText.isBlank()) return ToolResult.failed("pattern is required");
++        if (patternText.isBlank()) return ToolResult.failed("code=PATTERN_REQUIRED\npattern is required");
++
++        Pattern pattern;
++        try {
++            pattern = Pattern.compile(patternText, Pattern.CASE_INSENSITIVE);
++        } catch (PatternSyntaxException invalidPattern) {
++            return ToolResult.failed("code=INVALID_REGEX\n"
++                    + "message=" + ToolSupport.limit(invalidPattern.getDescription(), 240));
++        }
++        SecureWorkspacePath paths = ToolSupport.workspacePaths(context);
++        Path searchRoot;
++        try {
++            searchRoot = resolveSearchRoot(context, args, paths);
++        } catch (IllegalArgumentException invalidPath) {
++            return invalidSearchPath(invalidPath);
++        }
+ 
+         String include = ToolSupport.stringArg(args, "include", "");
+         int max = Math.min(200, Math.max(1, ToolSupport.intArg(args, "max_results", 50)));
+-        Pattern pattern = Pattern.compile(patternText, Pattern.CASE_INSENSITIVE);
+-        Path root = ToolSupport.workspacePaths(context).workspaceRoot();
+         ArrayList<String> hits = new ArrayList<>();
+         long[] bytesRead = {0L};
+         boolean[] byteBudgetReached = {false};
+-        WorkspaceScanner.ScanResult scan = workspaceScanner.scan(ToolSupport.workspacePaths(context),
+-                WorkspaceScanner.INTERACTIVE_SEARCH_BUDGET, context.getCancellationToken(), (file, attributes) -> {
+-                    if (hits.size() >= max || byteBudgetReached[0] || attributes.size() > MAX_FILE_BYTES
+-                            || (!include.isBlank() && !root.relativize(file).toString().replace('\\', '/').contains(include))
+-                            || isLikelyBinary(file)) {
+-                        return hits.size() < max && !byteBudgetReached[0];
+-                    }
+-                    if (bytesRead[0] + attributes.size() > MAX_TOTAL_BYTES) {
+-                        byteBudgetReached[0] = true;
+-                        return false;
+-                    }
+-                    bytesRead[0] += attributes.size();
+-                    String relative = root.relativize(file).toString().replace('\\', '/');
+-                    try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+-                        String line;
+-                        int lineNumber = 0;
+-                        while ((line = reader.readLine()) != null && hits.size() < max) {
+-                            lineNumber++;
+-                            if (pattern.matcher(line).find()) {
+-                                hits.add(relative + ":" + lineNumber + ": " + ToolSupport.limit(line.trim(), 240));
+-                            }
+-                        }
+-                    } catch (Exception ignored) {
+-                        // Unreadable or non-UTF-8 files are not eligible grep candidates.
+-                    }
+-                    return hits.size() < max;
+-                });
++        Path workspaceRoot = paths.workspaceRoot();
++
++        WorkspaceScanner.ScanResult scan = null;
++        if (Files.isDirectory(searchRoot, LinkOption.NOFOLLOW_LINKS)) {
++            scan = workspaceScanner.scan(paths, searchRoot, WorkspaceScanner.INTERACTIVE_SEARCH_BUDGET,
++                    context.getCancellationToken(), (file, attributes) -> collectMatches(file, attributes, searchRoot,
++                            workspaceRoot, pattern, include, max, hits, bytesRead, byteBudgetReached));
++        } else if (Files.isRegularFile(searchRoot, LinkOption.NOFOLLOW_LINKS)) {
++            BasicFileAttributes attributes = Files.readAttributes(searchRoot, BasicFileAttributes.class,
++                    LinkOption.NOFOLLOW_LINKS);
++            collectMatches(searchRoot, attributes, searchRoot.getParent(), workspaceRoot, pattern, include, max,
++                    hits, bytesRead, byteBudgetReached);
++        } else {
++            return ToolResult.failed("code=SEARCH_PATH_UNSUPPORTED\n"
++                    + "next_action=use a regular workspace file or directory");
++        }
+ 
+         String content = hits.isEmpty() ? "No matches." : String.join("\n", hits);
+         if (byteBudgetReached[0]) {
+             content += "\n\nScan truncated: read byte budget reached (read_bytes=" + bytesRead[0] + ").";
+-        } else if (scan.truncated()) {
+-            content += "\n\nScan truncated: " + scan.stopReason().name().toLowerCase(java.util.Locale.ROOT)
++        } else if (scan != null && scan.truncated()) {
++            content += "\n\nScan truncated: " + scan.stopReason().name().toLowerCase(Locale.ROOT)
+                     + " (visited=" + scan.visitedEntries() + ", candidates=" + scan.candidateFiles()
+-                    + ", skipped_directories=" + scan.skippedDirectories() + ", elapsed_ms=" + scan.elapsedMillis() + ").";
++                    + ", skipped_directories=" + scan.skippedDirectories() + ", elapsed_ms=" + scan.elapsedMillis()
++                    + ").";
+         }
+         return ToolResult.ok(content);
+     }
+ 
++    private Path resolveSearchRoot(AgentContext context, JsonObject args, SecureWorkspacePath paths) {
++        String requestedPath = ToolSupport.stringArg(args, "path", "").trim();
++        if (requestedPath.isBlank()) {
++            return paths.workspaceRoot();
++        }
++        return ToolSupport.resolve(context, requestedPath);
++    }
++
++    private ToolResult invalidSearchPath(IllegalArgumentException exception) {
++        String message = exception.getMessage() == null ? "invalid search path" : exception.getMessage();
++        if ("path does not exist".equals(message)) {
++            return ToolResult.failed("code=SEARCH_PATH_NOT_FOUND\n"
++                    + "next_action=use list_files or glob to locate a workspace path before retrying");
++        }
++        return ToolResult.failed("code=SEARCH_PATH_INVALID\nmessage=" + ToolSupport.limit(message, 240));
++    }
++
++    private boolean collectMatches(Path file, BasicFileAttributes attributes, Path scopeRoot, Path workspaceRoot,
++                                   Pattern pattern, String include, int max, ArrayList<String> hits,
++                                   long[] bytesRead, boolean[] byteBudgetReached) {
++        if (hits.size() >= max || byteBudgetReached[0] || attributes.size() > MAX_FILE_BYTES || isLikelyBinary(file)) {
++            return hits.size() < max && !byteBudgetReached[0];
++        }
++        String scopedRelative = relative(scopeRoot, file);
++        if (!include.isBlank() && !scopedRelative.contains(include)) {
++            return true;
++        }
++        if (bytesRead[0] + attributes.size() > MAX_TOTAL_BYTES) {
++            byteBudgetReached[0] = true;
++            return false;
++        }
++        bytesRead[0] += attributes.size();
++        String relative = relative(workspaceRoot, file);
++        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
++            String line;
++            int lineNumber = 0;
++            while ((line = reader.readLine()) != null && hits.size() < max) {
++                lineNumber++;
++                if (pattern.matcher(line).find()) {
++                    hits.add(relative + ":" + lineNumber + ": " + ToolSupport.limit(line.trim(), 240));
++                }
++            }
++        } catch (Exception ignored) {
++            // 不可读或非 UTF-8 文件不是 grep 候选，继续扫描其他安全文件。
++        }
++        return hits.size() < max;
++    }
++
++    private String relative(Path root, Path file) {
++        if (root == null || file == null) {
++            return "";
++        }
++        Path normalizedRoot = root.toAbsolutePath().normalize();
++        Path normalizedFile = file.toAbsolutePath().normalize();
++        if (normalizedRoot.equals(normalizedFile)) {
++            Path name = normalizedFile.getFileName();
++            return name == null ? "" : name.toString().replace('\\', '/');
++        }
++        return normalizedRoot.relativize(normalizedFile).toString().replace('\\', '/');
++    }
++
+     private boolean isLikelyBinary(Path file) {
+         try (var input = Files.newInputStream(file)) {
+             byte[] bytes = input.readNBytes(8192);
+             for (byte value : bytes) {
+                 if (value == 0) return true;
+             }
+             return false;
+         } catch (Exception ignored) {
+             return true;
+         }
+     }
+-}
++}
+\ No newline at end of file
+diff --git a/backend/src/main/java/com/labex/labexagent/tool/impl/ReadFileTool.java b/backend/src/main/java/com/labex/labexagent/tool/impl/ReadFileTool.java
+index 428bab4..67de1cc 100644
+--- a/backend/src/main/java/com/labex/labexagent/tool/impl/ReadFileTool.java
++++ b/backend/src/main/java/com/labex/labexagent/tool/impl/ReadFileTool.java
+@@ -1,53 +1,139 @@
+ package com.labex.labexagent.tool.impl;
+ 
+ import com.google.gson.JsonObject;
+ import com.labex.labexagent.runtime.AgentContext;
+-import com.labex.labexagent.tool.FileContentFingerprint;
++import com.labex.labexagent.service.WorkspaceScanner;
+ import com.labex.labexagent.tool.AgentTool;
++import com.labex.labexagent.tool.FileContentFingerprint;
+ import com.labex.labexagent.tool.ToolDefinition;
+ import com.labex.labexagent.tool.ToolResult;
+ import com.labex.labexagent.tool.ToolSupport;
++import com.labex.labexagent.workspace.SecureWorkspacePath;
+ import com.labex.service.StudentProjectService;
+-import java.nio.charset.StandardCharsets;
+-import java.security.MessageDigest;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.List;
++import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ 
+ @Component
+-public class ReadFileTool
+-implements AgentTool {
++public class ReadFileTool implements AgentTool {
++    private static final int MAX_MISSING_PATH_CANDIDATES = 3;
+     private final StudentProjectService studentProjectService;
++    private final WorkspaceScanner workspaceScanner;
+ 
++    /** 兼容已有聚焦测试和旧调用方；生产 Bean 使用注入的共享扫描器。 */
+     public ReadFileTool(StudentProjectService studentProjectService) {
++        this(studentProjectService, new WorkspaceScanner());
++    }
++
++    @Autowired
++    public ReadFileTool(StudentProjectService studentProjectService, WorkspaceScanner workspaceScanner) {
+         this.studentProjectService = studentProjectService;
++        this.workspaceScanner = workspaceScanner;
+     }
+ 
+     public ToolDefinition definition() {
+-        return ToolDefinition.builder().name("read_file").description("\u8bfb\u53d6\u6307\u5b9a\u8def\u5f84\u7684\u6587\u4ef6\u5185\u5bb9\uff0c\u652f\u6301\u8bbe\u7f6e\u884c\u53f7\u8303\u56f4").stringProperty("file_path", "\u6587\u4ef6\u7684\u7edd\u5bf9\u6216\u76f8\u5bf9\u8def\u5f84", true).intProperty("offset", "\u4ece\u7b2c\u51e0\u884c\u5f00\u59cb\u8bfb\u53d6\uff08\u53ef\u9009\uff09", false).intProperty("limit", "\u8bfb\u53d6\u591a\u5c11\u884c\uff08\u9ed8\u8ba42000\u884c\uff09", false).build();
++        return ToolDefinition.builder().name("read_file")
++                .description("Read a file at the specified path, optionally within a line range. Use glob or list_files first when the path is uncertain.")
++                .stringProperty("file_path", "Workspace-relative file path", true)
++                .intProperty("offset", "Starting line number (optional)", false)
++                .intProperty("limit", "Number of lines to read; default 2000", false)
++                .build();
+     }
+ 
+     public ToolResult execute(AgentContext context, JsonObject args) throws Exception {
+-        String path = ToolSupport.normalizeRelativePath((String)ToolSupport.stringArgMulti((JsonObject)args, "", (String[])new String[]{"file_path", "path", "filePath"}));
++        String path = ToolSupport.normalizeRelativePath(
++                ToolSupport.stringArgMulti(args, "", "file_path", "path", "filePath"));
+         if (path.isEmpty()) {
+-            return ToolResult.failed("file_path is required");
++            return ToolResult.failed("code=FILE_PATH_REQUIRED\nfile_path is required");
++        }
++        final String content;
++        try {
++            content = studentProjectService.readProjectFile(context.getStudentId(), context.getProject().getProjectId(), path);
++        } catch (IllegalArgumentException missingPath) {
++            if (!"path does not exist".equals(missingPath.getMessage())) {
++                throw missingPath;
++            }
++            return missingFile(path, context);
+         }
+-        String content = this.studentProjectService.readProjectFile(context.getStudentId(), context.getProject().getProjectId(), path);
+         int offset = Math.max(0, args.has("offset") ? args.get("offset").getAsInt() : 0);
+         int limit = Math.max(1, args.has("limit") ? args.get("limit").getAsInt() : 2000);
+         String[] lines = content.split("\n", -1);
+         offset = Math.min(offset, lines.length);
+         int end = Math.min(offset + limit, lines.length);
+         StringBuilder result = new StringBuilder();
+         result.append("[read_file path=").append(path)
+                 .append(" lines=").append(lines.length == 0 ? 0 : offset + 1)
+                 .append("-").append(end)
+                 .append("/").append(lines.length)
+                 .append(" sha256=").append(FileContentFingerprint.sha256(content))
+                 .append("]\n");
+-        for (int i = offset; i < end; ++i) {
+-            result.append(i + 1).append(": ").append(lines[i]).append("\n");
++        for (int index = offset; index < end; ++index) {
++            result.append(index + 1).append(": ").append(lines[index]).append("\n");
+         }
+-        return ToolResult.ok((String)result.toString());
++        return ToolResult.ok(result.toString());
+     }
+ 
++    private ToolResult missingFile(String requestedPath, AgentContext context) {
++        List<String> candidates = candidates(requestedPath, context);
++        StringBuilder result = new StringBuilder("code=FILE_NOT_FOUND\nrequested_path=")
++                .append(requestedPath).append("\n");
++        if (!candidates.isEmpty()) {
++            result.append("candidates=\n");
++            candidates.forEach(candidate -> result.append("- ").append(candidate).append("\n"));
++            result.append("next_action=use a candidate path or call glob before retrying");
++        } else {
++            result.append("next_action=call glob or list_files to locate the file before retrying");
++        }
++        return ToolResult.failed(result.toString());
++    }
+ 
+-}
++    private List<String> candidates(String requestedPath, AgentContext context) {
++        String targetName;
++        try {
++            Path fileName = Path.of(requestedPath).getFileName();
++            targetName = fileName == null ? "" : fileName.toString();
++        } catch (RuntimeException invalidPath) {
++            return List.of();
++        }
++        if (targetName.isBlank()) {
++            return List.of();
++        }
++        String expected = targetName.toLowerCase(java.util.Locale.ROOT);
++        SecureWorkspacePath paths;
++        try {
++            paths = ToolSupport.workspacePaths(context);
++        } catch (IllegalArgumentException unavailableWorkspace) {
++            return List.of();
++        }
++        List<String> exact = new ArrayList<>();
++        List<String> related = new ArrayList<>();
++        try {
++            workspaceScanner.scan(paths, WorkspaceScanner.INTERACTIVE_SEARCH_BUDGET, context.getCancellationToken(),
++                    (file, attributes) -> {
++                        String relative = paths.workspaceRoot().relativize(file).toString().replace('\\', '/');
++                        String name = file.getFileName() == null ? "" : file.getFileName().toString();
++                        String normalizedName = name.toLowerCase(java.util.Locale.ROOT);
++                        if (normalizedName.equals(expected)) {
++                            exact.add(relative);
++                        } else if (normalizedName.contains(expected) || expected.contains(normalizedName)) {
++                            related.add(relative);
++                        }
++                        return exact.size() + related.size() < MAX_MISSING_PATH_CANDIDATES * 4;
++                    });
++        } catch (Exception ignored) {
++            return List.of();
++        }
++        exact.sort(Comparator.naturalOrder());
++        related.sort(Comparator.naturalOrder());
++        List<String> results = new ArrayList<>(MAX_MISSING_PATH_CANDIDATES);
++        exact.stream().limit(MAX_MISSING_PATH_CANDIDATES).forEach(results::add);
++        if (results.size() < MAX_MISSING_PATH_CANDIDATES) {
++            related.stream().filter(candidate -> !results.contains(candidate))
++                    .limit(MAX_MISSING_PATH_CANDIDATES - results.size()).forEach(results::add);
++        }
++        return List.copyOf(results);
++    }
++}
+\ No newline at end of file
+diff --git a/backend/src/main/resources/application.yml b/backend/src/main/resources/application.yml
+index 7cc79b3..3389f1a 100644
+--- a/backend/src/main/resources/application.yml
++++ b/backend/src/main/resources/application.yml
+@@ -1,162 +1,169 @@
+ server:
+   port: 8080
+   servlet:
+     context-path: /api
+ 
+ spring:
+   profiles:
+     default: local
+   config:
+     import:
+       - optional:file:${user.dir}/../.env[.properties]
+       - optional:file:${user.dir}/.env[.properties]
+   application:
+     name: labex-agent-backend
+   # 项目使用 JWT 鉴权，不需要 Spring Security 默认的内存用户（避免每次启动生成随机密码的噪音）
+   autoconfigure:
+     exclude:
+       - org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+   datasource:
+     driver-class-name: com.mysql.cj.jdbc.Driver
+     url: ${LABEX_AGENT_DB_URL:jdbc:mysql://localhost:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+     username: ${LABEX_AGENT_DB_USERNAME:root}
+     password: ${LABEX_AGENT_DB_PASSWORD:}
+   sql:
+     init:
+       mode: always
+       schema-locations: classpath:sql/schema.sql
+   servlet:
+     multipart:
+       enabled: true
+       max-file-size: 100MB
+       max-request-size: 100MB
+   task:
+     scheduling:
+       pool:
+         size: ${LABEX_AGENT_SCHEDULER_POOL_SIZE:4}
+       thread-name-prefix: labex-agent-scheduler-
+ 
+ mybatis-plus:
+   type-aliases-package: com.labex.entity
+   configuration:
+     map-underscore-to-camel-case: true
+   global-config:
+     db-config:
+       id-type: auto
+ 
+ jwt:
+   secret: ${LABEX_AGENT_JWT_SECRET:labex-agent-local-dev-secret-key-change-me-please-64-bytes-minimum}
+   expiration: ${LABEX_AGENT_JWT_EXPIRATION:86400000}
+   prefix: "Bearer "
+ 
+ labex-agent:
+   project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/LabexAgent/workspaces}
+   interaction-timeout-poll-interval-ms: ${LABEX_AGENT_INTERACTION_TIMEOUT_POLL_INTERVAL_MS:30000}
+   retry-poll-interval-ms: ${LABEX_AGENT_RETRY_POLL_INTERVAL_MS:1000}
+   legacy-migration:
+     target-removal-version: ${LABEX_AGENT_LEGACY_REMOVAL_VERSION:1.1.0}
+     observation-window-days: ${LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS:14}
+   history:
+     max-page-events-budget: ${LABEX_AGENT_HISTORY_MAX_PAGE_EVENTS_BUDGET:1000}
+     max-part-output-chars: ${LABEX_AGENT_HISTORY_MAX_PART_OUTPUT_CHARS:4000}
++  tool-discovery:
++    read-file-candidate-limit: ${LABEX_AGENT_READ_FILE_CANDIDATE_LIMIT:3}
+   tool-output:
+     read-max-chars: ${LABEX_AGENT_TOOL_OUTPUT_READ_MAX_CHARS:4000}
++    model-max-lines: ${LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_LINES:2000}
++    model-max-bytes: ${LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_BYTES:51200}
+   loop:
+     hard-max-iterations: ${LABEX_AGENT_HARD_MAX_ITERATIONS:0}
+     soft-max-iterations: ${LABEX_AGENT_SOFT_MAX_ITERATIONS:0}
+     repeated-tool-call-threshold: ${LABEX_AGENT_REPEATED_TOOL_CALL_THRESHOLD:3}
+     max-cycle-length: ${LABEX_AGENT_MAX_TOOL_CYCLE_LENGTH:3}
+     max-automatic-strategy-switches: ${LABEX_AGENT_MAX_AUTOMATIC_STRATEGY_SWITCHES:1}
+     max-non-progress-iterations: ${LABEX_AGENT_MAX_NON_PROGRESS_ITERATIONS:8}
++    finalization-recovery-limit: ${LABEX_AGENT_FINALIZATION_RECOVERY_LIMIT:1}
+   recovery:
+     auto-repair-enabled: ${LABEX_AGENT_AUTO_REPAIR_ENABLED:true}
+     max-automatic-repairs: ${LABEX_AGENT_MAX_AUTOMATIC_REPAIRS:3}
+     max-repeated-command-failures: ${LABEX_AGENT_MAX_REPEATED_COMMAND_FAILURES:2}
+     max-environment-failures: ${LABEX_AGENT_MAX_ENVIRONMENT_FAILURES:1}
+     verification-strategy: ${LABEX_AGENT_VERIFICATION_STRATEGY:auto}
+     fallback-verification-strategy: ${LABEX_AGENT_FALLBACK_VERIFICATION_STRATEGY:manual}
+   instance-id: ${LABEX_AGENT_INSTANCE_ID:}
+   process-host-id: ${LABEX_AGENT_PROCESS_HOST_ID:}
+   acceptance:
+     auto-approve-verification: ${LABEX_AGENT_ACCEPTANCE_AUTO_APPROVE_VERIFICATION:true}
+   execution:
+     permission-profile: ${LABEX_AGENT_PERMISSION_PROFILE:opencode}
+     network-default-enabled: ${LABEX_AGENT_NETWORK_DEFAULT_ENABLED:true}
+     allow-full-access: ${LABEX_AGENT_ALLOW_FULL_ACCESS:false}
+   preview:
+     enabled: ${LABEX_AGENT_PREVIEW_ENABLED:true}
+     startup-timeout-ms: ${LABEX_AGENT_PREVIEW_STARTUP_TIMEOUT_MS:30000}
+     poll-interval-ms: ${LABEX_AGENT_PREVIEW_POLL_INTERVAL_MS:250}
+     connect-timeout-ms: ${LABEX_AGENT_PREVIEW_CONNECT_TIMEOUT_MS:1000}
+     output-max-chars: ${LABEX_AGENT_PREVIEW_OUTPUT_MAX_CHARS:60000}
++    failure-hint-max-chars: ${LABEX_AGENT_PREVIEW_FAILURE_HINT_MAX_CHARS:512}
++    output-drain-timeout-ms: ${LABEX_AGENT_PREVIEW_OUTPUT_DRAIN_TIMEOUT_MS:1000}
+     min-port: ${LABEX_AGENT_PREVIEW_MIN_PORT:1024}
+     max-port: ${LABEX_AGENT_PREVIEW_MAX_PORT:65535}
+     readiness-host: ${LABEX_AGENT_PREVIEW_READINESS_HOST:127.0.0.1}
+     public-host: ${LABEX_AGENT_PREVIEW_PUBLIC_HOST:localhost}
+   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
+   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
+   lease-reconciliation-interval-ms: ${LABEX_AGENT_LEASE_RECONCILIATION_INTERVAL_MS:30000}
+   lease-reconciliation-batch-size: ${LABEX_AGENT_LEASE_RECONCILIATION_BATCH_SIZE:50}
+   worker:
+     network-default-enabled: ${LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED:true}
+     wsl:
+       distribution: ${LABEX_AGENT_WSL_DISTRIBUTION:Debian}
+     docker:
+       image: ${LABEX_AGENT_WORKER_DOCKER_IMAGE:labex-agent-sandbox:smoke}
+       max-concurrent-containers: ${LABEX_AGENT_DOCKER_MAX_CONCURRENT_CONTAINERS:8}
+       wsl-workspace-mapping: ${LABEX_AGENT_DOCKER_WSL_WORKSPACE_MAPPING:false}
+     resources:
+       cpu-millis: ${LABEX_AGENT_WORKER_CPU_MILLIS:1000}
+       memory-megabytes: ${LABEX_AGENT_WORKER_MEMORY_MB:1024}
+       max-pids: ${LABEX_AGENT_WORKER_MAX_PIDS:256}
+   cors:
+     allowed-origins: ${LABEX_AGENT_CORS_ALLOWED_ORIGINS:}
+   secret-store:
+     master-key: ${LABEX_AGENT_SECRET_STORE_MASTER_KEY:}
+   websocket:
+     allowed-origins: ${LABEX_AGENT_WEBSOCKET_ALLOWED_ORIGINS:http://localhost:3000,http://127.0.0.1:3000}
+   lsp:
+     enabled: ${LABEX_LSP_ENABLED:true}
+     start-timeout-seconds: ${LABEX_LSP_START_TIMEOUT_SECONDS:90}
+     request-timeout-seconds: ${LABEX_LSP_REQUEST_TIMEOUT_SECONDS:6}
+     diagnostic-timeout-millis: ${LABEX_LSP_DIAGNOSTIC_TIMEOUT_MILLIS:1500}
+     failure-cooldown-seconds: ${LABEX_LSP_FAILURE_COOLDOWN_SECONDS:300}
+     commands:
+       java: ${LABEX_LSP_JAVA_CMD:jdtls --jvm-arg=-Xms256m}
+       typescript: ${LABEX_LSP_TS_CMD:typescript-language-server --stdio}
+       vue: ${LABEX_LSP_VUE_CMD:vue-language-server --stdio}
+       python: ${LABEX_LSP_PY_CMD:pyright-langserver --stdio}
+   attachment:
+     storage-path: ${LABEX_AGENT_ATTACHMENT_PATH:${LABEX_AGENT_UPLOAD_PATH:D:/LabexAgent/uploads}/agent-input-attachments}
+     max-files-per-message: ${LABEX_AGENT_ATTACHMENT_MAX_FILES_PER_MESSAGE:4}
+     max-file-size-bytes: ${LABEX_AGENT_ATTACHMENT_MAX_FILE_SIZE_BYTES:20971520}
+     max-total-size-bytes: ${LABEX_AGENT_ATTACHMENT_MAX_TOTAL_SIZE_BYTES:41943040}
+     allowed-mime-types: ${LABEX_AGENT_ATTACHMENT_ALLOWED_MIME_TYPES:image/jpeg,image/png,image/gif,image/webp}
+     pending-ttl-minutes: ${LABEX_AGENT_ATTACHMENT_PENDING_TTL_MINUTES:15}
+     terminal-ttl-hours: ${LABEX_AGENT_ATTACHMENT_TERMINAL_TTL_HOURS:24}
+     cleanup-interval-ms: ${LABEX_AGENT_ATTACHMENT_CLEANUP_INTERVAL_MS:900000}
+     cleanup-batch-size: ${LABEX_AGENT_ATTACHMENT_CLEANUP_BATCH_SIZE:100}
+     estimated-image-tokens: ${LABEX_AGENT_ATTACHMENT_ESTIMATED_IMAGE_TOKENS:8192}
+   web-search:
+     provider: ${LABEX_AGENT_WEB_SEARCH_PROVIDER:auto}
+     exa-enabled: ${LABEX_AGENT_WEB_SEARCH_EXA_ENABLED:true}
+     parallel-enabled: ${LABEX_AGENT_WEB_SEARCH_PARALLEL_ENABLED:false}
+     public-fallback-enabled: ${LABEX_AGENT_WEB_SEARCH_PUBLIC_FALLBACK_ENABLED:true}
+     exa-api-key: ${EXA_API_KEY:}
+     parallel-api-key: ${PARALLEL_API_KEY:}
+     request-timeout-seconds: ${LABEX_AGENT_WEB_SEARCH_TIMEOUT_SECONDS:25}
+     max-response-bytes: ${LABEX_AGENT_WEB_SEARCH_MAX_RESPONSE_BYTES:1048576}
+ 
+ rag:
+   mini-max-api-key: ${MINIMAX_API_KEY:}
+   mini-max-base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
+   mini-max-api-host: ${MINIMAX_API_HOST:https://api.minimaxi.com}
+   mini-max-model: ${MINIMAX_MODEL:MiniMax-M2.7-highspeed}
+   image-understanding-enabled: ${LABEX_AGENT_IMAGE_UNDERSTANDING:true}
+   tavily-api-key: ${TAVILY_API_KEY:}
+   upload-path: ${LABEX_AGENT_UPLOAD_PATH:D:/LabexAgent/uploads}
+ 
+ logging:
+   level:
+     com.labex: info
+     org.springframework.security: warn

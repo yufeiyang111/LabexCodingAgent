@@ -18,6 +18,7 @@ import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
+import com.labex.labexagent.workspace.WorkspaceOperationIdentity;
 import com.labex.labexagent.worker.SandboxWorker;
 import com.labex.labexagent.worker.WorkerRunSpec;
 import java.nio.file.Files;
@@ -115,6 +116,7 @@ public class RunCommandTool implements AgentTool {
         ToolResult result = ToolResult.fromObservedProcessExecution(
                 shellExecutor.execute(run, prepared, context.getCancellationToken()),
                 descriptor.shellName(), relativeWorkdir(context, workingPath), artifact.relativePath());
+        result.withWorkspaceIdentity(WorkspaceOperationIdentity.forContext(context, workingPath, List.of()));
         recordVerificationIfRelevant(context, command, result);
         return result;
     }
@@ -144,6 +146,7 @@ public class RunCommandTool implements AgentTool {
                             argv, workingPath, Duration.ofMillis(timeoutMs), MAX_OUTPUT_CHARS,
                             artifact.absolutePath()), context.getCancellationToken()),
                     "direct", relativeWorkdir(context, workingPath), artifact.relativePath());
+            result.withWorkspaceIdentity(WorkspaceOperationIdentity.forContext(context, workingPath, List.of()));
             recordVerificationIfRelevant(context, command, result);
             return result;
         } catch (IllegalArgumentException exception) {

@@ -55,6 +55,41 @@ class AgentToolTurnExecutorTest {
     }
 
     @Test
+    void resolvesPerRunScopedToolWithoutRegisteringItGlobally() {
+        AtomicInteger calls = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry(List.of(tool("read_file", calls)));
+        AgentContext context = context();
+        context.setSelectedToolNames(List.of("mcp_docs_search"));
+        AgentTool scoped = requiredStringTool("mcp_docs_search", "query", calls);
+        context.setScopedToolBindings(java.util.Map.of("mcp_docs_search", scoped));
+        AgentToolTurnExecutor executor = new AgentToolTurnExecutor(registry);
+
+        var resolution = executor.resolve(context, "mcp_docs_search", "zh");
+        var admission = executor.resolveNative(context,
+                new AgentModelTurnExecutor.NativeToolCall("mcp_docs_search", "{\"query\":\"agent runtime\"}",
+                        "mcp-call-1", 0), "zh");
+
+        assertTrue(resolution.allowed());
+        assertTrue(admission.allowed());
+        assertEquals(scoped, resolution.tool());
+    }
+
+    @Test
+    void scopedToolDoesNotLeakIntoAnotherRunContext() {
+        AtomicInteger calls = new AtomicInteger();
+        ToolRegistry registry = new ToolRegistry(List.of(tool("read_file", calls)));
+        AgentContext owner = context();
+        owner.setSelectedToolNames(List.of("mcp_docs_search"));
+        owner.setScopedToolBindings(java.util.Map.of("mcp_docs_search", requiredStringTool("mcp_docs_search", "query", calls)));
+        AgentContext other = context();
+        other.setSelectedToolNames(List.of("mcp_docs_search"));
+        AgentToolTurnExecutor executor = new AgentToolTurnExecutor(registry);
+
+        assertTrue(executor.resolve(owner, "mcp_docs_search", "zh").allowed());
+        assertFalse(executor.resolve(other, "mcp_docs_search", "zh").allowed());
+    }
+
+    @Test
     void executesResolvedSelectedToolExactlyOnce() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         ToolRegistry registry = new ToolRegistry(List.of(tool("read_file", calls)));

@@ -19,12 +19,19 @@ import com.labex.labexagent.run.AgentVerificationRecorder;
 import com.labex.labexagent.run.CommandFailureGuard;
 import com.labex.labexagent.run.EnvironmentBlockerClassifier;
 import com.labex.labexagent.tool.ToolResult;
+import com.labex.labexagent.workspace.ProjectWorkspace;
+import com.labex.labexagent.workspace.SecureWorkspacePath;
+import com.labex.labexagent.workspace.WorkspaceOperationIdentity;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.service.StudentProjectService;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -710,12 +717,41 @@ public class CommandApprovalOrchestrator {
     private void closeApprovedToolCall(CommandApproval approval, boolean succeeded, ProcessExecutionResult result,
                                        WorkspaceChangeEvidence workspaceEvidence) {
         if (approval == null) return;
-        String output = result == null ? "" : CommandRedactor.redact(result.output());
+        WorkspaceChangeEvidence evidence = workspaceEvidence == null
+                ? WorkspaceChangeEvidence.unavailable() : workspaceEvidence;
+        WorkspaceOperationIdentity identity = workspaceOperationIdentity(approval, evidence);
+        String workdir = identity == null ? "." : identity.workingDirectory();
+        ToolResult toolResult = ToolResult.fromProcessExecution(redactedProcessResult(result),
+                safeShellName(approval), workdir, null);
         String detail = "status=" + (succeeded ? "completed" : "failed")
-                + "\nexit=" + (result == null || result.exitCode() == null ? "none" : result.exitCode())
-                + (output == null || output.isBlank() ? "" : "\n" + output)
-                + (workspaceEvidence == null ? "" : workspaceEvidence.toolResultDetail());
-        resolveApprovedToolCall(approval, detail);
+                + "\n" + toolResult.getContent()
+                + evidence.toolResultDetail();
+        toolResult.setContent(detail);
+        if (identity != null) {
+            toolResult.withWorkspaceIdentity(identity);
+        }
+        if (evidence.hasChanges()) {
+            toolResult.withWorkspaceChangeEvidence(identity, evidence.changeIds());
+        }
+        if (evidence.hasWorkspaceVerification()) {
+            toolResult.withWorkspaceVerification(evidence.workspaceVerification());
+        }
+        resolveApprovedToolCall(approval, toolResult);
+    }
+
+    private String safeShellName(CommandApproval approval) {
+        if (approval == null || approval.getShell() == null || approval.getShell().isBlank()) {
+            return "direct";
+        }
+        String shell = approval.getShell().trim().toLowerCase(java.util.Locale.ROOT);
+        return shell.matches("[a-z0-9._-]{1,32}") ? shell : "direct";
+    }
+
+    /** 控制面复用 shell 输出时继续沿用审批路径既有的敏感信息脱敏边界。 */
+    private ProcessExecutionResult redactedProcessResult(ProcessExecutionResult result) {
+        if (result == null) return null;
+        return new ProcessExecutionResult(result.status(), result.exitCode(), result.durationMs(),
+                CommandRedactor.redact(result.output()), result.truncated(), result.outputPath(), result.outputChars());
     }
 
     private GitSnapshotService.Snapshot captureWorkspaceSnapshot(StudentProject project, CommandApproval approval,
@@ -748,11 +784,55 @@ public class CommandApprovalOrchestrator {
             List<PendingChange> changes = diffService.recordSnapshotDiffWithoutTaskProjection(
                     approval.getStudentId(), project, approval.getConversationId(), approval.getTaskId(),
                     "command_approval", beforeSnapshot, afterSnapshot);
-            return WorkspaceChangeEvidence.from(changes);
+            return WorkspaceChangeEvidence.from(changes, verifyWorkspacePostconditions(project, changes));
         } catch (RuntimeException exception) {
             log.warn("COMMAND_APPROVAL_SNAPSHOT_EVIDENCE_FAILED taskId={} approvalId={} errorType={}",
                     approval.getTaskId(), approval.getApprovalId(), exception.getClass().getSimpleName());
             return WorkspaceChangeEvidence.unavailable();
+        }
+    }
+
+    /**
+     * Snapshot 证明“命令期间观察到变更”，这里再对每个安全相对 target 做一次真实文件系统后置检查。
+     * 它不试图猜测任意 shell 命令的意图，只验证已落入 change-set 的实际 target，避免把 rm -f 的
+     * 空成功或快照后的竞争误投影成已验证删除。
+     */
+    private Map<String, Object> verifyWorkspacePostconditions(StudentProject project, List<PendingChange> changes) {
+        List<PendingChange> safeChanges = changes == null ? List.of() : changes.stream()
+                .filter(Objects::nonNull)
+                .filter(change -> change.getRelativePath() != null && !change.getRelativePath().isBlank())
+                .toList();
+        if (safeChanges.isEmpty()) {
+            return Map.of("state", "no_change", "targets", List.of());
+        }
+        try {
+            SecureWorkspacePath workspace = ProjectWorkspace.paths(project);
+            List<Map<String, Object>> targets = new ArrayList<>();
+            boolean verified = true;
+            for (PendingChange change : safeChanges) {
+                String expectedState = "delete".equalsIgnoreCase(change.getChangeType())
+                        ? "absent" : "regular_file";
+                Path target = workspace.resolveForCreate(change.getRelativePath());
+                String observedState;
+                if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                    observedState = "absent";
+                } else if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                    observedState = "regular_file";
+                } else {
+                    observedState = "not_regular_file";
+                }
+                boolean targetVerified = expectedState.equals(observedState);
+                verified = verified && targetVerified;
+                Map<String, Object> targetEvidence = new LinkedHashMap<>();
+                targetEvidence.put("path", change.getRelativePath().replace('\\', '/'));
+                targetEvidence.put("expectedState", expectedState);
+                targetEvidence.put("observedState", observedState);
+                targets.add(Map.copyOf(targetEvidence));
+            }
+            return Map.of("state", verified ? "verified" : "mismatch", "targets", List.copyOf(targets));
+        } catch (RuntimeException exception) {
+            // 工作区不可检查时不虚构成功，只持久化可解释的安全状态。
+            return Map.of("state", "unavailable", "targets", List.of());
         }
     }
 
@@ -763,10 +843,19 @@ public class CommandApprovalOrchestrator {
     }
 
     private void resolveApprovedToolCall(CommandApproval approval, String detail) {
+        if (approval == null) return;
+        String safeDetail = detail == null ? "" : detail;
+        transcriptService.appendDeferredToolResult(approval.getTaskId(), approval.getToolCallId(), "", safeDetail);
+        toolCallJournalService.completedExisting(approval.getTaskId(), approval.getToolCallId(), safeDetail);
+    }
+
+    private void resolveApprovedToolCall(CommandApproval approval, ToolResult result) {
+        if (approval == null) return;
+        String detail = result == null || result.getContent() == null ? "" : result.getContent();
         transcriptService.appendDeferredToolResult(approval.getTaskId(), approval.getToolCallId(), "", detail);
-        // The protocol terminal state is completed even when the command outcome is failed.
-        // The redacted result content retains the command outcome for the model and UI.
-        toolCallJournalService.completedExisting(approval.getTaskId(), approval.getToolCallId(), detail);
+        // 协议层的 tool call 已经结束；真实命令成功/失败仍由 ToolResult 内容与 metadata 供模型和 UI 判断。
+        toolCallJournalService.completedExisting(approval.getTaskId(), approval.getToolCallId(),
+                result == null ? ToolResult.ok(detail) : result);
     }
 
     /**
@@ -839,35 +928,95 @@ public class CommandApprovalOrchestrator {
         additional.put("evidenceStatus", evidence.status());
         additional.put("changedFileCount", evidence.changedFileCount());
         additional.put("changedPaths", evidence.changedPaths());
+        WorkspaceOperationIdentity identity = workspaceOperationIdentity(approval, evidence);
+        additional.put("workspaceIdentityStatus", identity == null ? "unavailable" : "captured");
+        if (identity != null) {
+            additional.put("workspaceIdentity", identity.toPayload());
+        }
+        if (evidence.hasChanges()) {
+            additional.put("workspaceMutation", Map.of(
+                    "state", "applied",
+                    "changeIds", evidence.changeIds()));
+        }
+        if (evidence.hasWorkspaceVerification()) {
+            additional.put("workspaceVerification", evidence.workspaceVerification());
+        }
         additional.put("resumeAgentLoop", resumeAgentLoop);
         return publicPayload(approval, additional);
     }
 
-    private record WorkspaceChangeEvidence(String status, int changedFileCount, List<String> changedPaths) {
+    /** 证据投影失败不得掩盖真实命令结果；同时要明确告诉 reducer target identity 不可用。 */
+    private WorkspaceOperationIdentity workspaceOperationIdentity(CommandApproval approval,
+                                                                   WorkspaceChangeEvidence evidence) {
+        if (approval == null) {
+            return null;
+        }
+        try {
+            StudentProject project = projectService.getOwnedProject(approval.getStudentId(), approval.getProjectId());
+            if (project == null) {
+                return null;
+            }
+            AgentTask task = taskService.getOwnedTask(approval.getStudentId(), approval.getProjectId(),
+                    approval.getTaskId());
+            return WorkspaceOperationIdentity.forCommandApproval(project, approval, task, evidence.changedPaths());
+        } catch (RuntimeException invalidIdentity) {
+            log.warn("COMMAND_APPROVAL_WORKSPACE_IDENTITY_UNAVAILABLE taskId={} approvalId={} errorType={}",
+                    approval.getTaskId(), approval.getApprovalId(), invalidIdentity.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    private record WorkspaceChangeEvidence(String status, int changedFileCount, List<String> changedPaths,
+                                           List<PendingChange> changes,
+                                           Map<String, Object> workspaceVerification) {
         private static WorkspaceChangeEvidence unavailable() {
-            return new WorkspaceChangeEvidence("unavailable", 0, List.of());
+            return new WorkspaceChangeEvidence("unavailable", 0, List.of(), List.of(),
+                    Map.of("state", "unavailable", "targets", List.of()));
         }
 
-        private static WorkspaceChangeEvidence from(List<PendingChange> changes) {
-            if (changes == null || changes.isEmpty()) {
-                return new WorkspaceChangeEvidence("no_change", 0, List.of());
+        private static WorkspaceChangeEvidence from(List<PendingChange> changes,
+                                                    Map<String, Object> workspaceVerification) {
+            List<PendingChange> safeChanges = changes == null ? List.of() : changes.stream()
+                    .filter(Objects::nonNull)
+                    .toList();
+            if (safeChanges.isEmpty()) {
+                return new WorkspaceChangeEvidence("no_change", 0, List.of(), List.of(),
+                        workspaceVerification == null || workspaceVerification.isEmpty()
+                                ? Map.of("state", "no_change", "targets", List.of())
+                                : Map.copyOf(workspaceVerification));
             }
-            List<String> paths = changes.stream()
+            List<String> paths = safeChanges.stream()
                     .map(PendingChange::getRelativePath)
                     .filter(path -> path != null && !path.isBlank())
                     .distinct()
                     .sorted()
                     .limit(40)
                     .toList();
-            return new WorkspaceChangeEvidence("captured", changes.size(), List.copyOf(paths));
+            return new WorkspaceChangeEvidence("captured", safeChanges.size(), List.copyOf(paths),
+                    List.copyOf(safeChanges), workspaceVerification == null || workspaceVerification.isEmpty()
+                    ? Map.of("state", "unavailable", "targets", List.of())
+                    : Map.copyOf(workspaceVerification));
         }
 
         private boolean hasChanges() {
             return changedFileCount > 0;
         }
 
+        private List<String> changeIds() {
+            return changes.stream()
+                    .map(PendingChange::getId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .distinct()
+                    .toList();
+        }
+
+        private boolean hasWorkspaceVerification() {
+            return !"unavailable".equals(String.valueOf(workspaceVerification.get("state")));
+        }
+
         private String toolResultDetail() {
-            String detail = "\nworkspace_evidence=" + status + "\nchanged_file_count=" + changedFileCount;
+            String detail = "\nworkspace_evidence=" + status + "\nchanged_file_count=" + changedFileCount
+                    + "\nworkspace_verification=" + workspaceVerification.getOrDefault("state", "unavailable");
             return changedPaths.isEmpty() ? detail : detail + "\nchanged_paths=" + String.join(",", changedPaths);
         }
     }

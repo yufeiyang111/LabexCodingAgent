@@ -133,11 +133,11 @@ function renderChart() {
   }
   baseCellShapes = new WeakMap()
 
-  const textColor = getCssColor('--ai-text-muted', props.dark ? '#a1a1aa' : '#736d62')
-  const borderColor = getCssColor('--ai-border-strong', props.dark ? 'rgba(255,255,255,0.15)' : '#e0d8c8')
-  const surfaceColor = getCssColor('--ai-bg-secondary', props.dark ? '#18181b' : '#f2ecdf')
-  const accentColor = getCssColor('--ai-purple', props.dark ? '#d97757' : '#d97757')
-  const tooltipBackground = getCssColor('--ai-bg-elevated', props.dark ? '#27272a' : '#fcf9f2')
+  const textColor = getCssColor('--ai-text-muted', props.dark ? '#a1a1aa' : '#64748b')
+  const borderColor = getCssColor('--ai-border-strong', props.dark ? 'rgba(255,255,255,0.15)' : '#e2e8f0')
+  const surfaceColor = getCssColor('--ai-bg-secondary', props.dark ? '#18181b' : '#f8fafc')
+  const accentColor = getCssColor('--ai-purple', props.dark ? '#c2410c' : '#c2410c')
+  const tooltipBackground = getCssColor('--ai-bg-elevated', props.dark ? '#27272a' : '#ffffff')
 
   chart.setOption({
     animation: false,

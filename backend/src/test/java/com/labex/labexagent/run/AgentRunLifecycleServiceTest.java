@@ -19,10 +19,14 @@ import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunOutbox;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService.StaleExecutionFenceException;
+import com.labex.labexagent.runtime.ToolExposureSnapshot;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
+import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentRunOutboxMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -59,6 +63,45 @@ class AgentRunLifecycleServiceTest {
         assertEquals(1L, task.getLastEventSequence());
         assertEquals(1L, task.getRunVersion());
         verify(outboxMapper).insert(any(AgentRunOutbox.class));
+    }
+
+    @Test
+    void preservesNullableToolExposureSchemaInDurableEventAndOutbox() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunEventMapper eventMapper = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outboxMapper = mock(AgentRunOutboxMapper.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        when(taskMapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(eventMapper.selectOne(any())).thenReturn(null);
+        when(taskMapper.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(outboxMapper.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        doAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(904L);
+            return 1;
+        }).when(eventMapper).insert(any(AgentRunEvent.class));
+        Map<String, Object> inputSchema = new LinkedHashMap<>();
+        inputSchema.put("type", "object");
+        inputSchema.put("default", null);
+        ToolExposureSnapshot exposure = ToolExposureSnapshot.live(AgentRuntimeProfile.LABEX_NATIVE, "build",
+                List.of(new ToolDefinition("inspect", "Inspect schema", inputSchema)), List.of());
+        AgentRunLifecycleService service = new AgentRunLifecycleService(taskMapper, eventMapper, outboxMapper);
+
+        AgentRunEvent event = service.appendEvent(71L, "TOOL_EXPOSURE", exposure.toPayload(),
+                "task-71-tool-exposure");
+
+        JsonObject eventSchema = JsonParser.parseString(event.getPayload()).getAsJsonObject()
+                .getAsJsonArray("definitions").get(0).getAsJsonObject()
+                .getAsJsonObject("inputSchema");
+        ArgumentCaptor<AgentRunOutbox> outbox = ArgumentCaptor.forClass(AgentRunOutbox.class);
+        verify(outboxMapper).insert(outbox.capture());
+        JsonObject outboxSchema = JsonParser.parseString(outbox.getValue().getPayload()).getAsJsonObject()
+                .getAsJsonObject("payload").getAsJsonArray("definitions").get(0).getAsJsonObject()
+                .getAsJsonObject("inputSchema");
+
+        assertTrue(eventSchema.has("default"));
+        assertTrue(eventSchema.get("default").isJsonNull());
+        assertTrue(outboxSchema.has("default"));
+        assertTrue(outboxSchema.get("default").isJsonNull());
     }
 
     @Test

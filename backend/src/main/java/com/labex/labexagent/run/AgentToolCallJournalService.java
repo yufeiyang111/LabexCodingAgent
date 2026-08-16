@@ -1,6 +1,7 @@
 package com.labex.labexagent.run;
 
 import com.labex.entity.AgentRunPart;
+import com.labex.labexagent.tool.ToolResult;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -74,6 +75,18 @@ public class AgentToolCallJournalService {
         record(fence, taskId, toolCallId, "completed", toolName, arguments, iteration, result);
     }
 
+    /** 结果感知重载：把实际执行证据与 Tool Part 一起持久化。 */
+    public void completed(ExecutionFence fence, Long taskId, String toolCallId, String toolName, Object arguments,
+                          int iteration, ToolResult result) {
+        record(fence, taskId, toolCallId, "completed", toolName, arguments, iteration,
+                detail(result), resultMetadata(result), Map.of());
+    }
+
+    public void failed(ExecutionFence fence, Long taskId, String toolCallId, String toolName, Object arguments,
+                       int iteration, ToolResult result) {
+        record(fence, taskId, toolCallId, "error", toolName, arguments, iteration,
+                detail(result), resultMetadata(result), Map.of());
+    }
     public void failed(ExecutionFence fence, Long taskId, String toolCallId, String toolName, Object arguments,
                         int iteration, String result) {
         record(fence, taskId, toolCallId, "error", toolName, arguments, iteration, result);
@@ -85,9 +98,23 @@ public class AgentToolCallJournalService {
         record(fence, taskId, toolCallId, "interrupted", toolName, arguments, iteration, result);
     }
 
+    /** 保留取消前已经产生的结构化执行和工作区事实，供恢复与前端回放使用。 */
+    public void interrupted(ExecutionFence fence, Long taskId, String toolCallId, String toolName, Object arguments,
+                            int iteration, ToolResult result) {
+        record(fence, taskId, toolCallId, "interrupted", toolName, arguments, iteration,
+                detail(result), resultMetadata(result), Map.of());
+    }
+
     public void blocked(ExecutionFence fence, Long taskId, String toolCallId, String toolName, Object arguments,
                         int iteration, String result) {
         record(fence, taskId, toolCallId, "environment_blocked", toolName, arguments, iteration, result);
+    }
+
+    /** 环境阻塞也不能丢失执行结果和部分工作区变更证据。 */
+    public void blocked(ExecutionFence fence, Long taskId, String toolCallId, String toolName, Object arguments,
+                        int iteration, ToolResult result) {
+        record(fence, taskId, toolCallId, "environment_blocked", toolName, arguments, iteration,
+                detail(result), resultMetadata(result), Map.of());
     }
 
     public void skipped(ExecutionFence fence, Long taskId, String toolCallId, String toolName, Object arguments,
@@ -97,45 +124,82 @@ public class AgentToolCallJournalService {
 
     /** 控制面写入：审批过期/调度接管路径，不携带执行 fence（见 {@link ExecutionFence} 契约）。 */
     public void completedExisting(Long taskId, String toolCallId, String result) {
-        recordExisting(taskId, toolCallId, "completed", result);
+        recordExisting(taskId, toolCallId, "completed", result, Map.of());
+    }
+
+    /**
+     * 审批执行等控制面回调也必须写入原始 ToolResult 的结构化 durable evidence，
+     * 不能仅把结果压成字符串，否则重连与恢复会丢失 workspace identity/verification。
+     */
+    public void completedExisting(Long taskId, String toolCallId, ToolResult result) {
+        recordExisting(taskId, toolCallId, "completed", detail(result), resultMetadata(result));
     }
 
     /** 控制面写入：审批过期/调度接管路径，不携带执行 fence（见 {@link ExecutionFence} 契约）。 */
     public void failedExisting(Long taskId, String toolCallId, String result) {
-        recordExisting(taskId, toolCallId, "error", result);
+        recordExisting(taskId, toolCallId, "error", result, Map.of());
     }
 
     /** 控制面写入：审批过期/调度接管路径，不携带执行 fence（见 {@link ExecutionFence} 契约）。 */
     public void interruptedExisting(Long taskId, String toolCallId, String result) {
-        recordExisting(taskId, toolCallId, "interrupted", result);
+        recordExisting(taskId, toolCallId, "interrupted", result, Map.of());
     }
 
-    private void recordExisting(Long taskId, String toolCallId, String status, String detail) {
-        AgentRunPart part = partService.resolveExistingToolCall(taskId, toolCallId, status, detail);
+    private void recordExisting(Long taskId, String toolCallId, String status, String detail,
+                                Map<String, Object> resultMetadata) {
+        Map<String, Object> durableMetadata = resultMetadata == null || resultMetadata.isEmpty()
+                ? Map.of() : Map.copyOf(resultMetadata);
+        AgentRunPart part = durableMetadata.isEmpty()
+                ? partService.resolveExistingToolCall(taskId, toolCallId, status, detail)
+                : partService.resolveExistingToolCall(taskId, toolCallId, status, detail, durableMetadata);
         if (part == null) return;
         Map<String, Object> payload = new LinkedHashMap<>(partService.projectToolCall(part));
         payload.put("detail", detail == null ? "" : truncate(detail));
+        if (!durableMetadata.isEmpty()) {
+            payload.put("metadata", new LinkedHashMap<>(durableMetadata));
+        }
         publishPartEvent(null, taskId, part, status, payload);
     }
 
     private void record(ExecutionFence fence, Long taskId, String toolCallId, String status, String toolName,
                         Object arguments, int iteration, String detail) {
-        record(fence, taskId, toolCallId, status, toolName, arguments, iteration, detail, Map.of());
+        record(fence, taskId, toolCallId, status, toolName, arguments, iteration, detail, Map.of(), Map.of());
     }
 
     private void record(ExecutionFence fence, Long taskId, String toolCallId, String status, String toolName,
-                        Object arguments, int iteration, String detail, Map<String, Object> extraPayload) {
+                        Object arguments, int iteration, String detail, Map<String, Object> interactionPayload) {
+        record(fence, taskId, toolCallId, status, toolName, arguments, iteration, detail, Map.of(), interactionPayload);
+    }
+
+    private void record(ExecutionFence fence, Long taskId, String toolCallId, String status, String toolName,
+                        Object arguments, int iteration, String detail, Map<String, Object> resultMetadata,
+                        Map<String, Object> interactionPayload) {
         if (taskId == null || toolCallId == null || toolCallId.isBlank()) return;
+        Map<String, Object> durableMetadata = resultMetadata == null || resultMetadata.isEmpty()
+                ? Map.of() : Map.copyOf(resultMetadata);
         Map<String, Object> payload = basePayload(toolCallId, status, toolName, arguments, iteration, detail);
-        if (extraPayload != null && !extraPayload.isEmpty()) {
-            payload.put("interactionPayload", new LinkedHashMap<>(extraPayload));
+        if (!durableMetadata.isEmpty()) {
+            payload.put("metadata", new LinkedHashMap<>(durableMetadata));
+        }
+        if (interactionPayload != null && !interactionPayload.isEmpty()) {
+            payload.put("interactionPayload", new LinkedHashMap<>(interactionPayload));
         }
 
-        AgentRunPart part = Objects.requireNonNull(
-                partService.upsertToolCall(fence, taskId, toolCallId, status, toolName,
-                        arguments, iteration, detail),
+        AgentRunPart part = Objects.requireNonNull(durableMetadata.isEmpty()
+                        ? partService.upsertToolCall(fence, taskId, toolCallId, status, toolName,
+                                arguments, iteration, detail)
+                        : partService.upsertToolCall(fence, taskId, toolCallId, status, toolName,
+                                arguments, iteration, detail, durableMetadata),
                 "Durable Tool Part persistence returned null");
         publishPartEvent(fence, taskId, part, status, payload);
+    }
+
+    private String detail(ToolResult result) {
+        return result == null || result.getContent() == null ? "" : result.getContent();
+    }
+
+    private Map<String, Object> resultMetadata(ToolResult result) {
+        return result == null ? Map.of() : result.durableResultMetadata();
     }
 
     private Map<String, Object> basePayload(String toolCallId, String status, String toolName,

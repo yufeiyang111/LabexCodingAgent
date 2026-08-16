@@ -20,6 +20,7 @@ class AgentLoopEngineFinalReplyPolicyTest {
         assertTrue(AgentLoopEngine.shouldRejectFinalReply("修复登录问题并验证", "好的"));
         assertTrue(AgentLoopEngine.shouldRejectFinalReply("Fix the login problem and verify it", "OK"));
     }
+
     @Test
     void doesNotTreatTodoProgressAsAFinalReplyGate() {
         assertFalse(AgentLoopEngine.isPrematureFinal(
@@ -36,4 +37,13 @@ class AgentLoopEngineFinalReplyPolicyTest {
                 "updateTask(task.getTaskId(), \"completed\""));
     }
 
+    @Test
+    void nativeProfileUsesCompletionProjectionInsteadOfLegacyTextAndIntentGates() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));
+
+        assertTrue(source.contains("usesLegacyTextFinalGuards(executionRuntimeProfile)"));
+        assertTrue(source.contains("project(executionRuntimeProfile, completion)"));
+        assertTrue(source.contains("VISIBLE_UNVERIFIED"));
+    }
 }

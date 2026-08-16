@@ -22,6 +22,26 @@ test('replays durable tool and reasoning parts idempotently', () => {
   assert.deepEqual(target.toolCalls[0].args, { strategy: 'test' })
 })
 
+test('replays a completed shell nonzero exit as a visible error from durable metadata', () => {
+  const target = message()
+  applyRunPartSnapshot(target, [
+    { partId: 7, partKey: 'tool:shell-nonzero', partType: 'tool', toolCallId: 'shell-nonzero',
+      tool: 'shell', input: '{"command":"npm run build"}', output: 'exit=2\nstatus=failed',
+      status: 'completed',
+      metadata: '{"failureClass":"non_zero_exit","execution":{"status":"failed","exitCode":2,"workdir":"frontend","outputPath":".labex-agent/artifacts/task-7/shell-nonzero.log"}}',
+      sequence: 7 }
+  ])
+
+  assert.equal(target.toolCalls.length, 1)
+  assert.equal(target.toolCalls[0].durableStatus, 'completed')
+  assert.equal(target.toolCalls[0].status, 'error')
+  assert.equal(target.toolCalls[0].failureClass, 'non_zero_exit')
+  assert.deepEqual(target.toolCalls[0].executionResult, {
+    status: 'failed', exitCode: 2, workdir: 'frontend',
+    outputPath: '.labex-agent/artifacts/task-7/shell-nonzero.log'
+  })
+})
+
 test('projects provider tool_call and tool_result parts into one durable tool card', () => {
   const target = message()
   const parts = [
@@ -120,4 +140,20 @@ test('restores a durable finalization blocker without adding a new sidebar card'
   assert.equal(target.completionEvidence, null)
   assert.equal(target.completionBlockedEvidence.reasonCode, 'preview_url_mismatch')
   assert.equal(target.completionBlockedEvidence.recoveryAllowed, false)
+})
+
+test('keeps completion evidence details when a durable finalization blocker follows it', () => {
+  const target = message()
+  applyRunPartSnapshot(target, [
+    { partId: 51, partKey: 'completion:evidence-a', partType: 'completion_evidence', status: 'error',
+      output: '{"taskId":9,"satisfied":false,"changedFiles":["skills/SKILL.md"],"unresolvedRisks":["missing verification"]}', sequence: 17 },
+    { partId: 52, partKey: 'finalization:evidence-a', partType: 'finalization_blocker', status: 'error',
+      input: '{"taskId":9,"reasonCode":"completion_evidence_unsatisfied","guidance":"verify latest change","recoveryAllowed":false}', sequence: 18 }
+  ])
+
+  assert.equal(target.completionEvidence, null)
+  assert.equal(target.completionBlockedEvidence.satisfied, false)
+  assert.deepEqual(target.completionBlockedEvidence.changedFiles, ['skills/SKILL.md'])
+  assert.deepEqual(target.completionBlockedEvidence.unresolvedRisks, ['missing verification'])
+  assert.equal(target.completionBlockedEvidence.reasonCode, 'completion_evidence_unsatisfied')
 })

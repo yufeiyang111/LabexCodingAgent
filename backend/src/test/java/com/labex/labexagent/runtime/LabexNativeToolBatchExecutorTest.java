@@ -36,12 +36,14 @@ class LabexNativeToolBatchExecutorTest {
         LabexNativeToolBatchExecutor.Admission first = admission("read_file", "call-read", 0);
         LabexNativeToolBatchExecutor.Admission second = admission("list_files", "call-list", 1);
         AtomicBoolean secondStartedAfterFirst = new AtomicBoolean(false);
+        ToolResult firstResult = ToolResult.ok("README");
+        ToolResult secondResult = ToolResult.ok("src");
 
         when(delegate.execute(first)).thenAnswer(invocation ->
-                LabexNativeToolBatchExecutor.CallExecution.completed(ToolResult.ok("README")));
+                LabexNativeToolBatchExecutor.CallExecution.completed(firstResult));
         when(delegate.execute(second)).thenAnswer(invocation -> {
             secondStartedAfterFirst.set(true);
-            return LabexNativeToolBatchExecutor.CallExecution.completed(ToolResult.ok("src"));
+            return LabexNativeToolBatchExecutor.CallExecution.completed(secondResult);
         });
 
         LabexNativeToolBatchExecutor.BatchResult result = executor.execute(
@@ -62,11 +64,11 @@ class LabexNativeToolBatchExecutorTest {
                 any(), eq(3));
         order.verify(delegate).execute(first);
         order.verify(journal).completed(any(ExecutionFence.class), eq(71L), eq("call-read"), eq("read_file"),
-                any(), eq(3), eq("README"));
+                any(), eq(3), org.mockito.ArgumentMatchers.same(firstResult));
         order.verify(transcript).append(any(ExecutionFence.class), eq(71L), eq(4L), any(Map.class));
         order.verify(delegate).execute(second);
         order.verify(journal).completed(any(ExecutionFence.class), eq(71L), eq("call-list"), eq("list_files"),
-                any(), eq(3), eq("src"));
+                any(), eq(3), org.mockito.ArgumentMatchers.same(secondResult));
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> messages = ArgumentCaptor.forClass(Map.class);

@@ -15,11 +15,16 @@ import static org.mockito.Mockito.when;
 import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
+import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.labexagent.tool.ToolResult;
+import com.labex.labexagent.workspace.WorkspaceOperationIdentity;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -85,6 +90,47 @@ class AgentToolCallJournalServiceTest {
     }
 
     @Test
+    void persistsStructuredWorkspaceIdentityWithTheCompletedToolPart() {
+        ExecutionFence fence = new ExecutionFence(7L, "instance-a", 4L);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        when(parts.upsertToolCall(eq(fence), eq(7L), eq("call-shell"), eq("completed"), eq("shell"),
+                any(), eq(2), org.mockito.ArgumentMatchers.startsWith("exit=0"), any()))
+                .thenReturn(part(192L, "tool:call-shell", "call-shell", "shell"));
+        AgentToolCallJournalService journal = new AgentToolCallJournalService(lifecycle, parts);
+        ToolResult result = ToolResult.fromObservedProcessExecution(
+                new ProcessExecutionResult(ExecutionStatus.SUCCEEDED, 0, 5, "ok", false),
+                "direct", "frontend", "artifacts/shell.log")
+                .withWorkspaceIdentity(new WorkspaceOperationIdentity(
+                        1, 7, 12, "conversation-1", 7L, 4L, "workspace-hash", "frontend", List.of(), ""))
+                .withWorkspaceVerification(Map.of("state", "verified", "targets", List.of(Map.of(
+                        "path", "src/App.vue", "expectedState", "present", "observedState", "present"))));
+
+        journal.completed(fence, 7L, "call-shell", "shell", Map.of("command", "npm test"), 2, result);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metadata = ArgumentCaptor.forClass(Map.class);
+        verify(parts).upsertToolCall(eq(fence), eq(7L), eq("call-shell"), eq("completed"), eq("shell"),
+                any(), eq(2), org.mockito.ArgumentMatchers.startsWith("exit=0"), metadata.capture());
+        assertThat(metadata.getValue())
+                .containsKey("workspaceIdentity")
+                .containsKey("workspaceVerification")
+                .containsKey("execution");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> workspaceIdentity = (Map<String, Object>) metadata.getValue().get("workspaceIdentity");
+        assertThat(workspaceIdentity)
+                .containsEntry("taskId", 7L)
+                .containsEntry("executionEpoch", 4L)
+                .containsEntry("workingDirectory", "frontend");
+
+        ArgumentCaptor<Object> payload = ArgumentCaptor.forClass(Object.class);
+        verify(lifecycle).appendEvent(eq(fence), eq(7L), eq("TOOL_CALL_STATE"), payload.capture(),
+                eq("tool-call-state-part-192-completed"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> event = (Map<String, Object>) payload.getValue();
+        assertThat(event).containsKey("metadata");
+    }
+    @Test
     void completesAnExistingToolCallDirectlyFromTheDurablePart() {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         AgentRunPartService parts = mock(AgentRunPartService.class);
@@ -115,6 +161,55 @@ class AgentToolCallJournalServiceTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> event = (Map<String, Object>) payload.getValue();
         assertThat(event.get("arguments")).isEqualTo(Map.of("command", "mvn test"));
+    }
+
+    @Test
+    void externallyResolvedToolResultPreservesStructuredWorkspaceEvidence() {
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunPartService parts = mock(AgentRunPartService.class);
+        AgentRunPart existing = part(191L, "tool:call-1", "call-1", "shell");
+        existing.setInputJson("{\"command\":\"rm -rf skills\"}");
+        existing.setStatus("completed");
+        existing.setSequenceNumber(2L);
+        WorkspaceOperationIdentity identity = new WorkspaceOperationIdentity(
+                1, 7, 12, "conversation-1", 7L, 4L, "workspace-fingerprint", ".",
+                List.of("skills/SKILL.md"), "operation-fingerprint");
+        ToolResult result = ToolResult.ok("status=completed\nexit=0")
+                .withWorkspaceChangeEvidence(identity, List.of("change-1"))
+                .withWorkspaceVerification(Map.of(
+                        "state", "verified",
+                        "targets", List.of(Map.of(
+                                "path", "skills/SKILL.md",
+                                "expectedState", "absent",
+                                "observedState", "absent"))));
+        when(parts.resolveExistingToolCall(eq(7L), eq("call-1"), eq("completed"),
+                eq("status=completed\nexit=0"), any())).thenReturn(existing);
+        when(parts.projectToolCall(existing)).thenReturn(Map.of(
+                "partId", 191L,
+                "partKey", "tool:call-1",
+                "toolCallId", "call-1",
+                "tool", "shell",
+                "arguments", Map.of("command", "rm -rf skills"),
+                "status", "completed",
+                "iteration", 2L,
+                "detail", "status=completed\nexit=0"));
+        AgentToolCallJournalService journal = new AgentToolCallJournalService(lifecycle, parts);
+
+        journal.completedExisting(7L, "call-1", result);
+
+        ArgumentCaptor<Map<String, Object>> metadata = ArgumentCaptor.forClass(Map.class);
+        verify(parts).resolveExistingToolCall(eq(7L), eq("call-1"), eq("completed"),
+                eq("status=completed\nexit=0"), metadata.capture());
+        assertThat(metadata.getValue())
+                .containsKey("workspaceIdentity")
+                .containsKey("workspaceMutation")
+                .containsKey("workspaceVerification");
+        ArgumentCaptor<Object> payload = ArgumentCaptor.forClass(Object.class);
+        verify(lifecycle).appendEvent(eq(7L), eq("TOOL_CALL_STATE"), payload.capture(),
+                eq("tool-call-state-part-191-completed"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> event = (Map<String, Object>) payload.getValue();
+        assertThat(event).containsKey("metadata");
     }
 
     @Test

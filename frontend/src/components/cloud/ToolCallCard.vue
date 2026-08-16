@@ -190,7 +190,7 @@ const commandSubmitting = computed(() => props.call._commandApprovalInFlight ===
 const toolMap = {
   read_file: '读取文件', edit_file: '编辑文件', write_file: '写入文件',
   apply_patch: '应用补丁', list_files: '列出文件', glob: '搜索文件',
-  grep: '搜索内容', search_code: '搜索代码', bash: '执行命令',
+  grep: '搜索内容', search_code: '搜索代码', shell: '执行命令', bash: '执行命令',
   run_command: '执行命令', execute_code: '执行代码', run_tests: '运行测试',
   create_plan: '创建计划', plan: '计划', todo_write: '更新待办',
   retrieve_context: '检索上下文', question: '提问',
@@ -200,7 +200,19 @@ const toolMap = {
   external_directory: '外部目录'
 }
 const toolLabel = computed(() => toolMap[props.call.name] || props.call.name)
+const failureText = computed(() => {
+  const failureClass = String(props.call.failureClass || '').toLowerCase()
+  const exitCode = props.call.executionResult?.exitCode
+  if (failureClass === 'non_zero_exit') return `命令失败${exitCode === undefined || exitCode === null ? '' : `（退出码 ${exitCode}）`}`
+  if (failureClass === 'timed_out') return '执行超时'
+  if (failureClass === 'cancelled') return '已取消'
+  if (failureClass === 'infrastructure_error') return '执行环境不可用'
+  if (failureClass === 'execution_failed') return '执行失败'
+  if (failureClass === 'tool_error') return '工具调用失败'
+  return ''
+})
 const executionText = computed(() => {
+  if (failureText.value) return failureText.value
   if (props.call.durableStatus === 'timed_out') return '\u6267\u884c\u8d85\u65f6'
   if (props.call.durableStatus === 'cancelled') return '\u5df2\u53d6\u6d88'
   if (props.call.status === 'skipped') return '\u5df2\u8df3\u8fc7'
@@ -245,7 +257,7 @@ const questionRequestReady = computed(() => Boolean(
 const questionOptions = computed(() => Array.isArray(questionRequest.value.options) ? questionRequest.value.options.filter(Boolean) : [])
 
 const isEditTool = computed(() => ['edit_file', 'write_file', 'apply_patch'].includes(props.call.name))
-const isShellTool = computed(() => ['bash', 'run_command', 'execute_code', 'run_tests'].includes(props.call.name))
+const isShellTool = computed(() => ['shell', 'bash', 'run_command', 'execute_code', 'run_tests'].includes(props.call.name))
 const isReadTool = computed(() => ['read_file', 'retrieve_context'].includes(props.call.name))
 const isSearchTool = computed(() => ['list_files', 'glob', 'grep', 'search_code', 'lsp_symbols'].includes(props.call.name))
 

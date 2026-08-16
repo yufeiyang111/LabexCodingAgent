@@ -2,12 +2,15 @@ package com.labex.labexagent.runtime;
 
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.run.ExecutionFence;
+import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class AgentContext {
@@ -41,6 +44,8 @@ public class AgentContext {
     private Set<String> trustedVerificationSources = new LinkedHashSet<>();
     private Set<String> unverifiedChangeTargets = new LinkedHashSet<>();
     private Set<String> selectedToolNames = Set.of();
+    /** 当前 task 的临时扩展工具绑定，例如按当前 student 发现的 MCP tool；绝不写入全局 Registry。 */
+    private Map<String, AgentTool> scopedToolBindings = Map.of();
 
     public boolean isPlanMode() {
         return "plan".equals(mode);
@@ -256,6 +261,27 @@ public class AgentContext {
     public Set<String> getSelectedToolNames() { return this.selectedToolNames; }
     public boolean isToolSelected(String toolName) {
         return toolName != null && this.selectedToolNames.contains(toolName);
+    }
+
+    public void setScopedToolBindings(Map<String, AgentTool> bindings) {
+        if (bindings == null || bindings.isEmpty()) {
+            this.scopedToolBindings = Map.of();
+            return;
+        }
+        LinkedHashMap<String, AgentTool> normalized = new LinkedHashMap<>();
+        bindings.forEach((name, tool) -> {
+            if (name != null && !name.isBlank() && tool != null) {
+                normalized.putIfAbsent(name.trim(), tool);
+            }
+        });
+        this.scopedToolBindings = Map.copyOf(normalized);
+    }
+
+    public AgentTool resolveScopedTool(String toolName) {
+        if (toolName == null || toolName.isBlank()) {
+            return null;
+        }
+        return this.scopedToolBindings.get(toolName.trim());
     }
 
     public boolean hasUnverifiedChanges() { return unverifiedChanges; }

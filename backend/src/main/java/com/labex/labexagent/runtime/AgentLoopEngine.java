@@ -41,6 +41,7 @@ import com.labex.labexagent.prompt.LabexSystemPrompt;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunPlanService;
 import com.labex.labexagent.run.AgentRunPartService;
+import com.labex.labexagent.run.AgentToolExposureSnapshotService;
 import com.labex.labexagent.run.AgentRunProgressProjectionService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.run.AgentRunTransitionKey;
@@ -199,6 +200,8 @@ public class AgentLoopEngine {
     private AgentProviderMessageProjector providerMessageProjector;
     private AgentToolNarrator toolNarrator;
     private ToolSelectionPolicy toolSelectionPolicy;
+    private ToolExposurePlanner toolExposurePlanner;
+    private AgentToolExposureSnapshotService toolExposureSnapshotService;
     private ContextAdmissionService contextAdmissionService;
     private ContextAdmissionGate contextAdmissionGate;
     private final MiniMaxChat miniMaxChat;
@@ -346,6 +349,17 @@ public class AgentLoopEngine {
     @Autowired
     void setNativeToolBatchExecutor(LabexNativeToolBatchExecutor nativeToolBatchExecutor) {
         this.nativeToolBatchExecutor = requireProcessor(nativeToolBatchExecutor, "nativeToolBatchExecutor");
+    }
+
+    @Autowired
+    void setToolExposurePlanner(ToolExposurePlanner toolExposurePlanner) {
+        this.toolExposurePlanner = requireRuntimeDependency(toolExposurePlanner, "toolExposurePlanner");
+    }
+
+    @Autowired
+    void setToolExposureSnapshotService(AgentToolExposureSnapshotService toolExposureSnapshotService) {
+        this.toolExposureSnapshotService = requireRuntimeDependency(
+                toolExposureSnapshotService, "toolExposureSnapshotService");
     }
 
     @Autowired
@@ -896,9 +910,12 @@ public class AgentLoopEngine {
             this.appendRunLog(runLog, "\n## Runtime metadata\n\n- Conversation: `" + conv.getConversationId() + "`\n- Task: `" + task.getTaskId() + "`\n- Mode: `" + mode + "`\n- Runtime profile: `" + executionRuntimeProfile.persistedValue() + "`\n- Iteration policy: `" + this.iterationPolicyDescription() + "`\n");
             long contextBuildStartedAt = System.nanoTime();
             RunRuntimeProjection runtimeProjection = this.buildRunRuntimeProjection(
-                    studentId, conv.getConversationId(), project, mode, modelConfig, llmConfig, visibleLanguage, executionRuntimeProfile);
+                    studentId, conv.getConversationId(), project, mode, modelConfig, llmConfig, visibleLanguage,
+                    executionRuntimeProfile, task.getTaskId());
             List<ToolDefinition> selectedToolDefinitions = runtimeProjection.selectedTools();
             ctx.setSelectedToolNames(this.toolSelectionPolicy.selectedNames(selectedToolDefinitions));
+            ctx.setScopedToolBindings(runtimeProjection.toolExposure().scopedTools());
+            this.persistToolExposureSnapshot(sse, conv, task, ctx, runtimeProjection.toolExposure());
             String toolDefinitions = runtimeProjection.toolDefinitions();
             String sysPrompt = runtimeProjection.systemPrompt();
             List<Map<String, Object>> tools = runtimeProjection.tools();
@@ -1020,12 +1037,15 @@ public class AgentLoopEngine {
                                         // prompt-cache key 保持当前 conversation 与模型路由作用域。
                                         if (!runtimeProjection.mode().equals(ctx.getMode())) {
                                             RunRuntimeProjection fresh = this.buildRunRuntimeProjection(
-                                                    studentId, conv.getConversationId(), project, ctx.getMode(), modelConfig, llmConfig, visibleLanguage, executionRuntimeProfile);
+                                                    studentId, conv.getConversationId(), project, ctx.getMode(), modelConfig, llmConfig,
+                                                    visibleLanguage, executionRuntimeProfile, task.getTaskId());
                                             runtimeProjection = fresh;
                                             sysPrompt = fresh.systemPrompt();
                                             tools = fresh.tools();
                                             llmConfig = fresh.llmConfig();
                                             ctx.setSelectedToolNames(this.toolSelectionPolicy.selectedNames(fresh.selectedTools()));
+                                            ctx.setScopedToolBindings(fresh.toolExposure().scopedTools());
+                                            this.persistToolExposureSnapshot(sse, conv, task, ctx, fresh.toolExposure());
                                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
                                                     Map.of("role", "user", "content",
                                                             fresh.modePolicy() + "\nThe run mode has changed; the policy above is now in effect."));
@@ -1327,7 +1347,7 @@ public class AgentLoopEngine {
                                                 // AgentRunPartService.interruptOpenParts 标记 interrupted），不做部分投影。
                                                 throw staleFence;
                                             }
-                                            this.recordLoopToolResult(loopGuard, sse, conv, ctx, i, tn, loopDecision.signature(), res.isSuccess());
+                                            this.recordLoopToolResult(loopGuard, sse, conv, ctx, i, tn, loopDecision.signature(), res);
                                             Optional<EnvironmentBlockerClassifier.Blocker> environmentBlocker =
                                                     EnvironmentBlockerClassifier.classify(tn, res);
                                             if (environmentBlocker.isPresent()) {
@@ -1544,7 +1564,7 @@ public class AgentLoopEngine {
                                         // 直接 rethrow；失败工具 Part 与剩余 batch 由恢复/接管路径处理。
                                         throw staleFence;
                                     }
-                                    this.recordLoopToolResult(loopGuard, sse, conv, ctx, i, invTool, recoveredLoopDecision.signature(), res.isSuccess());
+                                    this.recordLoopToolResult(loopGuard, sse, conv, ctx, i, invTool, recoveredLoopDecision.signature(), res);
                                      Optional<EnvironmentBlockerClassifier.Blocker> recoveredEnvironmentBlocker =
                                              EnvironmentBlockerClassifier.classify(invTool, res);
                                      if (recoveredEnvironmentBlocker.isPresent()) {
@@ -3140,6 +3160,14 @@ public class AgentLoopEngine {
         if (r.getExecutionDurationMs() != null) {
             o.put("executionDurationMs", r.getExecutionDurationMs());
         }
+        Object workspaceMutation = r.durableResultMetadata().get("workspaceMutation");
+        Object workspaceVerification = r.durableResultMetadata().get("workspaceVerification");
+        if (!r.getWorkspaceIdentity().isEmpty()) {
+            o.put("workspaceIdentity", r.getWorkspaceIdentity());
+        }
+        if (workspaceVerification != null) {
+            o.put("workspaceVerification", workspaceVerification);
+        }
         if ("create_plan".equals(tn) || "plan".equals(tn)) {
             o.put("plan", content);
         }
@@ -3162,6 +3190,15 @@ public class AgentLoopEngine {
             workspace.put("toolCallId", toolCallId == null ? "" : toolCallId);
             workspace.put("source", "agent_tool");
             workspace.put("workspaceChangeId", "tool:" + (toolCallId == null ? "unknown" : toolCallId));
+            if (!r.getWorkspaceIdentity().isEmpty()) {
+                workspace.put("workspaceIdentity", r.getWorkspaceIdentity());
+            }
+            if (workspaceMutation != null) {
+                workspace.put("workspaceMutation", workspaceMutation);
+            }
+            if (workspaceVerification != null) {
+                workspace.put("workspaceVerification", workspaceVerification);
+            }
             String workspaceKey = toolCallId == null || toolCallId.isBlank() ? "" : "tool-workspace-changed:" + toolCallId;
             this.sendEvent(sse, conv, "WORKSPACE_CHANGED", workspace, workspaceKey);
         }
@@ -3413,8 +3450,10 @@ public class AgentLoopEngine {
                                                            AgentModelConfig modelConfig,
                                                            LlmProvider.LlmConfig baseLlmConfig,
                                                            String visibleLanguage,
-                                                           AgentRuntimeProfile runtimeProfile) {
-        List<ToolDefinition> selectedTools = this.selectToolDefinitions(studentId, mode, modelConfig, runtimeProfile);
+                                                           AgentRuntimeProfile runtimeProfile,
+                                                           Long taskId) {
+        ToolExposure toolExposure = this.planToolExposure(studentId, mode, modelConfig, runtimeProfile, taskId);
+        List<ToolDefinition> selectedTools = toolExposure.definitions();
         String toolDefinitions = this.buildToolDefinitions(selectedTools);
         String systemPrompt = this.buildSystemPrompt(project, toolDefinitions, visibleLanguage, runtimeProfile);
         List<Map<String, Object>> tools = new ArrayList<>(this.buildToolsList(selectedTools));
@@ -3422,13 +3461,48 @@ public class AgentLoopEngine {
                 PromptCacheKeyFactory.forConversation(studentId, modelConfig.getConfigId(),
                         baseLlmConfig.baseUrl(), baseLlmConfig.modelName(), conversationId));
         return new RunRuntimeProjection(mode, selectedTools, toolDefinitions, systemPrompt, tools,
-                this.buildModePolicy(mode), configured);
+                this.buildModePolicy(mode), configured, toolExposure);
     }
 
     /** 当前 mode 派生的 Provider 请求投影；mode 变更后必须整体重建。 */
     private record RunRuntimeProjection(String mode, List<ToolDefinition> selectedTools, String toolDefinitions,
                                         String systemPrompt, List<Map<String, Object>> tools, String modePolicy,
-                                        LlmProvider.LlmConfig llmConfig) {
+                                        LlmProvider.LlmConfig llmConfig, ToolExposure toolExposure) {
+    }
+
+    private ToolExposure planToolExposure(Integer studentId, String mode, AgentModelConfig modelConfig,
+                                          AgentRuntimeProfile runtimeProfile, Long taskId) {
+        if (runtimeProfile == AgentRuntimeProfile.LABEX_NATIVE && this.toolExposurePlanner != null) {
+            if (this.toolExposureSnapshotService != null) {
+                java.util.Optional<ToolExposureSnapshot> snapshot = this.toolExposureSnapshotService.findLatest(
+                        taskId, runtimeProfile, mode);
+                if (snapshot.isPresent()) {
+                    return this.toolExposurePlanner.restore(snapshot.orElseThrow());
+                }
+            }
+            boolean imageInputEnabled = modelConfig != null
+                    && Integer.valueOf(1).equals(modelConfig.getImageInputEnabled());
+            return this.toolExposurePlanner.plan(new ToolExposurePlanner.Request(
+                    studentId, mode, runtimeProfile, imageInputEnabled, true, true));
+        }
+        List<ToolDefinition> definitions = this.selectToolDefinitions(studentId, mode, modelConfig, runtimeProfile);
+        return new ToolExposure(definitions, Map.of(),
+                ToolExposureSnapshot.live(runtimeProfile, mode, definitions, List.of()), false);
+    }
+
+    private void persistToolExposureSnapshot(AgentSsePublisher sse, AgentConversation conversation,
+                                              AgentTask task, AgentContext context, ToolExposure exposure) throws Exception {
+        if (exposure == null || exposure.restoredFromSnapshot() || exposure.snapshot() == null
+                || task == null || task.getTaskId() == null) {
+            return;
+        }
+        LinkedHashMap<String, Object> payload = new LinkedHashMap<>(exposure.snapshot().toPayload());
+        payload.put("taskId", task.getTaskId());
+        payload.put("executionEpoch", context == null ? 0L : context.getExecutionEpoch());
+        String key = "tool-exposure:v1:" + task.getTaskId() + ":"
+                + exposure.snapshot().runtimeProfile() + ":" + exposure.snapshot().mode() + ":"
+                + exposure.snapshot().schemaFingerprint();
+        this.sendEvent(sse, conversation, "TOOL_EXPOSURE", payload, key);
     }
 
     private List<ToolDefinition> selectToolDefinitions(Integer studentId, String mode, AgentModelConfig modelConfig) {
@@ -3608,10 +3682,11 @@ public class AgentLoopEngine {
 
     private void recordLoopToolResult(AgentLoopGuard loopGuard, AgentSsePublisher sse,
                                       AgentConversation conversation, AgentContext context, int iteration,
-                                      String toolName, String signature, boolean success) throws Exception {
-        loopGuard.recordToolResult(signature, success);
+                                      String toolName, String signature, ToolResult result) throws Exception {
+        boolean successfulOutcome = result != null && result.isSuccessfulExecutionOutcome();
+        loopGuard.recordToolResult(signature, result);
         this.projectLoopGuardProgress(loopGuard, sse, conversation, context, iteration,
-                success ? "tool_success" : "tool_failure", toolName);
+                successfulOutcome ? "tool_success" : "tool_failure", toolName);
     }
 
     private void projectLoopGuardProgress(AgentLoopGuard loopGuard, AgentSsePublisher sse,
@@ -4214,7 +4289,7 @@ public class AgentLoopEngine {
                     ToolResult result = this.execTool(toolName, arguments, context, sse, conversation,
                             visibleLanguage, toolCallId, runLog);
                     this.recordLoopToolResult(loopGuard, sse, conversation, context, iteration, toolName,
-                            loopDecision.signature(), result.isSuccess());
+                            loopDecision.signature(), result);
                     return LabexNativeToolBatchExecutor.CallExecution.completed(result);
                 },
                 this::nativeBatchToolResultForModel);
@@ -4921,17 +4996,16 @@ public class AgentLoopEngine {
 
     private void journalToolFinished(ExecutionFence executionFence, Long taskId, String toolCallId, String toolName,
                                      Object arguments, int iteration, ToolResult result) {
-        String detail = result == null ? "" : result.getContent();
         // 结构化执行状态直接决定 durable Part 状态，不能只靠 result 文本猜测。
         String executionStatus = result == null ? "" : String.valueOf(result.getExecutionStatus());
         if (result != null && result.isSuccess()) {
-            this.toolCallJournalService.completed(executionFence, taskId, toolCallId, toolName, arguments, iteration, detail);
+            this.toolCallJournalService.completed(executionFence, taskId, toolCallId, toolName, arguments, iteration, result);
         } else if ("cancelled".equals(executionStatus)) {
-            this.toolCallJournalService.interrupted(executionFence, taskId, toolCallId, toolName, arguments, iteration, detail);
+            this.toolCallJournalService.interrupted(executionFence, taskId, toolCallId, toolName, arguments, iteration, result);
         } else if ("infrastructure_error".equals(executionStatus)) {
-            this.toolCallJournalService.blocked(executionFence, taskId, toolCallId, toolName, arguments, iteration, detail);
+            this.toolCallJournalService.blocked(executionFence, taskId, toolCallId, toolName, arguments, iteration, result);
         } else {
-            this.toolCallJournalService.failed(executionFence, taskId, toolCallId, toolName, arguments, iteration, detail);
+            this.toolCallJournalService.failed(executionFence, taskId, toolCallId, toolName, arguments, iteration, result);
         }
     }
 

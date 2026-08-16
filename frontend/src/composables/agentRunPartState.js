@@ -1,5 +1,6 @@
 import { upsertDurableToolCallState } from './agentToolCallState.js'
 import { stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
+import { mergeFinalizationBlockedEvidence } from './completionEvidenceProjection.js'
 
 function parseJson(value, fallback = {}) {
   if (!value) return fallback
@@ -128,6 +129,7 @@ export function applyRunPartSnapshot(message, parts = [], options = {}) {
         arguments: type === 'tool_result' ? undefined : parseJson(part.input),
         status: part.status,
         detail: part.output,
+        metadata: parseJson(part.metadata, {}),
         outputTruncated: part.outputTruncated === true,
         outputLength: part.outputLength || 0
       })
@@ -164,7 +166,9 @@ export function applyRunPartSnapshot(message, parts = [], options = {}) {
     if (type === 'finalization_blocker') {
       const blocker = parseJson(part.output, parseJson(part.input, {}))
       message.completionEvidence = null
-      message.completionBlockedEvidence = blocker
+      message.completionBlockedEvidence = mergeFinalizationBlockedEvidence(
+        message.completionBlockedEvidence, blocker
+      )
       message.pendingFinalContent = ''
       message.hasPendingFinalDraft = false
       return

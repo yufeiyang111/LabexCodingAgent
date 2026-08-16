@@ -55,6 +55,35 @@ class AgentRunPartServiceTest {
     }
 
     @Test
+    void persistsStructuredWorkspaceIdentityAlongsideTheToolPart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(parts.insert(any(AgentRunPart.class))).thenAnswer(invocation -> {
+            AgentRunPart part = invocation.getArgument(0);
+            part.setPartId(91L);
+            return 1;
+        });
+        Map<String, Object> workspaceIdentity = Map.of(
+                "operationFingerprint", "a".repeat(64),
+                "workingDirectory", "src/service",
+                "relativePaths", List.of("src/service/Task.java"));
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messageService())
+                .upsertToolCall(7L, "call-1", "completed", "shell",
+                        Map.of("command", "npm test"), 3, "exit=0",
+                        Map.of("workspaceIdentity", workspaceIdentity,
+                                "execution", Map.of("status", "succeeded", "exitCode", 0)));
+
+        assertThat(result.getMetadata())
+                .contains("workspaceIdentity")
+                .contains("operationFingerprint")
+                .contains("src/service/Task.java")
+                .contains("exitCode");
+    }
+
+    @Test
     void persistsToolCallDetailWithoutTruncation() {
         AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
         AgentTaskMapper tasks = mock(AgentTaskMapper.class);
@@ -201,6 +230,45 @@ class AgentRunPartServiceTest {
         assertThat(compatibilityTool.getStatus()).isEqualTo("interrupted");
         assertThat(providerCall.getStatus()).isEqualTo("interrupted");
         assertThat(toolResult.getStatus()).isEqualTo("completed");
+    }
+
+    @Test
+    void externallyResolvedToolResultMergesStructuredEvidenceWithoutReplacingTheOriginalEpoch() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunPart providerCall = new AgentRunPart();
+        providerCall.setPartId(90L);
+        providerCall.setPartType("tool_call");
+        providerCall.setToolCallId("call-1");
+        AgentRunPart compatibilityTool = new AgentRunPart();
+        compatibilityTool.setPartId(92L);
+        compatibilityTool.setPartType("tool");
+        compatibilityTool.setToolCallId("call-1");
+        compatibilityTool.setToolName("shell");
+        compatibilityTool.setStatus("waiting_approval");
+        compatibilityTool.setSequenceNumber(3L);
+        compatibilityTool.setMetadata("{\"executionEpoch\":4,\"sequence\":3,\"partType\":\"tool\",\"status\":\"waiting_approval\",\"existing\":\"preserved\"}");
+        when(parts.selectList(any())).thenReturn(List.of(providerCall));
+        when(parts.selectOne(any())).thenReturn(compatibilityTool);
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messages)
+                .resolveExistingToolCall(7L, "call-1", "completed", "status=completed\nexit=0",
+                        Map.of(
+                                "workspaceIdentity", Map.of("workingDirectory", ".", "relativePaths", List.of("skills/SKILL.md")),
+                                "workspaceMutation", Map.of("state", "applied", "changeIds", List.of("change-1")),
+                                "workspaceVerification", Map.of("state", "verified", "targets", List.of())));
+
+        assertThat(result).isSameAs(compatibilityTool);
+        assertThat(compatibilityTool.getMetadata())
+                .contains("existing")
+                .contains("preserved")
+                .contains("workspaceIdentity")
+                .contains("workspaceMutation")
+                .contains("workspaceVerification")
+                .contains("\"executionEpoch\":4")
+                .contains("\"status\":\"completed\"");
+        verify(messages).upsertAssistantTurn(7L, 3L, "completed");
     }
 
     @Test
@@ -595,6 +663,60 @@ class AgentRunPartServiceTest {
         assertThat(result.getInputJson()).contains("Visible summary");
         assertThat(result.getInputJson()).doesNotContain("private title");
         assertThat(result.getInputJson()).doesNotContainIgnoringCase("<think");
+    }
+
+    @Test
+    void persistsToolExposureAsAnAuditableDurablePart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(48L);
+        when(messages.recordEventMessage(anyLong(), anyString(), any(), anyLong())).thenReturn(message);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "TOOL_EXPOSURE", Map.of(
+                        "runtimeProfile", "labex-native",
+                        "mode", "build",
+                        "schemaFingerprint", "fingerprint-71",
+                        "definitions", List.of(Map.of("name", "read_file"))), 22L);
+
+        assertThat(result.getPartType()).isEqualTo("tool_exposure");
+        assertThat(result.getPartKey()).isEqualTo("tool-exposure:labex-native:build");
+        assertThat(result.getInputJson()).contains("schemaFingerprint").contains("fingerprint-71");
+    }
+
+    @Test
+    void persistsVisibleUnverifiedNativeFinalAlongsideItsEvidence() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(47L);
+        when(messages.recordEventMessage(anyLong(), anyString(), any(), anyLong())).thenReturn(message);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        AgentRunPart evidence = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "COMPLETION_EVIDENCE", Map.of(
+                        "satisfied", false,
+                        "finalResponseVisible", true,
+                        "finalizationStatus", "unverified",
+                        "changedFiles", List.of("skills/SKILL.md")), 24L);
+        AgentRunPart finalReply = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "FINAL", Map.of(
+                        "content", "已删除 skill，仍需要补充验证。",
+                        "completionStatus", "unverified"), 25L);
+
+        assertThat(evidence.getPartType()).isEqualTo("completion_evidence");
+        assertThat(evidence.getStatus()).isEqualTo("error");
+        assertThat(evidence.getInputJson())
+                .contains("finalResponseVisible").contains("unverified").contains("skills/SKILL.md");
+        assertThat(finalReply.getPartType()).isEqualTo("text");
+        assertThat(finalReply.getStatus()).isEqualTo("completed");
+        assertThat(finalReply.getOutputText()).isEqualTo("已删除 skill，仍需要补充验证。");
     }
 
     @Test

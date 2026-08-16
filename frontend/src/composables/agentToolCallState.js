@@ -19,7 +19,31 @@ export function projectToolResultStatus(success, result) {
   return { status: 'completed', verificationStatus }
 }
 
-export function visibleToolCallStatus(status, detail = '') {
+function visibleFailureStatus(failureClass = '') {
+  switch (String(failureClass || '').toLowerCase()) {
+    case 'cancelled':
+      return 'interrupted'
+    case 'infrastructure_error':
+      return 'warning'
+    case '':
+      return ''
+    default:
+      return 'error'
+  }
+}
+
+function structuredMetadata(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function visibleToolCallStatus(status, detail = '', failureClass = '') {
   switch (String(status || '').toLowerCase()) {
     case 'pending':
     case 'running':
@@ -29,7 +53,7 @@ export function visibleToolCallStatus(status, detail = '') {
     case 'waiting_user':
       return 'waiting_user'
     case 'completed':
-      return projectToolResultStatus(true, detail).status
+      return visibleFailureStatus(failureClass) || projectToolResultStatus(true, detail).status
     case 'environment_blocked':
       return 'warning'
     case 'skipped':
@@ -88,6 +112,8 @@ export function upsertDurableToolCallState(message, state = {}) {
       toolCallId: state.toolCallId,
       startedAt: Date.now(),
       execution: { phase: 'recovered', elapsedMs: 0 },
+      failureClass: '',
+      executionResult: null,
       _order: nextOrder(message)
     }
     message.toolCalls.push(call)
@@ -95,6 +121,13 @@ export function upsertDurableToolCallState(message, state = {}) {
   call.name = state.tool || call.name
   call.args = state.arguments || call.args || {}
   call.durableStatus = state.status || call.durableStatus || 'pending'
+  const metadata = structuredMetadata(state.metadata)
+  const failureClass = typeof metadata.failureClass === 'string' ? metadata.failureClass.trim() : ''
+  if (failureClass) call.failureClass = failureClass
+  if (metadata.execution && typeof metadata.execution === 'object' && !Array.isArray(metadata.execution)) {
+    call.executionResult = { ...metadata.execution }
+    if (metadata.execution.status) call.executionStatus = String(metadata.execution.status).toLowerCase()
+  }
   if (state.detail !== undefined && state.detail !== null) call.result = state.detail
   if (state.outputTruncated) {
     call.outputTruncated = true
@@ -120,7 +153,7 @@ export function upsertDurableToolCallState(message, state = {}) {
     // Keep a pending approval visible when a pre-pause observation reports failure.
     call.status = 'waiting_approval'
   } else {
-    call.status = visibleToolCallStatus(call.durableStatus, call.result)
+    call.status = visibleToolCallStatus(call.durableStatus, call.result, call.failureClass)
   }
   if (call.durableStatus === 'environment_blocked') call.environmentBlocker = state
   return call

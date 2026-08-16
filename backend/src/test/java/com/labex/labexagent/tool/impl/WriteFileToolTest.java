@@ -1,5 +1,6 @@
 package com.labex.labexagent.tool.impl;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -23,6 +24,8 @@ import com.labex.labexagent.tool.ToolSupport;
 import com.labex.service.StudentProjectService;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -89,6 +92,52 @@ class WriteFileToolTest {
         assertEquals("change", result.getPendingChangeId());
         verify(diffService).stageAndApplyDeferred(eq(7), same(project), eq("conversation"), eq(1L),
                 eq("Main.java"), eq(before), eq(after), eq("modify"));
+    }
+
+    @Test
+    void projectsAppliedWriteAsWorkspaceChangeEvidence() throws Exception {
+        DiffService diffService = mock(DiffService.class);
+        WriteFileTool tool = tool(diffService);
+        String before = "class Main {}";
+        String after = "class Main { void run() {} }";
+        Files.writeString(workspace.resolve("Main.java"), before);
+        AgentContext context = context();
+        context.setExecutionEpoch(8L);
+        when(diffService.stageAndApplyDeferred(eq(7), same(project), eq("conversation"), eq(1L),
+                eq("Main.java"), eq(before), eq(after), eq("modify")))
+                .thenReturn(pendingChange("Main.java", "modify", before, after));
+
+        ToolResult result = tool.execute(context, args("file_path", "Main.java", "content", after));
+
+        assertThat(result.getWorkspaceIdentity())
+                .containsEntry("taskId", 1L)
+                .containsEntry("executionEpoch", 8L)
+                .containsEntry("workingDirectory", ".")
+                .containsEntry("relativePaths", java.util.List.of("Main.java"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> mutation = (Map<String, Object>) result.durableResultMetadata().get("workspaceMutation");
+        assertThat(mutation)
+                .containsEntry("state", "applied")
+                .containsEntry("changeIds", java.util.List.of("change"));
+    }
+    @Test
+    void projectsDiffServiceWriteVerificationAlongsideChangeEvidence() throws Exception {
+        DiffService diffService = mock(DiffService.class);
+        WriteFileTool tool = tool(diffService);
+        Files.writeString(workspace.resolve("Main.java"), "class Before {}");
+        AgentContext context = context();
+        Map<String, Object> verification = Map.of("state", "verified", "targets", List.of(Map.of(
+                "path", "Main.java", "expectedState", "present", "observedState", "present")));
+        when(diffService.stageAndApplyDeferred(eq(7), same(project), eq("conversation"), eq(1L),
+                eq("Main.java"), eq("class Before {}"), eq("class After {}"), eq("modify")))
+                .thenReturn(pendingChange("Main.java", "modify", "class Before {}", "class After {}"));
+        when(diffService.peekLastApplyTelemetry())
+                .thenReturn(new DiffService.ApplyTelemetry("complete", Map.of(), verification));
+
+        ToolResult result = tool.execute(context, args("file_path", "Main.java", "content", "class After {}"));
+
+        assertThat(result.durableResultMetadata())
+                .containsEntry("workspaceVerification", verification);
     }
 
     @Test

@@ -66,6 +66,18 @@ public final class AgentToolTurnExecutor {
                     "工具 `" + toolName + "` 未在本轮模型请求中暴露，已拒绝执行。",
                     "Tool '" + toolName + "' was not exposed in this model turn.")));
         }
+        AgentTool scopedTool = context.resolveScopedTool(toolName);
+        if (scopedTool == null && canonicalToolName != null && !canonicalToolName.equals(toolName)) {
+            scopedTool = context.resolveScopedTool(canonicalToolName);
+        }
+        if (scopedTool != null) {
+            if (!AgentMode.isUnrestricted(context.getMode())) {
+                return ToolResolution.rejected(ToolResult.failed(local(language,
+                        "工具 `" + toolName + "` 在 " + context.getMode() + " 模式下不可用。",
+                        "Tool '" + toolName + "' is not allowed in " + context.getMode() + " mode.")));
+            }
+            return ToolResolution.allowed(scopedTool);
+        }
         if (!registry.isToolAllowed(context.getMode(), toolName)) {
             return ToolResolution.rejected(ToolResult.failed(local(language,
                     "工具 `" + toolName + "` 在 " + context.getMode() + " 模式下不可用。",

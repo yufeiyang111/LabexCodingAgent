@@ -115,11 +115,24 @@ class AgentLoopEngineStreamingContractTest {
         assertTrue(source.contains("this.sendEvent(sse, conv, \"WORKSPACE_CHANGED\", workspace, workspaceKey);"));
         assertTrue(source.contains("if (r.getDiff() != null || r.getPendingChangeId() != null) {"));
         assertTrue(source.contains("workspace.put(\"workspaceChangeId\", \"tool:\" + (toolCallId == null ? \"unknown\" : toolCallId));"));
+        assertTrue(source.contains("workspace.put(\"workspaceIdentity\", r.getWorkspaceIdentity());"));
+        assertTrue(source.contains("workspace.put(\"workspaceMutation\", workspaceMutation);"));
+        assertTrue(source.contains("workspace.put(\"workspaceVerification\", workspaceVerification);"));
         assertTrue(source.contains("String workspaceKey = toolCallId == null || toolCallId.isBlank() ? \"\" : \"tool-workspace-changed:\" + toolCallId;"));
         int observe = source.indexOf("this.sendEvent(sse, conv, \"OBSERVE\", o);");
         int workspaceChanged = source.indexOf("this.sendEvent(sse, conv, \"WORKSPACE_CHANGED\", workspace, workspaceKey);");
         assertTrue(observe >= 0);
         assertTrue(workspaceChanged > observe);
+    }
+
+    @Test
+    void preservesStructuredToolEvidenceWhenLegacyTurnsReachTerminalPartStates() {
+        // legacy 对话仍可能继续执行；不能在这里退化为 String detail，
+        // 否则 workspace identity、mutation 和 verification 都会从 durable Part 中丢失。
+        assertTrue(source.contains("this.toolCallJournalService.completed(executionFence, taskId, toolCallId, toolName, arguments, iteration, result);"));
+        assertTrue(source.contains("this.toolCallJournalService.interrupted(executionFence, taskId, toolCallId, toolName, arguments, iteration, result);"));
+        assertTrue(source.contains("this.toolCallJournalService.blocked(executionFence, taskId, toolCallId, toolName, arguments, iteration, result);"));
+        assertTrue(source.contains("this.toolCallJournalService.failed(executionFence, taskId, toolCallId, toolName, arguments, iteration, result);"));
     }
 
     @Test

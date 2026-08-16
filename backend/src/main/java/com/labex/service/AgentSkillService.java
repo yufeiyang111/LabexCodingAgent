@@ -32,6 +32,41 @@ public class AgentSkillService extends ServiceImpl<AgentSkillMapper, AgentSkill>
                 .last("LIMIT " + MAX_PROMPT_SKILLS));
     }
 
+    /**
+     * 仅查询是否存在可供 native runtime 按需读取的 Skill，避免在 Provider 请求前加载正文。
+     */
+    public boolean hasEnabledSkills(Integer studentId) {
+        if (studentId == null) {
+            return false;
+        }
+        return this.count(new LambdaQueryWrapper<AgentSkill>()
+                .eq(AgentSkill::getStudentId, studentId)
+                .eq(AgentSkill::getStatus, 1)
+                .eq(AgentSkill::getIsEnabled, 1)) > 0;
+    }
+
+    /**
+     * 返回模型发现 Skill 所需的紧凑目录；正文只能由明确指定的 Skill 调用读取。
+     */
+    public List<SkillCatalogEntry> listEnabledCatalog(Integer studentId) {
+        if (studentId == null) {
+            return List.of();
+        }
+        return this.list(new LambdaQueryWrapper<AgentSkill>()
+                        .select(AgentSkill::getSkillKey, AgentSkill::getTitle, AgentSkill::getDescription)
+                        .eq(AgentSkill::getStudentId, studentId)
+                        .eq(AgentSkill::getStatus, 1)
+                        .eq(AgentSkill::getIsEnabled, 1)
+                        .orderByDesc(AgentSkill::getUpdateTime)
+                        .last("LIMIT " + MAX_PROMPT_SKILLS))
+                .stream()
+                .map(skill -> new SkillCatalogEntry(skill.getSkillKey(), skill.getTitle(), skill.getDescription()))
+                .toList();
+    }
+
+    public record SkillCatalogEntry(String skillKey, String title, String description) {
+    }
+
     public AgentSkill getOwned(Integer studentId, Integer skillId) {
         return this.lambdaQuery()
                 .eq(AgentSkill::getStudentId, studentId)

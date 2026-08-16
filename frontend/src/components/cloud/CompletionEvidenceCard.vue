@@ -14,7 +14,12 @@
 <script setup>
 import { computed } from 'vue'
 const props = defineProps({ evidence: { type: Object, required: true } })
-const title = computed(() => props.evidence?.satisfied ? '服务器完成证据已满足' : '服务器拒绝完成：证据不足')
+const title = computed(() => {
+  if (props.evidence?.satisfied) return '服务器完成证据已满足'
+  return props.evidence?.finalResponseVisible
+    ? '服务器验证未满足（已展示模型答复）'
+    : '服务器拒绝完成：证据不足'
+})
 const changed = computed(() => list('changedFiles'))
 const passed = computed(() => list('successfulVerifications'))
 const failed = computed(() => list('failedVerifications'))

@@ -3,6 +3,7 @@ package com.labex.labexagent.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.labex.labexagent.tool.ToolResult;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -73,17 +74,24 @@ public final class AgentLoopGuard {
         recordToolResult("", success);
     }
 
+    /**
+     * 仅将真实成功视为可重置的执行进展；不同输入的失败由签名级重试检测处理，
+     * 不能被误计为模型连续无进展，否则正常的诊断/探索会在固定轮数后被提前停止。
+     */
+    public void recordToolResult(String signature, ToolResult result) {
+        recordToolResult(signature, result != null && result.isSuccessfulExecutionOutcome());
+    }
+
     public void recordToolResult(String signature, boolean success) {
         if (success) {
             nonProgressIterations = 0;
             if (signature != null && !signature.isBlank()) {
                 failedToolSignatures.remove(signature);
             }
-        } else {
-            recordModelNoProgress();
-            if (signature != null && !signature.isBlank()) {
-                failedToolSignatures.merge(signature, 1, Integer::sum);
-            }
+            return;
+        }
+        if (signature != null && !signature.isBlank()) {
+            failedToolSignatures.merge(signature, 1, Integer::sum);
         }
     }
 

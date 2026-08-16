@@ -461,6 +461,26 @@ test('live TOOL_CALL merges by toolCallId after snapshot hydration', () => {
   assert.equal(assistant.toolCalls[0].status, 'error')
 })
 
+test('live OBSERVE keeps a completed nonzero shell exit visibly failed', () => {
+  const state = harness()
+  const assistant = message()
+  state.handleAgentEvent({ type: 'TOOL_CALL', data: { taskId: 4, tool: 'shell', toolCallId: 'shell-nonzero', arguments: { command: 'npm run build' } } }, assistant)
+  state.handleAgentEvent({ type: 'TOOL_CALL_STATE', data: {
+    taskId: 4, tool: 'shell', toolCallId: 'shell-nonzero', status: 'completed',
+    metadata: { failureClass: 'non_zero_exit', execution: { status: 'failed', exitCode: 2, workdir: 'frontend' } }
+  } }, assistant)
+
+  state.handleAgentEvent({ type: 'OBSERVE', data: {
+    taskId: 4, toolCallId: 'shell-nonzero', success: true, content: 'exit=2\nstatus=failed',
+    executionStatus: 'failed', failureClass: 'non_zero_exit',
+    execution: { status: 'failed', exitCode: 2, workdir: 'frontend' }
+  } }, assistant)
+
+  assert.equal(assistant.toolCalls[0].durableStatus, 'completed')
+  assert.equal(assistant.toolCalls[0].status, 'error')
+  assert.equal(assistant.toolCalls[0].failureClass, 'non_zero_exit')
+  assert.equal(assistant.toolCalls[0].executionResult.exitCode, 2)
+})
 test('live OBSERVE projects structured timed_out and cancelled execution statuses', () => {
   const state = harness()
   const assistant = message()

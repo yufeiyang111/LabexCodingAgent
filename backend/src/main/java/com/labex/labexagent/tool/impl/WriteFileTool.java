@@ -8,10 +8,13 @@ import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
+import com.labex.labexagent.workspace.WorkspaceOperationIdentity;
 import com.labex.service.StudentProjectService;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +34,7 @@ public class WriteFileTool implements AgentTool {
 
     public ToolDefinition definition() {
         return ToolDefinition.builder().name("write_file")
-                .description("Create a new file or replace the entire content of an existing file. Changes are applied immediately, recorded in history, and can be reverted.")
+                .description("Create one text file or intentionally replace the entire content of one existing file. Use apply_patch for contextual partial edits or file deletion. Changes are applied immediately, recorded in history, and can be reverted.")
                 .stringProperty("file_path", "File path", true)
                 .stringProperty("content", "File content", true)
                 .build();
@@ -84,9 +87,16 @@ public class WriteFileTool implements AgentTool {
             long totalElapsedMs = elapsedMs(totalStartedNanos);
             log.info("WRITE_FILE_TOOL_COMPLETE taskId={} path={} changeId={} applyMs={} totalMs={}",
                     context.getTaskId(), cleaned, change.getId(), applyElapsedMs, totalElapsedMs);
+            DiffService.ApplyTelemetry telemetry = this.diffService.peekLastApplyTelemetry();
+            Map<String, Object> workspaceVerification = telemetry == null ? Map.of()
+                    : telemetry.workspaceVerification();
             return ToolResult.ok("\u5df2\u81ea\52a8\u5199\u5165\u6587\u4ef6: " + path
                             + "\uff08\u53ef\u968f\u65f6\u56de\u9000\uff09")
-                    .withDiff(change.getDiff()).withPendingChangeId(change.getId());
+                    .withDiff(change.getDiff()).withPendingChangeId(change.getId())
+                    .withWorkspaceChangeEvidence(
+                            WorkspaceOperationIdentity.forContext(context, context.getWorkspaceRoot(), List.of(cleaned)),
+                            List.of(change.getId()))
+                    .withWorkspaceVerification(workspaceVerification);
         } catch (Exception failure) {
             log.warn("WRITE_FILE_TOOL_FAILED taskId={} path={} applyMs={} totalMs={} errorType={} error={}",
                     context.getTaskId(), cleaned, elapsedMs(applyStartedNanos), elapsedMs(totalStartedNanos),

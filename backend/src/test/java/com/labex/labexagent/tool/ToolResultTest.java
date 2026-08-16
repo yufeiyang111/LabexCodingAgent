@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.labex.labexagent.execution.ExecutionStatus;
 import com.labex.labexagent.execution.ProcessExecutionResult;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class ToolResultTest {
@@ -20,6 +21,7 @@ class ToolResultTest {
         ToolResult result = ToolResult.fromProcessExit(137, "process terminated");
 
         assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getFailureClass()).isEqualTo("non_zero_exit");
         assertThat(result.getContent()).isEqualTo("exit=137\nprocess terminated");
     }
 
@@ -39,6 +41,36 @@ class ToolResultTest {
                 .endsWith("tests passed");
     }
 
+    @Test
+    void observedNonZeroExitRemainsVisibleButIsNotASuccessfulExecutionOutcome() {
+        ProcessExecutionResult execution = new ProcessExecutionResult(
+                ExecutionStatus.FAILED, 2, 321, "build output", false);
+
+        ToolResult result = ToolResult.fromObservedProcessExecution(execution, "bash", "frontend", null);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.isSuccessfulExecutionOutcome()).isFalse();
+    }
+
+    @Test
+    void durableMetadataClassifiesNonZeroExecutionAndPreservesSafeExecutionTarget() {
+        ProcessExecutionResult execution = new ProcessExecutionResult(
+                ExecutionStatus.FAILED, 2, 321, "build output", true,
+                ".labex-agent/artifacts/task-9/call-1.log", 15_000L);
+
+        ToolResult result = ToolResult.fromObservedProcessExecution(
+                execution, "bash", "frontend", ".labex-agent/artifacts/task-9/call-1.log");
+
+        Map<String, Object> metadata = result.durableResultMetadata();
+        assertThat(metadata).containsEntry("failureClass", "non_zero_exit");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> executionMetadata = (Map<String, Object>) metadata.get("execution");
+        assertThat(executionMetadata)
+                .containsEntry("status", "failed")
+                .containsEntry("exitCode", 2)
+                .containsEntry("workdir", "frontend")
+                .containsEntry("outputPath", ".labex-agent/artifacts/task-9/call-1.log");
+    }
     @Test
     void structuredProcessResultExposesArtifactAndExecutionEnvironment() {
         ProcessExecutionResult execution = new ProcessExecutionResult(

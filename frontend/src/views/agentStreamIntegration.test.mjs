@@ -5,6 +5,7 @@ import test from 'node:test'
 const source = await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 'utf8')
 const runtimeSource = await readFile(new URL('../composables/useAgentTaskRuntime.js', import.meta.url), 'utf8')
 const timelineSource = await readFile(new URL('../composables/useAgentEventTimeline.js', import.meta.url), 'utf8')
+const completionEvidenceSource = await readFile(new URL('../components/cloud/CompletionEvidenceCard.vue', import.meta.url), 'utf8')
 const terminalPanelSource = await readFile(new URL('../components/terminal/TerminalPanel.vue', import.meta.url), 'utf8')
 
 test('terminal command completion reloads the file tree without manual refresh', () => {
@@ -164,4 +165,13 @@ test('provider candidate final text stays provisional until the run finalizes', 
 test('question and approval pauses do not reconnect before an explicit user decision', () => {
   assert.match(timelineSource, /case 'TASK_PAUSED':[\s\S]*!\['command_approval', 'permission', 'network', 'question'\]\.includes\(data\.reason\)/)
   assert.match(source, /async function handleQuestionReply\(payload\) \{[\s\S]*?replayResumedAgent\(taskId, assistantMsg(?:, [^)]+)?\)/)
+})
+
+test('CloudWorkspace renders a durable finalization blocker instead of silently truncating the conversation', () => {
+  assert.match(source, /msg\.completionEvidence \|\| msg\.completionBlockedEvidence/)
+  assert.match(source, /:evidence="msg\.completionEvidence \|\| msg\.completionBlockedEvidence"/)
+})
+
+test('CloudWorkspace labels a visible native final with unsatisfied evidence without calling it a rejected reply', () => {
+  assert.match(completionEvidenceSource, /finalResponseVisible[\s\S]*服务器验证未满足（已展示模型答复）/)
 })

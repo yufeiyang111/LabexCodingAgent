@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LabexAgent UI 优化方案 - 对话界面演示</title>
+  <style>
+    /* ==================== 基础变量 ==================== */
+    :root {
+      /* 侘寂风格保留 - 低饱和度、自然色系 */
+      --wabi-bg: #f8f6f3;
+      --wabi-surface: #ffffff;
+      --wabi-surface-warm: #faf9f7;
+      --wabi-border: #e8e4df;
+      --wabi-border-light: #f0ece8;
+
+      --wabi-text: #2c2c2c;
+      --wabi-text-secondary: #8a8580;
+      --wabi-text-muted: #b5b0ab;
+
+      --wabi-green: #7a8b6f;
+      --wabi-green-light: #e8ede5;
+      --wabi-accent: #7a8b6f;
+
+      /* 现代 coding agent 增强色 */
+      --agent-thinking-bg: #f5f3ff;
+      --agent-thinking-border: #e9d5ff;
+      --agent-thinking-text: #6b21a8;
+
+      --tool-running: #3b82f6;
+      --tool-success: #10b981;
+      --tool-error: #ef4444;
+      --tool-warning: #f59e0b;
+      --tool-waiting: #8b5cf6;
+
+      /* 代码块 */
+      --code-bg: #1e293b;
+      --code-text: #e2e8f0;
+      --code-comment: #94a3b8;
+      --code-keyword: #7dd3fc;
+      --code-string: #86efac;
+
+      /* 阴影和圆角 */
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+      --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
+      --shadow-lg: 0 4px 16px rgba(0,0,0,0.08);
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+    }
+
+    /* ==================== 全局样式 ==================== */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+      background: var(--wabi-bg);
+      color: var(--wabi-text);
+      line-height: 1.6;
+      padding: 20px;
+    }
+
+    .demo-container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: var(--wabi-surface);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+    }
+
+    /* ==================== 顶部说明 ==================== */
+    .demo-header {
+      background: linear-gradient(135deg, var(--wabi-green), #6b7d60);
+      color: white;
+      padding: 24px 28px;
+    }
+
+    .demo-header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .demo-header p {
+      font-size: 14px;
+      opacity: 0.9;
+      line-height: 1.5;
+    }
+
+    .demo-meta {
+      display: flex;
+      gap: 16px;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+
+    .demo-badge {
+      background: rgba(255,255,255,0.2);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-weight: 500;
+    }
+
+    /* ==================== 对话区域 ==================== */
+    .chat-area {
+      padding: 24px 28px;
+      min-height: 600px;
+    }
+
+    /* ==================== 消息基础 ==================== */
+    .message {
+      margin-bottom: 24px;
+      animation: messageSlideIn 0.3s ease;
+    }
+
+    @keyframes messageSlideIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .message-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 14px;
+    }
+
+    .message-avatar.user {
+      background: linear-gradient(135deg, #6b7d60, #7a8b6f);
+      color: white;
+    }
+
+    .message-avatar.assistant {
+      background: linear-gradient(135deg, #8b5cf6, #a78bfa);
+      color: white;
+    }
+
+    .message-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+    }
+
+    .message-author {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--wabi-text);
+    }
+
+    .message-time {
+      font-size: 12px;
+      color: var(--wabi-text-secondary);
+    }
+
+    /* ==================== 用户消息 ==================== */
+    .message.user .message-content {
+      background: var(--wabi-surface-warm);
+      border: 1px solid var(--wabi-border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* ==================== Agent 消息 ==================== */
+    .message.assistant .message-body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* ==================== 思考过程 - 新设计 ==================== */
+    .thinking-block {
+      background: var(--agent-thinking-bg);
+      border: 1px solid var(--agent-thinking-border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      transition: all 0.2s ease;
+    }
+
+    .thinking-block:hover {
+      box-shadow: var(--shadow-sm);
+    }
+
+    .thinking-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      user-select: none;
+      background: linear-gradient(to bottom, rgba(139,92,246,0.05), transparent);
+    }
+
+    .thinking-header:hover {
+      background: rgba(139,92,246,0.08);
+    }
+
+    .thinking-icon {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .thinking-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .thinking-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--agent-thinking-text);
+      letter-spacing: 0.3px;
+    }
+
+    .thinking-summary {
+      font-size: 12px;
+      color: #7c3aed;
+      opacity: 0.8;
+      margin-left: auto;
+      max-width: 400px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .thinking-toggle {
+      margin-left: 8px;
+      transition: transform 0.2s;
+    }
+
+    .thinking-toggle.expanded {
+      transform: rotate(90deg);
+    }
+
+    .thinking-content {
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.7;
+      color: #581c87;
+      border-top: 1px solid var(--agent-thinking-border);
+    }
+
+    .thinking-content p {
+      margin-bottom: 10px;
+    }
+
+    .thinking-content p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* 流式思考中的动画 */
+    .thinking-block.streaming .thinking-header {
+      animation: thinkingPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes thinkingPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.8; }
+    }
+
+    .thinking-cursor {
+      display: inline-block;
+      width: 8px;
+      height: 14px;
+      background: var(--agent-thinking-text);
+      margin-left: 4px;
+      animation: cursorBlink 1s steps(2) infinite;
+    }
+
+    @keyframes cursorBlink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* ==================== 工具调用卡片 - 优化版 ==================== */
+    .tool-call {
+      background: white;
+      border: 1px solid var(--wabi-border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      transition: all 0.2s ease;
+    }
+
+    .tool-call:hover {
+      box-shadow: var(--shadow-md);
+      border-color: var(--wabi-text-muted);
+    }
+
+    .tool-call.running {
+      border-left: 3px solid var(--tool-running);
+    }
+
+    .tool-call.completed {
+      border-left: 3px solid var(--tool-success);
+    }
+
+    .tool-call.error {
+      border-left: 3px solid var(--tool-error);
+    }
+
+    .tool-call.waiting {
+      border-left: 3px solid var(--tool-warning);
+    }
+
+    .tool-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s;
+    }
+
+    .tool-header:hover {
+      background: var(--wabi-surface-warm);
+    }
+
+    .tool-status-icon {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .tool-status-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .tool-status-icon.running svg {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .tool-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .tool-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--wabi-text);
+      margin-bottom: 2px;
+    }
+
+    .tool-summary {
+      font-size: 12px;
+      color: var(--wabi-text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tool-timing {
+      font-size: 11px;
+      color: var(--wabi-text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tool-timing-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .tool-body {
+      padding: 12px 14px;
+      border-top: 1px solid var(--wabi-border-light);
+      font-size: 13px;
+    }
+
+    .tool-section {
+      margin-bottom: 12px;
+    }
+
+    .tool-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .tool-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--wabi-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .tool-arg {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+
+    .tool-arg-key {
+      color: var(--wabi-text-secondary);
+      font-weight: 600;
+      min-width: 60px;
+      flex-shrink: 0;
+    }
+
+    .tool-arg-value {
+      color: var(--wabi-text);
+      word-break: break-all;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 11px;
+    }
+
+    .tool-arg-value.file {
+      color: #6366f1;
+    }
+
+    /* ==================== 代码块 - 增强版 ==================== */
+    .code-block {
+      position: relative;
+      background: var(--code-bg);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      margin: 8px 0;
+    }
+
+    .code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: rgba(0,0,0,0.2);
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .code-lang {
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.6);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .code-copy-btn {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.8);
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .code-copy-btn:hover {
+      background: rgba(255,255,255,0.2);
+      color: white;
+    }
+
+    .code-content {
+      padding: 12px;
+      overflow-x: auto;
+    }
+
+    .code-content pre {
+      margin: 0;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--code-text);
+    }
+
+    .code-line {
+      display: block;
+    }
+
+    .code-keyword { color: var(--code-keyword); }
+    .code-string { color: var(--code-string); }
+    .code-comment { color: var(--code-comment); font-style: italic; }
+    .code-function { color: #fcd34d; }
+
+    /* ==================== Agent 输出文本 ==================== */
+    .agent-output {
+      background: white;
+      border: 1px solid var(--wabi-border);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--wabi-text);
+    }
+
+    .agent-output p {
+      margin-bottom: 12px;
+    }
+
+    .agent-output p:last-child {
+      margin-bottom: 0;
+    }
+
+    .agent-output code {
+      background: var(--wabi-border-light);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'SF Mono', monospace;
+      font-size: 13px;
+      color: #6366f1;
+    }
+
+    /* ==================== 时间轴视图 ==================== */
+    .timeline-view {
+      margin-top: 16px;
+      padding: 16px;
+      background: var(--wabi-surface-warm);
+      border: 1px solid var(--wabi-border);
+      border-radius: var(--radius-md);
+    }
+
+    .timeline-header {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--wabi-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .timeline-item {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+      position: relative;
+    }
+
+    .timeline-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .timeline-item::before {
+      content: '';
+      position: absolute;
+      left: 7px;
+      top: 24px;
+      bottom: -12px;
+      width: 2px;
+      background: var(--wabi-border);
+    }
+
+    .timeline-item:last-child::before {
+      display: none;
+    }
+
+    .timeline-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      margin-top: 2px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .timeline-dot.thinking {
+      background: var(--agent-thinking-text);
+    }
+
+    .timeline-dot.tool {
+      background: var(--tool-success);
+    }
+
+    .timeline-content {
+      flex: 1;
+      font-size: 12px;
+    }
+
+    .timeline-label {
+      font-weight: 600;
+      color: var(--wabi-text);
+      margin-bottom: 2px;
+    }
+
+    .timeline-detail {
+      color: var(--wabi-text-secondary);
+      font-size: 11px;
+    }
+
+    /* ==================== 响应式 ==================== */
+    @media (max-width: 768px) {
+      body { padding: 12px; }
+      .demo-header { padding: 20px; }
+      .chat-area { padding: 16px; }
+      .demo-header h1 { font-size: 18px; }
+    }
+
+    /* ==================== 滚动条美化 ==================== */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--wabi-border-light);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--wabi-text-muted);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--wabi-text-secondary);
+    }
+  </style>
+</head>
+<body>
+  <div class="demo-container">
+    <!-- 顶部说明 -->
+    <div class="demo-header">
+      <h1>🎨 LabexAgent UI 优化演示</h1>
+      <p>基于 2026 年主流 coding agent (Claude Code, Cursor) 的设计最佳实践,融合侘寂风格进行的界面优化方案</p>
+      <div class="demo-meta">
+        <span class="demo-badge">✨ 视觉层次优化</span>
+        <span class="demo-badge">🔄 流式体验增强</span>
+        <span class="demo-badge">📊 状态透明度提升</span>
+      </div>
+    </div>
+
+    <!-- 对话区域 -->
+    <div class="chat-area">
+
+      <!-- 用户消息 -->
+      <div class="message user">
+        <div class="message-header">
+          <div class="message-avatar user">👤</div>
+          <div class="message-meta">
+            <span class="message-author">You</span>
+            <span class="message-time">14:32</span>
+          </div>
+        </div>
+        <div class="message-content">
+          请帮我重构 UserService.java,把用户注册逻辑拆分成独立的方法,并添加参数校验
+        </div>
+      </div>
+
+      <!-- Agent 消息 -->
+      <div class="message assistant">
+        <div class="message-header">
+          <div class="message-avatar assistant">🤖</div>
+          <div class="message-meta">
+            <span class="message-author">LabexAgent</span>
+            <span class="message-time">14:32</span>
+          </div>
+        </div>
+
+        <div class="message-body">
+
+          <!-- 思考过程 - 新样式 -->
+          <div class="thinking-block">
+            <div class="thinking-header" onclick="toggleThinking(this)">
+              <div class="thinking-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#6b21a8" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/>
+                </svg>
+              </div>
+              <span class="thinking-label">思考过程</span>
+              <span class="thinking-summary">分析代码结构,规划重构方案</span>
+              <svg class="thinking-toggle" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </div>
+            <div class="thinking-content" style="display: none;">
+              <p>首先读取 UserService.java 文件,了解当前的注册逻辑实现。</p>
+              <p>我发现注册方法中包含了密码加密、权限初始化、数据库保存等多个职责,违反了单一职责原则。</p>
+              <p>重构计划:
+                <br>1. 提取 validateUserInput() 方法进行参数校验
+                <br>2. 提取 encryptPassword() 方法处理密码加密
+                <br>3. 提取 initializeUserRole() 方法初始化用户权限
+                <br>4. 主注册方法 register() 只负责协调这些步骤</p>
+            </div>
+          </div>
+
+          <!-- 工具调用 1: 读取文件 - 已完成 -->
+          <div class="tool-call completed">
+            <div class="tool-header" onclick="toggleTool(this)">
+              <div class="tool-status-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              </div>
+              <div class="tool-info">
+                <div class="tool-name">读取文件</div>
+                <div class="tool-summary">src/main/java/com/labex/service/UserService.java</div>
+              </div>
+              <div class="tool-timing">
+                <span class="tool-timing-dot" style="color: #10b981;"></span>
+                <span>0.3s</span>
+              </div>
+            </div>
+            <div class="tool-body" style="display: none;">
+              <div class="tool-section">
+                <div class="tool-section-label">参数</div>
+                <div class="tool-arg">
+                  <span class="tool-arg-key">文件</span>
+                  <span class="tool-arg-value file">src/main/java/com/labex/service/UserService.java</span>
+                </div>
+              </div>
+              <div class="tool-section">
+                <div class="tool-section-label">结果</div>
+                <div class="code-block">
+                  <div class="code-header">
+                    <span class="code-lang">Java</span>
+                    <button class="code-copy-btn">复制</button>
+                  </div>
+                  <div class="code-content">
+                    <pre><span class="code-line"><span class="code-keyword">public</span> User <span class="code-function">register</span>(String username, String password) {</span>
+<span class="code-line">    <span class="code-comment">// 参数校验、密码加密、保存全部混在一起</span></span>
+<span class="code-line">    <span class="code-keyword">if</span> (username == <span class="code-keyword">null</span> || password == <span class="code-keyword">null</span>) {</span>
+<span class="code-line">        <span class="code-keyword">throw new</span> IllegalArgumentException(<span class="code-string">"参数不能为空"</span>);</span>
+<span class="code-line">    }</span>
+<span class="code-line">    String encrypted = BCrypt.hashpw(password, BCrypt.gensalt());</span>
+<span class="code-line">    User user = <span class="code-keyword">new</span> User(username, encrypted);</span>
+<span class="code-line">    user.setRole(<span class="code-string">"USER"</span>);</span>
+<span class="code-line">    <span class="code-keyword">return</span> userMapper.insert(user);</span>
+<span class="code-line">}</span></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 工具调用 2: 编辑文件 - 运行中 -->
+          <div class="tool-call running">
+            <div class="tool-header" onclick="toggleTool(this)">
+              <div class="tool-status-icon running">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                </svg>
+              </div>
+              <div class="tool-info">
+                <div class="tool-name">编辑文件</div>
+                <div class="tool-summary">重构注册方法,提取子方法</div>
+              </div>
+              <div class="tool-timing">
+                <span class="tool-timing-dot" style="color: #3b82f6;"></span>
+                <span>1.2s</span>
+              </div>
+            </div>
+            <div class="tool-body" style="display: none;">
+              <div class="tool-section">
+                <div class="tool-section-label">参数</div>
+                <div class="tool-arg">
+                  <span class="tool-arg-key">文件</span>
+                  <span class="tool-arg-value file">src/main/java/com/labex/service/UserService.java</span>
+                </div>
+                <div class="tool-arg">
+                  <span class="tool-arg-key">操作</span>
+                  <span class="tool-arg-value">替换 register 方法实现</span>
+                </div>
+              </div>
+              <div class="tool-section">
+                <div class="tool-section-label">执行阶段</div>
+                <div style="font-size: 12px; color: #3b82f6;">正在应用代码修改...</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Agent 输出文本 -->
+          <div class="agent-output">
+            <p>我已经读取了 <code>UserService.java</code> 文件,发现注册逻辑确实需要重构。</p>
+            <p>正在进行以下改进:</p>
+            <p>
+              1. <strong>提取参数校验</strong> - 新增 <code>validateUserInput()</code> 方法<br>
+              2. <strong>提取密码加密</strong> - 新增 <code>encryptPassword()</code> 方法<br>
+              3. <strong>提取权限初始化</strong> - 新增 <code>initializeUserRole()</code> 方法<br>
+              4. <strong>简化主方法</strong> - <code>register()</code> 现在只负责协调流程
+            </p>
+            <p>这样每个方法都有单一职责,代码更易测试和维护。</p>
+          </div>
+
+          <!-- 时间轴视图(可选) -->
+          <div class="timeline-view">
+            <div class="timeline-header">执行时间轴</div>
+
+            <div class="timeline-item">
+              <div class="timeline-dot thinking"></div>
+              <div class="timeline-content">
+                <div class="timeline-label">思考与规划</div>
+                <div class="timeline-detail">分析代码结构,制定重构方案 · 2.1s</div>
+              </div>
+            </div>
+
+            <div class="timeline-item">
+              <div class="timeline-dot tool"></div>
+              <div class="timeline-content">
+                <div class="timeline-label">读取文件</div>
+                <div class="timeline-detail">UserService.java · 0.3s</div>
+              </div>
+            </div>
+
+            <div class="timeline-item">
+              <div class="timeline-dot tool" style="background: #3b82f6;"></div>
+              <div class="timeline-content">
+                <div class="timeline-label">编辑文件 (进行中)</div>
+                <div class="timeline-detail">应用重构修改 · 1.2s</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- 用户消息 2 -->
+      <div class="message user">
+        <div class="message-header">
+          <div class="message-avatar user">👤</div>
+          <div class="message-meta">
+            <span class="message-author">You</span>
+            <span class="message-time">14:35</span>
+          </div>
+        </div>
+        <div class="message-content">
+          看起来不错,还能帮我添加单元测试吗?
+        </div>
+      </div>
+
+      <!-- Agent 消息 2 (流式中) -->
+      <div class="message assistant">
+        <div class="message-header">
+          <div class="message-avatar assistant">🤖</div>
+          <div class="message-meta">
+            <span class="message-author">LabexAgent</span>
+            <span class="message-time">14:35</span>
+          </div>
+        </div>
+
+        <div class="message-body">
+
+          <!-- 流式思考中 -->
+          <div class="thinking-block streaming">
+            <div class="thinking-header">
+              <div class="thinking-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#6b21a8" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/>
+                </svg>
+              </div>
+              <span class="thinking-label">思考中...</span>
+              <span class="thinking-cursor"></span>
+            </div>
+            <div class="thinking-content">
+              <p>当然可以!我会为重构后的方法编写完整的单元测试。</p>
+              <p>测试策略:
+                <br>1. 测试正常注册流程
+                <br>2. 测试参数校验(空值、格式错误)
+                <br>3. 测试密码加密是否正确
+                <br>4. 使用 Mockito mock UserMapper...</p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    // 折叠/展开思考过程
+    function toggleThinking(header) {
+      const content = header.nextElementSibling;
+      const toggle = header.querySelector('.thinking-toggle');
+      if (content.style.display === 'none') {
+        content.style.display = 'block';
+        toggle.classList.add('expanded');
+      } else {
+        content.style.display = 'none';
+        toggle.classList.remove('expanded');
+      }
+    }
+
+    // 折叠/展开工具调用
+    function toggleTool(header) {
+      const body = header.nextElementSibling;
+      if (body.style.display === 'none') {
+        body.style.display = 'block';
+      } else {
+        body.style.display = 'none';
+      }
+    }
+
+    // 复制代码
+    document.querySelectorAll('.code-copy-btn').forEach(btn => {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const codeBlock = this.closest('.code-block');
+        const code = codeBlock.querySelector('pre').textContent;
+        navigator.clipboard.writeText(code).then(() => {
+          this.textContent = '✓ 已复制';
+          setTimeout(() => {
+            this.textContent = '复制';
+          }, 2000);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

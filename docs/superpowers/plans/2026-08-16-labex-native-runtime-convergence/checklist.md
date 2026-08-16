@@ -36,38 +36,47 @@
 - [x] 未执行 Part 显式 interrupted 或 skipped（approval 的真实 `skipped` 已覆盖；cancellation 组件回归已覆盖 `interrupted`，其 H2 回归待补）。
 - [ ] epoch、lease、approval、resume 幂等。
 - [ ] overflow 与循环保护有限且可解释。
+  - [x] 不同参数的失败工具调用不再被累计为“模型连续无进展”；同签名重复失败仍由持久化签名循环检测阻断。
+  - [x] shell 非零 exit 仍以可读的已完成工具输出交给模型，但不能重置循环保护，也会进入同签名失败检测。
 
 ## 工具与安全
 
 - [ ] native schema 没有重叠 command/test/control 工具。
+  - [x] 文件 mutation 已收敛：新 native build 不暴露 `edit_file`；`write_file` 只负责单文件创建/全量替换，`apply_patch` 只负责精确上下文替换/删除；旧 exposure snapshot 保持其原始 schema 可恢复。
+  - [x] native command schema 仅暴露 `shell`；`bash`、`run_command`、`run_tests`、`execute_code` 不进入新 native build 的模型 schema。
 - [ ] normal install、build、test、lint、dev、Git add/commit 可用。
 - [ ] destructive、越界、secret、生产高风险操作受结构化保护。
-- [ ] shell 结果记录 exit、error、target、证据。
+- [x] shell 结果记录 exit、error、target、证据：C8 已将退出码、稳定 `failureClass`、安全相对 workdir/artifact path 与既有 identity/verification 写入 durable Tool Part/Event；真实 worker/browser 现场仍待验收。
 - [ ] 文件 mutation 记录 before/after 与 target identity。
 - [ ] 删除失败不会产生成功 verification。
+  - [x] direct `write_file` / `apply_patch` 已在 workspace lease 内记录真实写后 verification；临时 workspace 删除回归已覆盖文件、change-set、ToolResult/Part/Event 投影一致。
+  - [x] approval `shell` 已将 snapshot change-set 的真实 postcondition（delete=absent，其它=regular_file）与 identity/changeId 写回原 ToolResult、既有 Tool Part 和 `WORKSPACE_CHANGED`；真实 worker 与浏览器刷新验收仍待完成。
 - [ ] 重复恢复不会产生第二次副作用。
+  - [x] approval consume 的第二次执行不会再次启动命令或 resume（聚焦回归已覆盖）；完整断线/worker 接管恢复仍待验收。
 
 ## Final 与前端
 
-- [ ] final candidate、accepted、rejected、interrupted durable 可重放。
+- [x] native final 与服务器验证证据可 durable 回放（legacy 的全部 candidate/rejected 分支仍待统一验收）。
 - [ ] 任务终态不由 SSE close 推断。
-- [ ] final 在刷新与重连后仍显示。
+- [x] native final 在 reducer replay / 流式事件回放后仍显示（真实浏览器 smoke 仍待执行）。
 - [ ] tool 失败会在 UI 与 verification 中保留。
+  - [x] C9：durable Tool Part / `TOOL_CALL_STATE` 的 `metadata.failureClass` 和 `execution` 已在 reducer 中投影；完成 transport 的非零 shell exit 显示为错误而非绿色完成，native `shell` 卡片可显示命令。真实浏览器 smoke 仍待做。
 - [ ] 计划为 UI projection，不是 tool completion gate。
 - [ ] workspace change 仅刷新正确项目与 task 的文件树。
 
 ## 扩展能力
 
-- [ ] exposure snapshot 被持久化并可恢复。
+- [x] native exposure snapshot 以 `TOOL_EXPOSURE` durable Event/Part 持久化，并在同 profile/mode 恢复时重建 scoped MCP binding（真实 MCP 现场恢复 smoke 仍待做）。
 - [ ] Web Search 与 Fetch 按条件暴露。
 - [ ] 图片工具只在有效附件与模型能力下暴露。
 - [ ] LSP 以 operation 型工具按语言 client 暴露。
-- [ ] Skill catalog 与内容按需分离。
-- [ ] MCP 只加载连接可用、允许的动态定义。
+- [x] Skill catalog 与内容按需分离（native：目录与单项正文分离）。
+- [ ] MCP native 已按当前 student/task scoped exposure 挂载，不再读取全局 dynamic registry；仍需以真实连接断线、权限变更与恢复 smoke 验收“只加载连接可用、允许”的完整边界。
+- [x] MCP adapter 保留原始 JSON Schema 类型，不将 integer / array / object 参数降级为 string。
 
 ## 验收与收口
 
-- [ ] 每个实现切片有红灯和绿灯证据。
+- [ ] 每个实现切片有红灯和绿灯证据（本轮 ToolExposure/MCP schema 切片已补齐；其余未完成切片仍待补）。
 - [x] 当前阶段 A 的后端聚焦测试通过。
 - [x] 完整后端测试通过（2026-08-16：`cd backend && mvn -q clean test`）。
 - [ ] 前端 reducer 测试通过。

@@ -3,6 +3,7 @@ package com.labex.labexagent.run;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentRunOutbox;
@@ -28,6 +29,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class AgentRunLifecycleService {
     private static final Logger log = LoggerFactory.getLogger(AgentRunLifecycleService.class);
     private static final Gson GSON = new Gson();
+    /** 工具 JSON schema 的 null 也是协议数据，TOOL_EXPOSURE 不能在落库时把它省掉。 */
+    private static final Gson TOOL_EXPOSURE_GSON = new GsonBuilder().serializeNulls().create();
     private static final String OUTBOX_TOPIC = "agent.run.event";
 
     private final AgentTaskMapper taskMapper;
@@ -199,7 +202,7 @@ public class AgentRunLifecycleService {
         event.setSequenceNumber(sequence);
         event.setState(AgentRunState.RECOVERING.persistedStatus());
         event.setEventType(eventType);
-        event.setPayload(GSON.toJson(safePayload));
+        event.setPayload(serializeEventPayload(eventType, safePayload));
         event.setIdempotencyKey(key);
         event.setCreateTime(now);
         if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
@@ -280,7 +283,7 @@ public class AgentRunLifecycleService {
         event.setSequenceNumber(nextSequence);
         event.setState(targetState.persistedStatus());
         event.setEventType(eventType);
-        event.setPayload(GSON.toJson(safePayload));
+        event.setPayload(serializeEventPayload(eventType, safePayload));
         event.setIdempotencyKey(idempotencyKey);
         event.setCreateTime(now);
         if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
@@ -560,7 +563,7 @@ public class AgentRunLifecycleService {
         event.setSequenceNumber(nextSequence);
         event.setState(targetState.persistedStatus());
         event.setEventType(eventType);
-        event.setPayload(GSON.toJson(safePayload));
+        event.setPayload(serializeEventPayload(eventType, safePayload));
         event.setIdempotencyKey(idempotencyKey);
         event.setCreateTime(now);
         if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
@@ -701,7 +704,7 @@ public class AgentRunLifecycleService {
         event.setSequenceNumber(nextSequence);
         event.setState(state.persistedStatus());
         event.setEventType(eventType);
-        event.setPayload(GSON.toJson(safePayload));
+        event.setPayload(serializeEventPayload(eventType, safePayload));
         event.setIdempotencyKey(idempotencyKey);
         event.setCreateTime(now);
         if (eventMapper.insert(event) != 1 || event.getEventId() == null) {
@@ -757,12 +760,19 @@ public class AgentRunLifecycleService {
         }
     }
 
+    /** 仅工具暴露快照保留 schema 中显式 null；其他既有运行事件维持原有序列化兼容性。 */
+    private String serializeEventPayload(String eventType, Object payload) {
+        return "TOOL_EXPOSURE".equals(eventType)
+                ? TOOL_EXPOSURE_GSON.toJson(payload)
+                : GSON.toJson(payload);
+    }
+
     private void persistOutbox(AgentRunEvent event, Object payload, LocalDateTime now) {
         AgentRunOutbox outbox = new AgentRunOutbox();
         outbox.setEventId(event.getEventId());
         outbox.setTaskId(event.getTaskId());
         outbox.setTopic(OUTBOX_TOPIC);
-        outbox.setPayload(GSON.toJson(outboxPayload(event, payload)));
+        outbox.setPayload(serializeEventPayload(event.getEventType(), outboxPayload(event, payload)));
         outbox.setStatus("pending");
         outbox.setAttempts(0);
         outbox.setAvailableTime(now);

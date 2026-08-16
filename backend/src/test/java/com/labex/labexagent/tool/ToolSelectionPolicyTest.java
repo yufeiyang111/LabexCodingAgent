@@ -49,20 +49,51 @@ class ToolSelectionPolicyTest {
     }
 
     @Test
-    void nativeProfileKeepsAtomicCapabilitiesButHidesHarnessControlTools() {
+    void nativeProfileKeepsAtomicCapabilitiesAndLoadsOnDemandExtensionsWithoutHarnessControls() {
         ToolRegistry registry = registry();
         registry.registerDynamicTool("mcp_weather", tool("mcp_weather"));
         ToolSelectionPolicy policy = new ToolSelectionPolicy();
-        ToolSelectionPolicy.Capabilities all = new ToolSelectionPolicy.Capabilities(true, true, true, true);
+        ToolSelectionPolicy.Capabilities all = new ToolSelectionPolicy.Capabilities(true, true, true, true, true);
 
         assertEquals(List.of(
-                "read_file", "read_tool_output", "glob", "grep", "edit_file", "write_file", "shell",
-                "question", "web_search", "web_fetch", "understand_image", "mcp_weather"),
+                "read_file", "read_tool_output", "glob", "grep", "write_file", "apply_patch", "shell",
+                "question", "web_search", "web_fetch", "understand_image", "lsp", "skill"),
                 names(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE)));
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "question", "web_search", "web_fetch",
-                "understand_image"),
+                "understand_image", "lsp", "skill"),
                 names(policy.select(registry, "plan", all, AgentRuntimeProfile.LABEX_NATIVE)));
+        assertFalse(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "edit_file"));
+        assertTrue(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "apply_patch"));
+        assertFalse(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "todo_write"));
+        assertFalse(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "run_tests"));
+        assertFalse(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "mcp_weather"));
+    }
+
+    @Test
+    void nativeBuildExposesOnlyTheUnifiedShellEntryPoint() {
+        ToolSelectionPolicy policy = new ToolSelectionPolicy();
+        ToolSelectionPolicy.Capabilities all = new ToolSelectionPolicy.Capabilities(true, true, true, true, true);
+        List<ToolDefinition> selected = policy.select(registry(), "build", all, AgentRuntimeProfile.LABEX_NATIVE);
+
+        assertTrue(policy.isSelected(selected, "shell"));
+        assertFalse(policy.isSelected(selected, "bash"));
+        assertFalse(policy.isSelected(selected, "run_command"));
+        assertFalse(policy.isSelected(selected, "run_tests"));
+        assertFalse(policy.isSelected(selected, "execute_code"));
+    }
+
+    @Test
+    void nativeProfileDoesNotExposeTheSkillReaderWhenTheUserHasNoEnabledSkillCatalog() {
+        ToolSelectionPolicy policy = new ToolSelectionPolicy();
+        ToolSelectionPolicy.Capabilities withoutSkills = new ToolSelectionPolicy.Capabilities(
+                true, false, true, true, false);
+
+        List<ToolDefinition> selected = policy.select(registry(), "build", withoutSkills,
+                AgentRuntimeProfile.LABEX_NATIVE);
+
+        assertTrue(policy.isSelected(selected, "lsp"));
+        assertFalse(policy.isSelected(selected, "skill"));
     }
     @Test
     void capabilityFilteringOnlyRemovesOptionalCapabilitiesFromTheCoreProfile() {
@@ -93,7 +124,8 @@ class ToolSelectionPolicyTest {
                 tool("edit_file"), tool("write_file"), tool("apply_patch"), tool("shell"),
                 tool("todo_write"), tool("question"), tool("web_search"), tool("web_fetch"),
                 tool("understand_image"), tool("lsp"), tool("skill"), tool("task"), tool("mcp_call"),
-                tool("create_plan"), tool("plan_exit"), tool("run_tests"), tool("execute_code"),
+                tool("create_plan"), tool("plan_exit"), tool("bash"), tool("run_command"), tool("run_tests"),
+                tool("execute_code"),
                 tool("context_note"), tool("list_files"), tool("project_overview"), tool("repo_map"),
                 tool("retrieve_context"), tool("propose_project_config"), tool("start_preview"),
                 tool("stop_preview")));
