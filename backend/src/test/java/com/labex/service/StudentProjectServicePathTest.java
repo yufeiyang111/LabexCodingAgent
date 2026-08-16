@@ -2,15 +2,19 @@ package com.labex.service;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.commandsecurity.AgentProjectMetadataRefreshScheduler;
 import com.labex.service.impl.StudentProjectServiceImpl;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -96,6 +100,40 @@ class StudentProjectServicePathTest {
         assertTrue((Boolean) result.get("readOnly"));
         assertTrue(((String) result.get("content")).length() > 0);
         assertTrue(((String) result.get("content")).length() < 2 * 1024 * 1024);
+    }
+
+    @Test
+    void userFileOperationsDeferMetadataRefreshToTheCoalescingScheduler() throws Exception {
+        Files.createDirectories(workspace.resolve("src"));
+        Files.writeString(workspace.resolve("src/app.js"), "// app");
+        StudentProject project = ownedProject();
+        StudentProjectServiceImpl service = spy(new StudentProjectServiceImpl());
+        doReturn(project).when(service).getOwnedProject(7, 12);
+        doReturn(true).when(service).updateById(project);
+        AgentProjectMetadataRefreshScheduler scheduler = mock(AgentProjectMetadataRefreshScheduler.class);
+        ReflectionTestUtils.setField(service, "metadataRefreshScheduler", scheduler);
+
+        service.createProjectItem(7, 12, "src", "new.txt", "file");
+
+        assertTrue(Files.isRegularFile(workspace.resolve("src/new.txt")));
+        assertNull(project.getStructureJson(),
+                "structure tree must not be rebuilt synchronously inside the user request");
+        verify(scheduler).schedule(7, 12, "student_file_operation");
+    }
+
+    @Test
+    void asyncMetadataRefreshStillRefreshesWhenNoSchedulerIsAvailable() throws Exception {
+        Files.createDirectories(workspace.resolve("src"));
+        Files.writeString(workspace.resolve("src/app.js"), "// app");
+        StudentProject project = ownedProject();
+        StudentProjectServiceImpl service = spy(new StudentProjectServiceImpl());
+        doReturn(project).when(service).getOwnedProject(7, 12);
+        doReturn(true).when(service).updateById(project);
+
+        service.refreshProjectMetadataAsync(7, 12, "test");
+
+        assertEquals(1, project.getFileCount());
+        assertTrue(project.getStructureJson().contains("app.js"));
     }
 
     private StudentProject ownedProject() {

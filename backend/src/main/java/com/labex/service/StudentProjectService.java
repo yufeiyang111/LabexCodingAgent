@@ -31,6 +31,8 @@ extends IService<StudentProject> {
 
     public StudentProject refreshProjectMetadata(Integer var1, Integer var2);
 
+    public void refreshProjectMetadataAsync(Integer var1, Integer var2, String var3);
+
     public String askProjectAgent(Integer var1, Integer var2, String var3, String var4, String var5);
 
     public void deleteOwnedProject(Integer var1, Integer var2);

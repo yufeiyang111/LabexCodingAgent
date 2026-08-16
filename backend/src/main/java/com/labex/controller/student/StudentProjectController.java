@@ -312,7 +312,7 @@ public class StudentProjectController {
             ProjectTerminalService.TerminalRunResult result = projectTerminalService.run(session, project,
                     approval.getCanonicalCommand(), approval.getWorkingDirectory(), terminalLongRunning(approval.getCommandOptions()),
                     terminalTimeout(approval.getCommandOptions()));
-            studentProjectService.refreshProjectMetadata(studentId, projectId);
+            studentProjectService.refreshProjectMetadataAsync(studentId, projectId, "terminal_command");
             return Result.success(terminalResult(session, result));
         } catch (Exception e) {
             return unavailableApproval();
@@ -345,7 +345,7 @@ public class StudentProjectController {
         ProjectTerminalService.TerminalRunResult result = projectTerminalService.run(session, project,
                 classification.normalizedCommand().canonicalCommand(), classification.normalizedCommand().canonicalWorkingDirectory(),
                 longRunning, timeout);
-        studentProjectService.refreshProjectMetadata(studentId, project.getProjectId());
+        studentProjectService.refreshProjectMetadataAsync(studentId, project.getProjectId(), "terminal_command");
         return Result.success(terminalResult(session, result));
     }
 

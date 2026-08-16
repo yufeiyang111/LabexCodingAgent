@@ -95,7 +95,7 @@
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <TerminalPanel ref="terminalPanelRef" :project-id="projectId" :project-path="projectPath" :is-dark="aiDarkTheme" @toggle-theme="toggleAiTheme" />
+        <TerminalPanel ref="terminalPanelRef" :project-id="projectId" :project-path="projectPath" :is-dark="aiDarkTheme" @toggle-theme="toggleAiTheme" @command-finished="onTerminalCommandFinished" />
       </section>
       </div>
 
@@ -1185,8 +1185,19 @@ onMounted(async () => {
 })
 
 // 清理定时器，防止内存泄漏
+let terminalRefreshTimer = null
+function onTerminalCommandFinished() {
+  // 终端命令结束（含审批执行）后合并刷新文件树，避免高频命令反复请求。
+  if (terminalRefreshTimer) clearTimeout(terminalRefreshTimer)
+  terminalRefreshTimer = setTimeout(() => { void loadRoot() }, 150)
+}
+
 onBeforeUnmount(() => {
   invalidateTaskRuntime()
+  if (terminalRefreshTimer) {
+    clearTimeout(terminalRefreshTimer)
+    terminalRefreshTimer = null
+  }
   // 清理滚动防抖定时器
   if (scrollTimeout) {
     clearTimeout(scrollTimeout)

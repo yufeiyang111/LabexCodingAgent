@@ -126,7 +126,7 @@ const props = defineProps({
   isDark: { type: Boolean, default: true }
 })
 
-const emit = defineEmits(['terminal-created', 'terminal-closed', 'toggle-theme'])
+const emit = defineEmits(['terminal-created', 'terminal-closed', 'toggle-theme', 'command-finished'])
 
 const {
   terminals,
@@ -209,21 +209,26 @@ function renderManagedExecution(termData, result = {}) {
 }
 
 async function runManagedCommand(command, termData) {
-  const response = await projectApi.terminalRunSession(props.projectId, termData.managedSessionId, command, {
-    path: termData.managedPath,
-    timeoutSeconds: termData.timeoutSeconds
-  })
-  const result = response.data || {}
-  if (result.refused) {
-    termData.terminal.write(`\r\n[Command blocked: ${result.reasonCode || 'policy'}]\r\n`)
-    return
+  try {
+    const response = await projectApi.terminalRunSession(props.projectId, termData.managedSessionId, command, {
+      path: termData.managedPath,
+      timeoutSeconds: termData.timeoutSeconds
+    })
+    const result = response.data || {}
+    if (result.refused) {
+      termData.terminal.write(`\r\n[Command blocked: ${result.reasonCode || 'policy'}]\r\n`)
+      return
+    }
+    if (result.approvalRequired) {
+      await resolveManagedApproval(result, termData)
+      return
+    }
+    renderManagedOutput(termData, result.output)
+    renderManagedExecution(termData, result)
+  } finally {
+    // 命令结束（含审批执行完成）后通知工作区刷新文件树，避免手动刷新。
+    emit('command-finished')
   }
-  if (result.approvalRequired) {
-    await resolveManagedApproval(result, termData)
-    return
-  }
-  renderManagedOutput(termData, result.output)
-  renderManagedExecution(termData, result)
 }
 
 async function createNewTerminal() {

@@ -9,6 +9,7 @@ import com.labex.rag.config.RagConfig;
 import com.labex.rag.llm.LLMChat;
 import com.labex.rag.llm.MiniMaxChat;
 import com.labex.rag.llm.OllamaChat;
+import com.labex.labexagent.commandsecurity.AgentProjectMetadataRefreshScheduler;
 import com.labex.labexagent.service.ProjectScanPolicy;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.service.StudentProjectService;
@@ -71,6 +72,9 @@ implements StudentProjectService {
     private OllamaChat ollamaChat;
     @Autowired
     private RagConfig ragConfig;
+    @Lazy
+    @Autowired(required = false)
+    private AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
 
     public StudentProject uploadProject(Integer studentId, MultipartFile file, String projectName) {
         String originalName;
@@ -94,23 +98,22 @@ implements StudentProjectService {
             Files.createDirectories(archivePath.getParent(), new FileAttribute[0]);
             Files.createDirectories(workspacePath, new FileAttribute[0]);
             file.transferTo(archivePath);
-            this.unzipSecurely(archivePath, workspacePath);
+            ExtractStats stats = this.unzipSecurely(archivePath, workspacePath);
             this.initializeAgentIgnoreFile(workspacePath);
-            ExtractStats stats = this.countProjectFiles(workspacePath);
-            Map structure = this.buildTree(workspacePath, workspacePath, 0);
             StudentProject project = new StudentProject();
             project.setStudentId(studentId);
             project.setProjectName(safeProjectName);
             project.setOriginalFileName(originalName);
             project.setArchivePath(archivePath.toString());
             project.setWorkspacePath(workspacePath.toString());
-            project.setStructureJson(GSON.toJson(structure));
+            project.setStructureJson(null);
             project.setFileCount(Integer.valueOf(stats.fileCount));
             project.setTotalSize(Long.valueOf(stats.totalSize));
             project.setStatus(Integer.valueOf(1));
             project.setCreateTime(LocalDateTime.now());
             project.setUpdateTime(LocalDateTime.now());
             this.save(project);
+            this.scheduleMetadataRefresh(project);
             return project;
         }
         catch (Exception e) {
@@ -137,20 +140,20 @@ implements StudentProjectService {
             Files.createDirectories(workspacePath, new FileAttribute[0]);
             this.writeStarterTemplate(workspacePath, safeProjectName, safeTemplate);
             this.initializeAgentIgnoreFile(workspacePath);
-            ExtractStats stats = this.countProjectFiles(workspacePath);
             StudentProject project = new StudentProject();
             project.setStudentId(studentId);
             project.setProjectName(safeProjectName);
             project.setOriginalFileName("created:" + safeTemplate);
             project.setArchivePath("");
             project.setWorkspacePath(workspacePath.toString());
-            project.setStructureJson(GSON.toJson(this.buildTree(workspacePath, workspacePath, 0)));
-            project.setFileCount(Integer.valueOf(stats.fileCount));
-            project.setTotalSize(Long.valueOf(stats.totalSize));
+            project.setStructureJson(null);
+            project.setFileCount(Integer.valueOf(0));
+            project.setTotalSize(Long.valueOf(0L));
             project.setStatus(Integer.valueOf(1));
             project.setCreateTime(LocalDateTime.now());
             project.setUpdateTime(LocalDateTime.now());
             this.save(project);
+            this.scheduleMetadataRefresh(project);
             return project;
         }
         catch (Exception e) {
@@ -245,8 +248,7 @@ implements StudentProjectService {
                 throw new IllegalArgumentException("Please select an existing file");
             }
             Files.write(filePath, bytes, new OpenOption[0]);
-            this.refreshProjectMetadataInternal(project);
-            this.updateById(project);
+            this.scheduleMetadataRefresh(project);
             return project;
         }
         catch (IOException e) {
@@ -277,8 +279,7 @@ implements StudentProjectService {
             } else {
                 Files.createFile(target, new FileAttribute[0]);
             }
-            this.refreshProjectMetadataInternal(project);
-            this.updateById(project);
+            this.scheduleMetadataRefresh(project);
             return project;
         }
         catch (IOException e) {
@@ -302,8 +303,7 @@ implements StudentProjectService {
             } else {
                 Files.delete(target);
             }
-            this.refreshProjectMetadataInternal(project);
-            this.updateById(project);
+            this.scheduleMetadataRefresh(project);
             return project;
         }
         catch (IOException e) {
@@ -341,8 +341,7 @@ implements StudentProjectService {
             } else {
                 Files.move(source, target, new CopyOption[0]);
             }
-            this.refreshProjectMetadataInternal(project);
-            this.updateById(project);
+            this.scheduleMetadataRefresh(project);
             return project;
         }
         catch (IOException e) {
@@ -360,6 +359,32 @@ implements StudentProjectService {
         catch (IOException e) {
             throw new RuntimeException("Failed to refresh project metadata: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 用户文件操作/终端命令后的非关键 metadata 刷新：交给合并调度器异步执行，
+     * 避免每次增删改都同步全量扫描拖慢 HTTP 请求；文件树接口直读磁盘，不依赖该字段。
+     */
+    public void refreshProjectMetadataAsync(Integer studentId, Integer projectId, String reason) {
+        if (studentId == null || projectId == null) {
+            return;
+        }
+        if (this.metadataRefreshScheduler != null) {
+            this.metadataRefreshScheduler.schedule(studentId, projectId, reason);
+            return;
+        }
+        try {
+            StudentProject project = this.requireOwnedProject(studentId, projectId);
+            this.refreshProjectMetadataInternal(project);
+            this.updateById(project);
+        } catch (Exception failure) {
+            log.warn("PROJECT_METADATA_REFRESH_SYNC_FALLBACK_FAILED projectId={} errorType={} error={}",
+                    projectId, failure.getClass().getSimpleName(), failure.getMessage());
+        }
+    }
+
+    private void scheduleMetadataRefresh(StudentProject project) {
+        this.refreshProjectMetadataAsync(project.getStudentId(), project.getProjectId(), "student_file_operation");
     }
 
     public String askProjectAgent(Integer studentId, Integer projectId, String relativePath, String question, String mode) {

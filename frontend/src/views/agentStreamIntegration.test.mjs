@@ -5,6 +5,14 @@ import test from 'node:test'
 const source = await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 'utf8')
 const runtimeSource = await readFile(new URL('../composables/useAgentTaskRuntime.js', import.meta.url), 'utf8')
 const timelineSource = await readFile(new URL('../composables/useAgentEventTimeline.js', import.meta.url), 'utf8')
+const terminalPanelSource = await readFile(new URL('../components/terminal/TerminalPanel.vue', import.meta.url), 'utf8')
+
+test('terminal command completion reloads the file tree without manual refresh', () => {
+  assert.match(source, /@command-finished="onTerminalCommandFinished"/)
+  assert.match(source, /function onTerminalCommandFinished\(\) \{[\s\S]*setTimeout\(\(\) => \{ void loadRoot\(\) \}, 150\)/)
+  assert.match(terminalPanelSource, /defineEmits\(\[[^\]]*'command-finished'/)
+  assert.match(terminalPanelSource, /emit\('command-finished'\)/)
+})
 
 test('CloudWorkspace delegates file ownership to useWorkspaceFiles', () => {
   assert.match(source, /import \{ useWorkspaceFiles \} from '@\/composables\/useWorkspaceFiles'/)
