@@ -43,7 +43,7 @@
           v-model:new-item-name="newItemName"
           :show-rename-modal="showRenameModal"
           v-model:rename-value="renameItemValue"
-          @select="openFile"
+          @select="handleSelectTreeFile"
           @new-item="handleNewItem"
           @rename="handleRename"
           @delete="handleDelete"
@@ -89,89 +89,100 @@
           </div>
         </div>
 
-        <!-- 中部 AI 放大主工作区 -->
-        <CenterAiWorkspace
-          v-if="isAgentInCenter"
-          :messages="messages"
-          v-model:agent-input="agentInput"
-          v-model:agent-mode="agentMode"
-          :current-model="currentModelName"
-          :thinking-level="thinkingLevel"
-          :available-models="modelConfigs"
-          :agent-loading="agentLoading"
-          :current-session-name="currentSessionName"
-          :has-older-messages="hasOlderMessages"
-          :loading-older-messages="loadingOlderMessages"
-          :show-thinking-process="showThinkingProcess"
-          :supports-images="currentModelSupportsImages"
-          :selected-code="selectedCode"
-          :pending-images="pendingImageAttachments"
-          :context-usage-status="contextUsageStatus"
-          :token-usage="tokenUsage"
-          :quick-chips="quickChips"
-          :active-path="activePath"
-          :get-merged-items="getMergedItems"
-          :render-thinking-markdown="renderThinkingMarkdown"
-          :render-message-markdown="renderMessageMarkdown"
-          @dock-back="dockAiBackToSidebar"
-          @mode-change="switchMode"
-          @send="sendMessage"
-          @stop="stopGeneration"
-          @trigger-commands="showCommandMenu"
-          @trigger-at-file="atFile"
-          @optimize-prompt="optimizePrompt"
-          @clear-selected-code="selectedCode = ''"
-          @preview-image="openImagePreview"
-          @remove-image="removePendingImage"
-          @image-files="handleDroppedImageFiles"
-          @open-context-dialog="openContextUsageDialog"
-          @change-model="handleSelectModelByName"
-          @change-thinking="handleChangeThinkingLevel"
-          @open-model-config="showModelConfig = true"
-          @load-older-history="loadOlderHistory"
-          @apply-chip="prompt => { agentInput = prompt; sendMessage() }"
-          @markdown-click="handleMarkdownClick"
-          @permission="handlePermissionDecision"
-          @command-approval="handleCommandApproval"
-          @question="handleQuestionReply"
-          @copy-message="copyMessage"
-          @insert-editor="insertToEditor"
-        />
-
-        <!-- 代码编辑器模式 -->
-        <main v-else class="ws-editor">
-          <!-- 标签页条 (支持拖拽调序 + LabexAgent 快速切换) -->
-          <div v-if="openFiles.length > 0 || isAgentInCenter" class="ws-editor-tabs">
-            <div
-              v-for="(f, idx) in openFiles"
-              :key="f.path"
-              class="ws-tab"
-              :class="{ active: idx === activeTabIndex }"
-              draggable="true"
-              @dragstart="onTabDragStart($event, idx)"
-              @dragover.prevent="onTabDragOver($event, idx)"
-              @drop.prevent="onTabDrop($event, idx)"
-              @click="switchTab(idx)"
-              @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeFile(idx) } }"
-            >
-              <FileIcon :name="f.name" :size="12" />
-              <span class="ws-tab-name">{{ f.name }}</span>
-              <span v-if="f.dirty" class="ws-tab-dot"></span>
-              <button class="ws-tab-close" @click.stop="closeFile(idx)" title="关闭">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
+        <!-- 标签页条 (始终在顶部，展示所有打开的文件标签 + LabexAgent 标签) -->
+        <div v-if="openFiles.length > 0 || isAgentInCenter" class="ws-editor-tabs">
+          <!-- 文件 Tabs -->
+          <div
+            v-for="(f, idx) in openFiles"
+            :key="f.path"
+            class="ws-tab"
+            :class="{ active: !isAgentTabActive && idx === activeTabIndex }"
+            draggable="true"
+            @dragstart="onTabDragStart($event, idx)"
+            @dragover.prevent="onTabDragOver($event, idx)"
+            @drop.prevent="onTabDrop($event, idx)"
+            @click="onSelectFileTab(idx)"
+            @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeFile(idx) } }"
+          >
+            <FileIcon :name="f.name" :size="12" />
+            <span class="ws-tab-name">{{ f.name }}</span>
+            <span v-if="f.dirty" class="ws-tab-dot"></span>
+            <button class="ws-tab-close" @click.stop="closeFile(idx)" title="关闭">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
           </div>
 
-          <!-- 空白状态 -->
-          <div v-if="openFiles.length === 0 && !isAgentInCenter" class="ws-editor-empty">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <p>选择文件开始编辑</p>
-            <p class="ws-editor-hint">从左侧文件树中选择一个文件，或将右侧 LabexAgent 拖入此处放大</p>
+          <!-- LabexAgent 专属标签页 -->
+          <div
+            v-if="isAgentInCenter"
+            class="ws-tab ws-tab-agent"
+            :class="{ active: isAgentTabActive }"
+            @click="onSelectAgentTab"
+            title="LabexAgent 智能助手"
+          >
+            <span class="agent-tab-sparkle">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            </span>
+            <span class="ws-tab-name">LabexAgent</span>
+            <button class="ws-tab-close" @click.stop="closeAgentTab" title="还原至侧边栏">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
           </div>
+        </div>
 
-          <!-- Monaco 编辑器容器 -->
-          <div v-else-if="openFiles.length > 0" class="ws-monaco">
+        <!-- 主内容区：根据激活的标签显示 CenterAiWorkspace 还是 MonacoEditor -->
+        <main class="ws-editor">
+          <!-- 当处于 LabexAgent 标签时显示放大的 AI 视图 -->
+          <CenterAiWorkspace
+            v-if="isAgentInCenter && isAgentTabActive"
+            :messages="messages"
+            v-model:agent-input="agentInput"
+            v-model:agent-mode="agentMode"
+            :current-model="currentModelName"
+            :thinking-level="thinkingLevel"
+            :available-models="modelConfigs"
+            :agent-loading="agentLoading"
+            :current-session-name="currentSessionName"
+            :has-older-messages="hasOlderMessages"
+            :loading-older-messages="loadingOlderMessages"
+            :show-thinking-process="showThinkingProcess"
+            :supports-images="currentModelSupportsImages"
+            :selected-code="selectedCode"
+            :pending-images="pendingImageAttachments"
+            :context-usage-status="contextUsageStatus"
+            :token-usage="tokenUsage"
+            :quick-chips="quickChips"
+            :active-path="activePath"
+            :get-merged-items="getMergedItems"
+            :render-thinking-markdown="renderThinkingMarkdown"
+            :render-message-markdown="renderMessageMarkdown"
+            @dock-back="dockAiBackToSidebar"
+            @mode-change="switchMode"
+            @send="sendMessage"
+            @stop="stopGeneration"
+            @trigger-commands="showCommandMenu"
+            @trigger-at-file="atFile"
+            @optimize-prompt="optimizePrompt"
+            @clear-selected-code="selectedCode = ''"
+            @preview-image="openImagePreview"
+            @remove-image="removePendingImage"
+            @image-files="handleDroppedImageFiles"
+            @open-context-dialog="openContextUsageDialog"
+            @change-model="handleSelectModelByName"
+            @change-thinking="handleChangeThinkingLevel"
+            @open-model-config="showModelConfig = true"
+            @load-older-history="loadOlderHistory"
+            @apply-chip="prompt => { agentInput = prompt; sendMessage() }"
+            @markdown-click="handleMarkdownClick"
+            @permission="handlePermissionDecision"
+            @command-approval="handleCommandApproval"
+            @question="handleQuestionReply"
+            @copy-message="copyMessage"
+            @insert-editor="insertToEditor"
+          />
+
+          <!-- 当处于文件编辑标签时显示 Monaco 编辑器 -->
+          <div v-else-if="openFiles.length > 0 && activeTabIndex >= 0" class="ws-monaco">
             <MonacoEditor
               v-if="editorReady"
               v-model="fileContent"
@@ -180,6 +191,13 @@
               :read-only="activeFileReadOnly"
               height="100%"
             />
+          </div>
+
+          <!-- 空白状态 -->
+          <div v-else class="ws-editor-empty">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <p>选择文件开始编辑</p>
+            <p class="ws-editor-hint">从左侧文件树中选择一个文件，或将右侧 LabexAgent 拖入此处放大</p>
           </div>
         </main>
 
@@ -922,6 +940,7 @@ function showConversationPanel() {
 const aiCollapsed = ref(false)
 const explorerVisible = ref(true)
 const isAgentInCenter = ref(false)
+const isAgentTabActive = ref(false)
 const aiPanelWidth = ref(420)
 const centerDropOverlayActive = ref(false)
 const isDraggingAi = ref(false)
@@ -930,6 +949,42 @@ const showImageLightbox = ref(false)
 const imageLightboxSrc = ref('')
 const imageLightboxTitle = ref('')
 const thinkingLevel = ref('High')
+
+async function handleSelectTreeFile(path) {
+  isAgentTabActive.value = false
+  await openFile(path)
+}
+
+function onSelectFileTab(idx) {
+  isAgentTabActive.value = false
+  switchTab(idx)
+}
+
+function onSelectAgentTab() {
+  isAgentTabActive.value = true
+}
+
+function closeAgentTab() {
+  isAgentInCenter.value = false
+  isAgentTabActive.value = false
+  aiCollapsed.value = false
+  if (openFiles.value.length > 0) {
+    const nextIdx = Math.min(Math.max(0, activeTabIndex.value), openFiles.value.length - 1)
+    switchTab(nextIdx)
+  }
+  ElMessage.info('LabexAgent 已还原至右侧边栏')
+}
+
+function dockAiBackToSidebar() {
+  closeAgentTab()
+}
+
+function moveAiToCenter() {
+  isAgentInCenter.value = true
+  isAgentTabActive.value = true
+  aiCollapsed.value = true
+  ElMessage.success('LabexAgent 已作为标签页在中心区域打开')
+}
 
 function onAiHeaderDragStart(e) {
   isDraggingAi.value = true
@@ -956,20 +1011,12 @@ function onCenterDragLeave(e) {
 function onCenterDrop(e) {
   if (isDraggingAi.value) {
     isAgentInCenter.value = true
+    isAgentTabActive.value = true
     centerDropOverlayActive.value = false
     isDraggingAi.value = false
-    ElMessage.success('LabexAgent 已切换至中心主视图')
+    aiCollapsed.value = true
+    ElMessage.success('LabexAgent 已作为标签页在中心区域打开')
   }
-}
-
-function moveAiToCenter() {
-  isAgentInCenter.value = true
-  ElMessage.success('LabexAgent 已切换至中心主视图')
-}
-
-function dockAiBackToSidebar() {
-  isAgentInCenter.value = false
-  aiCollapsed.value = false
 }
 
 function toggleAiPanelLayout() {

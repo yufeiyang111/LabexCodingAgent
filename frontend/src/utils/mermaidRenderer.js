@@ -18,7 +18,8 @@ export async function initMermaid() {
   if (initialized) return
   mermaid.initialize({
     startOnLoad: false,
-    // 'antiscript' blocks script injection but allows Chinese and special chars.
+    suppressErrorRendering: true,
+    // 'loose' blocks script injection but allows Chinese and special chars.
     // 'strict' rejects Chinese text nodes which causes "Syntax error in text".
     securityLevel: 'loose',
     fontFamily: "'Inter', 'Segoe UI', 'Noto Sans SC', sans-serif",
@@ -65,8 +66,12 @@ export async function renderMermaidDiagram(code) {
   await initMermaid()
   const mermaid = await loadMermaid()
   const id = `mmd-${Date.now().toString(36)}-${(renderCounter++).toString(36)}`
+  const cleanCode = (code || '').trim()
+  if (!cleanCode) {
+    return { ok: false, error: 'Mermaid 代码为空' }
+  }
   try {
-    const { svg } = await mermaid.render(id, code)
+    const { svg } = await mermaid.render(id, cleanCode)
     // mermaid returns a "Syntax error" SVG instead of throwing — detect and
     // treat it as a render failure so we show our own error UI.
     if (svg && svg.includes('Syntax error in text')) {
@@ -75,11 +80,18 @@ export async function renderMermaidDiagram(code) {
     return { ok: true, svg }
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
+  } finally {
+    if (typeof document !== 'undefined' && document.body) {
+      const stray = document.querySelectorAll(
+        `body > [id^="dmmd-"], body > [id^="mmd-"], body > svg[id^="mmd-"], body > [id^="d${id}"], body > [id="${id}"]`
+      )
+      stray.forEach(el => el.remove())
+    }
   }
 }
 
 export async function syncMermaidTheme() {
   if (!initialized) return
   const mermaid = await loadMermaid()
-  mermaid.initialize({ theme: 'base' })
+  mermaid.initialize({ theme: 'base', suppressErrorRendering: true })
 }

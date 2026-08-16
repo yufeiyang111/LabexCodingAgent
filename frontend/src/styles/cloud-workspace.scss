@@ -2670,6 +2670,18 @@
   flex: 1;
   min-height: 0;
 }
+
+/* Hide any stray mermaid error containers injected directly into document body */
+body > [id^="dmmd-"],
+body > [id^="mmd-"],
+body > svg[id^="mmd-"],
+body > div[id*="mermaid"] {
+  display: none !important;
+  visibility: hidden !important;
+  position: absolute !important;
+  left: -9999px !important;
+  pointer-events: none !important;
+}
 /* ===== Table: strong border, clear header, visible separators ===== */
 .markdown-rendered .msg-table-wrap {
   position: relative;

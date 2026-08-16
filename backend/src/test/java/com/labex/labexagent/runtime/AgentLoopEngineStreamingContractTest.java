@@ -137,6 +137,15 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
+    void separatesActualExecutionFailureFromModelTransportCompletion() {
+        // 非零 shell exit 仍是可回填给模型的 completed transport，但工程状态、失败熔断与恢复提示
+        // 必须使用实际 execution outcome，不能把它当作一次成功验证。
+        assertTrue(source.contains("boolean successfulExecutionOutcome = result.isSuccessfulExecutionOutcome();"));
+        assertTrue(source.contains("!successfulExecutionOutcome && !result.isApprovalRequired()"));
+        assertTrue(source.contains("result == null || result.isSuccessfulExecutionOutcome() || result.isApprovalRequired()"));
+        assertTrue(source.contains("o.put(\"success\", r.isSuccess());"));
+    }
+    @Test
     void preservesStructuredToolEvidenceWhenLegacyTurnsReachTerminalPartStates() {
         // legacy 对话仍可能继续执行；不能在这里退化为 String detail，
         // 否则 workspace identity、mutation 和 verification 都会从 durable Part 中丢失。

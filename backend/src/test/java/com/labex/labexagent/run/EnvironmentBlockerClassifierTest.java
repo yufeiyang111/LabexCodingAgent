@@ -2,6 +2,8 @@ package com.labex.labexagent.run;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.tool.ToolResult;
 import org.junit.jupiter.api.Test;
 
@@ -63,6 +65,18 @@ class EnvironmentBlockerClassifierTest {
         assertThat(blocker).isEmpty();
     }
 
+    @Test
+    void classifiesTransportCompletedNonzeroShellDnsFailureAsEnvironmentBlocker() {
+        ToolResult result = ToolResult.fromObservedProcessExecution(
+                new ProcessExecutionResult(ExecutionStatus.FAILED, 1, 10L,
+                        "npm ERR! code ENOTFOUND\nnpm ERR! request to https://registry.npmjs.org/example failed", false),
+                "bash", ".", null);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.isSuccessfulExecutionOutcome()).isFalse();
+        assertThat(EnvironmentBlockerClassifier.classify("shell", result))
+                .hasValueSatisfying(blocker -> assertThat(blocker.code()).isEqualTo("DNS_UNAVAILABLE"));
+    }
     @Test
     void doesNotBlockSuccessfulOrUnrelatedToolResults() {
         assertThat(EnvironmentBlockerClassifier.classify("run_tests", ToolResult.ok("exit=0"))).isEmpty();

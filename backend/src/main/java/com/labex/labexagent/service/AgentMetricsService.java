@@ -36,7 +36,11 @@ public class AgentMetricsService {
             event.put("taskId", context.getTaskId());
             event.put("stage", context.getStage());
             event.put("tool", toolName == null ? "" : toolName);
-            event.put("success", result != null && result.isSuccess());
+            boolean transportSuccess = result != null && result.isSuccess();
+            boolean executionSuccess = result != null && result.isSuccessfulExecutionOutcome();
+            event.put("success", executionSuccess);
+            event.put("transportSuccess", transportSuccess);
+            event.put("executionSuccess", executionSuccess);
             event.put("durationMs", durationMs);
             event.put("approvalRequired", result != null && result.isApprovalRequired());
             event.put("writeCount", context.getWriteCount());

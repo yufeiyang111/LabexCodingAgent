@@ -429,3 +429,26 @@ cd frontend && npm run build
 **已覆盖的可观察结果**：一条 `status=completed` 的 shell Part 只要携带 `failureClass=non_zero_exit` 或 `execution.status=failed`，无论随后收到的是 durable snapshot、历史 `OBSERVE` 还是实时 `OBSERVE`，用户可见卡片均保持 `status=error`；`durableStatus=completed` 保留作 transport 审计，`exitCode`、相对 workdir 和 artifact 路径不会被实时事件丢失。
 
 **仍未关闭的风险**：尚未完成真实浏览器中执行命令、刷新、SSE reconnect 的现场 smoke；本切片也不决定 Agent 是否允许给最终答复，完成/失败仍必须由后端 verification 与 completion evidence 裁决。
+### 切片 C11：把真实 execution outcome 从 model transport 中分离（2026-08-16）
+
+**Public seam**：工具执行后的工程进度、环境阻塞判定、workspace memory、metrics，以及最终模型恢复提示。
+
+**Red**：`ToolResult.fromObservedProcessExecution(FAILED, exit=2, ...)` 依既有协议仍是 `success=true`，因此旧代码把它当成 `completed`：进度停在 intake 而不是 repair，shell 的 DNS/依赖失败没有环境阻塞分类，跨会话 workspace memory 把失败的 `npm run build` 写成 `PASS` 且没有 failure event。此类错误会同时污染下一轮 agent 判断、熔断/恢复策略和用户验收记录。
+
+**Green**：保留 `isSuccess()` 只表示“tool result transport 已完成、模型可读取输出”；工程事实统一改用 `isSuccessfulExecutionOutcome()`。`AgentContextOrchestrator` 将非零 exit 投影为 repair，`EnvironmentBlockerClassifier` 可阻断 DNS/依赖重试，`AgentLoopEngine` 记录命令失败、添加 recovery guidance 并在日志中同时显示 execution 与 transport，workspace memory/metrics 将失败写为 FAIL 和 `executionSuccess=false`。`sendObserve` / journal 仍使用 transport success 与 completed Tool Part，避免破坏 provider tool-result 协议。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\tool\shell.ts:489-605`：shell 运行保留 process exit、输出截断和 artifact metadata 后返回 tool output，而非仅以异常替代输出；参考 `packages\opencode\src\session\processor.ts:203-245` 的 Tool Part completed/error 持久化边界。LabexAgent 未复制实质代码；因现有 OpenAI-compatible transcript 需要对非零 exit 保留工具输出，采用显式双语义 API（transport vs execution outcome）而不是改变 `ToolResult.isSuccess()` 的既有协议。
+
+**Red → Green 证据**：
+
+```text
+# Red：transport completed 的非零 exit 被当成工程成功
+cd backend && mvn -q -Dtest=AgentContextOrchestratorVerificationTrustTest,EnvironmentBlockerClassifierTest,AgentWorkspaceMemoryServiceTest test
+
+# Green：真实 outcome、environment blocker、memory/metrics、loop/journal/shell 契约
+cd backend && mvn -q -Dtest=ToolResultTest,AgentContextOrchestratorVerificationTrustTest,EnvironmentBlockerClassifierTest,AgentWorkspaceMemoryServiceTest,AgentMetricsServiceTest,AgentToolCallJournalServiceTest,AgentLoopGuardTest,RunCommandToolTest,ShellToolContractTest,AgentLoopEngineStreamingContractTest test
+```
+
+**已覆盖的可观察结果**：非零 shell exit 仍交给模型阅读完整输出，但任务进度进入 repair、同类 DNS/依赖命令可进入环境阻塞处理、workspace memory 明确记录 FAIL 与 failure event、metrics 同时记录 `transportSuccess=true` / `executionSuccess=false`。这使后续模型不会从“PASS”记忆或成功遥测中得到相反信号。
+
+**仍未关闭的风险**：本切片没有完成整个跨会话记忆的噪声治理，也不替代真实 browser/worker 的现场验收；当前仅消除了失败 outcome 被误写成成功事实的路径。全局记忆的可插拔设计与 Hermes 对比仍按主计划在 harness 核心完成后单独调研。

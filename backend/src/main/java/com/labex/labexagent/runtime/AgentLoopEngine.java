@@ -2284,6 +2284,7 @@ public class AgentLoopEngine {
                 this.projectPersistedPlanUpdate(sse, ctx);
             }
             result = this.annotateCommandRecovery(name, result);
+            boolean successfulExecutionOutcome = result.isSuccessfulExecutionOutcome();
             this.recordProcessOutputArtifact(ctx, name, toolCallId, result);
             delegateElapsedMs = elapsedMs(delegateStartedNanos);
             DiffService.ApplyTelemetry diffTelemetry = this.diffService.consumeLastApplyTelemetry();
@@ -2326,13 +2327,13 @@ public class AgentLoopEngine {
             if (hookReport.content() != null && !hookReport.content().isBlank()) {
                 result.setContent((result.getContent() == null ? "" : result.getContent()) + hookReport.content());
             }
-            if (result.isSuccess() && this.isWorkspaceMutationTool(name)) {
+            if (successfulExecutionOutcome && this.isWorkspaceMutationTool(name)) {
                 this.commandFailureGuard.recordWorkspaceChange(ctx.getExecutionFence(), ctx.getTaskId());
             }
-            if (this.isCommandPolicyTool(name) && !result.isSuccess() && !result.isApprovalRequired()) {
+            if (this.isCommandPolicyTool(name) && !successfulExecutionOutcome && !result.isApprovalRequired()) {
                 this.commandFailureGuard.record(ctx.getExecutionFence(), ctx.getTaskId(), name, guardedCommand, guardedWorkingDirectory, result.getContent());
             }
-            if (!result.isSuccess() && !result.isApprovalRequired()) {
+            if (!successfulExecutionOutcome && !result.isApprovalRequired()) {
                 this.recordToolFailure(ctx, name, toolCallId, result.getContent());
             }
 
@@ -2350,8 +2351,8 @@ public class AgentLoopEngine {
             this.metricsService.recordTool(ctx, name, args, result, elapsedMs(totalStartedNanos), hookReport);
             metricsElapsedMs = elapsedMs(metricsStartedNanos);
             long totalElapsedMs = elapsedMs(totalStartedNanos);
-            log.info("AGENT_TOOL_EXEC_COMPLETE taskId={} projectId={} tool={} toolCallId={} success={} totalMs={} delegateMs={} beforeSnapshotMs={} afterSnapshotMs={} snapshotDiffMs={} postEditMs={} contextMs={} metricsMs={} pendingChangeId={}",
-                    ctx.getTaskId(), ctx.getProject().getProjectId(), name, toolCallId, result.isSuccess(), totalElapsedMs,
+            log.info("AGENT_TOOL_EXEC_COMPLETE taskId={} projectId={} tool={} toolCallId={} executionSuccess={} transportSuccess={} totalMs={} delegateMs={} beforeSnapshotMs={} afterSnapshotMs={} snapshotDiffMs={} postEditMs={} contextMs={} metricsMs={} pendingChangeId={}",
+                    ctx.getTaskId(), ctx.getProject().getProjectId(), name, toolCallId, successfulExecutionOutcome, result.isSuccess(), totalElapsedMs,
                     delegateElapsedMs, beforeSnapshotElapsedMs, afterSnapshotElapsedMs, snapshotDiffElapsedMs,
                     postEditElapsedMs, contextElapsedMs, metricsElapsedMs, result.getPendingChangeId());
             this.appendToolExecutionComplete(runLog, name, toolCallId, result, totalElapsedMs, delegateElapsedMs,
@@ -2430,7 +2431,7 @@ public class AgentLoopEngine {
     }
 
     private ToolResult annotateCommandRecovery(String toolName, ToolResult result) {
-        if (result == null || result.isSuccess() || result.isApprovalRequired() || !this.isCommandPolicyTool(toolName)) {
+        if (result == null || result.isSuccessfulExecutionOutcome() || result.isApprovalRequired() || !this.isCommandPolicyTool(toolName)) {
             return result;
         }
         String content = result.getContent() == null ? "" : result.getContent();
@@ -4694,13 +4695,13 @@ public class AgentLoopEngine {
                                              long afterSnapshotMs, long snapshotDiffMs, long postEditMs,
                                              long contextMs, long metricsMs) {
         this.appendRunLog(path, "- Completed at: `" + LocalDateTime.now() + "`\n"
-                + "- Status: `" + (result.isSuccess() ? "success" : "failed") + "`\n"
+                + "- Status: `" + (result.isSuccessfulExecutionOutcome() ? "success" : "failed") + "`\n"
+                + "- Transport: `" + (result.isSuccess() ? "completed" : "failed") + "`\n"
                 + "- Timing ms: total=`" + totalMs + "`, delegate=`" + delegateMs
                 + "`, snapshotBefore=`" + beforeSnapshotMs + "`, snapshotAfter=`" + afterSnapshotMs
                 + "`, snapshotDiff=`" + snapshotDiffMs + "`, postEdit=`" + postEditMs
                 + "`, context=`" + contextMs + "`, metrics=`" + metricsMs + "`\n");
     }
-
     private void appendToolExecutionFailed(Path path, String toolName, String toolCallId, String phase,
                                            long totalMs, Exception failure) {
         this.appendRunLog(path, "- Failed at: `" + LocalDateTime.now() + "`\n"
@@ -4720,7 +4721,7 @@ public class AgentLoopEngine {
                         result.getApprovalDisplayCommand() == null ? "<redacted>" : result.getApprovalDisplayCommand())) + "`\n"
                 : "";
         String resultStatus = result.isInteractionRequired() ? "waiting_user"
-                : (result.isApprovalRequired() ? "waiting_approval" : (result.isSuccess() ? "success" : "failed"));
+                : (result.isApprovalRequired() ? "waiting_approval" : (result.isSuccessfulExecutionOutcome() ? "success" : "failed"));
         this.appendRunLog(path, "\n### Tool result\n\n- Status: `" + resultStatus
                 + "`\n" + approvalDetail
                 + (result.getPendingChangeId() != null ? "- Change record: `" + this.safeLogText(result.getPendingChangeId()) + "`\n" : "")

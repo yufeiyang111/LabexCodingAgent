@@ -111,12 +111,11 @@ public class AgentContextOrchestrator {
     }
 
     private String toolStatus(ToolResult result) {
-        if (result.isSuccess()) return "completed";
         if (result.isApprovalRequired()) return "waiting_approval";
         if (result.isInteractionRequired()) {
             return "question".equals(result.getInteractionType()) ? "waiting_user" : "waiting_approval";
         }
-        return "error";
+        return result.isSuccessfulExecutionOutcome() ? "completed" : "error";
     }
 
     private String stageGuidance(String stage) {

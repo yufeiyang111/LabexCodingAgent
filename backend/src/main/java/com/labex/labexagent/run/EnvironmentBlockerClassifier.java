@@ -12,7 +12,7 @@ public final class EnvironmentBlockerClassifier {
     private EnvironmentBlockerClassifier() { }
 
     public static Optional<Blocker> classify(String toolName, ToolResult result) {
-        if (result == null || result.isSuccess() || !isDependencyExecutionTool(toolName)) {
+        if (result == null || result.isSuccessfulExecutionOutcome() || !isDependencyExecutionTool(toolName)) {
             return Optional.empty();
         }
         String output = result.getContent() == null ? "" : result.getContent().toLowerCase(Locale.ROOT);

@@ -83,14 +83,15 @@ public class AgentWorkspaceMemoryService {
         try {
             WorkspaceMemory memory = readMemory(context.getProject());
             String safeTool = toolName.trim().toLowerCase(Locale.ROOT);
-            if ("read_file".equals(safeTool) && result.isSuccess()) {
+            boolean successfulExecutionOutcome = result.isSuccessfulExecutionOutcome();
+            if ("read_file".equals(safeTool) && successfulExecutionOutcome) {
                 recordRead(context, args, memory);
-            } else if (isWriteTool(safeTool) && result.isSuccess()) {
+            } else if (isWriteTool(safeTool) && successfulExecutionOutcome) {
                 recordWrite(context, args, memory, safeTool);
             } else if (isVerificationTool(safeTool)) {
                 recordVerification(args, result, memory, safeTool);
             }
-            if (!result.isSuccess()) {
+            if (!successfulExecutionOutcome) {
                 recordFailure(args, result, memory, safeTool);
             }
             memory.updatedAt = LocalDateTime.now().toString();
@@ -160,7 +161,7 @@ public class AgentWorkspaceMemoryService {
         MemoryEvent event = new MemoryEvent();
         event.time = LocalDateTime.now().toString();
         event.tool = tool;
-        event.summary = (result.isSuccess() ? "PASS " : "FAIL ") + tool + (command.isBlank() ? "" : " `" + limit(command, 120) + "`")
+        event.summary = (result.isSuccessfulExecutionOutcome() ? "PASS " : "FAIL ") + tool + (command.isBlank() ? "" : " `" + limit(command, 120) + "`")
                 + " :: " + limit(normalize(result.getContent()), 220);
         memory.verifications.add(event);
     }

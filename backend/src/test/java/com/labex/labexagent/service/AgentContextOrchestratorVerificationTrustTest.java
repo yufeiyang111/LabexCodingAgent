@@ -43,6 +43,27 @@ class AgentContextOrchestratorVerificationTrustTest {
     }
 
     @Test
+    void transportCompletedNonzeroShellOutcomeMovesProgressIntoRepair() throws Exception {
+        AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(
+                mock(AgentContextManager.class), mock(ProjectIndexService.class),
+                mock(AgentWorkspaceMemoryService.class), mock(LspSessionManager.class),
+                mock(ProjectCodeMapService.class), new AgentRunExecutionProgressReducer());
+        StudentProject project = new StudentProject();
+        project.setWorkspacePath(Files.createDirectories(workspace).toString());
+        AgentContext context = AgentContext.create("session", 1, project, "conversation", 1L);
+        ToolResult result = ToolResult.fromObservedProcessExecution(
+                new ProcessExecutionResult(ExecutionStatus.FAILED, 2, 10L,
+                        "exit=2\nTypeScript compile failed", false), "bash", ".", null);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.isSuccessfulExecutionOutcome()).isFalse();
+
+        orchestrator.afterTool(context, "shell", new JsonObject(), result);
+
+        assertThat(context.getStage()).isEqualTo("repair");
+        assertThat(context.hasTrustedVerification()).isFalse();
+    }
+    @Test
     void manualReadWithShaCreatesTrustedVerificationEvidence() throws Exception {
         AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(
                 mock(AgentContextManager.class), mock(ProjectIndexService.class),
