@@ -86,6 +86,13 @@
                     </div>
                   </div>
                   <div class="user-msg-text">{{ msg.content }}</div>
+                  <div class="user-msg-footer">
+                    <span v-if="msg.timestamp" class="msg-time">{{ formatTime(msg.timestamp) }}</span>
+                    <button class="msg-copy-btn" title="复制内容" @click.stop="emit('copy-message', msg.content)">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      <span>复制</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </template>
@@ -178,13 +185,16 @@
                     :is-running="msg.timing.isRunning"
                   />
 
-                  <!-- 消息工具栏 -->
+                  <!-- 消息工具栏与时间 -->
                   <div class="msg-actions-bar">
-                    <button class="msg-action-btn" title="复制内容" @click="emit('copy-message', msg.content)">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    <span v-if="msg.timestamp" class="msg-time">{{ formatTime(msg.timestamp) }}</span>
+                    <button class="msg-action-btn" title="复制内容" @click.stop="emit('copy-message', msg.content)">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      <span>复制</span>
                     </button>
-                    <button class="msg-action-btn" title="插入到编辑器" v-if="activePath" @click="emit('insert-editor', msg.content)">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    <button class="msg-action-btn" title="插入到编辑器" v-if="activePath" @click.stop="emit('insert-editor', msg.content)">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                      <span>插入</span>
                     </button>
                   </div>
                 </div>
@@ -751,30 +761,69 @@ defineExpose({
   color: #09090b;
 }
 
+.user-msg-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.user-msg-footer .msg-time {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 10.5px;
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+
+.user-msg-footer .msg-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.user-msg-footer .msg-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
 .msg-actions-bar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   padding-top: 4px;
 }
 
+.msg-actions-bar .msg-time {
+  font-size: 11px;
+  color: #71717a;
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+
 .msg-action-btn {
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #a1a1aa;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
+  color: #3f3f46;
+  font-size: 11px;
   cursor: pointer;
-  transition: all 0.1s;
+  transition: all 0.12s ease;
 }
 
 .msg-action-btn:hover {
-  background: #f4f4f5;
-  color: #09090b;
+  background: #09090b;
+  color: #ffffff;
+  border-color: #09090b;
 }
 
 /* 浮动回顶/滚底与导航按钮 */
@@ -811,8 +860,8 @@ defineExpose({
 
 .center-msg-navigator {
   position: absolute;
-  bottom: 125px;
-  left: 32px;
+  top: 14px;
+  right: 24px;
   display: flex;
   align-items: center;
   gap: 4px;

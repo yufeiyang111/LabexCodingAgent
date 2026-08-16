@@ -12,6 +12,21 @@ import org.junit.jupiter.api.Test;
 class WebSearchProviderSelectorTest {
 
     @Test
+    void availabilityUsesTheSameConfiguredProviderRouteAsSearch() {
+        WebSearchProperties properties = properties("auto");
+        StubProvider exa = new StubProvider(WebSearchProviderId.EXA, false,
+                new WebSearchResponse(WebSearchProviderId.EXA, "exa"));
+        StubProvider fallback = new StubProvider(WebSearchProviderId.PUBLIC_FALLBACK, true,
+                new WebSearchResponse(WebSearchProviderId.PUBLIC_FALLBACK, "fallback"));
+        WebSearchProviderSelector selector = new WebSearchProviderSelector(properties, List.of(exa, fallback));
+
+        assertFalse(selector.isAvailable());
+        properties.setProvider("public_fallback");
+        assertTrue(selector.isAvailable());
+        assertEquals(0, exa.calls);
+        assertEquals(0, fallback.calls);
+    }
+    @Test
     void autoFallsBackToPublicSearchOnlyAfterRecoverableExaFailure() throws Exception {
         WebSearchProperties properties = properties("auto");
         StubProvider exa = new StubProvider(WebSearchProviderId.EXA, true,

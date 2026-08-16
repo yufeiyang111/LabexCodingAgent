@@ -20,13 +20,13 @@ export const FILE_LINK_EXTS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico'
 ])
 
-const PATTERN_SRC = '((?:[A-Za-z][\\w.-]*\\/)+[\\w.-]+\\.[A-Za-z0-9]{1,10})'
+const PATTERN_SRC = '((?:[A-Za-z0-9_.-]+\\/)*[A-Za-z0-9_.-]+\\.[A-Za-z0-9]{1,10}(?::\\d+)?)'
 
 // Skip selectors for the walker. Anything matching these ancestors is
 // considered "already styled" — code blocks, buttons, our own chrome, etc.
 const SKIP_SELECTORS = [
   'a', 'code', 'pre', 'button',
-  '.file-link',
+  '.file-link', '.file-link-chip',
   '.msg-table-tag', '.code-lang',
   '.mermaid-tab', '.mermaid-tool-btn',
   '.code-copy-btn', '.code-tool-btn', '.table-copy-btn',
@@ -54,7 +54,8 @@ export function enhanceFileLinks(root, { iconHtml = '', linkClass = 'file-link' 
     let m
     let hit = false
     while ((m = re.exec(text)) !== null) {
-      const ext = m[1].split('.').pop().toLowerCase()
+      const clean = m[1].split(':')[0]
+      const ext = clean.split('.').pop().toLowerCase()
       if (FILE_LINK_EXTS.has(ext)) { hit = true; break }
     }
     if (hit) targets.push(node)
@@ -66,21 +67,22 @@ export function enhanceFileLinks(root, { iconHtml = '', linkClass = 'file-link' 
     const re = new RegExp(PATTERN_SRC, 'g')
     let match
     while ((match = re.exec(text)) !== null) {
-      const path = match[1]
-      const ext = path.split('.').pop().toLowerCase()
+      const rawPath = match[1]
+      const cleanPath = rawPath.split(':')[0]
+      const ext = cleanPath.split('.').pop().toLowerCase()
       if (!FILE_LINK_EXTS.has(ext)) continue
       if (match.index > last) frag.append(document.createTextNode(text.slice(last, match.index)))
       const span = document.createElement('span')
       span.className = linkClass
-      span.dataset.path = path
+      span.dataset.path = cleanPath
       span.setAttribute('role', 'button')
       span.setAttribute('tabindex', '0')
-      span.title = `打开 ${path}`
+      span.title = `打开 ${rawPath}`
       const iconPart = iconHtml ? `<span class="${linkClass}-icon">${iconHtml}</span>` : ''
-      span.innerHTML = `${iconPart}<span class="${linkClass}-text">${escapeHtml(path)}</span>`
+      span.innerHTML = `${iconPart}<span class="${linkClass}-text">${escapeHtml(rawPath)}</span>`
       frag.append(span)
-      found.push(path)
-      last = match.index + path.length
+      found.push(cleanPath)
+      last = match.index + rawPath.length
     }
     if (last < text.length) frag.append(document.createTextNode(text.slice(last)))
     node.parentNode?.replaceChild(frag, node)

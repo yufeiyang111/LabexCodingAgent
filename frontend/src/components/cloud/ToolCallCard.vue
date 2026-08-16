@@ -123,11 +123,17 @@
           <div v-if="call.outputTruncated" class="tc-projection-note">
             输出过长，历史页已截断展示前 {{ truncate(call.result, 1000).length }} 字符（完整 {{ call.outputLength || call.result.length }} 字符已持久化在数据库）。
           </div>
-          <div v-if="isShellTool" class="tc-shell-output">
-            <pre>{{ truncate(call.result, 1000) }}</pre>
-          </div>
-          <div v-else-if="hasDiff" class="tc-diff-wrap">
+          <div v-if="hasDiff" class="tc-diff-wrap">
             <DiffViewer :diff="extractDiff(call.result)" />
+          </div>
+          <!-- IDE 风格多色彩高亮代码块 (复刻截图图四) -->
+          <div v-else-if="formattedCodeLines.length > 0" class="tc-code-ide-block">
+            <div class="tc-code-ide-lines">
+              <div v-for="(item, idx) in formattedCodeLines" :key="idx" class="tc-code-ide-row">
+                <span class="tc-code-ide-ln">{{ item.lineNum }}</span>
+                <span class="tc-code-ide-code hljs" v-html="item.html || '&nbsp;'"></span>
+              </div>
+            </div>
           </div>
           <div v-else class="tc-result-text">
             <pre>{{ truncate(call.result, 1000) }}</pre>
@@ -210,6 +216,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import hljs from 'highlight.js/lib/common'
 import DiffViewer from './DiffViewer.vue'
 
 const props = defineProps({
@@ -331,6 +338,72 @@ const editDiffLines = computed(() => {
     })
   }
   return lines
+})
+
+const detectedCodeLang = computed(() => {
+  const file = argsObj.value.path || argsObj.value.file_path || argsObj.value.filename || ''
+  if (!file) return ''
+  const ext = file.split('.').pop()?.toLowerCase()
+  const map = {
+    py: 'python',
+    js: 'javascript',
+    jsx: 'javascript',
+    ts: 'typescript',
+    tsx: 'typescript',
+    vue: 'html',
+    html: 'html',
+    css: 'css',
+    scss: 'scss',
+    java: 'java',
+    json: 'json',
+    sh: 'bash',
+    bash: 'bash',
+    sql: 'sql',
+    md: 'markdown',
+    xml: 'xml',
+    yml: 'yaml',
+    yaml: 'yaml'
+  }
+  return map[ext] || ''
+})
+
+function escapeHtml(str) {
+  return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+const formattedCodeLines = computed(() => {
+  if (!props.call.result || typeof props.call.result !== 'string') return []
+  const text = truncate(props.call.result, 3000)
+  const lines = text.split('\n')
+  const lang = detectedCodeLang.value
+
+  return lines.map((line, idx) => {
+    const match = line.match(/^(\s*\d+)([:|])\s?(.*)$/)
+    let lineNum = ''
+    let codeContent = line
+    if (match) {
+      lineNum = match[1].trim()
+      codeContent = match[3]
+    }
+
+    let highlightedHtml = ''
+    try {
+      if (lang && hljs.getLanguage(lang)) {
+        highlightedHtml = hljs.highlight(codeContent, { language: lang }).value
+      } else {
+        const auto = hljs.highlightAuto(codeContent)
+        highlightedHtml = auto.value || escapeHtml(codeContent)
+      }
+    } catch {
+      highlightedHtml = escapeHtml(codeContent)
+    }
+
+    return {
+      lineNum: lineNum || String(idx + 1),
+      raw: line,
+      html: highlightedHtml
+    }
+  })
 })
 
 const hasDiff = computed(() => {
@@ -501,8 +574,14 @@ function setQuestionAnswer(option) {
   border: 1px solid #e4e4e7;
   border-radius: 6px;
   font-size: 11.5px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'JetBrains Mono', 'Inter', -apple-system, sans-serif;
+  font-weight: 600;
   color: #3f3f46;
+}
+
+.tc-status-pill-badge .badge-text {
+  font-weight: 600;
+  letter-spacing: 0.2px;
 }
 
 .tc-status-pill-badge.completed {
@@ -639,13 +718,94 @@ function setQuestionAnswer(option) {
   white-space: pre-wrap;
 }
 
-/* 终端输出视窗 */
+/* 终端与 IDE 代码视窗 (复刻截图图四) */
 .tc-shell-output,
 .tc-result-text {
-  background: #0f172a;
+  background: #0d1117;
   border-radius: 6px;
   padding: 8px 12px;
   overflow-x: auto;
+}
+
+.tc-code-ide-block {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.tc-code-ide-lines {
+  overflow-x: auto;
+  padding: 8px 0;
+}
+
+.tc-code-ide-row {
+  display: flex;
+  align-items: flex-start;
+  padding: 0 10px;
+  min-height: 20px;
+}
+
+.tc-code-ide-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tc-code-ide-ln {
+  width: 38px;
+  min-width: 38px;
+  text-align: right;
+  padding-right: 12px;
+  color: #6e7681;
+  font-size: 11px;
+  user-select: none;
+  border-right: 1px solid #21262d;
+  margin-right: 12px;
+}
+
+.tc-code-ide-code {
+  flex: 1;
+  white-space: pre;
+  word-break: normal;
+  color: #e6edf3;
+  font-family: inherit;
+  font-size: inherit;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+/* IDE 语法高亮颜色映射 */
+:deep(.hljs-keyword), :deep(.hljs-selector-tag), :deep(.hljs-built_in) {
+  color: #ff7b72 !important;
+  font-weight: 600;
+}
+
+:deep(.hljs-string), :deep(.hljs-attr) {
+  color: #a5d6ff !important;
+}
+
+:deep(.hljs-title), :deep(.hljs-title.function_), :deep(.hljs-section) {
+  color: #d2a8ff !important;
+  font-weight: 600;
+}
+
+:deep(.hljs-comment), :deep(.hljs-quote) {
+  color: #8b949e !important;
+  font-style: italic;
+}
+
+:deep(.hljs-number), :deep(.hljs-literal) {
+  color: #79c0ff !important;
+}
+
+:deep(.hljs-type), :deep(.hljs-class) {
+  color: #ffa657 !important;
+}
+
+:deep(.hljs-variable), :deep(.hljs-template-variable) {
+  color: #ffa657 !important;
 }
 
 .tc-shell-output pre,

@@ -4,6 +4,7 @@ import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.mcp.McpManager;
 import com.labex.labexagent.mcp.McpToolAdapter;
 import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
+import com.labex.labexagent.websearch.WebSearchProviderSelector;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolRegistry;
@@ -29,13 +30,16 @@ public final class ToolExposurePlanner {
     private final ToolSelectionPolicy toolSelectionPolicy;
     private final AgentSkillService skillService;
     private final McpManager mcpManager;
+    private final WebSearchProviderSelector webSearchProviderSelector;
 
     public ToolExposurePlanner(ToolRegistry toolRegistry, ToolSelectionPolicy toolSelectionPolicy,
-                               AgentSkillService skillService, McpManager mcpManager) {
+                               AgentSkillService skillService, McpManager mcpManager,
+                               WebSearchProviderSelector webSearchProviderSelector) {
         this.toolRegistry = toolRegistry;
         this.toolSelectionPolicy = toolSelectionPolicy;
         this.skillService = skillService;
         this.mcpManager = mcpManager;
+        this.webSearchProviderSelector = webSearchProviderSelector;
     }
 
     public ToolExposure plan(Request request) {
@@ -46,9 +50,10 @@ public final class ToolExposurePlanner {
         boolean skillCatalogAvailable = nativeProfile && hasEnabledSkills(safeRequest.studentId());
         // native MCP 必须由当前 student 的实际发现结果构成，不能读取全局 dynamic registry。
         boolean globalDynamicMcpEnabled = !nativeProfile && toolRegistry != null && toolRegistry.getDynamicToolCount() > 0;
+        boolean webSearchAvailable = safeRequest.webSearchEnabled() && isWebSearchAvailable();
         ToolSelectionPolicy.Capabilities capabilities = new ToolSelectionPolicy.Capabilities(
                 safeRequest.imageInputEnabled(), globalDynamicMcpEnabled,
-                safeRequest.webSearchEnabled(), safeRequest.webFetchEnabled(), skillCatalogAvailable);
+                webSearchAvailable, safeRequest.webFetchEnabled(), skillCatalogAvailable);
         List<ToolDefinition> definitions = new ArrayList<>(toolSelectionPolicy.select(
                 toolRegistry, mode, capabilities, profile));
         List<McpToolAdapter.McpToolInfo> mcpDefinitions = nativeProfile && AgentMode.isUnrestricted(mode)
@@ -67,6 +72,21 @@ public final class ToolExposurePlanner {
             return plan(Request.empty());
         }
         return new ToolExposure(snapshot.toToolDefinitions(), snapshot.toScopedTools(mcpManager), snapshot, true);
+    }
+
+    /**
+     * 只根据本地 provider 配置判断 schema 是否可用；网络健康检查仍留在实际工具调用阶段。
+     */
+    private boolean isWebSearchAvailable() {
+        if (webSearchProviderSelector == null) {
+            return false;
+        }
+        try {
+            return webSearchProviderSelector.isAvailable();
+        } catch (RuntimeException failure) {
+            log.warn("Unable to resolve Web Search capability: {}", failure.getMessage());
+            return false;
+        }
     }
 
     private boolean hasEnabledSkills(Integer studentId) {

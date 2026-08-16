@@ -21,6 +21,21 @@ public class WebSearchProviderSelector {
         this.providers = Map.copyOf(byId);
     }
 
+    /**
+     * 返回当前配置路由是否存在可执行 provider；不发起网络请求，也不探测外部服务健康度。
+     * schema 暴露只使用该本地配置事实，真实调用仍由 {@link #search(WebSearchRequest, AgentContext)} 执行。
+     */
+    public boolean isAvailable() {
+        return switch (configuredProvider()) {
+            case "exa" -> isEnabled(WebSearchProviderId.EXA);
+            case "parallel" -> isEnabled(WebSearchProviderId.PARALLEL);
+            case "public_fallback" -> isEnabled(WebSearchProviderId.PUBLIC_FALLBACK);
+            // auto 的实际调用先走 Exa；fallback 只处理 Exa 的可恢复运行时失败。
+            case "auto" -> isEnabled(WebSearchProviderId.EXA);
+            default -> false;
+        };
+    }
+
     public WebSearchResponse search(WebSearchRequest request, AgentContext context) throws WebSearchException {
         String configuredProvider = configuredProvider();
         if ("exa".equals(configuredProvider)) {
@@ -52,6 +67,11 @@ public class WebSearchProviderSelector {
             }
             return fallback.search(request, context);
         }
+    }
+
+    private boolean isEnabled(WebSearchProviderId providerId) {
+        WebSearchProvider provider = providers.get(providerId);
+        return provider != null && provider.isEnabled();
     }
 
     private WebSearchProvider required(WebSearchProviderId providerId) throws WebSearchException {

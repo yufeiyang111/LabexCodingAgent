@@ -74,6 +74,8 @@
 
 - [x] native exposure snapshot 以 `TOOL_EXPOSURE` durable Event/Part 持久化，并在同 profile/mode 恢复时重建 scoped MCP binding（真实 MCP 现场恢复 smoke 仍待做）。
 - [ ] Web Search 与 Fetch 按条件暴露。
+  - [x] C16：live native exposure 只在当前配置路由有可执行 Web Search provider 时包含 `web_search`；`web_fetch` 保持本地 HTTP(S) capability，不增加额外确认。已持久化 exposure snapshot 不受后续配置变化影响。
+  - [x] C17：`web_fetch` 在读取前校验声明长度，并对未知长度响应执行流式字节上限；连接、请求、重定向、响应与模型输出范围均集中在 `labex-agent.web-fetch`。
 - [ ] 图片工具只在有效附件与模型能力下暴露。
 - [ ] LSP 以 operation 型工具按语言 client 暴露。
 - [x] Skill catalog 与内容按需分离（native：目录与单项正文分离）。

@@ -421,7 +421,6 @@
                       >
                         {{ msg.environmentRetrying ? '正在恢复任务...' : '环境恢复后重试' }}
                       </button>
-                      <div v-if="showMessageTimestamps && msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</div>
                     </div>
 
                     <!-- File Changes Summary Card (常驻于任务底部) -->
@@ -429,7 +428,7 @@
                       v-if="msg.role === 'assistant' && i === messages.length - 1"
                       :changes="sessionChanges || []"
                       @review-all="selectAiTab('review')"
-                      @open-file-diff="file => openFile(file.path)"
+                      @open-file-diff="handleOpenFileDiff"
                     />
 
                     <CompletionEvidenceCard
@@ -446,9 +445,17 @@
                       :started-at="msg.timing.startedAt"
                       :active-elapsed-ms="msg.timing.activeElapsedMs"
                       :is-running="msg.timing.isRunning" />
-                    <div v-if="msg.role === 'assistant'" class="ai-msg-actions">
-                      <button class="ai-msg-action" title="复制" @click="copyMessage(msg.content)">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+
+                    <!-- 统一消息底部栏 (所有角色均支持复制与时间显示) -->
+                    <div class="ai-msg-footer" :class="msg.role">
+                      <span v-if="showMessageTimestamps && msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</span>
+                      <button class="ai-msg-action-copy" type="button" title="复制内容" @click.stop="copyMessage(msg.content)">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        <span>复制</span>
+                      </button>
+                      <button v-if="msg.role === 'assistant' && activePath" class="ai-msg-action-copy" type="button" title="插入到编辑器" @click.stop="insertToEditor(msg.content)">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        <span>插入</span>
                       </button>
                     </div>
                   </div>
@@ -1207,8 +1214,10 @@ function scrollToLatestMessageInstant() {
   })
 }
 
-watch([isAgentTabActive, isAgentInCenter, aiCollapsed, activeAiTab], () => {
+watch([isAgentTabActive, isAgentInCenter, aiCollapsed, activeAiTab, () => messages.value.length], () => {
   scrollToLatestMessageInstant()
+  setTimeout(scrollToLatestMessageInstant, 60)
+  setTimeout(scrollToLatestMessageInstant, 180)
 })
 
 function handleSelectModelByName(name) {

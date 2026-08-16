@@ -564,6 +564,44 @@
   padding: 0;
   max-width: 100%;
 }
+
+.ai-msg-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  user-select: none;
+}
+.ai-msg-footer.user {
+  justify-content: flex-end;
+}
+.ai-msg-footer.assistant {
+  justify-content: flex-start;
+}
+.ai-msg-footer .ai-msg-time {
+  font-size: 11px;
+  color: var(--text-muted, #71717a);
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+.ai-msg-action-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border: 1px solid var(--border-light, #e4e4e7);
+  border-radius: 4px;
+  background: var(--bg-app, #ffffff);
+  color: var(--text-secondary, #3f3f46);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.ai-msg-action-copy:hover {
+  background: var(--text-primary, #09090b);
+  color: #ffffff;
+  border-color: var(--text-primary, #09090b);
+}
+
 .ai-msg-text {
   white-space: normal;
   word-break: break-word;
@@ -2283,41 +2321,57 @@ body.is-resizing-ai .ai-panel {
   background: rgba(37, 99, 235, 0.08);
 }
 
-/* File path chip — clickable, opens the file in the left workspace tree */
-.markdown-rendered .file-link {
+/* File path chip — clickable, opens the file in editor tab (1:1 matching workspace_redesign_preview.html) */
+.markdown-rendered .file-link,
+.markdown-rendered .file-link-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 1px 7px 1px 5px;
-  margin: 0 1px;
-  color: var(--ai-accent);
-  background: var(--ai-accent-bg);
-  border: 1px solid color-mix(in srgb, var(--ai-accent) 22%, transparent);
-  border-radius: 5px;
+  padding: 1.5px 6px;
+  margin: 0 2px;
+  background: var(--bg-card-subtle, #f4f4f5);
+  border: 1px solid var(--border-light, #e4e4e7);
+  border-radius: 4px;
   font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-  font-size: 0.92em;
-  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-primary, #09090b);
   cursor: pointer;
+  font-weight: 500;
   white-space: nowrap;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: all 0.15s;
   vertical-align: baseline;
+  transition: all 0.12s ease;
 }
-.markdown-rendered .file-link:hover {
-  background: color-mix(in srgb, var(--ai-accent) 14%, var(--ai-bg));
-  border-color: color-mix(in srgb, var(--ai-accent) 40%, transparent);
-  color: var(--ai-accent);
+.markdown-rendered .file-link:hover,
+.markdown-rendered .file-link-chip:hover {
+  background: #09090b;
+  color: #ffffff;
+  border-color: #09090b;
 }
-.markdown-rendered .file-link:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--ai-accent) 50%, transparent);
-  outline-offset: 1px;
+
+/* Citation / URL link pill */
+.markdown-rendered .citation-link-pill,
+.markdown-rendered a.msg-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1.5px 8px;
+  margin: 0 2px;
+  background: var(--bg-card-subtle, #f4f4f5);
+  border: 1px solid var(--border-light, #e4e4e7);
+  border-radius: 999px;
+  font-size: 12px;
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 500;
+  transition: all 0.12s ease;
 }
-.markdown-rendered .file-link svg {
-  flex-shrink: 0;
-  opacity: 0.85;
+.markdown-rendered .citation-link-pill:hover,
+.markdown-rendered a.msg-link:hover {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
 }
+
 .markdown-rendered .file-link .file-link-text {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3205,8 +3259,8 @@ body > div[id*="mermaid"] {
 
 .ai-msg-navigator {
   position: absolute;
-  bottom: 80px;
-  left: 14px;
+  top: 10px;
+  right: 12px;
   display: inline-flex;
   align-items: center;
   gap: 2px;

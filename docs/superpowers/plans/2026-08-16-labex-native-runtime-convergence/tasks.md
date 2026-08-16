@@ -268,3 +268,7 @@ mvn -q -Dtest=CommandApprovalOrchestratorTest,AgentToolCallJournalServiceTest,Ag
 ```
 
 **未关闭**：没有将任意 shell 文本意图猜测成路径；真实 worker、浏览器文件树刷新和断线恢复仍属于后续 C/D 的验收。
+
+9. **C16 Web Search availability exposure（2026-08-16，已完成）**：将 native `web_search` 的 live schema 暴露绑定到当前 Web Search provider 的无副作用可用性判断；不可用 provider 不占用模型 schema，已持久化 snapshot 保持可回放。参考本地 `tool/registry.ts:267-306` 的 provider-aware schema 过滤，并保持 `websearch.ts:99-140` 的调用期 permission / execution 边界。
+
+10. **C17 Web Fetch bounded response（2026-08-16，已完成）**：把 fetch 的连接/请求/重定向/响应体/模型输出限制收敛为配置，在读流前拒绝声明超限、读流中阻止未知长度超限。参考本地 `tool/webfetch.ts:9-11,56-120`；保留既有出站 URL policy，不增加正常网络操作确认。

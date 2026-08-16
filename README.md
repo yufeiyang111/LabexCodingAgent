@@ -216,8 +216,17 @@ Large tool results are persisted in the durable Tool Part, while the Provider re
 | `LABEX_AGENT_WEB_SEARCH_PUBLIC_FALLBACK_ENABLED` | `true` | Exa 发生可恢复故障时，是否使用 DuckDuckGo/Bing 公开结果页兜底 |
 | `LABEX_AGENT_WEB_SEARCH_TIMEOUT_SECONDS` | `25` | 每次 Agent 搜索 provider 请求的超时秒数 |
 | `LABEX_AGENT_WEB_SEARCH_MAX_RESPONSE_BYTES` | `1048576` | 单次 provider 响应最大字节数 |
+| `LABEX_AGENT_WEB_FETCH_CONNECT_TIMEOUT_SECONDS` | `20` | `web_fetch` 连接超时秒数 |
+| `LABEX_AGENT_WEB_FETCH_REQUEST_TIMEOUT_SECONDS` | `60` | `web_fetch` 单次请求总超时秒数 |
+| `LABEX_AGENT_WEB_FETCH_MAX_REDIRECTS` | `5` | `web_fetch` 最多跟随的已校验重定向次数 |
+| `LABEX_AGENT_WEB_FETCH_MAX_RESPONSE_BYTES` | `1048576` | `web_fetch` 在解码前允许读取的最大响应字节数 |
+| `LABEX_AGENT_WEB_FETCH_DEFAULT_MAX_CHARS` | `12000` | `web_fetch` 未传 `max_chars` 时返回给模型的默认字符数 |
+| `LABEX_AGENT_WEB_FETCH_MIN_MAX_CHARS` | `1000` | `web_fetch.max_chars` 的最小值 |
+| `LABEX_AGENT_WEB_FETCH_MAX_MAX_CHARS` | `50000` | `web_fetch.max_chars` 的最大值 |
 
 Agent `web_search` 只返回搜索发现结果和来源 URL，不抓取结果正文；需要读取某个来源时由 Agent 使用 `web_fetch`。在 `auto` 模式下，Exa 是唯一自动尝试的付费/托管 provider；发生可恢复失败后才使用免费的 DuckDuckGo/Bing 结果页兜底。Agent 不会自动调用 Tavily 或 Parallel。
+
+`web_fetch` 仍可正常读取公开 HTTP(S) 文档，不增加用户确认；但会在读取响应体前校验声明长度，并在流式读取时执行字节上限，以防止异常页面在输出截断前耗尽服务端内存。
 
 
 #### 主 Agent 的用户模型配置

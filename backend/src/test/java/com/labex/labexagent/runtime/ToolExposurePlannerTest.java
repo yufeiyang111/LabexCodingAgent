@@ -13,6 +13,7 @@ import com.google.gson.JsonParser;
 import com.labex.labexagent.mcp.McpManager;
 import com.labex.labexagent.mcp.McpToolAdapter;
 import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
+import com.labex.labexagent.websearch.WebSearchProviderSelector;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolRegistry;
@@ -33,7 +34,7 @@ class ToolExposurePlannerTest {
         McpManager mcp = mock(McpManager.class);
         when(mcp.getAvailableTools(7)).thenReturn(List.of(mcpTool("docs", "Docs", "search")));
         ToolExposurePlanner planner = new ToolExposurePlanner(registry, new com.labex.labexagent.tool.ToolSelectionPolicy(),
-                skills, mcp);
+                skills, mcp, availableWebSearch());
 
         ToolExposure exposure = planner.plan(new ToolExposurePlanner.Request(
                 7, "build", AgentRuntimeProfile.LABEX_NATIVE, true, true, true));
@@ -51,9 +52,26 @@ class ToolExposurePlannerTest {
     }
 
     @Test
+    void nativeExposureHidesUnavailableWebSearchButKeepsWebFetch() {
+        ToolRegistry registry = registry();
+        AgentSkillService skills = mock(AgentSkillService.class);
+        McpManager mcp = mock(McpManager.class);
+        WebSearchProviderSelector webSearch = mock(WebSearchProviderSelector.class);
+        when(webSearch.isAvailable()).thenReturn(false);
+        ToolExposurePlanner planner = new ToolExposurePlanner(registry,
+                new com.labex.labexagent.tool.ToolSelectionPolicy(), skills, mcp, webSearch);
+
+        ToolExposure exposure = planner.plan(new ToolExposurePlanner.Request(
+                7, "build", AgentRuntimeProfile.LABEX_NATIVE, false, true, true));
+        List<String> names = exposure.definitions().stream().map(ToolDefinition::getName).toList();
+
+        assertFalse(names.contains("web_search"));
+        assertTrue(names.contains("web_fetch"));
+    }
+    @Test
     void restoringHistoricalNativeSnapshotKeepsItsOriginalEditSchema() {
         ToolExposurePlanner planner = new ToolExposurePlanner(registry(), new com.labex.labexagent.tool.ToolSelectionPolicy(),
-                mock(AgentSkillService.class), mock(McpManager.class));
+                mock(AgentSkillService.class), mock(McpManager.class), availableWebSearch());
         ToolExposureSnapshot historical = ToolExposureSnapshot.live(AgentRuntimeProfile.LABEX_NATIVE, "build", List.of(
                 tool("read_file").definition(), tool("edit_file").definition(), tool("write_file").definition(),
                 tool("shell").definition()), List.of());
@@ -72,7 +90,7 @@ class ToolExposurePlannerTest {
         McpManager mcp = mock(McpManager.class);
         when(mcp.getAvailableTools(7)).thenReturn(List.of(mcpTool("docs", "Docs", "search")));
         ToolExposurePlanner planner = new ToolExposurePlanner(registry, new com.labex.labexagent.tool.ToolSelectionPolicy(),
-                skills, mcp);
+                skills, mcp, availableWebSearch());
         ToolExposure initial = planner.plan(new ToolExposurePlanner.Request(
                 7, "build", AgentRuntimeProfile.LABEX_NATIVE, false, true, true));
         clearInvocations(mcp);
@@ -87,6 +105,11 @@ class ToolExposurePlannerTest {
         verifyNoInteractions(mcp);
     }
 
+    private static WebSearchProviderSelector availableWebSearch() {
+        WebSearchProviderSelector selector = mock(WebSearchProviderSelector.class);
+        when(selector.isAvailable()).thenReturn(true);
+        return selector;
+    }
     private static ToolRegistry registry() {
         return new ToolRegistry(List.of(
                 tool("read_file"), tool("read_tool_output"), tool("glob"), tool("grep"),

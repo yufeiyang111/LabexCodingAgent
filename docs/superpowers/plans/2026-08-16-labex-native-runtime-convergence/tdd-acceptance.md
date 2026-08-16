@@ -553,3 +553,40 @@ cd frontend && node --test src/composables/useAgentTaskRuntime.test.mjs src/view
 **已覆盖的可观察结果**：初始 SSE 中断、代理提前关闭或浏览器只失去 direct transport 时，只要 task durable 状态仍为 active，消息不会被误标为已完成；后续 FINAL、tool state、approval/question 等仍由同一 task 的可重放事件驱动。会话/session 不匹配时不接管，防止旧流污染新会话。
 
 **仍未关闭的风险**：本切片没有替代真实浏览器断网/刷新/后台 worker 接管验收；server-side event/outbox 长时间不可用时，前端只能显示其真实的可恢复状态，不能自行生成 final。
+
+### 切片 C16：不可用 Web Search 不进入 native schema（2026-08-16）
+
+**Public seam**：`WebSearchProviderSelector.isAvailable()` 与 `ToolExposurePlanner.plan(...)`（S3：native tool exposure snapshot）。
+
+**Red**：当前 native runtime 虽已有 `webSearchEnabled` capability 字段，但 `AgentLoopEngine` 构建 `ToolExposurePlanner.Request` 时固定传入 `true`。当当前配置选中的 Web Search provider 已禁用或不存在，模型仍看到 `web_search` schema，只能在调用后收到“disabled or unavailable”，徒增无效工具调用和上下文噪声。
+
+**Green**：Provider selector 以与实际 `search(...)` 相同的 provider 路由规则提供无副作用 availability 判断；ToolExposurePlanner 在创建 live native exposure 时将调用方 capability 与该判断相交。不可用时只省略 `web_search`，保留不依赖外部 search provider 的 `web_fetch`，且已经落库的 exposure snapshot 继续按原 schema 重放，不根据后续配置漂移重写历史 task。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\tool\registry.ts:267-306`：请求前 registry 会按当前 provider/runtime 能力筛选 schema；以及 `tool/websearch.ts:99-140`：Web Search 在工具调用时仍通过 permission 与 provider 执行。LabexAgent 适配为 Spring 的 provider availability + task-scoped durable exposure snapshot；未复制实质源码。
+
+**Red → Green 命令**：
+
+```text
+cd backend && mvn -q -Dtest=ToolExposurePlannerTest,WebSearchProviderSelectorTest test
+```
+
+**验收边界**：这是“不可用能力不注入模型 schema”的收敛，不是对正常网络能力增加确认或阻断；正常启用的 Web Search、Web Fetch 仍按既有权限与 URL 安全边界执行。
+
+**Red → Green 证据**：先新增 selector availability 与 planner 5 参数构造/disabled provider 回归，聚焦 Maven 测试在编译期报缺少 `isAvailable()` 与 constructor；实现后同一命令通过，且 availability 查询未调用任何 provider 的 `search(...)`。
+
+### 切片 C17：Web Fetch 在读取前限制响应体（2026-08-16）
+
+**Public seam**：`WebFetchTool.execute(...)` 的 HTTP response 读取边界与 `WebFetchProperties`。
+
+**Red**：当前实现使用 `HttpResponse.BodyHandlers.ofString()`，`max_chars` 只在整个响应已读入内存后再裁剪；恶意或异常的大响应会在工具输出截断前占用无界内存。连接超时、请求超时、重定向次数、响应字节上限与输出字符范围也散落在工具实现中。
+
+**Green**：将这些可调参数集中到 `labex-agent.web-fetch` properties。工具先依据 `Content-Length` 拒绝已知超限响应，再以有界 InputStream 读取处理 chunked/未知长度响应；超过上限时返回可解释失败，而不会吞掉连接或继续读取。正常 HTTP(S) Fetch 不增加用户确认，既有 SSRF/redirect 校验继续保留。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\tool\webfetch.ts:9-11` 的响应体和超时边界，以及 `webfetch.ts:56-120` 的请求/响应处理。LabexAgent 使用 Spring `HttpClient` 和现有 `OutboundUrlPolicy`，将上限作为多用户服务的资源隔离而非工具能力降级；未复制实质源码。
+
+**Red → Green 命令**：
+
+```text
+cd backend && mvn -q -Dtest=WebFetchToolPolicyTest test
+```
+**Red → Green 证据**：先新增 declared-size 与未知长度流的边界回归；旧工具缺少 `ResponseTooLargeException` / `readBoundedResponse(...)`，聚焦 Maven 测试在编译期失败。实现后同一测试通过：声明超限不会读 body，未知长度超过上限会中止，等于上限的正文仍可返回。
