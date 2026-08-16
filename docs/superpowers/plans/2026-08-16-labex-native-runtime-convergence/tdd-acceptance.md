@@ -452,3 +452,26 @@ cd backend && mvn -q -Dtest=ToolResultTest,AgentContextOrchestratorVerificationT
 **已覆盖的可观察结果**：非零 shell exit 仍交给模型阅读完整输出，但任务进度进入 repair、同类 DNS/依赖命令可进入环境阻塞处理、workspace memory 明确记录 FAIL 与 failure event、metrics 同时记录 `transportSuccess=true` / `executionSuccess=false`。这使后续模型不会从“PASS”记忆或成功遥测中得到相反信号。
 
 **仍未关闭的风险**：本切片没有完成整个跨会话记忆的噪声治理，也不替代真实 browser/worker 的现场验收；当前仅消除了失败 outcome 被误写成成功事实的路径。全局记忆的可插拔设计与 Hermes 对比仍按主计划在 harness 核心完成后单独调研。
+### 切片 C12：durable progress replay 不把非零 exit 重放成成功（2026-08-16）
+
+**Public seam**：`AgentRunProgressProjectionService.load(...)` 由 durable Tool Part 重建 task stage、verification、last tool status，并在恢复后的 prompt 中作为工程事实。
+
+**Red**：C11 修正了当前 JVM 的增量 `afterTool(...)`，但 durable projection 仍只把 `AgentRunPart.status` 传给 reducer。非零 shell exit 按协议持久化为 `status=completed` 且 metadata 为 `{failureClass: non_zero_exit, execution.status: failed}`；旧恢复路径忽略 metadata，重启后会把最后状态重建成 completed，丢掉 repair 语义。
+
+**Green**：`AgentRunExecutionProgressReducer` 增加纯 `effectiveToolStatus(...)`：只在 transport `completed` 时读取结构化 `failureClass` 和 `execution`，将 cancelled / infrastructure / non-zero / timeout 映射为各自工程状态；既有无 metadata 的历史 Part 保持兼容。`AgentRunProgressProjectionService` 用这份 effective status 更新 reducer 和 `lastStatus`，使 live、恢复和 prompt projection 共享同一实际结果。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\app\src\context\global-sync\event-reducer.ts:228-253` 按 durable Part ID 进行幂等状态重放，以及 `D:\opencode\opencode-dev\packages\opencode\src\session\message-v2.ts:326-370` 在保留 tool output 的同时区分错误/中断 Part。LabexAgent 未复制实质源码；其多用户 durable transcript 需要额外适配 execution metadata，因此把解释规则放入无 DB 依赖的 Java progress reducer。
+
+**Red → Green 证据**：
+
+```text
+# Red：reducer 没有 metadata-aware public seam，progress service 只读取 part.status
+cd backend && mvn -q -Dtest=AgentRunExecutionProgressReducerTest,AgentRunProgressProjectionServiceTest test
+
+# Green：metadata-aware reducer 与 durable service replay
+cd backend && mvn -q -Dtest=AgentRunExecutionProgressReducerTest,AgentRunProgressProjectionServiceTest test
+```
+
+**已覆盖的可观察结果**：一条 completed shell Part 带 `failureClass=non_zero_exit` / `execution.status=failed` 后，恢复投影为 `stage=repair`、`lastStatus=error`，不会增加成功 verification；写入前的 unverified changes 也不会在重启后被失败 shell 误清除。
+
+**仍未关闭的风险**：本切片覆盖 durable Part replay，但尚未进行真实 worker 中断、JVM 重启、SSE reconnect 的端到端现场验收；旧历史没有结构化 metadata 时为兼容仍按其原 status 重放。

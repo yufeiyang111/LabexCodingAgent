@@ -81,6 +81,7 @@
 - [x] 扩展 tool Part metadata 写入 exit status、error class、target、mutation、verification：`ToolResult` 的 durable metadata 已包含执行状态/退出码、稳定 `failureClass`、安全相对 workdir/artifact path，以及既有 workspace identity/mutation/verification；Journal 原样写入 Tool Part/Event。
   - [x] 实时 `OBSERVE` 投影复用同一份 `failureClass` / `execution` durable metadata，不能由 transport `success=true` 覆盖非零 shell exit 的用户可见失败状态。
   - [x] 所有工程进度、环境分类、失败熔断、workspace memory 与 metrics 都以 `ToolResult.isSuccessfulExecutionOutcome()` 判定真实执行结果；只有 model transport / durable tool protocol 保留 `isSuccess()`。
+  - [x] durable progress replay 同时解释 Tool Part status 与 `metadata.failureClass` / `metadata.execution`；completed transport 的非零 exit 在重启、恢复和 prompt progress projection 中仍是 repair，而非 completed。
 - [ ] 成功 mutation 后发布 durable `WORKSPACE_CHANGED`。
 
 ### 绿测与验收

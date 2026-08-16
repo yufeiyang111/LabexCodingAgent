@@ -3,6 +3,7 @@ package com.labex.labexagent.run;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 class AgentRunExecutionProgressReducerTest {
@@ -52,6 +53,18 @@ class AgentRunExecutionProgressReducerTest {
         assertThat(state.hasUnverifiedChanges()).isTrue();
     }
 
+    @Test
+    void completedTransportWithNonzeroExitMetadataMovesProgressIntoRepair() {
+        JsonObject metadata = JsonParser.parseString(
+                "{\"failureClass\":\"non_zero_exit\",\"execution\":{\"status\":\"failed\",\"exitCode\":2}}")
+                .getAsJsonObject();
+
+        AgentRunExecutionProgressReducer.State failed = reducer.apply(
+                reducer.initial(), "shell", new JsonObject(), "completed", "exit=2", metadata);
+
+        assertThat(failed.stage()).isEqualTo("repair");
+        assertThat(AgentRunExecutionProgressReducer.effectiveToolStatus("completed", metadata)).isEqualTo("error");
+    }
     @Test
     void waitingAndInterruptedToolPartsDoNotInventProgress() {
         AgentRunExecutionProgressReducer.State initial = reducer.initial();

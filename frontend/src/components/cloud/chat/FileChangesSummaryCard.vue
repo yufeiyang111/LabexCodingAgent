@@ -41,10 +41,11 @@
             title="点击在标签页打开代码 Diff"
           >
             <div class="file-row-left">
-              <span class="icon file-status-icon" :class="file.status">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              <span class="file-icon-dot">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
               </span>
-              <span class="file-path-text">{{ file.path }}</span>
+              <span class="file-name-text">{{ file.name }}</span>
+              <span class="file-dir-text" v-if="file.dir">{{ file.dir }}</span>
             </div>
             <div class="file-row-right">
               <span v-if="file.additions > 0" class="diff-add-text">+{{ file.additions }}</span>
@@ -81,12 +82,20 @@ const isCollapsed = ref(false)
 
 const fileList = computed(() => {
   if (!props.changes || props.changes.length === 0) return []
-  return props.changes.map(c => ({
-    path: c.path || c.filePath || c.filename || 'unknown',
-    status: c.status || 'modified',
-    additions: c.additions || c.addedLines || 0,
-    deletions: c.deletions || c.deletedLines || 0,
-  }))
+  return props.changes.map(c => {
+    const rawPath = (c.path || c.filePath || c.filename || 'unknown').replace(/\\/g, '/')
+    const parts = rawPath.split('/')
+    const name = parts.pop() || rawPath
+    const dir = parts.join('/')
+    return {
+      path: rawPath,
+      name,
+      dir: dir ? `/${dir}` : '',
+      status: c.status || 'modified',
+      additions: c.additions || c.addedLines || 0,
+      deletions: c.deletions || c.deletedLines || 0,
+    }
+  })
 })
 
 const filesCount = computed(() => {
@@ -238,15 +247,27 @@ function toggleCollapse() {
   align-items: center;
   gap: 7px;
   font-family: 'JetBrains Mono', monospace;
+  min-width: 0;
+  flex: 1;
 }
 
-.file-status-icon {
+.file-icon-dot {
+  display: inline-flex;
+  align-items: center;
   color: #ea580c;
 }
 
-.file-path-text {
+.file-name-text {
   color: #09090b;
   font-weight: 500;
+}
+
+.file-dir-text {
+  color: #71717a;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .file-row-right {
@@ -255,6 +276,7 @@ function toggleCollapse() {
   gap: 6px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
+  flex-shrink: 0;
 }
 
 .icon {

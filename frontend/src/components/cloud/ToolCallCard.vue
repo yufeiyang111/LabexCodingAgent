@@ -1,29 +1,59 @@
 <template>
   <div class="tc-card" :class="'tc-' + call.status" :data-tool-call-id="call.toolCallId || ''">
     <div class="tc-header" @click="expanded = !expanded">
-      <div class="tc-icon-wrap">
-        <svg v-if="call.status === 'running'" class="tc-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-        <svg v-else-if="call.status === 'completed'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-        <svg v-else-if="call.status === 'error'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-        <svg v-else-if="call.status === 'warning'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        <svg v-else-if="call.status === 'skipped' || call.status === 'interrupted'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 9 6 6m0-6-6 6"/></svg>
-        <svg v-else-if="call.status === 'waiting_user' || call.status === 'waiting_approval'" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <div class="tc-header-left">
+        <span class="tc-symbol-tag" v-if="isEditTool">&lt;&gt;</span>
+        <div class="tc-icon-wrap" v-else>
+          <svg v-if="call.status === 'running'" class="tc-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          <svg v-else-if="call.status === 'completed'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg v-else-if="call.status === 'error'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+          <svg v-else-if="call.status === 'warning'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <svg v-else-if="call.status === 'skipped' || call.status === 'interrupted'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 9 6 6m0-6-6 6"/></svg>
+          <svg v-else-if="call.status === 'waiting_user' || call.status === 'waiting_approval'" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <div class="tc-info">
+          <span class="tc-name">{{ headerTitle }}</span>
+          <span class="tc-summary" v-if="call.summary && !isEditTool">{{ call.summary }}</span>
+        </div>
       </div>
-      <div class="tc-info">
-        <span class="tc-name">{{ toolLabel }}</span>
-        <span class="tc-summary" v-if="call.summary">{{ call.summary }}</span>
-        <span class="tc-execution" v-if="executionText">{{ executionText }}</span>
-      </div>
-      <div class="tc-toggle">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" :style="{ transform: expanded ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+      <div class="tc-header-right">
+        <span v-if="call.status === 'completed'" class="tc-status-pill completed">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>{{ executionStatusText }}</span>
+        </span>
+        <span v-else-if="call.status === 'running'" class="tc-status-pill running">
+          <svg class="tc-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          <span>执行中...</span>
+        </span>
+        <span v-else-if="call.status === 'error'" class="tc-status-pill error">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span>失败</span>
+        </span>
+        <div class="tc-toggle">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" :style="{ transform: expanded ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
       </div>
     </div>
 
     <Transition name="tc-slide">
       <div v-if="expanded" class="tc-body">
+        <!-- Edit File Special Diff View (Figure 5) -->
+        <div v-if="isEditTool && editDiffLines.length > 0" class="tc-edit-diff-box">
+          <div
+            v-for="(dl, dIdx) in editDiffLines"
+            :key="dIdx"
+            class="tc-diff-line"
+            :class="'is-' + dl.type"
+          >
+            <span class="tc-diff-lineno">{{ dl.line }}</span>
+            <span class="tc-diff-marker">{{ dl.type === 'add' ? '+' : '-' }}</span>
+            <span class="tc-diff-code">{{ dl.text }}</span>
+          </div>
+        </div>
+
         <!-- Args Section -->
-        <div v-if="call.args" class="tc-section">
+        <div v-if="call.args && (!isEditTool || editDiffLines.length === 0)" class="tc-section">
           <div class="tc-section-label">参数</div>
           <div class="tc-args">
             <template v-if="isEditTool">
@@ -77,7 +107,7 @@
         </div>
 
         <!-- Result Section -->
-        <div v-if="call.result" class="tc-section">
+        <div v-if="call.result && (!isEditTool || editDiffLines.length === 0)" class="tc-section">
           <div class="tc-section-label">结果</div>
           <div v-if="call.outputTruncated" class="tc-projection-note">
             输出过长，历史页已截断展示前 {{ truncate(call.result, 1000).length }} 字符（完整 {{ call.outputLength || call.result.length }} 字符已持久化在数据库，不在历史页传输）。
@@ -268,6 +298,68 @@ const argsObj = computed(() => {
   return props.call.args || {}
 })
 
+const editStats = computed(() => {
+  if (!isEditTool.value) return { added: 0, deleted: 0 }
+  let added = 0
+  let deleted = 0
+  const oldStr = argsObj.value.old_string || argsObj.value.old_text || ''
+  const newStr = argsObj.value.new_string || argsObj.value.new_text || ''
+  if (oldStr) deleted = oldStr.split('\n').length
+  if (newStr) added = newStr.split('\n').length
+  if (props.call.result && typeof props.call.result === 'string') {
+    const addMatches = props.call.result.match(/^\+[^+]/gm)
+    const delMatches = props.call.result.match(/^-[^-]/gm)
+    if (addMatches) added = Math.max(added, addMatches.length)
+    if (delMatches) deleted = Math.max(deleted, delMatches.length)
+  }
+  return { added, deleted }
+})
+
+const headerTitle = computed(() => {
+  if (isEditTool.value) {
+    const file = argsObj.value.path || argsObj.value.file_path || argsObj.value.filename || ''
+    const statStr = (editStats.value.added > 0 || editStats.value.deleted > 0)
+      ? ` (+${editStats.value.added} -${editStats.value.deleted} 行)`
+      : ''
+    return `${props.call.name}: ${file}${statStr}`
+  }
+  if (isShellTool.value) {
+    const cmd = argsObj.value.command || argsObj.value.cmd || ''
+    return cmd ? `${props.call.name}: ${cmd}` : toolLabel.value
+  }
+  return toolLabel.value
+})
+
+const executionStatusText = computed(() => {
+  if (props.call.status === 'completed') {
+    const elapsed = Number(props.call.execution?.elapsedMs || 0)
+    return elapsed > 0 ? `${(elapsed / 1000).toFixed(2)}s 成功` : '成功'
+  }
+  if (props.call.status === 'running') return '执行中...'
+  if (props.call.status === 'error') return '失败'
+  return executionText.value
+})
+
+const editDiffLines = computed(() => {
+  if (!isEditTool.value) return []
+  const oldStr = argsObj.value.old_string || argsObj.value.old_text || ''
+  const newStr = argsObj.value.new_string || argsObj.value.new_text || ''
+  const lines = []
+  let lineNum = parseInt(argsObj.value.start_line || argsObj.value.line || '12', 10)
+  if (isNaN(lineNum) || lineNum <= 0) lineNum = 12
+  if (oldStr) {
+    oldStr.split('\n').forEach(l => {
+      lines.push({ type: 'del', line: lineNum, text: l })
+    })
+  }
+  if (newStr) {
+    newStr.split('\n').forEach((l, idx) => {
+      lines.push({ type: 'add', line: lineNum + idx, text: l })
+    })
+  }
+  return lines
+})
+
 const hasDiff = computed(() => {
   const r = props.call.result || ''
   return r.includes('---') && r.includes('+++') && r.includes('@@')
@@ -337,16 +429,103 @@ watch(() => props.call.questionRequest, (request) => {
 .tc-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   cursor: pointer;
   user-select: none;
+  background: #fafafa;
   transition: background 0.1s;
 }
-.tc-header:hover { background: #f9fafb; }
+.tc-header:hover { background: #f4f4f5; }
+.tc-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.tc-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.tc-symbol-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 12px;
+  color: #18181b;
+  letter-spacing: -0.5px;
+}
+.tc-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #f4f4f5;
+  color: #71717a;
+}
+.tc-status-pill.completed {
+  background: #ecfdf5;
+  color: #059669;
+}
+.tc-status-pill.running {
+  background: #eff6ff;
+  color: #2563eb;
+}
+.tc-status-pill.error {
+  background: #fef2f2;
+  color: #dc2626;
+}
+.tc-edit-diff-box {
+  margin: 6px 0;
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
+}
+.tc-diff-line {
+  display: flex;
+  align-items: flex-start;
+  padding: 2px 10px;
+  white-space: pre;
+  word-break: break-all;
+  overflow-x: auto;
+}
+.tc-diff-line.is-del {
+  background: #ffebe9;
+  color: #cf222e;
+}
+.tc-diff-line.is-add {
+  background: #e6ffec;
+  color: #1a7f37;
+}
+.tc-diff-lineno {
+  width: 28px;
+  flex-shrink: 0;
+  color: #a1a1aa;
+  user-select: none;
+  font-size: 11px;
+}
+.tc-diff-marker {
+  width: 14px;
+  flex-shrink: 0;
+  font-weight: 600;
+  user-select: none;
+}
+.tc-diff-code {
+  flex: 1;
+}
 .tc-icon-wrap {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -364,11 +543,12 @@ watch(() => props.call.questionRequest, (request) => {
 .tc-name {
   font-size: 12px;
   font-weight: 600;
-  color: #374151;
+  color: #18181b;
+  font-family: 'JetBrains Mono', monospace;
 }
 .tc-summary {
   font-size: 11px;
-  color: #6b7280;
+  color: #71717a;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -379,9 +559,9 @@ watch(() => props.call.questionRequest, (request) => {
 }
 .tc-running .tc-execution { color: #2563eb; }
 .tc-error .tc-execution { color: #dc2626; }
-.tc-toggle { flex-shrink: 0; }
+.tc-toggle { flex-shrink: 0; display: flex; align-items: center; }
 .tc-body {
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid #e4e4e7;
   padding: 8px 10px;
 }
 .tc-projection-note {

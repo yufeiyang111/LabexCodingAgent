@@ -21,10 +21,10 @@
           v-else
           class="thinking-preview-title"
         >
-          {{ collapsedTitle || '思考过程' }}
+          {{ collapsedTitle || '已完成深度思考' }}
         </span>
       </div>
-      <span v-if="elapsedText" class="thinking-meta-time">{{ elapsedText }}</span>
+      <span v-if="displayElapsed" class="thinking-meta-time">{{ displayElapsed }}</span>
     </div>
 
     <!-- 平滑风琴折叠展开 -->
@@ -43,7 +43,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 
 const props = defineProps({
   content: {
@@ -75,15 +75,35 @@ const props = defineProps({
 const emit = defineEmits(['markdown-click', 'toggle'])
 
 const isExpanded = ref(props.defaultOpen)
+const liveElapsed = ref('0.0')
+let ticker = null
+let startTimestamp = null
 
 watch(
   () => props.isStreaming,
   newVal => {
     if (newVal) {
-      isExpanded.value = true
+      if (!startTimestamp) startTimestamp = Date.now()
+      if (ticker) clearInterval(ticker)
+      ticker = setInterval(() => {
+        liveElapsed.value = ((Date.now() - startTimestamp) / 1000).toFixed(1)
+      }, 100)
+    } else {
+      if (ticker) {
+        clearInterval(ticker)
+        ticker = null
+      }
+      if (startTimestamp) {
+        liveElapsed.value = ((Date.now() - startTimestamp) / 1000).toFixed(1)
+      }
     }
-  }
+  },
+  { immediate: true }
 )
+
+onUnmounted(() => {
+  if (ticker) clearInterval(ticker)
+})
 
 const streamingTitle = computed(() => {
   if (props.content) {
@@ -99,12 +119,15 @@ const collapsedTitle = computed(() => {
     const clean = props.content.replace(/[#*`_]/g, '').trim()
     if (clean) return clean.slice(0, 50) + (clean.length > 50 ? '...' : '')
   }
-  return '思考过程'
+  return '已完成深度思考'
 })
 
-const elapsedText = computed(() => {
+const displayElapsed = computed(() => {
   if (props.elapsedSeconds !== null && props.elapsedSeconds !== undefined) {
-    return `${props.elapsedSeconds}s`
+    return props.isStreaming ? `已思考 ${Number(props.elapsedSeconds).toFixed(1)}s` : `耗时 ${Number(props.elapsedSeconds).toFixed(1)}s`
+  }
+  if (parseFloat(liveElapsed.value) > 0) {
+    return props.isStreaming ? `已思考 ${liveElapsed.value}s` : `耗时 ${liveElapsed.value}s`
   }
   return ''
 })

@@ -118,6 +118,7 @@
             class="ws-tab ws-tab-agent"
             :class="{ active: isAgentTabActive }"
             @click="onSelectAgentTab"
+            @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeAgentTab() } }"
             title="LabexAgent 智能助手"
           >
             <span class="agent-tab-sparkle">
@@ -179,6 +180,8 @@
             @question="handleQuestionReply"
             @copy-message="copyMessage"
             @insert-editor="insertToEditor"
+            @review-changes="handleReviewChanges"
+            @open-file-diff="handleOpenFileDiff"
           />
 
           <!-- 当处于文件编辑标签时显示 Monaco 编辑器 -->
@@ -977,6 +980,22 @@ function closeAgentTab() {
 
 function dockAiBackToSidebar() {
   closeAgentTab()
+}
+
+async function handleOpenFileDiff(file) {
+  const path = file?.path || file?.filePath || file
+  if (path) {
+    isAgentTabActive.value = false
+    await openFile(path)
+  }
+}
+
+function handleReviewChanges(msg) {
+  if (msg?.fileChanges && msg.fileChanges.length > 0) {
+    handleOpenFileDiff(msg.fileChanges[0])
+  } else if (sessionChanges.value && sessionChanges.value.length > 0) {
+    selectAiTab('review')
+  }
 }
 
 function moveAiToCenter() {

@@ -69,19 +69,23 @@
             class="center-msg-item"
             :class="msg.role"
           >
-            <!-- 用户消息 -->
+            <!-- 用户消息 (Figure 3) -->
             <template v-if="msg.role === 'user'">
               <div class="user-msg-bubble-wrap">
-                <div v-if="msg.attachments?.length" class="user-images-strip">
-                  <AgentImageAttachments
-                    :attachments="msg.attachments"
-                    variant="message"
-                    :show-names="false"
-                    @preview="img => emit('preview-image', img)"
-                  />
-                </div>
                 <div class="user-msg-bubble">
-                  {{ msg.content }}
+                  <!-- 用户发送的图片缩略图列表 (可点击预览大图) -->
+                  <div v-if="msg.attachments?.length" class="user-msg-thumbnails">
+                    <div
+                      v-for="(att, aIdx) in msg.attachments"
+                      :key="aIdx"
+                      class="user-msg-thumb-item"
+                      @click="emit('preview-image', att)"
+                      title="点击查看原图"
+                    >
+                      <img :src="att.dataUrl || att.url || att.src" :alt="att.name || '图片附件'" />
+                    </div>
+                  </div>
+                  <div class="user-msg-text">{{ msg.content }}</div>
                 </div>
               </div>
             </template>
@@ -140,6 +144,16 @@
                     ></div>
                   </div>
 
+                  <!-- 文件改动卡片 (Figure 1) -->
+                  <FileChangesSummaryCard
+                    v-if="(msg.fileChanges && msg.fileChanges.length > 0) || (msg.changes && msg.changes.length > 0)"
+                    :changes="msg.fileChanges || msg.changes"
+                    :additions="msg.additions || 0"
+                    :deletions="msg.deletions || 0"
+                    @review-all="emit('review-changes', msg)"
+                    @open-file-diff="file => emit('open-file-diff', file)"
+                  />
+
                   <!-- 任务证据与计划 -->
                   <CompletionEvidenceCard
                     v-if="msg.completionEvidence || msg.completionBlockedEvidence"
@@ -180,6 +194,40 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 浮动回到底部按钮 -->
+    <Transition name="fade-pop">
+      <button
+        v-if="showScrollBtn"
+        class="center-scroll-bottom-btn"
+        type="button"
+        @click="scrollToBottomManual"
+        title="回到底部"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+    </Transition>
+
+    <!-- 浮动消息上下导航 -->
+    <div v-if="messages.length > 2" class="center-msg-navigator">
+      <button
+        class="nav-btn"
+        :class="{ disabled: currentMsgIdx <= 0 }"
+        @click="navigateMessage(-1)"
+        title="上一条消息"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="18 15 12 9 6 15"/></svg>
+      </button>
+      <span class="nav-indicator">{{ currentMsgIdx + 1 }}/{{ messages.length }}</span>
+      <button
+        class="nav-btn"
+        :class="{ disabled: currentMsgIdx >= messages.length - 1 }"
+        @click="navigateMessage(1)"
+        title="下一条消息"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
     </div>
 
     <!-- 固定在底部的 Composer 区域 -->
@@ -231,16 +279,16 @@
 </template>
 
 <script setup>
-import { ref, nextTick, defineAsyncComponent } from 'vue'
+import { ref, nextTick, watch, defineAsyncComponent } from 'vue'
 import ComposerDock from '../composer/ComposerDock.vue'
 import ThinkingProcessBlock from './ThinkingProcessBlock.vue'
 import ToolCallCard from '../ToolCallCard.vue'
-import AgentImageAttachments from '../AgentImageAttachments.vue'
 
 const CompletionEvidenceCard = defineAsyncComponent(() => import('../CompletionEvidenceCard.vue'))
 const PlanDisplay = defineAsyncComponent(() => import('../PlanDisplay.vue'))
 const TokenChart = defineAsyncComponent(() => import('../TokenChart.vue'))
 const AgentTimer = defineAsyncComponent(() => import('../AgentTimer.vue'))
+const FileChangesSummaryCard = defineAsyncComponent(() => import('./FileChangesSummaryCard.vue'))
 
 const props = defineProps({
   messages: {
@@ -355,15 +403,35 @@ const emit = defineEmits([
   'question',
   'copy-message',
   'insert-editor',
+  'review-changes',
+  'open-file-diff',
 ])
 
 const scrollPaneRef = ref(null)
+const userScrolled = ref(false)
+const showScrollBtn = ref(false)
+const currentMsgIdx = ref(0)
 
-function onScroll() {
-  // Can track scroll position if needed
+function onScroll(e) {
+  const el = e.target
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  showScrollBtn.value = distanceFromBottom > 150
+  userScrolled.value = distanceFromBottom > 80
 }
 
-function scrollToBottom() {
+function scrollToBottomManual() {
+  userScrolled.value = false
+  showScrollBtn.value = false
+  if (scrollPaneRef.value) {
+    scrollPaneRef.value.scrollTo({
+      top: scrollPaneRef.value.scrollHeight,
+      behavior: 'smooth'
+    })
+  }
+}
+
+function scrollDown(force = false) {
+  if (userScrolled.value && !force) return
   nextTick(() => {
     if (scrollPaneRef.value) {
       scrollPaneRef.value.scrollTop = scrollPaneRef.value.scrollHeight
@@ -371,8 +439,27 @@ function scrollToBottom() {
   })
 }
 
+function navigateMessage(direction) {
+  const newIndex = currentMsgIdx.value + direction
+  if (newIndex >= 0 && newIndex < props.messages.length) {
+    currentMsgIdx.value = newIndex
+    const items = scrollPaneRef.value?.querySelectorAll('.center-msg-item')
+    if (items && items[newIndex]) {
+      items[newIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }
+}
+
+watch(
+  () => props.messages,
+  () => {
+    scrollDown(false)
+  },
+  { deep: true }
+)
+
 defineExpose({
-  scrollToBottom,
+  scrollToBottom: () => scrollDown(true),
 })
 </script>
 
@@ -449,7 +536,7 @@ defineExpose({
 .center-ai-scroll-pane {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 24px;
+  padding: 18px 24px 200px 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -575,6 +662,36 @@ defineExpose({
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
+.user-msg-thumbnails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.user-msg-thumb-item {
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.user-msg-thumb-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.user-msg-thumb-item:hover {
+  transform: scale(1.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
 .assistant-msg-wrap {
   display: flex;
   flex-direction: column;
@@ -621,26 +738,104 @@ defineExpose({
   color: #09090b;
 }
 
-/* 固定底部 Composer */
-.center-composer-dock-pinned {
-  flex-shrink: 0;
+/* 浮动回到底部与导航按钮 */
+.center-scroll-bottom-btn {
+  position: absolute;
+  bottom: 125px;
+  right: 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
   background: #ffffff;
-  border-top: 1px solid #e4e4e7;
-  padding: 10px 24px;
+  border: 1px solid #e4e4e7;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #18181b;
+  cursor: pointer;
+  z-index: 55;
+  transition: all 0.15s ease;
+}
+
+.center-scroll-bottom-btn:hover {
+  background: #f4f4f5;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+.center-msg-navigator {
+  position: absolute;
+  bottom: 125px;
+  left: 32px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 20px;
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  z-index: 55;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.center-msg-navigator .nav-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #71717a;
+  transition: all 0.12s;
+}
+
+.center-msg-navigator .nav-btn:hover:not(.disabled) {
+  background: #f4f4f5;
+  color: #18181b;
+}
+
+.center-msg-navigator .nav-btn.disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.nav-indicator {
+  color: #71717a;
+  padding: 0 4px;
+}
+
+/* 悬浮在底部的 Composer (Figure 4) */
+.center-composer-dock-pinned {
+  position: absolute;
+  bottom: 30px;
+  left: 0;
+  right: 0;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 16px;
+  background: transparent;
+  z-index: 50;
+  pointer-events: none;
   display: flex;
   flex-direction: column;
   align-items: center;
-  position: relative;
-  z-index: 60;
 }
 
 .center-composer-inner-wrapper {
   width: 100%;
-  max-width: 1040px;
+  pointer-events: auto;
 }
 
+/* 底部状态条 (Figure 4) */
 .center-status-strip {
-  height: 26px;
+  height: 24px;
   padding: 0 16px;
   background: #fafafa;
   border-top: 1px solid #f4f4f5;
@@ -650,6 +845,7 @@ defineExpose({
   font-size: 11px;
   color: #71717a;
   flex-shrink: 0;
+  user-select: none;
 }
 
 .status-left,

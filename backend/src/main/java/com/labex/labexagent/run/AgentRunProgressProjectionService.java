@@ -103,10 +103,12 @@ public class AgentRunProgressProjectionService {
                 Comparator.nullsLast(Long::compareTo)));
         for (AgentRunPart part : ordered) {
             JsonObject input = parseObject(part.getInputJson());
-            state = reducer.apply(state, part.getToolName(), input, part.getStatus(), part.getOutputText());
+            JsonObject metadata = parseObject(part.getMetadata());
+            String effectiveStatus = AgentRunExecutionProgressReducer.effectiveToolStatus(part.getStatus(), metadata);
+            state = reducer.apply(state, part.getToolName(), input, part.getStatus(), part.getOutputText(), metadata);
             lastToolCallId = safe(part.getToolCallId());
             lastTool = safe(part.getToolName());
-            lastStatus = safe(part.getStatus());
+            lastStatus = effectiveStatus;
             lastResult = bounded(part.getOutputText(), MAX_RESULT_CHARS);
             if (part.getPartId() != null) {
                 revision = Math.max(revision, part.getPartId());

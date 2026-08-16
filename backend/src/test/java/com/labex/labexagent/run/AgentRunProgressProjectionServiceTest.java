@@ -52,6 +52,30 @@ class AgentRunProgressProjectionServiceTest {
     }
 
     @Test
+    void rebuildsNonzeroShellOutcomeAsRepairFromDurablePartMetadata() {
+        AgentRunPartMapper parts = Mockito.mock(AgentRunPartMapper.class);
+        AgentRunEventMapper events = Mockito.mock(AgentRunEventMapper.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = Mockito.mock(AgentRunLifecycleService.class);
+        when(tasks.selectById(71L)).thenReturn(task(71L, 4L, "running"));
+        AgentRunPart write = toolPart(1L, "call-write", "write_file", "completed",
+                "{\"file_path\":\"src/Main.java\"}", "saved");
+        AgentRunPart shell = toolPart(2L, "call-shell", "shell", "completed", "{\"command\":\"npm run build\"}",
+                "exit=2\nstatus=failed");
+        shell.setMetadata("{\"failureClass\":\"non_zero_exit\",\"execution\":{\"status\":\"failed\",\"exitCode\":2}}");
+        when(parts.selectList(any())).thenReturn(List.of(write, shell));
+        when(events.selectList(any())).thenReturn(List.of());
+
+        AgentRunProgressProjectionService.Projection projection = service(parts, events, tasks, lifecycle)
+                .load(71L, 4L);
+
+        assertThat(projection.stage()).isEqualTo("repair");
+        assertThat(projection.writeCount()).isEqualTo(1);
+        assertThat(projection.verificationCount()).isZero();
+        assertThat(projection.lastStatus()).isEqualTo("error");
+        assertThat(projection.lastResult()).contains("exit=2");
+    }
+    @Test
     void durableToolPartsWinOverAStaleLegacyCheckpointSeed() {
         AgentRunPartMapper parts = Mockito.mock(AgentRunPartMapper.class);
         AgentRunEventMapper events = Mockito.mock(AgentRunEventMapper.class);

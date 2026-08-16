@@ -3137,3 +3137,48 @@ body > div[id*="mermaid"] {
   .ai-msg.user .ai-msg-content { max-width: 100%; }
   .ai-input-image-strip { padding: 6px; }
 }
+
+/* ===== 中心区域拖拽放置提示遮罩 (悬浮置顶于中心，带外圈虚线) ===== */
+.center-drop-zone-overlay {
+  position: absolute;
+  inset: 16px;
+  border: 2px dashed #18181b;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(8px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: fadeInOverlay 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.drop-hint-box {
+  padding: 16px 28px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #09090b;
+}
+
+.drop-hint-box svg {
+  color: #18181b;
+}
+
+@keyframes fadeInOverlay {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

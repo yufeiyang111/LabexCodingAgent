@@ -1,6 +1,6 @@
-﻿<template>
+<template>
   <div v-if="attachments.length > 0" class="agent-image-attachments" :class="`is-${variant}`" :aria-label="ariaLabel">
-    <article v-for="attachment in attachments" :key="attachment.id" class="agent-image-attachment">
+    <article v-for="attachment in attachments" :key="attachment.id || attachment.name" class="agent-image-attachment">
       <button
         type="button"
         class="agent-image-thumbnail"
@@ -8,7 +8,7 @@
         :aria-label="`预览图片：${attachment.name}`"
         @click="$emit('preview', attachment)"
       >
-        <img :src="attachment.previewUrl" :alt="attachment.name" />
+        <img :src="attachment.previewUrl || attachment.dataUrl || attachment.url || attachment.src" :alt="attachment.name" />
       </button>
       <button
         v-if="removable"
