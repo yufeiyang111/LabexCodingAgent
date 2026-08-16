@@ -119,6 +119,39 @@ test('direct stream events persist their durable task cursor through the runtime
   assert.equal(storage.getItem('labex-agent:task-event-cursor:42:71'), '19')
 })
 
+test('direct terminal stream hydrates a missing final reply from the authoritative task transcript', async () => {
+  const state = harness({
+    api: {
+      agentTask: async (_projectId, taskId) => ({ data: {
+        taskId,
+        conversationId: 'conversation-a',
+        sessionId: 'session-a',
+        status: 'completed',
+        runMessages: [
+          { messageId: 19, messageKey: 'assistant:final', sequence: 19, content: 'Durable final reply', status: 'completed' }
+        ],
+        parts: []
+      } })
+    }
+  })
+  const assistant = {
+    role: 'assistant',
+    taskId: 71,
+    conversationId: 'conversation-a',
+    runState: 'completed',
+    content: 'Partial direct final',
+    hasDurableFinal: false,
+    toolCalls: [],
+    timing: {}
+  }
+  state.messages.value.push(assistant)
+
+  assert.equal(await state.runtime.reconcileDirectTerminalTask(assistant), true)
+  assert.equal(assistant.content, 'Durable final reply')
+  assert.equal(assistant.runState, 'completed')
+  assert.equal(assistant.isStreaming, false)
+})
+
 test('terminal recovery reconciles conversation history after the initial snapshot', async () => {
   const reconciliations = []
   let state

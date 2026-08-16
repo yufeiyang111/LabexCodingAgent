@@ -422,10 +422,10 @@
                       <div v-if="showMessageTimestamps && msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</div>
                     </div>
 
-                    <!-- File Changes Summary Card -->
+                    <!-- File Changes Summary Card (常驻于任务底部) -->
                     <FileChangesSummaryCard
-                      v-if="msg.role === 'assistant' && (sessionChanges?.length > 0 && i === messages.length - 1)"
-                      :changes="sessionChanges"
+                      v-if="msg.role === 'assistant' && i === messages.length - 1"
+                      :changes="sessionChanges || []"
                       @review-all="selectAiTab('review')"
                       @open-file-diff="file => openFile(file.path)"
                     />
@@ -1446,7 +1446,7 @@ async function sendMessage() {
     }
   }
   messages.value.push({ role: 'user', content: q, attachments: imageAttachments, timestamp: Date.now() })
-  messages.value.push({ role: 'assistant', content: '', pendingFinalContent: '', hasPendingFinalDraft: false, thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), conversationId: currentAgentSession.value?.conversationId || null, timing: createMessageTiming() })
+  messages.value.push({ role: 'assistant', content: '', pendingFinalContent: '', hasPendingFinalDraft: false, hasDurableFinal: false, thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), conversationId: currentAgentSession.value?.conversationId || null, timing: createMessageTiming() })
   const assistantMsg = messages.value[messages.value.length - 1]
   agentInput.value = ''
   pendingImageAttachments.value = []
@@ -1495,6 +1495,10 @@ async function sendMessage() {
     } else {
       assistantMsg.isStreaming = false
       stopMessageTimer(assistantMsg)
+      // 初始 SSE 连接可能在最后一个 durable FINAL 帧抵达前关闭；仅从同 task 的 durable transcript 补齐空答复。
+      if (stillOwnsConversation && assistantMsg.hasDurableFinal !== true && !assistantMsg.error) {
+        await reconcileDirectTerminalTask(assistantMsg)
+      }
       await syncTaskTiming(assistantMsg)
       if (stillOwnsConversation) agentLoading.value = false
     }
@@ -1834,6 +1838,7 @@ const {
   recordTaskEventCursor,
   invalidate: invalidateTaskRuntime,
   recoverActiveTaskForConversation,
+  reconcileDirectTerminalTask,
   subscribeToTaskEvents,
   resumeTaskEventSubscription,
   syncTaskTiming,
@@ -3417,14 +3422,16 @@ function startSidebarResize(e) {
   handle.addEventListener('pointercancel', finish)
 }
 
-// Resize
+// Resize AI Panel
 let resizeFrame = null
 function startResize(e) {
   const handle = e.currentTarget
-  const panel = handle.closest('.ai-panel')
+  const panel = handle.nextElementSibling?.classList.contains('ai-panel')
+    ? handle.nextElementSibling
+    : document.querySelector('.ai-panel')
   if (!panel) return
   const startX = e.clientX
-  const startWidth = panel.offsetWidth || 340
+  const startWidth = aiPanelWidth.value || panel.offsetWidth || 420
   let latestX = startX
   panel.classList.add('is-resizing')
   handle.setPointerCapture?.(e.pointerId)
@@ -3433,7 +3440,7 @@ function startResize(e) {
     resizeFrame = null
     const diff = startX - latestX
     const width = Math.max(280, Math.min(startWidth + diff, window.innerWidth * 0.7))
-    panel.style.width = `${width}px`
+    aiPanelWidth.value = Math.round(width)
   }
   const onMove = event => {
     latestX = event.clientX

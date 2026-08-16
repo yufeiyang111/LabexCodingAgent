@@ -144,10 +144,9 @@
                     ></div>
                   </div>
 
-                  <!-- 文件改动卡片 (Figure 1) -->
+                  <!-- 文件改动卡片 (Figure 1: 常驻展示，无变动时显示 No changes) -->
                   <FileChangesSummaryCard
-                    v-if="(msg.fileChanges && msg.fileChanges.length > 0) || (msg.changes && msg.changes.length > 0)"
-                    :changes="msg.fileChanges || msg.changes"
+                    :changes="msg.fileChanges || msg.changes || []"
                     :additions="msg.additions || 0"
                     :deletions="msg.deletions || 0"
                     @review-all="emit('review-changes', msg)"
@@ -196,18 +195,31 @@
       </div>
     </div>
 
-    <!-- 浮动回到底部按钮 -->
-    <Transition name="fade-pop">
-      <button
-        v-if="showScrollBtn"
-        class="center-scroll-bottom-btn"
-        type="button"
-        @click="scrollToBottomManual"
-        title="回到底部"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-    </Transition>
+    <!-- 浮动回顶/滚底按钮组 -->
+    <div class="center-scroll-fab-group">
+      <Transition name="fade-pop">
+        <button
+          v-if="showScrollTopBtn"
+          class="center-scroll-fab-btn"
+          type="button"
+          @click="scrollToTopManual"
+          title="回到顶部"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+        </button>
+      </Transition>
+      <Transition name="fade-pop">
+        <button
+          v-if="showScrollBtn"
+          class="center-scroll-fab-btn"
+          type="button"
+          @click="scrollToBottomManual"
+          title="回到底部"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+      </Transition>
+    </div>
 
     <!-- 浮动消息上下导航 -->
     <div v-if="messages.length > 2" class="center-msg-navigator">
@@ -410,13 +422,31 @@ const emit = defineEmits([
 const scrollPaneRef = ref(null)
 const userScrolled = ref(false)
 const showScrollBtn = ref(false)
+const showScrollTopBtn = ref(false)
 const currentMsgIdx = ref(0)
 
 function onScroll(e) {
   const el = e.target
   const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   showScrollBtn.value = distanceFromBottom > 150
+  showScrollTopBtn.value = el.scrollTop > 150
   userScrolled.value = distanceFromBottom > 80
+
+  // 精准计算当前视口中央所在的消息索引
+  const items = el.querySelectorAll('.center-msg-item')
+  if (items && items.length > 0) {
+    const containerTop = el.getBoundingClientRect().top + 60
+    let found = 0
+    for (let i = 0; i < items.length; i++) {
+      const r = items[i].getBoundingClientRect()
+      if (r.bottom >= containerTop) {
+        found = i
+        break
+      }
+      found = i
+    }
+    currentMsgIdx.value = found
+  }
 }
 
 function scrollToBottomManual() {
@@ -425,6 +455,16 @@ function scrollToBottomManual() {
   if (scrollPaneRef.value) {
     scrollPaneRef.value.scrollTo({
       top: scrollPaneRef.value.scrollHeight,
+      behavior: 'smooth'
+    })
+  }
+}
+
+function scrollToTopManual() {
+  userScrolled.value = true
+  if (scrollPaneRef.value) {
+    scrollPaneRef.value.scrollTo({
+      top: 0,
       behavior: 'smooth'
     })
   }
@@ -440,13 +480,12 @@ function scrollDown(force = false) {
 }
 
 function navigateMessage(direction) {
-  const newIndex = currentMsgIdx.value + direction
-  if (newIndex >= 0 && newIndex < props.messages.length) {
-    currentMsgIdx.value = newIndex
-    const items = scrollPaneRef.value?.querySelectorAll('.center-msg-item')
-    if (items && items[newIndex]) {
-      items[newIndex].scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }
+  const items = scrollPaneRef.value?.querySelectorAll('.center-msg-item')
+  if (!items || items.length === 0) return
+  const newIndex = Math.max(0, Math.min(currentMsgIdx.value + direction, props.messages.length - 1))
+  currentMsgIdx.value = newIndex
+  if (items[newIndex]) {
+    items[newIndex].scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 }
 
@@ -738,11 +777,18 @@ defineExpose({
   color: #09090b;
 }
 
-/* 浮动回到底部与导航按钮 */
-.center-scroll-bottom-btn {
+/* 浮动回顶/滚底与导航按钮 */
+.center-scroll-fab-group {
   position: absolute;
   bottom: 125px;
   right: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 55;
+}
+
+.center-scroll-fab-btn {
   width: 32px;
   height: 32px;
   border-radius: 50%;
@@ -754,11 +800,10 @@ defineExpose({
   justify-content: center;
   color: #18181b;
   cursor: pointer;
-  z-index: 55;
   transition: all 0.15s ease;
 }
 
-.center-scroll-bottom-btn:hover {
+.center-scroll-fab-btn:hover {
   background: #f4f4f5;
   transform: translateY(-2px);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);

@@ -101,6 +101,7 @@ export function useAgentTaskRuntime(options) {
       modelSteps: [],
       plan: null,
       planJson: null,
+      hasDurableFinal: false,
       isStreaming: true,
       error: null,
       _nextOrder: 0,
@@ -213,6 +214,45 @@ export function useAgentTaskRuntime(options) {
       return true
     } catch (error) {
       console.warn('Failed to hydrate terminal Agent task projection:', error)
+      return false
+    }
+  }
+
+  /**
+   * 首次直连流已经结束、但浏览器漏收 FINAL 时，从同一 task 的 durable transcript 补齐可见答复。
+   * 不读取 AgentTask.summary；最终文本仍只来自 Run Message / Part 投影。
+   */
+  async function reconcileDirectTerminalTask(assistantMsg) {
+    if (!assistantMsg?.taskId || !projectId.value || typeof api.agentTask !== 'function') return false
+    if (assistantMsg.hasDurableFinal === true || assistantMsg.error) return false
+
+    const conversationId = assistantMsg.conversationId || currentAgentSession.value?.conversationId
+    if (!conversationId || !ownsConversation(conversationId)) return false
+
+    try {
+      const response = await api.agentTask(projectId.value, assistantMsg.taskId)
+      const task = response?.data
+      if (!task?.taskId || !isTerminalAgentTask(task) || task.conversationId !== conversationId) return false
+      if (currentAgentSession.value?.sessionId && task.sessionId
+          && task.sessionId !== currentAgentSession.value.sessionId) return false
+
+      assistantMsg.taskId = task.taskId
+      assistantMsg.conversationId = task.conversationId
+      reconcileRecoveredToolCalls(assistantMsg, task)
+      reconcileRecoveredCommandApproval(assistantMsg, task)
+      assistantMsg.runState = normalizeAgentRunState(task.status)
+      assistantMsg.isStreaming = false
+      assistantMsg.hasDurableFinal = Boolean(String(assistantMsg.content || '').trim())
+      if (assistantMsg.timing) assistantMsg.timing.taskId = task.taskId
+      stopMessageTimer(assistantMsg)
+      log('DIRECT_TERMINAL_TRANSCRIPT_HYDRATED', {
+        conversationId,
+        taskId: task.taskId,
+        status: task.status
+      })
+      return Boolean(String(assistantMsg.content || '').trim())
+    } catch (error) {
+      console.warn('Failed to hydrate a direct terminal Agent reply:', error)
       return false
     }
   }
@@ -445,6 +485,7 @@ export function useAgentTaskRuntime(options) {
     recordTaskEventCursor,
     invalidate,
     recoverActiveTaskForConversation,
+    reconcileDirectTerminalTask,
     subscribeToTaskEvents,
     resumeTaskEventSubscription,
     syncTaskTiming,

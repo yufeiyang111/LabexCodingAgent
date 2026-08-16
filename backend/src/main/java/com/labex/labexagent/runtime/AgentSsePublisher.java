@@ -101,9 +101,9 @@ public class AgentSsePublisher {
         }
         try {
             this.sendFrame(null, type, safeData);
-        } catch (IOException e) {
+        } catch (IOException ignored) {
+            // 浏览器只观察 transient 增量；断线不得中断执行，也不得阻止随后 FINAL 等 durable 事实落库。
             this.connectionClosed = true;
-            throw e;
         }
     }
 

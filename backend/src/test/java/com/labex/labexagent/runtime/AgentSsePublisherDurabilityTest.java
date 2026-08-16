@@ -164,6 +164,27 @@ class AgentSsePublisherDurabilityTest {
     }
 
     @Test
+    void persistsTheDurableFinalAfterThePrimaryTransientFrameDisconnects() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunEvent finalEvent = new AgentRunEvent();
+        finalEvent.setSequenceNumber(43L);
+        when(lifecycle.appendEvent(eq(71L), eq("FINAL"), any(), anyString())).thenReturn(finalEvent);
+        org.mockito.Mockito.doThrow(new IOException("client disconnected"))
+                .when(emitter).send(any(SseEmitter.SseEventBuilder.class));
+
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter);
+        publisher.bindRun(lifecycle, 71L);
+
+        assertDoesNotThrow(() -> {
+            publisher.sendTransient("FINAL_DELTA", Map.of("delta", "Visible final reply"));
+            publisher.send("FINAL", Map.of("content", "Visible final reply"));
+        });
+
+        verify(lifecycle).appendEvent(eq(71L), eq("FINAL"), any(), anyString());
+    }
+
+    @Test
     void forwardsTransientDeltasToTaskSubscribersAfterTheRunIsBound() throws Exception {
         SseEmitter emitter = mock(SseEmitter.class);
         java.util.concurrent.atomic.AtomicReference<Long> taskId = new java.util.concurrent.atomic.AtomicReference<>();

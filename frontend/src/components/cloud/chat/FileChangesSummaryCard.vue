@@ -1,22 +1,26 @@
 <template>
   <div
-    v-if="filesCount > 0 || totalAdditions > 0 || totalDeletions > 0"
     class="clean-changes-summary-card"
-    :class="{ collapsed: isCollapsed }"
+    :class="{ collapsed: isCollapsed, 'is-no-change': filesCount === 0 }"
   >
     <div class="summary-card-header">
-      <div class="summary-stats-left" @click="toggleCollapse">
-        <span class="icon summary-chevron" :class="{ rotated: !isCollapsed }">
+      <div class="summary-stats-left" @click="filesCount > 0 && toggleCollapse()">
+        <span v-if="filesCount > 0" class="icon summary-chevron" :class="{ rotated: !isCollapsed }">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
         </span>
-        <span class="summary-files-count">{{ filesCount }} {{ filesCount === 1 ? 'file' : 'files' }} changed</span>
-        <span class="summary-diff-counts">
+        <span v-else class="icon no-change-check">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#71717a" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+        </span>
+        <span class="summary-files-count" v-if="filesCount > 0">{{ filesCount }} {{ filesCount === 1 ? 'file' : 'files' }} changed</span>
+        <span class="summary-files-count no-change-text" v-else>No changes</span>
+        <span class="summary-diff-counts" v-if="filesCount > 0">
           <span v-if="totalAdditions > 0" class="diff-add-text">+{{ totalAdditions }}</span>
           <span v-if="totalDeletions > 0" class="diff-del-text">-{{ totalDeletions }}</span>
         </span>
       </div>
 
       <button
+        v-if="filesCount > 0"
         type="button"
         class="btn-review-diff"
         @click="emit('review-all')"
@@ -30,7 +34,7 @@
     </div>
 
     <!-- 平滑风琴展开文件明细列表 -->
-    <div class="smooth-accordion" :class="{ open: !isCollapsed }">
+    <div v-if="filesCount > 0" class="smooth-accordion" :class="{ open: !isCollapsed }">
       <div class="smooth-accordion-inner">
         <div class="summary-files-list">
           <div
@@ -277,6 +281,25 @@ function toggleCollapse() {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   flex-shrink: 0;
+}
+
+.clean-changes-summary-card.is-no-change {
+  background: #fafafa;
+  border-color: #e4e4e7;
+}
+
+.clean-changes-summary-card.is-no-change .summary-card-header {
+  border-bottom: none;
+  background: transparent;
+}
+
+.no-change-check {
+  color: #71717a;
+}
+
+.no-change-text {
+  color: #71717a;
+  font-weight: 500;
 }
 
 .icon {

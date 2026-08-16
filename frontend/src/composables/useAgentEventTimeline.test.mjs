@@ -517,6 +517,7 @@ test('keeps a user-question pause idle and commits candidate final text only aft
   state.handleAgentEvent({ type: 'RUN_STATE_RUNNING', data: { taskId: 9, state: 'running' } }, assistant)
   state.handleAgentEvent({ type: 'FINAL', data: { taskId: 9, content: 'Verified delivery' } }, assistant)
   assert.equal(assistant.content, 'Verified delivery')
+  assert.equal(assistant.hasDurableFinal, true)
   assert.equal(assistant.pendingFinalContent, '')
 })
 

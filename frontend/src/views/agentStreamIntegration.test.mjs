@@ -145,6 +145,12 @@ test('recoverable workspace pause hands the initial stream off to durable task s
   assert.match(source, /shouldResumeTaskEvents[\s\S]*?replayResumedAgent\(assistantMsg\.taskId, assistantMsg(?:, [^)]+)?\)/)
 })
 
+test('CloudWorkspace recovers a missed direct-stream final from the durable task transcript', () => {
+  assert.match(runtimeSource, /async function reconcileDirectTerminalTask\(assistantMsg\)/)
+  assert.match(source, /reconcileDirectTerminalTask,/)
+  assert.match(source, /assistantMsg\.isStreaming = false[\s\S]*?await reconcileDirectTerminalTask\(assistantMsg\)[\s\S]*?await syncTaskTiming\(assistantMsg\)/)
+})
+
 test('CloudWorkspace projects durable cache telemetry instead of treating absent data as a miss', () => {
   assert.match(source, /import \{ applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView \} from '@\/composables\/cacheTelemetryStatus'/)
   assert.match(source, /const selectedCacheTelemetryStats = computed\(\(\) => resolveCacheTelemetryScope\([\s\S]*allTokenStats\.value,[\s\S]*selectedCacheTelemetryModel\.value/)

@@ -457,6 +457,7 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       break
     }
     case 'FINAL':
+      message.hasDurableFinal = true
       message.pendingFinalContent = ''
       message.hasPendingFinalDraft = false
       if (!isRecoverableAgentRunState(message.runState) && data.content && !message.error) {

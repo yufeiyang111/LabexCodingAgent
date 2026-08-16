@@ -335,6 +335,7 @@ test('replayed command continuation accepts the durable final after returning to
   reduceHistoryEvent('RUN_STATE_COMPLETED', { taskId: 74 }, target)
 
   assert.equal(target.content, 'command approval resumed final')
+  assert.equal(target.hasDurableFinal, true)
   assert.equal(target.runState, 'completed')
   assert.equal(target.isStreaming, false)
 })

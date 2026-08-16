@@ -363,6 +363,7 @@ export function useAgentEventTimeline(options) {
         scheduleAgentRender()
         break
       case 'FINAL':
+        assistantMsg.hasDurableFinal = true
         assistantMsg.pendingFinalContent = ''
         assistantMsg.hasPendingFinalDraft = false
         if (!isRecoverableAgentRunState(assistantMsg.runState) && data.content && !assistantMsg.error) {
