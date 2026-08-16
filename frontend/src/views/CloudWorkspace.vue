@@ -797,55 +797,7 @@
 
     <ModelConfigDialog :state="modelConfigDialogState" :actions="modelConfigDialogActions" />
 
-    <!-- 预设指令弹窗 (Slash Commands) -->
-    <Transition name="fade-pop">
-      <div v-if="showCommandPalette" class="command-palette-overlay" @click.self="closeCommandPalette">
-        <div class="command-palette-modal" @click.stop>
-          <div class="command-palette-header">
-            <div class="command-palette-title-wrap">
-              <span class="icon">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-              </span>
-              <span class="command-palette-title">预设指令 (Slash Commands)</span>
-            </div>
-            <button type="button" class="btn-close-cmd" @click="closeCommandPalette">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
 
-          <div class="command-palette-search">
-            <input
-              ref="commandSearchRef"
-              v-model="commandSearch"
-              type="text"
-              class="command-search-input"
-              placeholder="搜索指令 (如 /goal, /plan, /test)..."
-              @keydown.down.prevent="navigateCommand(1)"
-              @keydown.up.prevent="navigateCommand(-1)"
-              @keydown.enter.prevent="selectFirstCommand"
-              @keydown.esc="closeCommandPalette"
-            />
-          </div>
-
-          <div ref="commandListRef" class="command-palette-list">
-            <div
-              v-for="(cmd, cIdx) in (filteredCommands.length > 0 ? filteredCommands : defaultSlashCommands)"
-              :key="cmd.name"
-              class="command-item"
-              :class="{ active: selectedCommandIndex === cIdx }"
-              @click="selectCommand(cmd)"
-            >
-              <div class="command-item-main">
-                <span class="command-name">/{{ cmd.name }}</span>
-                <span v-if="cmd.aliases?.length" class="command-aliases">({{ cmd.aliases.join(', ') }})</span>
-                <span v-if="cmd.category" class="command-category-tag">{{ cmd.category }}</span>
-              </div>
-              <div class="command-item-desc">{{ cmd.description }}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Transition>
   </div>
 </template>
 
@@ -1084,10 +1036,25 @@ async function handleOpenFileDiff(file) {
 
 function handleReviewChanges(msg) {
   if (msg?.fileChanges && msg.fileChanges.length > 0) {
-    handleOpenFileDiff(msg.fileChanges[0])
-  } else if (sessionChanges.value && sessionChanges.value.length > 0) {
-    selectAiTab('review')
+    const existing = new Set(sessionChanges.value.map(c => c.file || c.relativePath))
+    msg.fileChanges.forEach(f => {
+      const p = f.path || f.filePath || f.file
+      if (p && !existing.has(p)) {
+        sessionChanges.value.push({
+          file: p,
+          relativePath: p,
+          status: f.type || 'modify',
+          additions: f.additions || 0,
+          deletions: f.deletions || 0,
+          patch: f.patch || ''
+        })
+      }
+    })
   }
+  if (isAgentInCenter.value) {
+    aiCollapsed.value = false
+  }
+  selectAiTab('review')
 }
 
 function moveAiToCenter() {
@@ -1250,21 +1217,8 @@ const activeAiTab = ref('chat')
 const contextExpanded = ref(false)
 const showModelConfig = ref(false)
 
-// Command palette state
-const showCommandPalette = ref(false)
+// Scrolling button state
 const showScrollTopBtn = ref(false)
-const commandSearch = ref('')
-const selectedCommandIndex = ref(0)
-const commandSearchRef = ref(null)
-const commandListRef = ref(null)
-
-const defaultSlashCommands = [
-  { name: 'goal', description: '设定长时自主目标，不达成不停止', category: 'agent' },
-  { name: 'plan', description: '生成详细实施计划与任务分解', category: 'workflow' },
-  { name: 'browser', description: '调用浏览器执行自动化网络搜索与交互', category: 'tool' },
-  { name: 'review', description: '审查本次工作区的所有文件改动', category: 'code' },
-  { name: 'test', description: '执行项目测试并报告结果', category: 'test' },
-]
 
 // Slash command 目录由后端 typed metadata 投影，前端只持有可重建视图。
 const commandList = ref([])
@@ -1553,11 +1507,9 @@ function buildClientSlashActions() {
       `项目：${projectName.value || '-'} · 会话：${currentSessionName.value || '-'} · 模式：${agentMode.value} · 模型：${currentModelName.value}`
     ),
     COMMAND_HELP: async () => {
-      showCommandPalette.value = true
-      commandSearch.value = ''
-      selectedCommandIndex.value = 0
+      agentInput.value = '/'
       await nextTick()
-      commandSearchRef.value?.focus()
+      aiInputRef.value?.focus()
     },
     WORKSPACE_EXIT: async () => router.push({ name: 'Projects' })
   }
@@ -3529,75 +3481,7 @@ function atFile() {
     nextTick(() => aiInputRef.value?.focus())
   } else { ElMessage.warning('请先选择一个文件') }
 }
-function showCommandMenu() {
-  agentInput.value = '/'
-  showCommandPalette.value = true
-  commandSearch.value = ''
-  selectedCommandIndex.value = 0
-  nextTick(() => commandSearchRef.value?.focus())
-}
 
-// 命令选择器相关方法
-const filteredCommands = computed(() => {
-  const search = commandSearch.value.toLowerCase().trim()
-  if (!search) return commandList.value
-  return commandList.value.filter(cmd =>
-    cmd.name.toLowerCase().includes(search) ||
-    cmd.description.toLowerCase().includes(search) ||
-    cmd.category.toLowerCase().includes(search) ||
-    cmd.aliases.some(alias => alias.toLowerCase().includes(search))
-  )
-})
-
-function handleInput(e) {
-  autoResize(e)
-  const value = agentInput.value
-  if (value === '/') {
-    showCommandPalette.value = true
-    commandSearch.value = ''
-    selectedCommandIndex.value = 0
-    nextTick(() => commandSearchRef.value?.focus())
-  } else if (value.startsWith('/') && !value.includes(' ')) {
-    showCommandPalette.value = true
-    commandSearch.value = value.slice(1)
-    selectedCommandIndex.value = 0
-  } else {
-    showCommandPalette.value = false
-  }
-}
-
-function closeCommandPalette() {
-  showCommandPalette.value = false
-  commandSearch.value = ''
-  selectedCommandIndex.value = 0
-}
-
-function navigateCommand(direction) {
-  const total = filteredCommands.value.length
-  if (total === 0) return
-  selectedCommandIndex.value = (selectedCommandIndex.value + direction + total) % total
-  // 滚动到可见区域
-  nextTick(() => {
-    const list = commandListRef.value
-    const item = list?.querySelector('.command-item.active')
-    if (item) {
-      item.scrollIntoView({ block: 'nearest' })
-    }
-  })
-}
-
-function selectCommand(cmd) {
-  agentInput.value = '/' + cmd.name + ' '
-  closeCommandPalette()
-  nextTick(() => aiInputRef.value?.focus())
-}
-
-function selectFirstCommand() {
-  const first = filteredCommands.value[0]
-  if (first) {
-    selectCommand(first)
-  }
-}
 
 function startSidebarResize(e) {
   const handle = e.currentTarget

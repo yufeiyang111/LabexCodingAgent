@@ -383,6 +383,7 @@ function emitCommandApproval(action) {
 }
 
 function emitQuestion(action) {
+  if (!questionRequestReady.value) return
   emit('question', {
     toolCallId: props.call.toolCallId,
     requestId: questionRequest.value.requestId || questionRequest.value.interactionId,

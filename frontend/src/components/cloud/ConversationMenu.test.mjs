@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
@@ -18,7 +18,7 @@ test('CloudWorkspace wires the conversation panel into the left sidebar', async 
   const source = await readFile(new URL('../../views/CloudWorkspace.vue', import.meta.url), 'utf8')
 
   assert.match(source, /import SidebarNav from '@\/components\/sidebar\/SidebarNav\.vue'/)
-  assert.match(source, /import ConversationPanel from '@\/components\/sidebar\/ConversationPanel\.vue'/)
+  assert.match(source, /const ConversationPanel = defineAsyncComponent\(\(\) => import\('@\/components\/sidebar\/ConversationPanel\.vue'\)\)/)
   assert.match(source, /<SidebarNav :view="sidebarView" @change="sidebarView = \$event" \/>/)
   assert.match(source, /<ConversationPanel[\s\S]*?@select="selectConversation"[\s\S]*?@create="createNewSession"/)
   assert.doesNotMatch(source, /ConversationMenu/)

@@ -22,6 +22,37 @@
         @dragleave.prevent="onDragLeave"
         @drop.prevent="onDrop"
       >
+        <!-- 预设指令选择列表框 (从输入框向上延伸的浮动菜单) -->
+        <Transition name="composer-slash-pop">
+          <div
+            v-if="showSlashMenu"
+            ref="slashMenuRef"
+            class="composer-slash-menu"
+            @click.stop
+          >
+            <div class="slash-menu-header">
+              <span class="slash-menu-title">预设指令</span>
+              <span class="slash-menu-tip">↑↓ 导航 · Enter 选择 · Esc 关闭</span>
+            </div>
+            <div class="slash-menu-list">
+              <div
+                v-for="(cmd, cIdx) in filteredCommands"
+                :key="cmd.name"
+                class="slash-menu-item"
+                :class="{ active: cIdx === activeCommandIdx }"
+                @click="selectCommand(cmd)"
+                @mouseenter="activeCommandIdx = cIdx"
+              >
+                <div class="slash-item-left">
+                  <span class="slash-item-cmd">/{{ cmd.name }}</span>
+                </div>
+                <span class="slash-item-desc">{{ cmd.description }}</span>
+              </div>
+              <div v-if="filteredCommands.length === 0" class="slash-menu-empty">未匹配到相关指令</div>
+            </div>
+          </div>
+        </Transition>
+
         <!-- 附加选中的代码片段提示 -->
         <div v-if="selectedCode" class="composer-code-context">
           <span class="icon">
@@ -43,8 +74,7 @@
             :disabled="loading"
             rows="1"
             @input="onInput"
-            @keydown.enter.exact.prevent="onEnterSend"
-            @keydown.escape="emit('escape')"
+            @keydown="onKeydown"
             @paste="onPaste"
           ></textarea>
         </div>
@@ -87,9 +117,10 @@
             <button
               type="button"
               class="icon-action-btn"
+              :class="{ active: showSlashMenu }"
               title="预设指令 (/)"
               :disabled="loading"
-              @click="emit('trigger-commands')"
+              @click.stop="toggleSlashMenu"
             >
               <span class="icon">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
@@ -139,29 +170,25 @@
               @open-config="emit('open-model-config')"
             />
 
-            <!-- 发送 / 停止 按钮 -->
+            <!-- 发送/终止按钮 -->
             <button
               v-if="loading"
               type="button"
-              class="btn-send-round stop"
-              title="停止生成 (Esc)"
+              class="btn-send is-loading"
+              title="停止生成"
               @click="emit('stop')"
             >
-              <span class="icon">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
-              </span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
             </button>
             <button
               v-else
               type="button"
-              class="btn-send-round"
+              class="btn-send"
               :disabled="!modelValue.trim() && !pendingImages?.length"
-              title="发送 (Enter)"
+              title="发送指令 (Enter)"
               @click="onSendClick"
             >
-              <span class="icon">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-              </span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
             </button>
           </div>
         </div>
@@ -171,11 +198,11 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import ModeSlider from './ModeSlider.vue'
 import ModelSelectorPopover from './ModelSelectorPopover.vue'
-import ContextUsageIndicator from '../ContextUsageIndicator.vue'
-import AgentImageAttachments from '../AgentImageAttachments.vue'
+import AgentImageAttachments from '@/components/cloud/AgentImageAttachments.vue'
+import ContextUsageIndicator from '@/components/cloud/ContextUsageIndicator.vue'
 
 const props = defineProps({
   modelValue: {
@@ -188,11 +215,11 @@ const props = defineProps({
   },
   currentModel: {
     type: String,
-    default: 'Gemini 3.7 Flash',
+    default: '',
   },
   thinkingLevel: {
     type: String,
-    default: 'High',
+    default: 'Medium',
   },
   availableModels: {
     type: Array,
@@ -248,6 +275,27 @@ const textareaRef = ref(null)
 const fileInputRef = ref(null)
 const isDragOver = ref(false)
 
+const showSlashMenu = ref(false)
+const activeCommandIdx = ref(0)
+const slashQuery = ref('')
+
+const presetCommands = [
+  { name: 'goal', description: '设定长时自主目标，不达成目标不停止执行' },
+  { name: 'plan', description: '生成详细的技术实施计划与任务分解' },
+  { name: 'browser', description: '调用浏览器执行自动化网络搜索与交互' },
+  { name: 'review', description: '审查本次工作区生成的所有文件改动差异' },
+  { name: 'test', description: '执行项目测试套件并报告结果与修复建议' },
+  { name: 'diff', description: '查看当前未提交的所有代码变更' },
+  { name: 'compact', description: '立即压缩当前上下文历史以释放 Token 窗口' },
+  { name: 'clear', description: '清空当前会话并开启全新对话' },
+]
+
+const filteredCommands = computed(() => {
+  if (!slashQuery.value) return presetCommands
+  const q = slashQuery.value.toLowerCase().replace(/^\//, '')
+  return presetCommands.filter(c => c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q))
+})
+
 const computedPlaceholder = computed(() => {
   if (props.agentMode === 'plan') {
     return '规划模式：输入开发需求以生成系统重构与执行计划...'
@@ -260,7 +308,68 @@ const computedPlaceholder = computed(() => {
 })
 
 function onInput(e) {
-  emit('update:modelValue', e.target.value)
+  const val = e.target.value
+  emit('update:modelValue', val)
+  if (val.startsWith('/')) {
+    slashQuery.value = val
+    showSlashMenu.value = true
+    activeCommandIdx.value = 0
+  } else {
+    showSlashMenu.value = false
+  }
+}
+
+function toggleSlashMenu() {
+  showSlashMenu.value = !showSlashMenu.value
+  if (showSlashMenu.value) {
+    slashQuery.value = ''
+    activeCommandIdx.value = 0
+    nextTick(() => textareaRef.value?.focus())
+  }
+}
+
+function selectCommand(cmd) {
+  emit('update:modelValue', '/' + cmd.name + ' ')
+  showSlashMenu.value = false
+  nextTick(() => textareaRef.value?.focus())
+}
+
+function onKeydown(e) {
+  if (showSlashMenu.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (filteredCommands.value.length > 0) {
+        activeCommandIdx.value = (activeCommandIdx.value + 1) % filteredCommands.value.length
+      }
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (filteredCommands.value.length > 0) {
+        activeCommandIdx.value = (activeCommandIdx.value - 1 + filteredCommands.value.length) % filteredCommands.value.length
+      }
+      return
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      if (filteredCommands.value[activeCommandIdx.value]) {
+        e.preventDefault()
+        selectCommand(filteredCommands.value[activeCommandIdx.value])
+        return
+      }
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      showSlashMenu.value = false
+      return
+    }
+  }
+
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    onEnterSend()
+  } else if (e.key === 'Escape') {
+    emit('escape')
+  }
 }
 
 function onEnterSend() {
@@ -318,6 +427,20 @@ function onDrop(e) {
   }
 }
 
+function onClickOutside(e) {
+  if (showSlashMenu.value && !e.target.closest('.composer-card')) {
+    showSlashMenu.value = false
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('click', onClickOutside)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('click', onClickOutside)
+})
+
 defineExpose({
   focus: () => textareaRef.value?.focus(),
 })
@@ -330,6 +453,7 @@ defineExpose({
   flex-direction: column;
   align-items: center;
   user-select: none;
+  overflow: visible;
 }
 
 .composer-dock-inner {
@@ -337,6 +461,7 @@ defineExpose({
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow: visible;
 }
 
 .composer-mode-bar {
@@ -350,18 +475,100 @@ defineExpose({
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   display: flex;
   flex-direction: column;
-  position: relative;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  position: relative;
+  overflow: visible;
 }
 
 .composer-card:focus-within {
-  border-color: #09090b;
-  box-shadow: 0 4px 14px -2px rgba(0, 0, 0, 0.08);
+  border-color: #a1a1aa;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
 }
 
 .composer-card.is-image-dragover {
   border-color: #09090b;
   background: #fafafa;
+}
+
+/* 预设指令选择列表框 (从输入框向上延展) */
+.composer-slash-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: min(340px, 100%);
+  max-height: 280px;
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+  z-index: 100000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.slash-menu-header {
+  padding: 8px 12px;
+  background: #fafafa;
+  border-bottom: 1px solid #f4f4f5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.slash-menu-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #09090b;
+}
+
+.slash-menu-tip {
+  font-size: 10.5px;
+  color: #a1a1aa;
+}
+
+.slash-menu-list {
+  padding: 4px;
+  overflow-y: auto;
+  max-height: 220px;
+}
+
+.slash-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.slash-menu-item.active,
+.slash-menu-item:hover {
+  background: #f4f4f5;
+}
+
+.slash-item-cmd {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 12px;
+  color: #09090b;
+}
+
+.slash-item-desc {
+  font-size: 11.5px;
+  color: #71717a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-menu-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 11.5px;
+  color: #a1a1aa;
 }
 
 .composer-code-context {
@@ -442,51 +649,60 @@ defineExpose({
   transition: all 0.12s;
 }
 
-.icon-action-btn:hover {
+.icon-action-btn:hover,
+.icon-action-btn.active {
   background: #f4f4f5;
   color: #09090b;
 }
 
 .icon-action-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
-.btn-send-round {
+.btn-send {
   width: 26px;
   height: 26px;
-  border-radius: 9999px;
-  border: 1px solid #09090b;
-  background: #09090b;
+  border: none;
+  background: #18181b;
   color: #ffffff;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.12s ease;
-  margin-left: 4px;
+  transition: all 0.12s;
+  margin-left: 2px;
 }
 
-.btn-send-round:hover {
+.btn-send:hover:not(:disabled) {
   background: #27272a;
-  transform: scale(1.04);
 }
 
-.btn-send-round.stop {
-  background: #ef4444;
-  border-color: #ef4444;
-}
-
-.btn-send-round:disabled {
-  opacity: 0.35;
+.btn-send:disabled {
+  background: #f4f4f5;
+  color: #d4d4d8;
   cursor: not-allowed;
-  transform: none;
 }
 
-.icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+.btn-send.is-loading {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.btn-send.is-loading:hover {
+  background: #fecaca;
+}
+
+/* Transitions */
+.composer-slash-pop-enter-active,
+.composer-slash-pop-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.composer-slash-pop-enter-from,
+.composer-slash-pop-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
 }
 </style>

@@ -94,7 +94,12 @@ const segments = computed(() => Object.entries(props.status?.categories || {}).m
 </script>
 
 <style scoped>
-.context-usage-indicator { position: relative; display: inline-flex; align-items: center; }
+.context-usage-indicator {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  z-index: 1000;
+}
 .context-ring { width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; transition: transform .16s ease, filter .16s ease; }
 .context-ring:hover, .context-ring:focus-visible { transform: scale(1.14); outline: none; filter: brightness(1.15); }
 .context-ring svg { display:block; width:16px; height:16px; transform:rotate(-90deg); }
@@ -102,17 +107,19 @@ circle { fill:none; stroke-width:3.25; }.track { stroke:#596170; }.progress { st
 .normal { --context-tone:#5d86e8; }.warning { --context-tone:#e6ad70; }.danger { --context-tone:#f0784d; }.neutral { --context-tone:#86909f; }
 .context-popover {
   position: absolute;
-  z-index: 100000;
+  z-index: 999999;
   bottom: calc(100% + 8px);
   right: -6px;
-  width: 280px;
-  padding: 14px;
+  width: 250px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 14px;
   border: 1px solid #48515e;
   border-radius: 11px;
   background: #292e36;
   color: #edf0f4;
-  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.45);
   font-size: 12px;
+  user-select: none;
 }
 .context-popover::after {
   content: '';
@@ -127,12 +134,13 @@ circle { fill:none; stroke-width:3.25; }.track { stroke:#596170; }.progress { st
   transform: rotate(45deg);
 }
 .context-popover header, .context-popover footer { display: flex; justify-content: space-between; align-items: center; }
-.context-popover header { margin-bottom: 10px; }
-.context-popover header span, .context-popover > span { color: #9ea8b5; font-size: 11px; }
+.context-popover header { margin-bottom: 8px; }
+.context-popover header strong { font-size: 12px; color: #f8fafc; }
+.context-popover header span, .context-popover > span { color: #9ea8b5; font-size: 10.5px; }
 .context-popover footer { margin-top: 8px; color: #aab2bd; font-size: 11px; }
 .context-popover footer b { color: #eef1f5; }
-.window-usage { margin: 5px 0 0; color: #8f99a7; font-size: 10px; text-align: right; }
-.budget-split { display: grid; grid-template-columns: 1fr; gap: 3px; margin-bottom: 9px; color: #aeb7c3; font-size: 11px; }
+.window-usage { margin: 4px 0 0; color: #8f99a7; font-size: 10px; text-align: right; }
+.budget-split { display: grid; grid-template-columns: 1fr; gap: 2.5px; margin-bottom: 8px; color: #aeb7c3; font-size: 11px; }
 .segment-bar { display: flex; height: 6px; overflow: hidden; border-radius: 4px; background: #535b69; }
 .segment-bar i { display: block; height: 100%; }
 .context-empty-hint { margin: 6px 0 0; color: #9ea8b5; font-size: 11.5px; line-height: 1.5; }
