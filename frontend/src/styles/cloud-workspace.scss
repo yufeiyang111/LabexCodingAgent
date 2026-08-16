@@ -759,76 +759,20 @@
   text-align: right;
 }
 
-/* 消息导航器 */
-.ai-msg-navigator {
-  position: absolute;
-  right: 16px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  z-index: 10;
-  background: var(--ai-bg);
-  border: 1px solid var(--ai-border);
-  border-radius: 20px;
-  padding: 6px;
-  box-shadow: var(--ai-shadow-md);
+/* Sidebar Resizing Drag Performance */
+body.is-resizing-ai {
+  user-select: none !important;
+  cursor: col-resize !important;
 }
-
-.nav-btn {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--ai-text-muted);
-  border-radius: 50%;
-  cursor: pointer;
-  transition: all 0.15s;
+body.is-resizing-ai iframe,
+body.is-resizing-ai .monaco-editor,
+body.is-resizing-ai .center-ai-container,
+body.is-resizing-ai .ai-body,
+body.is-resizing-ai .ws-editor {
+  pointer-events: none !important;
 }
-
-.nav-btn:hover:not(.disabled) {
-  background: var(--ai-bg-tertiary);
-  color: var(--ai-text);
-}
-
-.nav-btn.disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.nav-indicator {
-  font-size: 10px;
-  color: var(--ai-text-faint);
-  padding: 2px 0;
-}
-
-/* Scroll to bottom */
-.ai-scroll-btn {
-  position: absolute;
-  bottom: 140px;
-  right: 16px;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--ai-border-strong);
-  background: var(--ai-bg);
-  color: var(--ai-text-muted);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  z-index: 5;
-  box-shadow: var(--ai-shadow-sm);
-  transition: all 0.15s;
-}
-.ai-scroll-btn:hover {
-  background: var(--ai-bg-secondary);
-  color: var(--ai-text-secondary);
+body.is-resizing-ai .ai-panel {
+  transition: none !important;
 }
 
 /* ===== Chat: Quick Action Chips ===== */
@@ -3227,47 +3171,61 @@ body > div[id*="mermaid"] {
   z-index: 55;
 }
 
+/* 侧边栏浮动滚动与导航按钮 (紧凑胶囊) */
+.ai-scroll-fab-group {
+  position: absolute;
+  bottom: 80px;
+  right: 14px;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 5px;
+  z-index: 55;
+}
+
 .ai-scroll-fab-btn {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: #ffffff;
   border: 1px solid #e4e4e7;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
   color: #18181b;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.12s ease;
 }
 
 .ai-scroll-fab-btn:hover {
   background: #f4f4f5;
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
 }
 
 .ai-msg-navigator {
   position: absolute;
   bottom: 80px;
   left: 14px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 3px 6px;
-  border-radius: 16px;
+  padding: 2px 6px;
+  height: 24px;
+  border-radius: 12px;
   background: #ffffff;
   border: 1px solid #e4e4e7;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   z-index: 55;
   font-size: 10.5px;
   font-family: 'JetBrains Mono', monospace;
+  user-select: none;
 }
 
 .ai-msg-navigator .nav-btn {
   width: 18px;
   height: 18px;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3276,6 +3234,7 @@ body > div[id*="mermaid"] {
   background: transparent;
   color: #71717a;
   cursor: pointer;
+  transition: all 0.1s;
 }
 
 .ai-msg-navigator .nav-btn:hover:not(.disabled) {

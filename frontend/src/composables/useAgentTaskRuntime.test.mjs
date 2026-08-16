@@ -189,6 +189,48 @@ test('direct terminal reconciliation waits for the durable final instead of cert
   assert.equal(assistant.hasDurableFinal, true)
 })
 
+test('direct stream closure reconnects to a still-running durable task instead of treating socket close as terminal', async () => {
+  const hold = deferred()
+  const subscriptions = []
+  const state = harness({
+    api: {
+      agentTask: async (_projectId, taskId) => ({ data: {
+        taskId,
+        conversationId: 'conversation-a',
+        sessionId: 'session-a',
+        status: 'running',
+        runMessages: [],
+        parts: []
+      } }),
+      agentActiveTask: async () => ({ data: null }),
+      agentTasks: async () => ({ data: [] })
+    },
+    subscribeAgent: async (_projectId, taskId, options) => {
+      subscriptions.push({ taskId, options })
+      await hold.promise
+    }
+  })
+  const assistant = {
+    role: 'assistant',
+    taskId: 71,
+    conversationId: 'conversation-a',
+    runState: 'running',
+    content: '',
+    hasDurableFinal: false,
+    toolCalls: [],
+    timing: {}
+  }
+  state.messages.value.push(assistant)
+
+  assert.equal(await state.runtime.reconcileDirectTerminalTask(assistant), true)
+  await Promise.resolve()
+  assert.equal(subscriptions.length, 1)
+  assert.equal(subscriptions[0].taskId, 71)
+  assert.equal(assistant.isStreaming, true)
+  assert.equal(state.agentLoading.value, true)
+  hold.resolve()
+})
+
 test('terminal recovery reconciles conversation history after the initial snapshot', async () => {
   const reconciliations = []
   let state

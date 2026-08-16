@@ -116,7 +116,7 @@ test('new conversation invalidates delayed selection and the extracted task runt
 test('direct streams cannot mutate loading or session ownership after a conversation transition', () => {
   assert.match(source, /const streamConversationGeneration = conversationSelectionGuard\.capture\(\)/)
   assert.match(source, /onEvent: event => \{[\s\S]*?conversationSelectionGuard\.isCurrent\(streamConversationGeneration\)[\s\S]*?handleAgentEvent\(event, assistantMsg\)/)
-  assert.match(source, /const stillOwnsConversation = conversationSelectionGuard\.isCurrent\(streamConversationGeneration\)[\s\S]*?if \(stillOwnsConversation\) agentLoading\.value = false/)
+  assert.match(source, /const stillOwnsConversation = conversationSelectionGuard\.isCurrent\(streamConversationGeneration\)[\s\S]*?if \(stillOwnsConversation\) agentLoading\.value = assistantMsg\.isStreaming/)
   assert.match(source, /async function selectConversation\([\s\S]*?invalidateTaskRuntime\(\)[\s\S]*?disconnectAgentStream\(\)/)
 })
 
@@ -149,6 +149,11 @@ test('CloudWorkspace recovers a missed direct-stream final from the durable task
   assert.match(runtimeSource, /async function reconcileDirectTerminalTask\(assistantMsg\)/)
   assert.match(source, /reconcileDirectTerminalTask,/)
   assert.match(source, /assistantMsg\.isStreaming = false[\s\S]*?await reconcileDirectTerminalTask\(assistantMsg\)[\s\S]*?await syncTaskTiming\(assistantMsg\)/)
+})
+
+test('CloudWorkspace preserves durable task recovery when the initial direct stream closes early', () => {
+  assert.match(runtimeSource, /if \(!isTerminalAgentTask\(task\)\)[\s\S]*?void subscribeToTaskEvents\(task, assistantMsg\)/)
+  assert.match(source, /await reconcileDirectTerminalTask\(assistantMsg\)[\s\S]*?agentLoading\.value = assistantMsg\.isStreaming/)
 })
 
 test('CloudWorkspace projects durable cache telemetry instead of treating absent data as a miss', () => {

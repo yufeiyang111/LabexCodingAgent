@@ -1,8 +1,13 @@
 <template>
-  <div class="ws-sidebar-panel">
-    <div class="ws-sidebar-header">
-      <span>文件资源管理器</span>
-      <div class="ws-sidebar-actions">
+  <div class="ws-sidebar-panel" :class="{ 'is-tree-collapsed': isTreeCollapsed }">
+    <div class="ws-sidebar-header" @click="toggleTreeCollapse">
+      <div class="header-title-group">
+        <span class="chevron-icon" :class="{ rotated: isTreeCollapsed }">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </span>
+        <span class="header-title-text">文件资源管理器</span>
+      </div>
+      <div class="ws-sidebar-actions" @click.stop>
         <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="$emit('create-file')" title="新建文件">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
         </button>
@@ -14,27 +19,32 @@
         </button>
       </div>
     </div>
-    <div class="ws-tree" v-loading="treeLoading" @scroll="$emit('scroll')">
-      <div v-if="treeError" class="ws-tree-error" role="alert">
-        <span>{{ treeError }}</span>
-        <button type="button" @click="$emit('refresh')">重试</button>
+
+    <Transition name="panel-collapse">
+      <div v-show="!isTreeCollapsed" class="ws-tree-container" v-loading="treeLoading" @scroll="$emit('scroll')">
+        <div class="ws-tree">
+          <div v-if="treeError" class="ws-tree-error" role="alert">
+            <span>{{ treeError }}</span>
+            <button type="button" @click="$emit('refresh')">重试</button>
+          </div>
+          <FileTreeNode
+            v-for="child in fileTree"
+            :key="child.path"
+            :node="child"
+            :selected-path="activePath"
+            :load-children="loadChildren"
+            :show-actions="true"
+            :refresh-key="refreshKey"
+            @select="p => $emit('select', p)"
+            @new-item="(p, t) => $emit('new-item', p, t)"
+            @rename="(p, n) => $emit('rename', p, n)"
+            @delete="p => $emit('delete', p)"
+          />
+          <button v-if="treeNextOffset !== null" class="ws-tree-load-more" type="button" @click="$emit('load-more')">加载更多文件</button>
+          <div v-if="!treeLoading && !treeError && fileTree.length === 0" class="ws-tree-empty">暂无文件</div>
+        </div>
       </div>
-      <FileTreeNode
-        v-for="child in fileTree"
-        :key="child.path"
-        :node="child"
-        :selected-path="activePath"
-        :load-children="loadChildren"
-        :show-actions="true"
-        :refresh-key="refreshKey"
-        @select="p => $emit('select', p)"
-        @new-item="(p, t) => $emit('new-item', p, t)"
-        @rename="(p, n) => $emit('rename', p, n)"
-        @delete="p => $emit('delete', p)"
-      />
-      <button v-if="treeNextOffset !== null" class="ws-tree-load-more" type="button" @click="$emit('load-more')">加载更多文件</button>
-      <div v-if="!treeLoading && !treeError && fileTree.length === 0" class="ws-tree-empty">暂无文件</div>
-    </div>
+    </Transition>
 
     <Teleport to="body">
       <Transition name="modal">
@@ -68,6 +78,7 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
 
 defineProps({
@@ -82,6 +93,12 @@ defineProps({
   newModalType: { type: String, default: 'file' },
   showRenameModal: { type: Boolean, default: false }
 })
+
+const isTreeCollapsed = ref(false)
+function toggleTreeCollapse() {
+  isTreeCollapsed.value = !isTreeCollapsed.value
+}
+
 const newItemName = defineModel('newItemName', { type: String, default: '' })
 const renameItemValue = defineModel('renameValue', { type: String, default: '' })
 defineEmits([
@@ -100,3 +117,55 @@ defineEmits([
   'confirm-rename'
 ])
 </script>
+
+<style scoped>
+.header-title-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chevron-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #71717a;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chevron-icon.rotated {
+  transform: rotate(-90deg);
+}
+
+.header-title-text {
+  font-weight: 600;
+  font-size: 12px;
+  color: #09090b;
+}
+
+.ws-tree-container {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.panel-collapse-enter-active,
+.panel-collapse-leave-active {
+  transition: opacity 0.18s ease, max-height 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+
+.panel-collapse-enter-from,
+.panel-collapse-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+.panel-collapse-enter-to,
+.panel-collapse-leave-from {
+  max-height: 100vh;
+  opacity: 1;
+}
+</style>

@@ -89,45 +89,40 @@
           </div>
         </div>
 
-        <!-- 标签页条 (始终在顶部，展示所有打开的文件标签 + LabexAgent 标签) -->
-        <div v-if="openFiles.length > 0 || isAgentInCenter" class="ws-editor-tabs">
-          <!-- 文件 Tabs -->
+        <!-- 标签页条 (始终在顶部，展示所有打开的文件标签 + LabexAgent 标签，全部支持拖拽自由排序) -->
+        <div v-if="allEditorTabs.length > 0" class="ws-editor-tabs">
           <div
-            v-for="(f, idx) in openFiles"
-            :key="f.path"
+            v-for="(t, tIdx) in allEditorTabs"
+            :key="t.id"
             class="ws-tab"
-            :class="{ active: !isAgentTabActive && idx === activeTabIndex }"
+            :class="{
+              'ws-tab-agent': t.type === 'agent',
+              active: t.type === 'agent' ? isAgentTabActive : (!isAgentTabActive && t.fileIndex === activeTabIndex)
+            }"
             draggable="true"
-            @dragstart="onTabDragStart($event, idx)"
-            @dragover.prevent="onTabDragOver($event, idx)"
-            @drop.prevent="onTabDrop($event, idx)"
-            @click="onSelectFileTab(idx)"
-            @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeFile(idx) } }"
+            @dragstart="onWorkspaceTabDragStart($event, tIdx)"
+            @dragover.prevent
+            @drop.prevent="onWorkspaceTabDrop($event, tIdx)"
+            @click="t.type === 'agent' ? onSelectAgentTab() : onSelectFileTab(t.fileIndex)"
+            @mouseup="e => { if (e.button === 1) { e.preventDefault(); t.type === 'agent' ? closeAgentTab() : closeFile(t.fileIndex) } }"
           >
-            <FileIcon :name="f.name" :size="12" />
-            <span class="ws-tab-name">{{ f.name }}</span>
-            <span v-if="f.dirty" class="ws-tab-dot"></span>
-            <button class="ws-tab-close" @click.stop="closeFile(idx)" title="关闭">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
-
-          <!-- LabexAgent 专属标签页 -->
-          <div
-            v-if="isAgentInCenter"
-            class="ws-tab ws-tab-agent"
-            :class="{ active: isAgentTabActive }"
-            @click="onSelectAgentTab"
-            @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeAgentTab() } }"
-            title="LabexAgent 智能助手"
-          >
-            <span class="agent-tab-sparkle">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-            </span>
-            <span class="ws-tab-name">LabexAgent</span>
-            <button class="ws-tab-close" @click.stop="closeAgentTab" title="还原至侧边栏">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
+            <template v-if="t.type === 'agent'">
+              <span class="agent-tab-sparkle">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              </span>
+              <span class="ws-tab-name">LabexAgent</span>
+              <button class="ws-tab-close" @click.stop="closeAgentTab" title="还原至侧边栏">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </template>
+            <template v-else>
+              <FileIcon :name="t.name" :size="12" />
+              <span class="ws-tab-name">{{ t.name }}</span>
+              <span v-if="t.dirty" class="ws-tab-dot"></span>
+              <button class="ws-tab-close" @click.stop="closeFile(t.fileIndex)" title="关闭">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </template>
           </div>
         </div>
 
@@ -452,53 +447,53 @@
                   </div>
                 </div>
               </TransitionGroup>
+            </div>
 
-              <!-- 浮动回顶/滚底按钮组 (侧边栏) -->
-              <div class="ai-scroll-fab-group">
-                <Transition name="fade-pop">
-                  <button
-                    v-if="showScrollTopBtn"
-                    class="ai-scroll-fab-btn"
-                    type="button"
-                    @click="scrollToTopManual"
-                    title="回到顶部"
-                  >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
-                  </button>
-                </Transition>
-                <Transition name="fade-pop">
-                  <button
-                    v-if="showScrollBtn"
-                    class="ai-scroll-fab-btn"
-                    type="button"
-                    @click="scrollToBottomManual"
-                    title="回到底部"
-                  >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-                  </button>
-                </Transition>
-              </div>
+            <!-- 浮动回顶/滚底按钮组 (侧边栏) -->
+            <div class="ai-scroll-fab-group">
+              <Transition name="fade-pop">
+                <button
+                  v-if="showScrollTopBtn"
+                  class="ai-scroll-fab-btn"
+                  type="button"
+                  @click="scrollToTopManual"
+                  title="回到顶部"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
+              </Transition>
+              <Transition name="fade-pop">
+                <button
+                  v-if="showScrollBtn"
+                  class="ai-scroll-fab-btn"
+                  type="button"
+                  @click="scrollToBottomManual"
+                  title="回到底部"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+              </Transition>
+            </div>
 
-              <!-- 浮动消息上下导航 (侧边栏) -->
-              <div v-if="messages.length > 2" class="ai-msg-navigator">
-                <button
-                  class="nav-btn"
-                  :class="{ disabled: currentMessageIndex <= 0 }"
-                  @click="navigateMessage(-1)"
-                  title="上一条消息"
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="18 15 12 9 6 15"/></svg>
-                </button>
-                <span class="nav-indicator">{{ currentMessageIndex + 1 }}/{{ messages.length }}</span>
-                <button
-                  class="nav-btn"
-                  :class="{ disabled: currentMessageIndex >= messages.length - 1 }"
-                  @click="navigateMessage(1)"
-                  title="下一条消息"
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="6 9 12 15 18 9"/></svg>
-                </button>
-              </div>
+            <!-- 浮动消息上下导航 (侧边栏，紧凑胶囊) -->
+            <div v-if="messages.length > 2" class="ai-msg-navigator">
+              <button
+                class="nav-btn"
+                :class="{ disabled: currentMessageIndex <= 0 }"
+                @click="navigateMessage(-1)"
+                title="上一条消息"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+              </button>
+              <span class="nav-indicator">{{ currentMessageIndex + 1 }}/{{ messages.length }}</span>
+              <button
+                class="nav-btn"
+                :class="{ disabled: currentMessageIndex >= messages.length - 1 }"
+                @click="navigateMessage(1)"
+                title="下一条消息"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
             </div>
 
             <!-- Composer Dock (Fixed at bottom) -->
@@ -1131,6 +1126,7 @@ function onCenterDrop(e) {
     centerDropOverlayActive.value = false
     isDraggingAi.value = false
     aiCollapsed.value = true
+    scrollToLatestMessageInstant()
     ElMessage.success('LabexAgent 已作为标签页在中心区域打开')
   }
 }
@@ -1142,24 +1138,79 @@ function toggleAiPanelLayout() {
   } else {
     aiCollapsed.value = !aiCollapsed.value
   }
-}
-
-function onTabDragStart(e, idx) {
-  draggedTabIdx.value = idx
-}
-
-function onTabDragOver(e, idx) {
-  // enable drop
-}
-
-function onTabDrop(e, idx) {
-  if (draggedTabIdx.value !== null && draggedTabIdx.value !== idx) {
-    const item = openFiles.value.splice(draggedTabIdx.value, 1)[0]
-    openFiles.value.splice(idx, 0, item)
-    activeTabIndex.value = idx
+  if (!aiCollapsed.value || isAgentInCenter.value) {
+    scrollToLatestMessageInstant()
   }
-  draggedTabIdx.value = null
 }
+
+const agentTabPosition = ref(0)
+const allEditorTabs = computed(() => {
+  const tabs = openFiles.value.map((f, idx) => ({
+    id: f.path,
+    type: 'file',
+    file: f,
+    fileIndex: idx,
+    name: f.name,
+    dirty: f.dirty
+  }))
+  if (isAgentInCenter.value) {
+    const pos = Math.max(0, Math.min(agentTabPosition.value, tabs.length))
+    tabs.splice(pos, 0, {
+      id: '__labex_agent_center_tab__',
+      type: 'agent',
+      name: 'LabexAgent'
+    })
+  }
+  return tabs
+})
+
+const draggedTabIndex = ref(null)
+function onWorkspaceTabDragStart(e, idx) {
+  draggedTabIndex.value = idx
+  e.dataTransfer?.setData('text/plain', String(idx))
+}
+
+function onWorkspaceTabDrop(e, targetIdx) {
+  if (draggedTabIndex.value === null || draggedTabIndex.value === targetIdx) return
+  const fromIdx = draggedTabIndex.value
+  const tabs = [...allEditorTabs.value]
+  const moved = tabs[fromIdx]
+  if (!moved) return
+
+  if (moved.type === 'agent') {
+    agentTabPosition.value = targetIdx
+    isAgentTabActive.value = true
+  } else {
+    const oldFileIdx = moved.fileIndex
+    const item = openFiles.value.splice(oldFileIdx, 1)[0]
+    let newFileIdx = 0
+    for (let i = 0; i < targetIdx; i++) {
+      if (tabs[i] && tabs[i].type === 'file' && tabs[i].id !== moved.id) {
+        newFileIdx++
+      }
+    }
+    openFiles.value.splice(newFileIdx, 0, item)
+    activeTabIndex.value = newFileIdx
+    isAgentTabActive.value = false
+  }
+  draggedTabIndex.value = null
+}
+
+function scrollToLatestMessageInstant() {
+  nextTick(() => {
+    if (msgContainer.value) {
+      msgContainer.value.scrollTop = msgContainer.value.scrollHeight
+    }
+    const centerHistory = document.querySelector('.center-chat-history')
+    if (centerHistory) {
+      centerHistory.scrollTop = centerHistory.scrollHeight
+    }
+  })
+}
+
+watch([isAgentTabActive, isAgentInCenter, aiCollapsed, activeAiTab], () => {
+  scrollToLatestMessageInstant()
+})
 
 function handleSelectModelByName(name) {
   const found = modelConfigs.value.find(c => c.modelName === name || c.configName === name)
@@ -1601,12 +1652,12 @@ async function sendMessage() {
     } else {
       assistantMsg.isStreaming = false
       stopMessageTimer(assistantMsg)
-      // 初始 SSE 连接可能在最后一个 durable FINAL 帧抵达前关闭；仅从同 task 的 durable transcript 补齐空答复。
+      // 初始 SSE 连接关闭只代表 transport 结束；以同一 task 的 durable 状态决定 final 补齐或恢复订阅。
       if (stillOwnsConversation && assistantMsg.hasDurableFinal !== true && !assistantMsg.error) {
         await reconcileDirectTerminalTask(assistantMsg)
       }
       await syncTaskTiming(assistantMsg)
-      if (stillOwnsConversation) agentLoading.value = false
+      if (stillOwnsConversation) agentLoading.value = assistantMsg.isStreaming
     }
     if (stillOwnsConversation) {
       await nextTick(); scrollDown()
@@ -2785,6 +2836,46 @@ function navigateMessage(direction) {
   })
 }
 
+const markdownRenderCache = new Map()
+const MAX_MD_CACHE_SIZE = 400
+
+function renderMarkdown(text) {
+  if (!text) return ''
+  const rawHtml = marked.parse(normalizeSpecialMarkdownBlocks(text), { gfm: true, breaks: true, silent: true })
+  return enhanceMarkdownHtml(sanitizeMarkdownHtml(String(rawHtml || '')))
+}
+
+function getCachedMarkdown(prefix, rawText) {
+  if (!rawText) return ''
+  const cacheKey = `${prefix}::${rawText}`
+  if (markdownRenderCache.has(cacheKey)) {
+    return markdownRenderCache.get(cacheKey)
+  }
+  let result = ''
+  if (prefix === 'thinking') {
+    result = renderMarkdown(stripInternalReasoningTags(rawText))
+  } else if (prefix === 'message_assistant') {
+    result = renderMarkdown(stripInternalReasoningBlocks(rawText))
+  } else {
+    result = renderMarkdown(rawText)
+  }
+  if (markdownRenderCache.size > MAX_MD_CACHE_SIZE) {
+    const firstKey = markdownRenderCache.keys().next().value
+    markdownRenderCache.delete(firstKey)
+  }
+  markdownRenderCache.set(cacheKey, result)
+  return result
+}
+
+function renderThinkingMarkdown(text) {
+  return getCachedMarkdown('thinking', text)
+}
+
+function renderMessageMarkdown(message) {
+  const isAssistant = message?.role === 'assistant'
+  return getCachedMarkdown(isAssistant ? 'message_assistant' : 'message_user', message?.content)
+}
+
 // 格式化时间戳
 function formatTime(timestamp) {
   if (!timestamp) return ''
@@ -2886,22 +2977,7 @@ function applyChip(prompt) { agentInput.value = prompt; nextTick(() => aiInputRe
 function toggleAiTheme() { themeStore.toggleLightDark() }
 function refreshContext() { ElMessage.success('上下文已刷新') }
 function copyMessage(content) { navigator.clipboard?.writeText(content); ElMessage.success('已复制') }
-function renderMarkdown(text) {
-  if (!text) return ''
-  const rawHtml = marked.parse(normalizeSpecialMarkdownBlocks(text), { gfm: true, breaks: true, silent: true })
-  return enhanceMarkdownHtml(sanitizeMarkdownHtml(String(rawHtml || '')))
-}
 
-function renderThinkingMarkdown(text) {
-  return renderMarkdown(stripInternalReasoningTags(text))
-}
-
-function renderMessageMarkdown(message) {
-  const source = message?.role === 'assistant'
-    ? stripInternalReasoningBlocks(message?.content)
-    : message?.content
-  return renderMarkdown(source)
-}
 
 function sanitizeMarkdownHtml(html) {
   if (typeof document === 'undefined') return html
@@ -3557,6 +3633,7 @@ function startResize(e) {
   const startX = e.clientX
   const startWidth = aiPanelWidth.value || panel.offsetWidth || 420
   let latestX = startX
+  document.body.classList.add('is-resizing-ai')
   panel.classList.add('is-resizing')
   handle.setPointerCapture?.(e.pointerId)
 
@@ -3576,6 +3653,7 @@ function startResize(e) {
       resizeFrame = null
       applyWidth()
     }
+    document.body.classList.remove('is-resizing-ai')
     panel.classList.remove('is-resizing')
     handle.removeEventListener('pointermove', onMove)
     handle.removeEventListener('pointerup', finish)

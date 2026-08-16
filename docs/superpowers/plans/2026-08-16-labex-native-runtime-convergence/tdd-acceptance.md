@@ -528,3 +528,28 @@ cd frontend && node --test src/composables/useAgentTaskRuntime.test.mjs
 **已覆盖的可观察结果**：FINAL 的 transient 文本不是最终事实。第一次 task detail 缺 final、下一次出现 final 时，用户看到的是完整 durable 答复而不是已被误认证的截断文本；task detail 永远属于当前 conversation/session，切换会话后立即停止恢复。
 
 **仍未关闭的风险**：有限重读不是无限重试；如果 durable projection 持续不可用，页面不会伪造成功，但仍需要既有刷新/事件订阅路径或服务端 outbox 修复来恢复。尚未完成真实浏览器断网/刷新现场 smoke。
+
+### 切片 C15：初始 SSE close 不再推断 task 已终态（2026-08-16）
+
+**Public seam**：`useAgentTaskRuntime.reconcileDirectTerminalTask(...)` 与 `CloudWorkspace.sendMessage()` 的初始 stream 收尾路径（S5：SSE event → Vue reducer/replay 边界）。
+
+**Red**：旧收尾逻辑一旦 `POST /agent/stream` 的 transport 返回，就先把 `assistantMsg.isStreaming` 设为 false，再只尝试 terminal transcript 补齐。若 durable task 实际仍是 `running`，函数直接返回 false，页面仍会将 loading 清掉且不订阅 task events；这把“浏览器连接关闭”错误地当成了“Agent task 已完成”。
+
+**Green**：收尾先读取同一 task 的 durable 状态。非终态 task 会恢复 Run Message/Part/interaction 投影，并复用现有 cursor-based `subscribeToTaskEvents(...)`；普通 running 保持 streaming/loading，`waiting_approval`、`waiting_user`、`waiting_workspace`、`waiting_environment`、retry backoff 等可恢复等待态保持非 loading 但继续由 durable subscription 接管。`CloudWorkspace` 最后依据 `assistantMsg.isStreaming` 设置 loading，而不是无条件写 false。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\session\processor.ts` 的 session/part 持久化边界，以及 `D:\opencode\opencode-dev\packages\app\src\context\global-sync\event-reducer.ts:228-253` 的事件驱动 UI 合并。OpenCode 不把 socket 生命周期作为消息事实；LabexAgent 适配为 Spring SSE 的 direct request 与后续 task subscription 两段 transport，未复制实质源码。
+
+**Red → Green 证据**：
+
+```text
+# Red：direct stream close 后 snapshot 仍为 running，旧 runtime 返回 false，未创建 durable subscription
+cd frontend && node --test src/composables/useAgentTaskRuntime.test.mjs
+# 新增回归失败：expected true, actual false
+
+# Green：running task 转交 cursor subscription；CloudWorkspace 不再无条件清空 loading
+cd frontend && node --test src/composables/useAgentTaskRuntime.test.mjs src/views/agentStreamIntegration.test.mjs
+```
+
+**已覆盖的可观察结果**：初始 SSE 中断、代理提前关闭或浏览器只失去 direct transport 时，只要 task durable 状态仍为 active，消息不会被误标为已完成；后续 FINAL、tool state、approval/question 等仍由同一 task 的可重放事件驱动。会话/session 不匹配时不接管，防止旧流污染新会话。
+
+**仍未关闭的风险**：本切片没有替代真实浏览器断网/刷新/后台 worker 接管验收；server-side event/outbox 长时间不可用时，前端只能显示其真实的可恢复状态，不能自行生成 final。

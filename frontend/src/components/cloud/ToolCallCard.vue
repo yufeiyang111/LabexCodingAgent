@@ -1,44 +1,42 @@
 <template>
-  <div class="tc-card" :class="'tc-' + call.status" :data-tool-call-id="call.toolCallId || ''">
+  <div class="tc-card" :class="['tc-' + call.status, { 'is-expanded': expanded }]" :data-tool-call-id="call.toolCallId || ''">
+    <!-- 卡片头部 (1:1 复刻用户设计图一) -->
     <div class="tc-header" @click="expanded = !expanded">
       <div class="tc-header-left">
-        <span class="tc-symbol-tag" v-if="isEditTool">&lt;&gt;</span>
-        <div class="tc-icon-wrap" v-else>
-          <svg v-if="call.status === 'running'" class="tc-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-          <svg v-else-if="call.status === 'completed'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-          <svg v-else-if="call.status === 'error'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-          <svg v-else-if="call.status === 'warning'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <svg v-else-if="call.status === 'skipped' || call.status === 'interrupted'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 9 6 6m0-6-6 6"/></svg>
-          <svg v-else-if="call.status === 'waiting_user' || call.status === 'waiting_approval'" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="statusColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        </div>
-        <div class="tc-info">
-          <span class="tc-name">{{ headerTitle }}</span>
-          <span class="tc-summary" v-if="call.summary && !isEditTool">{{ call.summary }}</span>
+        <!-- 专用语义化图标 -->
+        <span v-if="isSearchTool" class="tc-type-icon search" title="搜索工具">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </span>
+        <span v-else-if="isEditTool" class="tc-type-icon symbol" title="代码编辑">&lt;&gt;</span>
+        <span v-else-if="isShellTool" class="tc-type-icon shell" title="终端命令">&gt;_</span>
+        <span v-else-if="isReadTool" class="tc-type-icon read" title="文件读取">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </span>
+        <span v-else class="tc-type-icon default">⚡</span>
+
+        <!-- 语义化标题结构 -->
+        <div class="tc-title-tokens">
+          <strong class="tc-tool-name">{{ call.name || 'tool' }}:</strong>
+          <span class="tc-tool-arg-main">{{ toolMainArg }}</span>
+          <span v-if="toolSubInfo" class="tc-tool-sub-info">({{ toolSubInfo }})</span>
         </div>
       </div>
+
       <div class="tc-header-right">
-        <span v-if="call.status === 'completed'" class="tc-status-pill completed">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-          <span>{{ executionStatusText }}</span>
-        </span>
-        <span v-else-if="call.status === 'running'" class="tc-status-pill running">
-          <svg class="tc-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-          <span>执行中...</span>
-        </span>
-        <span v-else-if="call.status === 'error'" class="tc-status-pill error">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          <span>失败</span>
-        </span>
-        <div class="tc-toggle">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" :style="{ transform: expanded ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+        <!-- 右侧状态标签 (图一风格: 边框胶囊，含耗时与结果) -->
+        <div class="tc-status-pill-badge" :class="call.status">
+          <svg v-if="call.status === 'completed'" class="badge-icon-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.8"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg v-else-if="call.status === 'running'" class="badge-icon-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          <svg v-else-if="call.status === 'error'" class="badge-icon-err" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span class="badge-text">{{ formattedBadgeStatusText }}</span>
         </div>
       </div>
     </div>
 
+    <!-- 展开详情 (流畅过渡折叠) -->
     <Transition name="tc-slide">
       <div v-if="expanded" class="tc-body">
-        <!-- Edit File Special Diff View (Figure 5) -->
+        <!-- Edit File Special Diff View -->
         <div v-if="isEditTool && editDiffLines.length > 0" class="tc-edit-diff-box">
           <div
             v-for="(dl, dIdx) in editDiffLines"
@@ -54,7 +52,9 @@
 
         <!-- Args Section -->
         <div v-if="call.args && (!isEditTool || editDiffLines.length === 0)" class="tc-section">
-          <div class="tc-section-label">参数</div>
+          <div class="tc-section-header">
+            <span class="tc-section-label">调用参数</span>
+          </div>
           <div class="tc-args">
             <template v-if="isEditTool">
               <div class="tc-arg-row" v-if="argsObj.path || argsObj.file_path">
@@ -108,9 +108,20 @@
 
         <!-- Result Section -->
         <div v-if="call.result && (!isEditTool || editDiffLines.length === 0)" class="tc-section">
-          <div class="tc-section-label">结果</div>
+          <div class="tc-section-header">
+            <span class="tc-section-label">执行输出</span>
+            <button
+              type="button"
+              class="tc-btn-copy-result"
+              @click.stop="copyOutput(call.result)"
+              title="复制输出"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              <span>复制</span>
+            </button>
+          </div>
           <div v-if="call.outputTruncated" class="tc-projection-note">
-            输出过长，历史页已截断展示前 {{ truncate(call.result, 1000).length }} 字符（完整 {{ call.outputLength || call.result.length }} 字符已持久化在数据库，不在历史页传输）。
+            输出过长，历史页已截断展示前 {{ truncate(call.result, 1000).length }} 字符（完整 {{ call.outputLength || call.result.length }} 字符已持久化在数据库）。
           </div>
           <div v-if="isShellTool" class="tc-shell-output">
             <pre>{{ truncate(call.result, 1000) }}</pre>
@@ -178,22 +189,16 @@
           <div class="tc-approval-meta"><span>仅对当前命令生效，不会保存为永久权限</span></div>
           <div class="tc-approval-actions">
             <button type="button" class="tc-approval-btn primary" @click.stop="emitPermission('once')">允许一次</button>
+            <button type="button" class="tc-approval-btn secondary" @click.stop="emitPermission('always')">总是允许</button>
             <button type="button" class="tc-approval-btn danger" @click.stop="emitPermission('reject')">拒绝</button>
           </div>
         </div>
 
         <div v-if="isPermissionAsk" class="tc-approval">
-          <div class="tc-approval-title">需要确认后才能继续执行</div>
-          <textarea
-            v-model="approvalFeedback"
-            class="tc-textarea"
-            rows="2"
-            placeholder="可选：填写拒绝原因或执行约束，Agent 会读到这段反馈"
-            @click.stop
-          />
+          <div class="tc-approval-title">{{ call.permissionRequest.reason || 'Agent 请求操作权限' }}</div>
           <div class="tc-approval-actions">
             <button type="button" class="tc-approval-btn primary" @click.stop="emitPermission('once')">允许一次</button>
-            <button type="button" class="tc-approval-btn" @click.stop="emitPermission('always')">始终允许</button>
+            <button type="button" class="tc-approval-btn secondary" @click.stop="emitPermission('always')">总是允许</button>
             <button type="button" class="tc-approval-btn danger" @click.stop="emitPermission('reject')">拒绝</button>
           </div>
         </div>
@@ -204,92 +209,37 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import DiffViewer from './DiffViewer.vue'
 
 const props = defineProps({
-  call: { type: Object, required: true }
-})
-
-const emit = defineEmits(['permission', 'question', 'command-approval'])
-
-const expanded = ref(['error', 'warning', 'waiting_approval', 'waiting_user', 'interrupted'].includes(props.call.status))
-const answerDraft = ref('')
-const approvalFeedback = ref('')
-const commandSubmitting = computed(() => props.call._commandApprovalInFlight === true)
-
-const toolMap = {
-  read_file: '读取文件', edit_file: '编辑文件', write_file: '写入文件',
-  apply_patch: '应用补丁', list_files: '列出文件', glob: '搜索文件',
-  grep: '搜索内容', search_code: '搜索代码', shell: '执行命令', bash: '执行命令',
-  run_command: '执行命令', execute_code: '执行代码', run_tests: '运行测试',
-  create_plan: '创建计划', plan: '计划', todo_write: '更新待办',
-  retrieve_context: '检索上下文', question: '提问',
-  web_search: '网络搜索', web_fetch: '获取网页',
-  lsp_symbols: 'LSP符号', project_overview: '项目概览',
-  skill: '加载技能', task: '子任务', repo_clone: '克隆仓库',
-  external_directory: '外部目录'
-}
-const toolLabel = computed(() => toolMap[props.call.name] || props.call.name)
-const failureText = computed(() => {
-  const failureClass = String(props.call.failureClass || '').toLowerCase()
-  const exitCode = props.call.executionResult?.exitCode
-  if (failureClass === 'non_zero_exit') return `命令失败${exitCode === undefined || exitCode === null ? '' : `（退出码 ${exitCode}）`}`
-  if (failureClass === 'timed_out') return '执行超时'
-  if (failureClass === 'cancelled') return '已取消'
-  if (failureClass === 'infrastructure_error') return '执行环境不可用'
-  if (failureClass === 'execution_failed') return '执行失败'
-  if (failureClass === 'tool_error') return '工具调用失败'
-  return ''
-})
-const executionText = computed(() => {
-  if (failureText.value) return failureText.value
-  if (props.call.durableStatus === 'timed_out') return '\u6267\u884c\u8d85\u65f6'
-  if (props.call.durableStatus === 'cancelled') return '\u5df2\u53d6\u6d88'
-  if (props.call.status === 'skipped') return '\u5df2\u8df3\u8fc7'
-  if (props.call.status === 'interrupted') return '\u5df2\u4e2d\u65ad'
-  const execution = props.call.execution
-  if (!execution) return ''
-  const phaseNames = {
-    tool_delegate: '工具执行',
-    snapshot_before_command: '命令前快照',
-    snapshot_after_command: '命令后快照',
-    record_snapshot_diff: '记录快照差异',
-    post_edit_hook: '编辑后检查',
-    context_orchestration: '上下文编排',
-    metrics_persistence: '指标持久化'
+  call: {
+    type: Object,
+    required: true
   }
-  const phase = phaseNames[execution.phase] || execution.phase || '执行阶段'
-  const elapsed = Number(execution.elapsedMs || 0)
-  return elapsed > 0 ? `${phase} · ${(elapsed / 1000).toFixed(elapsed >= 10000 ? 0 : 1)} 秒` : phase
 })
-const statusColor = computed(() => {
-  if (props.call.status === 'running') return '#3b82f6'
-  if (props.call.status === 'error') return '#ef4444'
-  if (props.call.status === 'warning') return '#f59e0b'
-  if (props.call.status === 'waiting_approval') return '#f59e0b'
-  if (props.call.status === 'waiting_user') return '#8b5cf6'
-  if (props.call.status === 'skipped' || props.call.status === 'interrupted') return '#64748b'
-  return '#10b981'
-})
-const isPermissionAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.permissionRequest)
-const isNetworkAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.networkRequest)
-const networkRequest = computed(() => props.call.networkRequest || {})
-const networkDomains = computed(() => Array.isArray(networkRequest.value.domains)
-  ? networkRequest.value.domains.filter(Boolean) : [])
-const isCommandApproval = computed(() => props.call.status === 'waiting_approval'
-  && !!props.call.commandApproval && !props.call.networkRequest && !props.call.permissionRequest)
-const commandApproval = computed(() => props.call.commandApproval || {})
-const isQuestionAsk = computed(() => props.call.status === 'waiting_user' && !!props.call.questionRequest)
-const questionRequest = computed(() => props.call.questionRequest || {})
-const questionRequestReady = computed(() => Boolean(
-  questionRequest.value.requestId || questionRequest.value.interactionId
-))
-const questionOptions = computed(() => Array.isArray(questionRequest.value.options) ? questionRequest.value.options.filter(Boolean) : [])
+
+const emit = defineEmits(['permission', 'command-approval', 'question'])
+
+const expanded = ref(false)
+const answerDraft = ref('')
+const commandSubmitting = ref(false)
 
 const isEditTool = computed(() => ['edit_file', 'write_file', 'apply_patch'].includes(props.call.name))
 const isShellTool = computed(() => ['shell', 'bash', 'run_command', 'execute_code', 'run_tests'].includes(props.call.name))
 const isReadTool = computed(() => ['read_file', 'retrieve_context'].includes(props.call.name))
-const isSearchTool = computed(() => ['list_files', 'glob', 'grep', 'search_code', 'lsp_symbols'].includes(props.call.name))
+const isSearchTool = computed(() => ['grep_search', 'list_files', 'glob', 'grep', 'search_code', 'lsp_symbols'].includes(props.call.name))
+
+const isPermissionAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.permissionRequest)
+const isNetworkAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.networkRequest)
+const networkRequest = computed(() => props.call.networkRequest || {})
+const networkDomains = computed(() => Array.isArray(networkRequest.value.domains) ? networkRequest.value.domains.filter(Boolean) : [])
+const isCommandApproval = computed(() => props.call.status === 'waiting_approval' && !!props.call.commandApproval && !props.call.networkRequest && !props.call.permissionRequest)
+const commandApproval = computed(() => props.call.commandApproval || {})
+const isQuestionAsk = computed(() => props.call.status === 'waiting_user' && !!props.call.questionRequest)
+const questionRequest = computed(() => props.call.questionRequest || {})
+const questionRequestReady = computed(() => Boolean(questionRequest.value.requestId || questionRequest.value.interactionId))
+const questionOptions = computed(() => Array.isArray(questionRequest.value.options) ? questionRequest.value.options.filter(Boolean) : [])
 
 const argsObj = computed(() => {
   if (typeof props.call.args === 'string') {
@@ -315,37 +265,52 @@ const editStats = computed(() => {
   return { added, deleted }
 })
 
-const headerTitle = computed(() => {
-  if (isEditTool.value) {
-    const file = argsObj.value.path || argsObj.value.file_path || argsObj.value.filename || ''
-    const statStr = (editStats.value.added > 0 || editStats.value.deleted > 0)
-      ? ` (+${editStats.value.added} -${editStats.value.deleted} 行)`
-      : ''
-    return `${props.call.name || 'edit_file'}: ${file}${statStr}`
+// 主参数提取 (图一精炼显示)
+const toolMainArg = computed(() => {
+  if (isSearchTool.value) {
+    const p = argsObj.value.pattern || argsObj.value.query || argsObj.value.path || ''
+    return p ? `"${p}"` : ''
+  }
+  if (isEditTool.value || isReadTool.value) {
+    return argsObj.value.path || argsObj.value.file_path || argsObj.value.filename || ''
   }
   if (isShellTool.value) {
-    const cmd = argsObj.value.command || argsObj.value.cmd || ''
-    return cmd ? `运行: ${cmd}` : toolLabel.value
+    return argsObj.value.command || argsObj.value.cmd || ''
   }
-  if (isReadTool.value) {
-    const file = argsObj.value.path || argsObj.value.file_path || argsObj.value.filename || ''
-    return file ? `读取: ${file}` : toolLabel.value
-  }
-  if (isSearchTool.value) {
-    const query = argsObj.value.pattern || argsObj.value.query || ''
-    return query ? `搜索: ${query}` : toolLabel.value
-  }
-  return toolLabel.value
+  return argsObj.value.query || argsObj.value.name || ''
 })
 
-const executionStatusText = computed(() => {
+// 次要/缩略信息
+const toolSubInfo = computed(() => {
+  if (isEditTool.value) {
+    if (editStats.value.added > 0 || editStats.value.deleted > 0) {
+      return `+${editStats.value.added} -${editStats.value.deleted} 行`
+    }
+  }
+  if (isSearchTool.value && props.call.result) {
+    if (typeof props.call.result === 'string') {
+      const matchLines = props.call.result.split('\n').filter(l => l.trim().length > 0).length
+      if (matchLines > 0) return `找到 ${matchLines} 处匹配`
+    }
+  }
+  return ''
+})
+
+// 右侧状态胶囊文本 (图一精炼显示: "0.08s 成功" / "0.45s 退出码 0")
+const formattedBadgeStatusText = computed(() => {
+  const elapsed = Number(props.call.execution?.elapsedMs || 0)
+  const timeStr = elapsed > 0 ? `${(elapsed / 1000).toFixed(2)}s ` : ''
   if (props.call.status === 'completed') {
-    const elapsed = Number(props.call.execution?.elapsedMs || 0)
-    return elapsed > 0 ? `${(elapsed / 1000).toFixed(2)}s 成功` : '成功'
+    if (isShellTool.value) {
+      return `${timeStr}退出码 0`
+    }
+    return `${timeStr}成功`
   }
   if (props.call.status === 'running') return '执行中...'
-  if (props.call.status === 'error') return '失败'
-  return executionText.value
+  if (props.call.status === 'error') return `${timeStr}失败`
+  if (props.call.status === 'waiting_approval') return '等待审批'
+  if (props.call.status === 'waiting_user') return '等待输入'
+  return props.call.status
 })
 
 const editDiffLines = computed(() => {
@@ -369,342 +334,413 @@ const editDiffLines = computed(() => {
 })
 
 const hasDiff = computed(() => {
-  const r = props.call.result || ''
-  return r.includes('---') && r.includes('+++') && r.includes('@@')
+  if (!props.call.result || typeof props.call.result !== 'string') return false
+  return props.call.result.includes('--- ') && props.call.result.includes('+++ ')
 })
 
 function extractDiff(text) {
-  const match = text.match(/((?:---.*\n\+\+\+.*\n[\s\S]*?(?=---|\Z))|(?:diff[\s\S]*?(?=diff|\Z)))/)
-  return match ? match[0] : text
-}
-
-function formatJson(obj) {
-  if (typeof obj === 'string') return obj
-  try { return JSON.stringify(obj, null, 2) } catch { return String(obj) }
-}
-
-function truncate(text, max) {
   if (!text) return ''
-  text = String(text)
-  return text.length > max ? text.slice(0, max) + '...' : text
+  const lines = text.split('\n')
+  const diffStart = lines.findIndex(l => l.startsWith('--- ') || l.startsWith('diff --git'))
+  return diffStart >= 0 ? lines.slice(diffStart).join('\n') : text
+}
+
+function truncate(text, maxLen = 300) {
+  if (!text) return ''
+  return text.length > maxLen ? text.slice(0, maxLen) + '...' : text
+}
+
+function formatJson(val) {
+  if (!val) return ''
+  if (typeof val === 'string') {
+    try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
+  }
+  return JSON.stringify(val, null, 2)
+}
+
+function copyOutput(text) {
+  navigator.clipboard?.writeText(text || '')
+  ElMessage.success('输出已复制到剪贴板')
 }
 
 function emitPermission(action) {
-  emit('permission', { call: props.call, action, feedback: approvalFeedback.value.trim() })
+  emit('permission', {
+    toolCallId: props.call.toolCallId,
+    action,
+    permissionRequest: props.call.permissionRequest,
+    networkRequest: props.call.networkRequest
+  })
 }
 
 function emitCommandApproval(action) {
-  if (commandSubmitting.value) return
-  emit('command-approval', { call: props.call, action })
+  commandSubmitting.value = true
+  emit('command-approval', {
+    toolCallId: props.call.toolCallId,
+    action,
+    commandApproval: props.call.commandApproval
+  })
+  setTimeout(() => { commandSubmitting.value = false }, 1000)
+}
+
+function emitQuestion(action) {
+  emit('question', {
+    toolCallId: props.call.toolCallId,
+    requestId: questionRequest.value.requestId || questionRequest.value.interactionId,
+    action,
+    answer: action === 'answer' ? answerDraft.value : null
+  })
 }
 
 function setQuestionAnswer(option) {
   answerDraft.value = option
 }
-
-function emitQuestion(action) {
-  if (!questionRequestReady.value) return
-  emit('question', { call: props.call, action, answer: answerDraft.value.trim() })
-}
-
-watch(() => props.call.status, (status) => {
-  if (status === 'error' || status === 'waiting_approval' || status === 'waiting_user' || status === 'interrupted') {
-    expanded.value = true
-  }
-})
-
-watch(() => props.call.questionRequest, (request) => {
-  if (request?.answer) {
-    answerDraft.value = request.answer
-  }
-})
 </script>
 
 <style scoped>
 .tc-card {
-  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
   border-radius: 8px;
   margin: 6px 0;
   overflow: hidden;
-  transition: border-color 0.15s;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  user-select: none;
 }
-.tc-card.tc-running { border-color: #93c5fd; }
-.tc-card.tc-error { border-color: #fca5a5; }
-.tc-card.tc-waiting_approval { border-color: #fbbf24; }
-.tc-card.tc-warning { border-color: #fbbf24; }
-.tc-card.tc-skipped, .tc-card.tc-interrupted { border-color: #cbd5e1; background: #f8fafc; }
-.tc-card.tc-waiting_user { border-color: #c4b5fd; }
+
+.tc-card:hover {
+  border-color: #d4d4d8;
+}
+
+.tc-card.is-expanded {
+  border-color: #d4d4d8;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+/* 头部 (Figure 1) */
 .tc-header {
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 12px;
   cursor: pointer;
-  user-select: none;
-  background: #fafafa;
-  transition: background 0.1s;
+  background: #ffffff;
+  min-height: 38px;
 }
-.tc-header:hover { background: #f4f4f5; }
+
 .tc-header-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
+  overflow: hidden;
   flex: 1;
 }
+
+.tc-type-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #71717a;
+  flex-shrink: 0;
+}
+
+.tc-type-icon.symbol,
+.tc-type-icon.shell {
+  font-size: 11.5px;
+  color: #52525b;
+}
+
+.tc-title-tokens {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #09090b;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.tc-tool-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: #09090b;
+  flex-shrink: 0;
+}
+
+.tc-tool-arg-main {
+  font-family: 'JetBrains Mono', monospace;
+  color: #3f3f46;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 420px;
+}
+
+.tc-tool-sub-info {
+  font-size: 12px;
+  color: #71717a;
+  flex-shrink: 0;
+}
+
+/* 右侧状态胶囊 (Figure 1) */
 .tc-header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
   flex-shrink: 0;
 }
-.tc-symbol-tag {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 700;
-  font-size: 12px;
-  color: #18181b;
-  letter-spacing: -0.5px;
-}
-.tc-status-pill {
+
+.tc-status-pill-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  background: #f4f4f5;
-  color: #71717a;
-}
-.tc-status-pill.completed {
-  background: #ecfdf5;
-  color: #059669;
-}
-.tc-status-pill.running {
-  background: #eff6ff;
-  color: #2563eb;
-}
-.tc-status-pill.error {
-  background: #fef2f2;
-  color: #dc2626;
-}
-.tc-edit-diff-box {
-  margin: 6px 0;
-  border-radius: 6px;
-  overflow: hidden;
-  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-  font-size: 11.5px;
-  line-height: 1.6;
-  border: 1px solid #e4e4e7;
+  padding: 2px 8px;
   background: #ffffff;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #3f3f46;
 }
-.tc-diff-line {
-  display: flex;
-  align-items: flex-start;
-  padding: 2px 10px;
-  white-space: pre;
-  word-break: break-all;
-  overflow-x: auto;
+
+.tc-status-pill-badge.completed {
+  color: #18181b;
 }
-.tc-diff-line.is-del {
-  background: #ffebe9;
-  color: #cf222e;
+
+.tc-status-pill-badge.error {
+  color: #ef4444;
+  border-color: #fecaca;
+  background: #fef2f2;
 }
-.tc-diff-line.is-add {
-  background: #e6ffec;
-  color: #1a7f37;
+
+.tc-status-pill-badge.running {
+  color: #3b82f6;
+  border-color: #bfdbfe;
+  background: #eff6ff;
 }
-.tc-diff-lineno {
-  width: 28px;
-  flex-shrink: 0;
-  color: #a1a1aa;
-  user-select: none;
-  font-size: 11px;
+
+.badge-icon-spin {
+  animation: spin 1s linear infinite;
 }
-.tc-diff-marker {
-  width: 14px;
-  flex-shrink: 0;
-  font-weight: 600;
-  user-select: none;
+
+/* 详情展开区 */
+.tc-body {
+  border-top: 1px solid #f4f4f5;
+  background: #fafafa;
+  padding: 10px 12px;
+  font-size: 12px;
 }
-.tc-diff-code {
-  flex: 1;
+
+.tc-section {
+  margin-bottom: 10px;
 }
-.tc-icon-wrap {
-  width: 20px;
-  height: 20px;
+
+.tc-section:last-child {
+  margin-bottom: 0;
+}
+
+.tc-section-header {
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+  justify-content: space-between;
+  margin-bottom: 6px;
 }
-.tc-spin { animation: tcSpin 1s linear infinite; }
-@keyframes tcSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.tc-info {
-  flex: 1;
-  min-width: 0;
+
+.tc-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #71717a;
+}
+
+.tc-btn-copy-result {
+  background: transparent;
+  border: none;
+  color: #a1a1aa;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.12s;
+}
+
+.tc-btn-copy-result:hover {
+  color: #09090b;
+  background: #f4f4f5;
+}
+
+.tc-args {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 6px;
 }
-.tc-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: #18181b;
-  font-family: 'JetBrains Mono', monospace;
-}
-.tc-summary {
-  font-size: 11px;
-  color: #71717a;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tc-execution {
-  font-size: 10px;
-  color: #64748b;
-}
-.tc-running .tc-execution { color: #2563eb; }
-.tc-error .tc-execution { color: #dc2626; }
-.tc-toggle { flex-shrink: 0; display: flex; align-items: center; }
-.tc-body {
-  border-top: 1px solid #e4e4e7;
-  padding: 8px 10px;
-}
-.tc-projection-note {
-  margin: 0 0 8px;
-  padding: 7px 8px;
-  border-left: 3px solid #60a5fa;
-  border-radius: 5px;
-  background: #eff6ff;
-  color: #1e40af;
-  font-size: 11px;
-  line-height: 1.5;
-}
-.tc-section { margin-bottom: 8px; }
-.tc-section:last-child { margin-bottom: 0; }
-.tc-section-label {
-  font-size: 10px;
-  font-weight: 600;
-  color: #9ca3af;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 4px;
-}
+
 .tc-arg-row {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 4px;
-}
-.tc-arg-key {
-  font-size: 11px;
-  font-weight: 600;
-  color: #6b7280;
-  min-width: 32px;
-  flex-shrink: 0;
-  padding-top: 2px;
-}
-.tc-arg-val {
   font-size: 12px;
-  color: #374151;
+}
+
+.tc-arg-key {
+  color: #71717a;
+  font-weight: 500;
+  width: 42px;
+  flex-shrink: 0;
+}
+
+.tc-arg-val {
+  color: #09090b;
   word-break: break-all;
 }
+
 .tc-arg-file {
   font-family: 'JetBrains Mono', monospace;
-  color: #6366f1;
-  font-size: 11px;
-}
-.tc-arg-code {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  background: #f3f4f6;
-  padding: 4px 8px;
+  background: #f4f4f5;
+  padding: 1px 5px;
   border-radius: 4px;
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 120px;
-  overflow-y: auto;
-  flex: 1;
+  font-size: 11.5px;
 }
+
 .tc-arg-cmd {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  background: #1e293b;
-  color: #e2e8f0;
-  padding: 4px 8px;
-  border-radius: 4px;
-  display: inline-block;
+  background: #18181b;
+  color: #f8fafc;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  word-break: break-all;
 }
-.tc-args-json {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  background: #f3f4f6;
-  padding: 6px 8px;
-  border-radius: 4px;
+
+.tc-arg-code {
   margin: 0;
-  max-height: 200px;
-  overflow-y: auto;
+  font-family: 'JetBrains Mono', monospace;
+  background: #f4f4f5;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  color: #3f3f46;
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+.tc-args-json {
+  margin: 0;
+  font-family: 'JetBrains Mono', monospace;
+  background: #f4f4f5;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: #3f3f46;
+  white-space: pre-wrap;
+}
+
+/* 终端输出视窗 */
+.tc-shell-output,
+.tc-result-text {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 8px 12px;
+  overflow-x: auto;
+}
+
 .tc-shell-output pre,
 .tc-result-text pre {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  background: #1e293b;
-  color: #e2e8f0;
-  padding: 8px 10px;
-  border-radius: 6px;
   margin: 0;
-  max-height: 300px;
-  overflow-y: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #f8fafc;
   white-space: pre-wrap;
   word-break: break-all;
 }
-.tc-diff-wrap { margin-top: 4px; }
 
-.tc-question {
-  margin-top: 10px;
+.tc-projection-note {
+  font-size: 11px;
+  color: #71717a;
+  background: #f4f4f5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+/* Edit Diff Box */
+.tc-edit-diff-box {
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+}
+
+.tc-diff-line {
+  display: flex;
+  align-items: center;
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+
+.tc-diff-line.is-add {
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.tc-diff-line.is-del {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.tc-diff-lineno {
+  width: 28px;
+  color: #a1a1aa;
+  font-size: 10.5px;
+  user-select: none;
+}
+
+.tc-diff-marker {
+  width: 14px;
+  font-weight: 700;
+}
+
+.tc-diff-code {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 交互卡片 (提问、审批) */
+.tc-question,
+.tc-approval {
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
   padding: 10px;
-  border-radius: 8px;
-  background: #f5f3ff;
-  border: 1px solid #ddd6fe;
+  margin-top: 8px;
 }
 
 .tc-question-kicker {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 700;
-  color: #7c3aed;
-  letter-spacing: 0.4px;
+  color: #8b5cf6;
   text-transform: uppercase;
   margin-bottom: 4px;
 }
 
-.tc-question-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: #4c1d95;
+.tc-question-title,
+.tc-approval-title {
+  font-weight: 600;
+  color: #09090b;
   margin-bottom: 6px;
 }
 
 .tc-question-text {
-  font-size: 13px;
-  line-height: 1.6;
-  color: #312e81;
-  white-space: pre-wrap;
-  word-break: break-word;
+  color: #52525b;
   margin-bottom: 8px;
 }
 
-.tc-question-sync {
-  margin-bottom: 8px;
-  color: #6d28d9;
-  font-size: 11px;
-  line-height: 1.5;
-}
 .tc-question-options {
   display: flex;
   flex-wrap: wrap;
@@ -713,112 +749,100 @@ watch(() => props.call.questionRequest, (request) => {
 }
 
 .tc-option-btn {
-  border: 1px solid #c4b5fd;
-  border-radius: 999px;
-  background: #fff;
-  color: #5b21b6;
-  font-size: 12px;
+  padding: 4px 10px;
+  background: #f4f4f5;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
+  font-size: 11.5px;
   cursor: pointer;
-  padding: 5px 9px;
+  transition: all 0.12s;
 }
 
 .tc-option-btn:hover {
-  background: #ede9fe;
+  background: #e4e4e7;
+  color: #09090b;
 }
 
 .tc-textarea {
   width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-  min-height: 48px;
-  border: 1px solid #d1d5db;
-  border-radius: 7px;
-  background: #fff;
-  color: #111827;
+  padding: 6px 8px;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
   font-size: 12px;
-  line-height: 1.5;
-  padding: 7px 9px;
   outline: none;
+  resize: vertical;
   margin-bottom: 8px;
 }
 
 .tc-textarea:focus {
-  border-color: #8b5cf6;
-  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.15);
+  border-color: #18181b;
 }
 
-.tc-approval {
-  margin-top: 10px;
-  padding: 10px;
-  border-radius: 8px;
-  background: #fff8e6;
-  border: 1px solid #fde68a;
-}
-
-.tc-approval-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #92400e;
-  margin-bottom: 8px;
-}
-
-.tc-approval-command {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 11px;
-  color: #92400e;
-  margin-bottom: 8px;
-}
-
-.tc-approval-command code {
-  flex: 1;
-  font-family: 'JetBrains Mono', monospace;
-  overflow-wrap: anywhere;
-}
-
-.tc-approval-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 11px;
-  color: #a16207;
-  margin-bottom: 8px;
-}
 .tc-approval-actions {
   display: flex;
-  flex-wrap: wrap;
   gap: 8px;
+  margin-top: 8px;
 }
 
 .tc-approval-btn {
-  height: 28px;
-  border: 1px solid #d1d5db;
-  border-radius: 7px;
-  background: #fff;
-  color: #374151;
+  padding: 4px 12px;
+  border-radius: 6px;
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
-  padding: 0 10px;
+  border: 1px solid transparent;
+  transition: all 0.12s;
 }
 
-.tc-approval-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
 .tc-approval-btn.primary {
-  background: #111827;
-  border-color: #111827;
-  color: #fff;
+  background: #18181b;
+  color: #ffffff;
+}
+
+.tc-approval-btn.primary:hover {
+  background: #27272a;
+}
+
+.tc-approval-btn.secondary {
+  background: #f4f4f5;
+  border-color: #e4e4e7;
+  color: #3f3f46;
+}
+
+.tc-approval-btn.secondary:hover {
+  background: #e4e4e7;
 }
 
 .tc-approval-btn.danger {
-  color: #b91c1c;
-  border-color: #fecaca;
-  background: #fff5f5;
+  background: #fee2e2;
+  color: #dc2626;
+  border-color: #fca5a5;
 }
 
-.tc-slide-enter-active { transition: all 0.2s ease; }
-.tc-slide-leave-active { transition: all 0.15s ease; }
-.tc-slide-enter-from, .tc-slide-leave-to { opacity: 0; max-height: 0; }
+.tc-approval-btn.danger:hover {
+  background: #fecaca;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Animations */
+.tc-slide-enter-active,
+.tc-slide-leave-active {
+  transition: max-height 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.15s ease;
+  overflow: hidden;
+}
+
+.tc-slide-enter-from,
+.tc-slide-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+.tc-slide-enter-to,
+.tc-slide-leave-from {
+  max-height: 600px;
+  opacity: 1;
+}
 </style>

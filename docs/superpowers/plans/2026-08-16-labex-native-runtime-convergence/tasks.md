@@ -157,6 +157,7 @@
 6. **仍未关闭的边界**：尚未完成真实 MCP 断线/恢复现场 smoke、LSP 基于语言 client 的细粒度 gating，以及 Web/Image 的全部可用性组合验收；这些不能因本轮 unit/runtime wiring 通过而标记为阶段 E 完成。
 7. **直接流最终答复恢复**：`FINAL` 仍先以 durable Event/Part 写入；初始 POST 流结束时，如果 UI 仅收到 provisional `FINAL_DELTA` 或完全漏收 FINAL，则只以同一 task 的 Run Message / Part 补齐答复，不把 `AgentTask.summary` 当作 transcript 事实。一次 transient SSE 写失败只关闭该观察者，不再抛回执行循环，因此失败/取消路径随后仍能提交 durable `FINAL`。
 8. **终态投影短暂滞后**：直连收尾第一次读取 task detail 时，如果还没有 `assistant:final` Run Message，不能因为页面已有 partial delta 就把它认证为 durable final。仅对同一 task 做有限重读，直到 authoritative final 出现；超出窗口仍保持未认证，交给既有刷新/订阅恢复，而不把猜测写成事实。
+9. **直连 transport 与任务终态解耦**：初始 POST SSE 结束后先查 durable task。任务仍 active 时，复用现有 cursor/event subscription 继续回放，而不是将 UI 停在 completed；等待审批/用户/环境等可恢复态维持可交互的非 loading 展示。
 
 **本地参考与适配说明**：
 

@@ -1,7 +1,7 @@
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyRunMessageSnapshot, applyRunPartSnapshot } from './agentRunPartState.js'
 import { createAgentRuntimeIndex } from './agentRuntimeStore.js'
-import { isTerminalAgentRunState, normalizeAgentRunState } from './agentRunState.js'
+import { isRecoverableAgentRunState, isTerminalAgentRunState, normalizeAgentRunState } from './agentRunState.js'
 import { DIRECT_TERMINAL_TRANSCRIPT_RECOVERY } from '../constants/agentTaskRuntime.js'
 import { nextTick as vueNextTick } from 'vue'
 
@@ -240,7 +240,7 @@ export function useAgentTaskRuntime(options) {
         const response = await api.agentTask(projectId.value, assistantMsg.taskId)
         if (!ownsConversation(conversationId)) return false
         const task = response?.data
-        if (!task?.taskId || !isTerminalAgentTask(task) || task.conversationId !== conversationId) return false
+        if (!task?.taskId || task.conversationId !== conversationId) return false
         if (currentAgentSession.value?.sessionId && task.sessionId
             && task.sessionId !== currentAgentSession.value.sessionId) return false
 
@@ -249,6 +249,24 @@ export function useAgentTaskRuntime(options) {
         reconcileRecoveredToolCalls(assistantMsg, task)
         reconcileRecoveredCommandApproval(assistantMsg, task)
         assistantMsg.runState = normalizeAgentRunState(task.status)
+        if (!isTerminalAgentTask(task)) {
+          const paused = isRecoverableAgentRunState(assistantMsg.runState)
+          assistantMsg.isStreaming = !paused
+          if (assistantMsg.timing) {
+            assistantMsg.timing.taskId = task.taskId
+            assistantMsg.timing.isRunning = !paused
+          }
+          if (paused) stopMessageTimer(assistantMsg)
+          agentLoading.value = !paused
+          log('DIRECT_STREAM_CLOSURE_RECOVERED_ACTIVE_TASK', {
+            conversationId,
+            taskId: task.taskId,
+            status: task.status
+          })
+          void subscribeToTaskEvents(task, assistantMsg)
+          return true
+        }
+
         assistantMsg.isStreaming = false
         assistantMsg.hasDurableFinal = hasDurableFinalMessage(task)
         if (assistantMsg.timing) assistantMsg.timing.taskId = task.taskId
