@@ -72,8 +72,10 @@ test('CloudWorkspace renders live thinking and answer deltas immediately', () =>
 test('CloudWorkspace applies the internal-reasoning boundary again at render time', () => {
   assert.match(source, /v-html="renderThinkingMarkdown\(item\.data\.content\)"/)
   assert.match(source, /v-html="renderMessageMarkdown\(msg\)"/)
-  assert.match(source, /function renderThinkingMarkdown\(text\) \{[\s\S]*stripInternalReasoningTags\(text\)/)
-  assert.match(source, /function renderMessageMarkdown\(message\) \{[\s\S]*message\?\.role === 'assistant'[\s\S]*stripInternalReasoningBlocks\(message\?\.content\)/)
+  assert.match(source, /function getCachedMarkdown\(prefix, rawText\) \{[\s\S]*prefix === 'thinking'[\s\S]*stripInternalReasoningTags\(rawText\)/)
+  assert.match(source, /function getCachedMarkdown\(prefix, rawText\) \{[\s\S]*prefix === 'message_assistant'[\s\S]*stripInternalReasoningBlocks\(rawText\)/)
+  assert.match(source, /function renderThinkingMarkdown\(text\) \{[\s\S]*getCachedMarkdown\('thinking', text\)/)
+  assert.match(source, /function renderMessageMarkdown\(message\) \{[\s\S]*message\?\.role === 'assistant'[\s\S]*getCachedMarkdown\(isAssistant \? 'message_assistant' : 'message_user', message\?\.content\)/)
 })
 
 

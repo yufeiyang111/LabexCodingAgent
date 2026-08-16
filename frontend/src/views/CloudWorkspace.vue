@@ -179,10 +179,17 @@
             @open-file-diff="handleOpenFileDiff"
           />
 
-          <!-- 当处于文件编辑标签时显示 Monaco 编辑器 -->
+          <!-- 当处于文件编辑标签时显示 Monaco 编辑器或中心 Diff 变更对比视图 (如图所示) -->
           <div v-else-if="openFiles.length > 0 && activeTabIndex >= 0" class="ws-monaco">
+            <CenterDiffViewer
+              v-if="openFiles[activeTabIndex]?.isDiffView && openFiles[activeTabIndex]?.diff"
+              :diff="openFiles[activeTabIndex].diff"
+              :file-path="openFiles[activeTabIndex].path"
+              :is-dark="aiDarkTheme"
+              @switch-to-editor="openFiles[activeTabIndex].isDiffView = false"
+            />
             <MonacoEditor
-              v-if="editorReady"
+              v-else-if="editorReady"
               v-model="fileContent"
               :language="detectedLang"
               :theme="editorTheme"
@@ -862,6 +869,7 @@ const ContextUsageDialog = defineAsyncComponent(() => import('@/components/cloud
 const ModelConfigDialog = defineAsyncComponent(() => import('@/components/cloud/ModelConfigDialog.vue'))
 const CenterAiWorkspace = defineAsyncComponent(() => import('@/components/cloud/chat/CenterAiWorkspace.vue'))
 const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/ChangesPanel.vue'))
+const CenterDiffViewer = defineAsyncComponent(() => import('@/components/cloud/CenterDiffViewer.vue'))
 const CompletionEvidenceCard = defineAsyncComponent(() => import('@/components/cloud/CompletionEvidenceCard.vue'))
 const PlanDisplay = defineAsyncComponent(() => import('@/components/cloud/PlanDisplay.vue'))
 const FileChangesSummaryCard = defineAsyncComponent(() => import('@/components/cloud/chat/FileChangesSummaryCard.vue'))
@@ -1027,10 +1035,32 @@ function dockAiBackToSidebar() {
 }
 
 async function handleOpenFileDiff(file) {
-  const path = file?.path || file?.filePath || file
-  if (path) {
-    isAgentTabActive.value = false
-    await openFile(path)
+  const path = file?.path || file?.filePath || file?.file || file
+  if (!path) return
+  isAgentTabActive.value = false
+
+  let patch = file?.patch || file?.diff || ''
+  if (!patch) {
+    const change = sessionChanges.value.find(c => (c.file === path || c.relativePath === path))
+    if (change) patch = change.patch || change.diff
+  }
+  if (!patch) {
+    for (const msg of messages.value) {
+      if (msg.fileChanges) {
+        const fc = msg.fileChanges.find(f => (f.path === path || f.filePath === path || f.file === path))
+        if (fc && (fc.patch || fc.diff)) {
+          patch = fc.patch || fc.diff
+          break
+        }
+      }
+    }
+  }
+
+  await openFile(path)
+  const currentTab = openFiles.value[activeTabIndex.value]
+  if (currentTab) {
+    currentTab.diff = patch
+    currentTab.isDiffView = Boolean(patch)
   }
 }
 
@@ -1163,6 +1193,8 @@ function onWorkspaceTabDrop(e, targetIdx) {
   draggedTabIndex.value = null
 }
 
+const activeAiTab = ref('chat')
+
 function scrollToLatestMessageInstant() {
   nextTick(() => {
     if (msgContainer.value) {
@@ -1213,7 +1245,6 @@ function insertToEditor(text) {
 
 const aiDarkTheme = computed(() => themeStore.effectiveTheme === 'dark')
 const editorTheme = computed(() => aiDarkTheme.value ? 'vs-dark' : 'vs')
-const activeAiTab = ref('chat')
 const contextExpanded = ref(false)
 const showModelConfig = ref(false)
 
