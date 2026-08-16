@@ -131,6 +131,10 @@
           <!-- 当处于 LabexAgent 标签时显示放大的 AI 视图 -->
           <CenterAiWorkspace
             v-if="isAgentInCenter && isAgentTabActive"
+            v-model:active-tab="activeAiTab"
+            :session-changes="sessionChanges"
+            :is-dark="aiDarkTheme"
+            :terminal-visible="terminalPanelVisible"
             :messages="messages"
             v-model:agent-input="agentInput"
             v-model:agent-mode="agentMode"
@@ -177,6 +181,7 @@
             @insert-editor="insertToEditor"
             @review-changes="handleReviewChanges"
             @open-file-diff="handleOpenFileDiff"
+            @toggle-terminal="toggleTerminalPanel"
           />
 
           <!-- 当处于文件编辑标签时显示 Monaco 编辑器或中心 Diff 变更对比视图 (如图所示) -->

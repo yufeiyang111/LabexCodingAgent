@@ -1,13 +1,28 @@
 <template>
   <div class="center-ai-container">
-    <!-- 顶部状态栏与还原至侧边栏按钮 -->
+    <!-- 顶部状态栏与导航 Tab 栏 (复刻侧边栏导航: 对话, 用量, 审查, 扩展, 终端) -->
     <div class="center-ai-topbar">
       <div class="topbar-title-wrap">
         <span class="icon agent-symbol-icon">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         </span>
-        <span class="topbar-title">LabexAgent (中心主视图)</span>
+        <span class="topbar-title">LabexAgent</span>
         <span class="topbar-session-badge" v-if="currentSessionName">{{ currentSessionName }}</span>
+      </div>
+
+      <!-- 居中导航 Tabs -->
+      <div class="center-ai-tabs">
+        <button
+          v-for="tab in centerTabs"
+          :key="tab.key"
+          type="button"
+          class="center-ai-tab-btn"
+          :class="{ active: tab.key === 'terminal' ? terminalVisible : currentTab === tab.key }"
+          @click="handleTabClick(tab.key)"
+        >
+          <span class="tab-icon" v-html="tab.icon"></span>
+          <span>{{ tab.label }}</span>
+        </button>
       </div>
 
       <div class="topbar-actions-right">
@@ -25,264 +40,302 @@
       </div>
     </div>
 
-    <!-- 独立滚动消息内容区 -->
-    <div class="center-ai-scroll-pane" ref="scrollPaneRef" @scroll="onScroll">
-      <div class="center-ai-content-inner">
-        <!-- 历史记录加载按钮 -->
-        <button
-          v-if="hasOlderMessages"
-          class="btn-load-older"
-          type="button"
-          :disabled="loadingOlderMessages"
-          @click="emit('load-older-history')"
-        >
-          {{ loadingOlderMessages ? '正在加载更早记录...' : '加载更早记录' }}
-        </button>
+    <!-- ==================== TAB 1: 对话 (CHAT) ==================== -->
+    <div v-show="currentTab === 'chat'" class="center-chat-tab-wrapper">
+      <!-- 独立滚动消息内容区 -->
+      <div class="center-ai-scroll-pane" ref="scrollPaneRef" @scroll="onScroll">
+        <div class="center-ai-content-inner">
+          <!-- 历史记录加载按钮 -->
+          <button
+            v-if="hasOlderMessages"
+            class="btn-load-older"
+            type="button"
+            :disabled="loadingOlderMessages"
+            @click="emit('load-older-history')"
+          >
+            {{ loadingOlderMessages ? '正在加载更早记录...' : '加载更早记录' }}
+          </button>
 
-        <!-- 空白欢迎态 -->
-        <div v-if="messages.length === 0" class="center-empty-state">
-          <div class="empty-icon-box">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <!-- 空白欢迎态 -->
+          <div v-if="messages.length === 0" class="center-empty-state">
+            <div class="empty-icon-box">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            </div>
+            <h2 class="empty-greeting">有什么可以帮您的吗？</h2>
+            <p class="empty-subtext">输入需求，LabexAgent 将自动执行代码检索、架构设计、文件重构与测试验证。</p>
+
+            <!-- 快速指令 Pills -->
+            <div class="center-quick-chips" v-if="quickChips?.length">
+              <button
+                v-for="chip in quickChips"
+                :key="chip.label"
+                class="quick-chip-btn"
+                @click="emit('apply-chip', chip.prompt)"
+              >
+                <span v-html="chip.icon"></span>
+                <span>{{ chip.label }}</span>
+              </button>
+            </div>
           </div>
-          <h2 class="empty-greeting">有什么可以帮您的吗？</h2>
-          <p class="empty-subtext">输入需求，LabexAgent 将自动执行代码检索、架构设计、文件重构与测试验证。</p>
 
-          <!-- 快速指令 Pills -->
-          <div class="center-quick-chips" v-if="quickChips?.length">
-            <button
-              v-for="chip in quickChips"
-              :key="chip.label"
-              class="quick-chip-btn"
-              @click="emit('apply-chip', chip.prompt)"
+          <!-- 消息列表 -->
+          <div v-else class="center-message-list">
+            <div
+              v-for="(msg, index) in messages"
+              :key="index"
+              class="center-msg-item"
+              :class="msg.role"
             >
-              <span v-html="chip.icon"></span>
-              <span>{{ chip.label }}</span>
-            </button>
+              <!-- 用户消息 (Figure 3) -->
+              <template v-if="msg.role === 'user'">
+                <div class="user-msg-bubble-wrap">
+                  <div class="user-msg-bubble">
+                    <!-- 用户发送的图片缩略图列表 (可点击预览大图) -->
+                    <div v-if="msg.attachments?.length" class="user-msg-thumbnails">
+                      <div
+                        v-for="(att, aIdx) in msg.attachments"
+                        :key="aIdx"
+                        class="user-msg-thumb-item"
+                        @click="emit('preview-image', att)"
+                        title="点击查看原图"
+                      >
+                        <img :src="att.dataUrl || att.url || att.src" :alt="att.name || '图片附件'" />
+                      </div>
+                    </div>
+                    <div class="user-msg-text">{{ msg.content }}</div>
+                    <div class="user-msg-footer">
+                      <span v-if="msg.timestamp" class="msg-time">{{ formatTime(msg.timestamp) }}</span>
+                      <button class="msg-copy-btn" title="复制内容" @click.stop="emit('copy-message', msg.content)">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        <span>复制</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Assistant 消息 -->
+              <template v-else>
+                <div class="assistant-msg-wrap">
+                  <div class="assistant-msg-inner">
+                    <!-- 合并的时间序思考与工具调用卡片 -->
+                    <template v-if="(showThinkingProcess && msg.thinkingBlocks?.length > 0) || (msg.toolCalls?.length > 0)">
+                      <template v-for="item in getMergedItems(msg)" :key="item._order">
+                        <!-- 思考过程 -->
+                        <ThinkingProcessBlock
+                          v-if="item.type === 'thinking'"
+                          :content="item.data.content"
+                          :rendered-content="renderThinkingMarkdown(item.data.content)"
+                          :summary="item.data.summary"
+                          :default-open="item.data._open"
+                          @markdown-click="e => emit('markdown-click', e)"
+                        />
+
+                        <!-- 工具调用卡片 -->
+                        <ToolCallCard
+                          v-else-if="item.type === 'tool'"
+                          :call="item.data"
+                          @permission="d => emit('permission', d)"
+                          @command-approval="d => emit('command-approval', d)"
+                          @question="d => emit('question', d)"
+                        />
+                      </template>
+                    </template>
+
+                    <!-- 实时流式思考过程 -->
+                    <ThinkingProcessBlock
+                      v-if="showThinkingProcess && msg.thinking"
+                      :content="msg._thinkingDisplay || msg.thinking"
+                      :rendered-content="renderThinkingMarkdown(msg._thinkingDisplay || msg.thinking)"
+                      :is-streaming="true"
+                      @markdown-click="e => emit('markdown-click', e)"
+                    />
+
+                    <!-- 正文 Markdown 内容 -->
+                    <div class="msg-content-box" v-if="msg.content">
+                      <div
+                        class="markdown-rendered"
+                        v-html="renderMessageMarkdown(msg)"
+                        @click="e => emit('markdown-click', e)"
+                      ></div>
+                    </div>
+
+                    <!-- 流式骨架加载动画 -->
+                    <div v-else-if="msg.isStreaming && !msg.thinking" class="center-streaming-indicator">
+                      <span class="streaming-dot"></span>
+                      <span class="streaming-dot"></span>
+                      <span class="streaming-dot"></span>
+                    </div>
+
+                    <!-- 文件变更组件 -->
+                    <FileChangesSummaryCard
+                      v-if="index === messages.length - 1"
+                      :changes="sessionChanges || []"
+                      :additions="msg.additions || 0"
+                      :deletions="msg.deletions || 0"
+                      @review-all="emit('review-changes', msg)"
+                      @open-file-diff="file => emit('open-file-diff', file)"
+                    />
+
+                    <!-- 任务证据与计划 -->
+                    <CompletionEvidenceCard
+                      v-if="msg.completionEvidence || msg.completionBlockedEvidence"
+                      :evidence="msg.completionEvidence || msg.completionBlockedEvidence"
+                    />
+                    <PlanDisplay
+                      v-if="msg.plan || msg.planJson"
+                      :plan="msg.plan"
+                      :plan-json="msg.planJson"
+                    />
+
+                    <!-- Token 图表与耗时 -->
+                    <TokenChart
+                      v-if="index === messages.length - 1 && tokenUsage?.totalTokens > 0"
+                      :prompt-tokens="tokenUsage.promptTokens"
+                      :completion-tokens="tokenUsage.completionTokens"
+                      :call-count="tokenUsage.callCount"
+                    />
+                    <AgentTimer
+                      v-if="msg.timing"
+                      :started-at="msg.timing.startedAt"
+                      :active-elapsed-ms="msg.timing.activeElapsedMs"
+                      :is-running="msg.timing.isRunning"
+                    />
+
+                    <!-- 消息工具栏与时间 -->
+                    <div class="msg-actions-bar">
+                      <span v-if="msg.timestamp" class="msg-time">{{ formatTime(msg.timestamp) }}</span>
+                      <button class="msg-action-btn" title="复制内容" @click.stop="emit('copy-message', msg.content)">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        <span>复制</span>
+                      </button>
+                      <button class="msg-action-btn" title="插入到编辑器" v-if="activePath" @click.stop="emit('insert-editor', msg.content)">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        <span>插入</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
+      </div>
 
-        <!-- 消息列表 -->
-        <div v-else class="center-message-list">
-          <div
-            v-for="(msg, index) in messages"
-            :key="index"
-            class="center-msg-item"
-            :class="msg.role"
+      <!-- 浮动回顶/滚底与右上角导航按钮组 -->
+      <div class="center-scroll-fab-group">
+        <Transition name="fade-pop">
+          <button
+            v-if="showScrollTopBtn"
+            class="center-scroll-fab-btn"
+            type="button"
+            @click="scrollToTopManual"
+            title="回到顶部"
           >
-            <!-- 用户消息 (Figure 3) -->
-            <template v-if="msg.role === 'user'">
-              <div class="user-msg-bubble-wrap">
-                <div class="user-msg-bubble">
-                  <!-- 用户发送的图片缩略图列表 (可点击预览大图) -->
-                  <div v-if="msg.attachments?.length" class="user-msg-thumbnails">
-                    <div
-                      v-for="(att, aIdx) in msg.attachments"
-                      :key="aIdx"
-                      class="user-msg-thumb-item"
-                      @click="emit('preview-image', att)"
-                      title="点击查看原图"
-                    >
-                      <img :src="att.dataUrl || att.url || att.src" :alt="att.name || '图片附件'" />
-                    </div>
-                  </div>
-                  <div class="user-msg-text">{{ msg.content }}</div>
-                  <div class="user-msg-footer">
-                    <span v-if="msg.timestamp" class="msg-time">{{ formatTime(msg.timestamp) }}</span>
-                    <button class="msg-copy-btn" title="复制内容" @click.stop="emit('copy-message', msg.content)">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                      <span>复制</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </template>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+          </button>
+        </Transition>
+        <Transition name="fade-pop">
+          <button
+            v-if="showScrollBtn"
+            class="center-scroll-fab-btn"
+            type="button"
+            @click="scrollToBottomManual"
+            title="回到底部"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+        </Transition>
+      </div>
 
-            <!-- Assistant 消息 -->
-            <template v-else>
-              <div class="assistant-msg-wrap">
-                <div class="assistant-msg-inner">
-                  <!-- 合并的时间序思考与工具调用卡片 -->
-                  <template v-if="(showThinkingProcess && msg.thinkingBlocks?.length > 0) || (msg.toolCalls?.length > 0)">
-                    <template v-for="item in getMergedItems(msg)" :key="item._order">
-                      <!-- 思考过程 -->
-                      <ThinkingProcessBlock
-                        v-if="item.type === 'thinking'"
-                        :content="item.data.content"
-                        :rendered-content="renderThinkingMarkdown(item.data.content)"
-                        :summary="item.data.summary"
-                        :default-open="item.data._open"
-                        @markdown-click="e => emit('markdown-click', e)"
-                      />
+      <!-- 消息上下导航 (右上角胶囊) -->
+      <div v-if="messages.length > 2" class="center-msg-navigator">
+        <button
+          class="nav-btn"
+          :class="{ disabled: currentMsgIdx <= 0 }"
+          @click="navigateMessage(-1)"
+          title="上一条消息"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="18 15 12 9 6 15"/></svg>
+        </button>
+        <span class="nav-indicator">{{ currentMsgIdx + 1 }}/{{ messages.length }}</span>
+        <button
+          class="nav-btn"
+          :class="{ disabled: currentMsgIdx >= messages.length - 1 }"
+          @click="navigateMessage(1)"
+          title="下一条消息"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+      </div>
 
-                      <!-- 工具调用卡片 -->
-                      <ToolCallCard
-                        v-else-if="item.type === 'tool'"
-                        :call="item.data"
-                        @permission="args => emit('permission', args)"
-                        @command-approval="args => emit('command-approval', args)"
-                        @question="args => emit('question', args)"
-                      />
-                    </template>
-                  </template>
-
-                  <!-- 实时流式思考 -->
-                  <ThinkingProcessBlock
-                    v-if="showThinkingProcess && msg.thinking"
-                    :content="msg._thinkingDisplay || msg.thinking"
-                    :rendered-content="renderThinkingMarkdown(msg._thinkingDisplay || msg.thinking)"
-                    :is-streaming="true"
-                    @markdown-click="e => emit('markdown-click', e)"
-                  />
-
-                  <!-- 富文本 Markdown 输出 -->
-                  <div class="msg-content-box">
-                    <div
-                      v-if="msg.isStreaming && !msg.content && !msg.thinking"
-                      class="streaming-skeleton-box"
-                    >
-                      <div class="skeleton-line w-80"></div>
-                      <div class="skeleton-line w-60"></div>
-                    </div>
-                    <div
-                      v-else-if="msg.content"
-                      class="msg-markdown-rendered markdown-rendered"
-                      v-html="renderMessageMarkdown(msg)"
-                      @click="e => emit('markdown-click', e)"
-                    ></div>
-                  </div>
-
-                  <!-- 文件改动卡片 (Figure 1: 常驻展示，无变动时显示 No changes) -->
-                  <FileChangesSummaryCard
-                    :changes="msg.fileChanges || msg.changes || []"
-                    :additions="msg.additions || 0"
-                    :deletions="msg.deletions || 0"
-                    @review-all="emit('review-changes', msg)"
-                    @open-file-diff="file => emit('open-file-diff', file)"
-                  />
-
-                  <!-- 任务证据与计划 -->
-                  <CompletionEvidenceCard
-                    v-if="msg.completionEvidence || msg.completionBlockedEvidence"
-                    :evidence="msg.completionEvidence || msg.completionBlockedEvidence"
-                  />
-                  <PlanDisplay
-                    v-if="msg.plan || msg.planJson"
-                    :plan="msg.plan"
-                    :plan-json="msg.planJson"
-                  />
-
-                  <!-- Token 图表与耗时 -->
-                  <TokenChart
-                    v-if="index === messages.length - 1 && tokenUsage?.totalTokens > 0"
-                    :prompt-tokens="tokenUsage.promptTokens"
-                    :completion-tokens="tokenUsage.completionTokens"
-                    :call-count="tokenUsage.callCount"
-                  />
-                  <AgentTimer
-                    v-if="msg.timing"
-                    :started-at="msg.timing.startedAt"
-                    :active-elapsed-ms="msg.timing.activeElapsedMs"
-                    :is-running="msg.timing.isRunning"
-                  />
-
-                  <!-- 消息工具栏与时间 -->
-                  <div class="msg-actions-bar">
-                    <span v-if="msg.timestamp" class="msg-time">{{ formatTime(msg.timestamp) }}</span>
-                    <button class="msg-action-btn" title="复制内容" @click.stop="emit('copy-message', msg.content)">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                      <span>复制</span>
-                    </button>
-                    <button class="msg-action-btn" title="插入到编辑器" v-if="activePath" @click.stop="emit('insert-editor', msg.content)">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                      <span>插入</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </template>
-          </div>
+      <!-- 固定在底部的 Composer 区域 -->
+      <div class="center-composer-dock-pinned">
+        <div class="center-composer-inner-wrapper">
+          <ComposerDock
+            :model-value="agentInput"
+            :agent-mode="agentMode"
+            :current-model="currentModel"
+            :thinking-level="thinkingLevel"
+            :available-models="availableModels"
+            :loading="agentLoading"
+            :supports-images="supportsImages"
+            :selected-code="selectedCode"
+            :pending-images="pendingImages"
+            :context-usage-status="contextUsageStatus"
+            :active-path="activePath"
+            @update:model-value="val => emit('update:agentInput', val)"
+            @update:agent-mode="val => emit('update:agentMode', val)"
+            @mode-change="val => emit('mode-change', val)"
+            @send="emit('send')"
+            @stop="emit('stop')"
+            @trigger-commands="emit('trigger-commands')"
+            @trigger-at-file="emit('trigger-at-file')"
+            @optimize-prompt="emit('optimize-prompt')"
+            @clear-selected-code="emit('clear-selected-code')"
+            @preview-image="img => emit('preview-image', img)"
+            @remove-image="img => emit('remove-image', img)"
+            @image-files="files => emit('image-files', files)"
+            @open-context-dialog="emit('open-context-dialog')"
+            @change-model="name => emit('change-model', name)"
+            @change-thinking="lvl => emit('change-thinking', lvl)"
+            @open-model-config="emit('open-model-config')"
+          />
         </div>
       </div>
     </div>
 
-    <!-- 浮动回顶/滚底按钮组 -->
-    <div class="center-scroll-fab-group">
-      <Transition name="fade-pop">
-        <button
-          v-if="showScrollTopBtn"
-          class="center-scroll-fab-btn"
-          type="button"
-          @click="scrollToTopManual"
-          title="回到顶部"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
-        </button>
-      </Transition>
-      <Transition name="fade-pop">
-        <button
-          v-if="showScrollBtn"
-          class="center-scroll-fab-btn"
-          type="button"
-          @click="scrollToBottomManual"
-          title="回到底部"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-      </Transition>
+    <!-- ==================== TAB 2: 审查 (REVIEW - ChangesPanel) ==================== -->
+    <div v-show="currentTab === 'review'" class="center-subtab-pane">
+      <ChangesPanel
+        :changes="sessionChanges || []"
+        :is-dark="isDark"
+        @open-diff="f => emit('open-file-diff', f)"
+      />
     </div>
 
-    <!-- 浮动消息上下导航 -->
-    <div v-if="messages.length > 2" class="center-msg-navigator">
-      <button
-        class="nav-btn"
-        :class="{ disabled: currentMsgIdx <= 0 }"
-        @click="navigateMessage(-1)"
-        title="上一条消息"
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="18 15 12 9 6 15"/></svg>
-      </button>
-      <span class="nav-indicator">{{ currentMsgIdx + 1 }}/{{ messages.length }}</span>
-      <button
-        class="nav-btn"
-        :class="{ disabled: currentMsgIdx >= messages.length - 1 }"
-        @click="navigateMessage(1)"
-        title="下一条消息"
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-    </div>
-
-    <!-- 固定在底部的 Composer 区域 -->
-    <div class="center-composer-dock-pinned">
-      <div class="center-composer-inner-wrapper">
-        <ComposerDock
-          :model-value="agentInput"
-          :agent-mode="agentMode"
-          :current-model="currentModel"
-          :thinking-level="thinkingLevel"
-          :available-models="availableModels"
-          :loading="agentLoading"
-          :supports-images="supportsImages"
-          :selected-code="selectedCode"
-          :pending-images="pendingImages"
-          :context-usage-status="contextUsageStatus"
-          :active-path="activePath"
-          @update:model-value="val => emit('update:agentInput', val)"
-          @update:agent-mode="val => emit('update:agentMode', val)"
-          @mode-change="val => emit('mode-change', val)"
-          @send="emit('send')"
-          @stop="emit('stop')"
-          @trigger-commands="emit('trigger-commands')"
-          @trigger-at-file="emit('trigger-at-file')"
-          @optimize-prompt="emit('optimize-prompt')"
-          @clear-selected-code="emit('clear-selected-code')"
-          @preview-image="img => emit('preview-image', img)"
-          @remove-image="img => emit('remove-image', img)"
-          @image-files="files => emit('image-files', files)"
-          @open-context-dialog="emit('open-context-dialog')"
-          @change-model="name => emit('change-model', name)"
-          @change-thinking="lvl => emit('change-thinking', lvl)"
-          @open-model-config="emit('open-model-config')"
+    <!-- ==================== TAB 3: 用量 (USAGE) ==================== -->
+    <div v-show="currentTab === 'usage'" class="center-subtab-pane center-usage-pane">
+      <div class="center-usage-grid">
+        <div class="usage-summary-card">
+          <div class="stat-big-title">总 Token 消耗</div>
+          <div class="stat-big-number">{{ (tokenUsage?.totalTokens || 0) >= 1000 ? ((tokenUsage?.totalTokens || 0) / 1000).toFixed(1) + 'K' : (tokenUsage?.totalTokens || 0) }}</div>
+          <div class="stat-sub">{{ tokenUsage?.callCount || 0 }} 次模型调用</div>
+        </div>
+        <div class="usage-summary-card">
+          <div class="stat-label">输入 Tokens</div>
+          <div class="stat-val prompt">{{ tokenUsage?.promptTokens || 0 }}</div>
+        </div>
+        <div class="usage-summary-card">
+          <div class="stat-label">输出 Tokens</div>
+          <div class="stat-val completion">{{ tokenUsage?.completionTokens || 0 }}</div>
+        </div>
+      </div>
+      <div class="center-usage-chart-wrap" v-if="tokenUsage?.totalTokens > 0">
+        <TokenChart
+          :prompt-tokens="tokenUsage.promptTokens"
+          :completion-tokens="tokenUsage.completionTokens"
+          :call-count="tokenUsage.callCount"
         />
       </div>
     </div>
@@ -301,7 +354,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, nextTick, watch, defineAsyncComponent } from 'vue'
 import ComposerDock from '../composer/ComposerDock.vue'
 import ThinkingProcessBlock from './ThinkingProcessBlock.vue'
 import ToolCallCard from '../ToolCallCard.vue'
@@ -311,8 +364,25 @@ const PlanDisplay = defineAsyncComponent(() => import('../PlanDisplay.vue'))
 const TokenChart = defineAsyncComponent(() => import('../TokenChart.vue'))
 const AgentTimer = defineAsyncComponent(() => import('../AgentTimer.vue'))
 const FileChangesSummaryCard = defineAsyncComponent(() => import('./FileChangesSummaryCard.vue'))
+const ChangesPanel = defineAsyncComponent(() => import('../ChangesPanel.vue'))
 
 const props = defineProps({
+  activeTab: {
+    type: String,
+    default: 'chat',
+  },
+  sessionChanges: {
+    type: Array,
+    default: () => [],
+  },
+  isDark: {
+    type: Boolean,
+    default: false,
+  },
+  terminalVisible: {
+    type: Boolean,
+    default: false,
+  },
   messages: {
     type: Array,
     default: () => [],
@@ -395,11 +465,12 @@ const props = defineProps({
   },
   renderMessageMarkdown: {
     type: Function,
-    default: m => m.content || '',
+    default: m => m?.content || '',
   },
 })
 
 const emit = defineEmits([
+  'update:activeTab',
   'dock-back',
   'update:agentInput',
   'update:agentMode',
@@ -427,7 +498,41 @@ const emit = defineEmits([
   'insert-editor',
   'review-changes',
   'open-file-diff',
+  'toggle-terminal',
 ])
+
+const currentTab = computed({
+  get: () => props.activeTab || 'chat',
+  set: val => emit('update:activeTab', val),
+})
+
+const centerTabs = [
+  { key: 'chat', label: '对话', icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' },
+  { key: 'usage', label: '用量', icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>' },
+  { key: 'review', label: '审查', icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="12" y1="8" x2="12" y2="16"/></svg>' },
+  { key: 'terminal', label: '终端', icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>' },
+]
+
+function handleTabClick(key) {
+  if (key === 'terminal') {
+    emit('toggle-terminal')
+  } else {
+    currentTab.value = key
+  }
+}
+
+function formatTime(timestamp) {
+  if (!timestamp) return ''
+  try {
+    const d = new Date(timestamp)
+    if (isNaN(d.getTime())) return String(timestamp).substring(0, 16).replace('T', ' ')
+    const hours = String(d.getHours()).padStart(2, '0')
+    const minutes = String(d.getMinutes()).padStart(2, '0')
+    return `${hours}:${minutes}`
+  } catch {
+    return ''
+  }
+}
 
 const scrollPaneRef = ref(null)
 const userScrolled = ref(false)
@@ -442,7 +547,6 @@ function onScroll(e) {
   showScrollTopBtn.value = el.scrollTop > 150
   userScrolled.value = distanceFromBottom > 80
 
-  // 精准计算当前视口中央所在的消息索引
   const items = el.querySelectorAll('.center-msg-item')
   if (items && items.length > 0) {
     const containerTop = el.getBoundingClientRect().top + 60
@@ -465,7 +569,7 @@ function scrollToBottomManual() {
   if (scrollPaneRef.value) {
     scrollPaneRef.value.scrollTo({
       top: scrollPaneRef.value.scrollHeight,
-      behavior: 'smooth'
+      behavior: 'smooth',
     })
   }
 }
@@ -475,7 +579,7 @@ function scrollToTopManual() {
   if (scrollPaneRef.value) {
     scrollPaneRef.value.scrollTo({
       top: 0,
-      behavior: 'smooth'
+      behavior: 'smooth',
     })
   }
 }
@@ -518,20 +622,111 @@ defineExpose({
   display: flex;
   flex-direction: column;
   background: #ffffff;
-  overflow: hidden;
   position: relative;
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-.center-ai-topbar {
-  height: 42px;
-  padding: 0 16px;
+.center-chat-tab-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  height: calc(100% - 40px);
+}
+
+.center-subtab-pane {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
   background: #ffffff;
-  border-bottom: 1px solid #e4e4e7;
+}
+
+.center-usage-pane {
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 24px 20px;
+}
+
+.center-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.usage-summary-card {
+  padding: 14px 16px;
+  background: #fafafa;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+}
+
+.stat-big-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #71717a;
+  text-transform: uppercase;
+}
+
+.stat-big-number {
+  font-size: 24px;
+  font-weight: 700;
+  color: #09090b;
+  font-family: 'JetBrains Mono', monospace;
+  margin: 4px 0;
+}
+
+.stat-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #71717a;
+}
+
+.stat-val {
+  font-size: 18px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 4px;
+}
+
+.stat-val.prompt {
+  color: #3b82f6;
+}
+
+.stat-val.completion {
+  color: #10b981;
+}
+
+.stat-sub {
+  font-size: 11px;
+  color: #a1a1aa;
+}
+
+.center-usage-chart-wrap {
+  background: #fafafa;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+/* 顶部状态栏与 Tab */
+.center-ai-topbar {
+  height: 40px;
+  min-height: 40px;
+  padding: 0 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-shrink: 0;
+  background: #ffffff;
+  border-bottom: 1px solid #e4e4e7;
   user-select: none;
+  z-index: 10;
 }
 
 .topbar-title-wrap {
@@ -545,200 +740,273 @@ defineExpose({
 }
 
 .topbar-title {
-  font-weight: 600;
   font-size: 13px;
+  font-weight: 600;
   color: #09090b;
 }
 
 .topbar-session-badge {
-  font-size: 11.5px;
-  color: #71717a;
-  padding: 1px 6px;
-  background: #f4f4f5;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1.5px 7px;
   border-radius: 4px;
+  background: #f4f4f5;
+  color: #52525b;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.btn-dockback {
-  height: 26px;
-  padding: 0 9px;
-  background: #fafafa;
-  border: 1px solid #e4e4e7;
-  border-radius: 6px;
-  font-size: 11.5px;
-  font-weight: 500;
-  color: #3f3f46;
-  cursor: pointer;
+/* 导航 Tabs */
+.center-ai-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.center-ai-tab-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-  transition: all 0.12s;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #71717a;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.center-ai-tab-btn:hover {
+  background: #f4f4f5;
+  color: #09090b;
+}
+
+.center-ai-tab-btn.active {
+  background: #f4f4f5;
+  border-color: #e4e4e7;
+  color: #09090b;
+  font-weight: 600;
+}
+
+.topbar-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-dockback {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
+  color: #3f3f46;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s ease;
 }
 
 .btn-dockback:hover {
-  background: #f4f4f5;
-  border-color: #d4d4d8;
-  color: #09090b;
+  background: #09090b;
+  color: #ffffff;
+  border-color: #09090b;
 }
 
-/* 独立滚动区 */
+/* 滚动区与内容 */
 .center-ai-scroll-pane {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 24px 200px 24px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  overflow-x: hidden;
+  padding: 16px 24px 140px 24px;
 }
 
 .center-ai-content-inner {
+  max-width: 960px;
+  margin: 0 auto;
   width: 100%;
-  max-width: 1040px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
 }
 
 .btn-load-older {
-  align-self: center;
+  display: block;
+  margin: 0 auto 16px;
   padding: 4px 12px;
-  background: #fafafa;
+  border-radius: 999px;
   border: 1px solid #e4e4e7;
-  border-radius: 6px;
-  font-size: 11.5px;
+  background: #ffffff;
   color: #71717a;
+  font-size: 11.5px;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.12s;
+  transition: all 0.12s ease;
 }
 
-.btn-load-older:hover {
+.btn-load-older:hover:not(:disabled) {
   background: #f4f4f5;
   color: #09090b;
 }
 
+/* 空状态 */
 .center-empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 48px 0;
+  padding: 60px 20px;
   text-align: center;
 }
 
 .empty-icon-box {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
   background: #f4f4f5;
   border: 1px solid #e4e4e7;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #09090b;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 
 .empty-greeting {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   color: #09090b;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .empty-subtext {
   font-size: 13px;
   color: #71717a;
-  max-width: 480px;
-  line-height: 1.5;
-  margin-bottom: 20px;
+  max-width: 500px;
+  line-height: 1.6;
+  margin-bottom: 24px;
 }
 
 .center-quick-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
   justify-content: center;
+  gap: 8px;
+  max-width: 600px;
 }
 
 .quick-chip-btn {
-  padding: 6px 12px;
-  background: #fafafa;
-  border: 1px solid #e4e4e7;
-  border-radius: 20px;
-  font-size: 12px;
-  color: #3f3f46;
-  cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: all 0.15s ease;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid #e4e4e7;
+  background: #ffffff;
+  color: #3f3f46;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s ease;
 }
 
 .quick-chip-btn:hover {
-  background: #f4f4f5;
-  border-color: #d4d4d8;
+  border-color: #09090b;
   color: #09090b;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  background: #f4f4f5;
 }
 
+/* 消息列表 */
 .center-message-list {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  width: 100%;
 }
 
-.center-msg-item.user {
-  display: flex;
-  justify-content: flex-end;
+.center-msg-item {
+  width: 100%;
 }
 
 .user-msg-bubble-wrap {
-  max-width: 80%;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }
 
 .user-msg-bubble {
-  background: #fafafa;
-  border: 1px solid #e4e4e7;
-  border-radius: 10px;
-  padding: 9px 13px;
-  font-size: 13px;
-  line-height: 1.55;
-  color: #09090b;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  max-width: 80%;
+  background: #18181b;
+  color: #ffffff;
+  padding: 10px 14px;
+  border-radius: 12px 12px 2px 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.user-msg-text {
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .user-msg-thumbnails {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 8px;
 }
 
 .user-msg-thumb-item {
-  width: 38px;
-  height: 38px;
+  width: 52px;
+  height: 52px;
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid #e4e4e7;
-  background: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .user-msg-thumb-item img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  display: block;
 }
 
-.user-msg-thumb-item:hover {
-  transform: scale(1.06);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+.user-msg-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.user-msg-footer .msg-time {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 10.5px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-weight: 500;
+}
+
+.user-msg-footer .msg-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.user-msg-footer .msg-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .assistant-msg-wrap {
@@ -761,38 +1029,6 @@ defineExpose({
   color: #09090b;
 }
 
-.user-msg-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 6px;
-}
-
-.user-msg-footer .msg-time {
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 10.5px;
-  font-family: 'Inter', -apple-system, sans-serif;
-}
-
-.user-msg-footer .msg-copy-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1.5px 6px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  color: #ffffff;
-  font-size: 10.5px;
-  cursor: pointer;
-  transition: all 0.12s ease;
-}
-
-.user-msg-footer .msg-copy-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
-
 .msg-actions-bar {
   display: flex;
   align-items: center;
@@ -804,6 +1040,7 @@ defineExpose({
   font-size: 11px;
   color: #71717a;
   font-family: 'Inter', -apple-system, sans-serif;
+  font-weight: 500;
 }
 
 .msg-action-btn {
@@ -816,6 +1053,7 @@ defineExpose({
   background: #ffffff;
   color: #3f3f46;
   font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.12s ease;
 }
@@ -843,7 +1081,7 @@ defineExpose({
   border-radius: 50%;
   background: #ffffff;
   border: 1px solid #e4e4e7;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -873,6 +1111,7 @@ defineExpose({
   z-index: 55;
   font-size: 11px;
   font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
 }
 
 .center-msg-navigator .nav-btn {
@@ -904,7 +1143,7 @@ defineExpose({
   padding: 0 4px;
 }
 
-/* 悬浮在底部的 Composer (Figure 4) */
+/* 悬浮在底部的 Composer */
 .center-composer-dock-pinned {
   position: absolute;
   bottom: 30px;
@@ -927,7 +1166,7 @@ defineExpose({
   pointer-events: auto;
 }
 
-/* 底部状态条 (Figure 4) */
+/* 底部状态条 */
 .center-status-strip {
   height: 24px;
   padding: 0 16px;
@@ -937,6 +1176,7 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
+  font-weight: 500;
   color: #71717a;
   flex-shrink: 0;
   user-select: none;
@@ -963,6 +1203,5 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
 }
 </style>
