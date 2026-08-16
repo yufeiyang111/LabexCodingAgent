@@ -1,5 +1,12 @@
 <template>
-  <div ref="indicator" class="context-usage-indicator" @mouseenter="showPopover" @mouseleave="expanded = false" @focusin="showPopover" @focusout="expanded = false">
+  <div
+    ref="indicator"
+    class="context-usage-indicator"
+    @mouseenter="showPopover"
+    @mouseleave="hidePopover"
+    @focusin="showPopover"
+    @focusout="hidePopover"
+  >
     <button class="context-ring" :class="tone" type="button" :aria-label="ariaLabel" @click="$emit('open')">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <circle class="track" cx="12" cy="12" r="9" />
@@ -7,7 +14,13 @@
       </svg>
     </button>
     <Transition name="context-popover">
-      <section v-if="expanded" class="context-popover" :class="{ 'opens-left': opensLeft }" role="status">
+      <section
+        v-if="expanded"
+        class="context-popover"
+        role="status"
+        @mouseenter="isHoveringPopover = true"
+        @mouseleave="isHoveringPopover = false; hidePopover()"
+      >
         <template v-if="hasSnapshot">
           <header><strong>当前上下文</strong><span>字符估算</span></header>
           <div class="budget-split"><span>静态 {{ format(budget.staticTokens) }}</span><span>可压缩 {{ format(budget.reducibleTokens) }}</span><span>输出预留 {{ format(budget.reservedOutputTokens) }}</span><span>有效压缩线 {{ format(budget.softLimitTokens) }}</span></div>
@@ -15,7 +28,10 @@
           <footer><span>{{ usedLabel }}<template v-if="softLimitLabel"> / {{ softLimitLabel }}</template> tokens</span><b>{{ percentLabel }}</b></footer>
           <p v-if="windowPercentLabel" class="window-usage">总窗口用量 {{ windowPercentLabel }}</p>
         </template>
-        <template v-else><strong>上下文尚未生成</strong><span>首次模型调用前会显示状态。</span></template>
+        <template v-else>
+          <header><strong>当前上下文</strong><span>就绪</span></header>
+          <p class="context-empty-hint">当前会话上下文将在首次发起模型调用后实时统计与展示。</p>
+        </template>
       </section>
     </Transition>
   </div>
@@ -29,11 +45,23 @@ const props = defineProps({ status: { type: Object, default: null } })
 defineEmits(['open'])
 const indicator = ref(null)
 const expanded = ref(false)
+const isHoveringPopover = ref(false)
+let hideTimer = null
+
 const showPopover = () => {
-  const bounds = indicator.value?.getBoundingClientRect()
-  opensLeft.value = Boolean(bounds && bounds.left > 300)
+  if (hideTimer) clearTimeout(hideTimer)
   expanded.value = true
 }
+
+const hidePopover = () => {
+  if (hideTimer) clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    if (!isHoveringPopover.value) {
+      expanded.value = false
+    }
+  }, 120)
+}
+
 const palette = {
   systemPrompt: '#5d86e8', toolDefinitions: '#68b9ee', projectContext: '#72c7b5', workspaceMemory: '#8bd98a',
   conversationMemory: '#6fc0a8', runRecoveryContext: '#d6c16c', compactionSummary: '#e58a6b',
@@ -72,5 +100,42 @@ const segments = computed(() => Object.entries(props.status?.categories || {}).m
 .context-ring svg { display:block; width:16px; height:16px; transform:rotate(-90deg); }
 circle { fill:none; stroke-width:3.25; }.track { stroke:#596170; }.progress { stroke:var(--context-tone, #5d86e8); stroke-linecap:round; filter:drop-shadow(0 0 2px color-mix(in srgb, var(--context-tone, #5d86e8) 55%, transparent)); transition:stroke-dashoffset .25s ease, stroke .25s ease; }
 .normal { --context-tone:#5d86e8; }.warning { --context-tone:#e6ad70; }.danger { --context-tone:#f0784d; }.neutral { --context-tone:#86909f; }
-.context-popover { position:absolute; z-index:10000; bottom:27px; left:-5px; width:286px; padding:14px; border:1px solid #48515e; border-radius:11px; background:#292e36; color:#edf0f4; box-shadow:0 18px 38px #000b; font-size:12px; }.context-popover::after { content:''; position:absolute; bottom:-6px; left:12px; width:11px; height:11px; border-right:1px solid #48515e; border-bottom:1px solid #48515e; background:#292e36; transform:rotate(45deg); }.context-popover.opens-left { right:-5px; left:auto; }.context-popover.opens-left::after { right:12px; left:auto; }.context-popover header,.context-popover footer { display:flex; justify-content:space-between; align-items:center; }.context-popover header { margin-bottom:10px; }.context-popover header span,.context-popover > span { color:#9ea8b5; font-size:11px; }.context-popover footer { margin-top:8px; color:#aab2bd; font-size:11px; }.context-popover footer b { color:#eef1f5; }.window-usage { margin:5px 0 0; color:#8f99a7; font-size:10px; text-align:right; }.budget-split { display:grid; grid-template-columns:1fr; gap:3px; margin-bottom:9px; color:#aeb7c3; font-size:11px; }.segment-bar { display:flex; height:6px; overflow:hidden; border-radius:4px; background:#535b69; }.segment-bar i { display:block; height:100%; }.context-popover-enter-active,.context-popover-leave-active { transition:opacity .15s ease, transform .15s ease; }.context-popover-enter-from,.context-popover-leave-to { opacity:0; transform:translateY(4px); }
+.context-popover {
+  position: absolute;
+  z-index: 100000;
+  bottom: calc(100% + 8px);
+  right: -6px;
+  width: 280px;
+  padding: 14px;
+  border: 1px solid #48515e;
+  border-radius: 11px;
+  background: #292e36;
+  color: #edf0f4;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+}
+.context-popover::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  right: 10px;
+  width: 11px;
+  height: 11px;
+  border-right: 1px solid #48515e;
+  border-bottom: 1px solid #48515e;
+  background: #292e36;
+  transform: rotate(45deg);
+}
+.context-popover header, .context-popover footer { display: flex; justify-content: space-between; align-items: center; }
+.context-popover header { margin-bottom: 10px; }
+.context-popover header span, .context-popover > span { color: #9ea8b5; font-size: 11px; }
+.context-popover footer { margin-top: 8px; color: #aab2bd; font-size: 11px; }
+.context-popover footer b { color: #eef1f5; }
+.window-usage { margin: 5px 0 0; color: #8f99a7; font-size: 10px; text-align: right; }
+.budget-split { display: grid; grid-template-columns: 1fr; gap: 3px; margin-bottom: 9px; color: #aeb7c3; font-size: 11px; }
+.segment-bar { display: flex; height: 6px; overflow: hidden; border-radius: 4px; background: #535b69; }
+.segment-bar i { display: block; height: 100%; }
+.context-empty-hint { margin: 6px 0 0; color: #9ea8b5; font-size: 11.5px; line-height: 1.5; }
+.context-popover-enter-active, .context-popover-leave-active { transition: opacity .15s ease, transform .15s ease; }
+.context-popover-enter-from, .context-popover-leave-to { opacity: 0; transform: translateY(4px); }
 </style>

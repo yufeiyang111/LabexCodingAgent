@@ -152,6 +152,43 @@ test('direct terminal stream hydrates a missing final reply from the authoritati
   assert.equal(assistant.isStreaming, false)
 })
 
+test('direct terminal reconciliation waits for the durable final instead of certifying a partial delta', async () => {
+  let requests = 0
+  const state = harness({
+    api: {
+      agentTask: async (_projectId, taskId) => {
+        requests++
+        return { data: {
+          taskId,
+          conversationId: 'conversation-a',
+          sessionId: 'session-a',
+          status: 'completed',
+          runMessages: requests === 1
+            ? []
+            : [{ messageId: 20, messageKey: 'assistant:final', sequence: 20, content: 'Durable reply after projection', status: 'completed' }],
+          parts: []
+        } }
+      }
+    }
+  })
+  const assistant = {
+    role: 'assistant',
+    taskId: 71,
+    conversationId: 'conversation-a',
+    runState: 'completed',
+    content: 'Partial direct final',
+    hasDurableFinal: false,
+    toolCalls: [],
+    timing: {}
+  }
+  state.messages.value.push(assistant)
+
+  assert.equal(await state.runtime.reconcileDirectTerminalTask(assistant), true)
+  assert.equal(requests, 2)
+  assert.equal(assistant.content, 'Durable reply after projection')
+  assert.equal(assistant.hasDurableFinal, true)
+})
+
 test('terminal recovery reconciles conversation history after the initial snapshot', async () => {
   const reconciliations = []
   let state

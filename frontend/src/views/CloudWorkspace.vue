@@ -452,6 +452,53 @@
                   </div>
                 </div>
               </TransitionGroup>
+
+              <!-- 浮动回顶/滚底按钮组 (侧边栏) -->
+              <div class="ai-scroll-fab-group">
+                <Transition name="fade-pop">
+                  <button
+                    v-if="showScrollTopBtn"
+                    class="ai-scroll-fab-btn"
+                    type="button"
+                    @click="scrollToTopManual"
+                    title="回到顶部"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+                  </button>
+                </Transition>
+                <Transition name="fade-pop">
+                  <button
+                    v-if="showScrollBtn"
+                    class="ai-scroll-fab-btn"
+                    type="button"
+                    @click="scrollToBottomManual"
+                    title="回到底部"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
+                </Transition>
+              </div>
+
+              <!-- 浮动消息上下导航 (侧边栏) -->
+              <div v-if="messages.length > 2" class="ai-msg-navigator">
+                <button
+                  class="nav-btn"
+                  :class="{ disabled: currentMessageIndex <= 0 }"
+                  @click="navigateMessage(-1)"
+                  title="上一条消息"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
+                <span class="nav-indicator">{{ currentMessageIndex + 1 }}/{{ messages.length }}</span>
+                <button
+                  class="nav-btn"
+                  :class="{ disabled: currentMessageIndex >= messages.length - 1 }"
+                  @click="navigateMessage(1)"
+                  title="下一条消息"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+              </div>
             </div>
 
             <!-- Composer Dock (Fixed at bottom) -->
@@ -754,6 +801,56 @@
     />
 
     <ModelConfigDialog :state="modelConfigDialogState" :actions="modelConfigDialogActions" />
+
+    <!-- 预设指令弹窗 (Slash Commands) -->
+    <Transition name="fade-pop">
+      <div v-if="showCommandPalette" class="command-palette-overlay" @click.self="closeCommandPalette">
+        <div class="command-palette-modal" @click.stop>
+          <div class="command-palette-header">
+            <div class="command-palette-title-wrap">
+              <span class="icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              </span>
+              <span class="command-palette-title">预设指令 (Slash Commands)</span>
+            </div>
+            <button type="button" class="btn-close-cmd" @click="closeCommandPalette">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          <div class="command-palette-search">
+            <input
+              ref="commandSearchRef"
+              v-model="commandSearch"
+              type="text"
+              class="command-search-input"
+              placeholder="搜索指令 (如 /goal, /plan, /test)..."
+              @keydown.down.prevent="navigateCommand(1)"
+              @keydown.up.prevent="navigateCommand(-1)"
+              @keydown.enter.prevent="selectFirstCommand"
+              @keydown.esc="closeCommandPalette"
+            />
+          </div>
+
+          <div ref="commandListRef" class="command-palette-list">
+            <div
+              v-for="(cmd, cIdx) in (filteredCommands.length > 0 ? filteredCommands : defaultSlashCommands)"
+              :key="cmd.name"
+              class="command-item"
+              :class="{ active: selectedCommandIndex === cIdx }"
+              @click="selectCommand(cmd)"
+            >
+              <div class="command-item-main">
+                <span class="command-name">/{{ cmd.name }}</span>
+                <span v-if="cmd.aliases?.length" class="command-aliases">({{ cmd.aliases.join(', ') }})</span>
+                <span v-if="cmd.category" class="command-category-tag">{{ cmd.category }}</span>
+              </div>
+              <div class="command-item-desc">{{ cmd.description }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -773,10 +870,7 @@ import ModelSelectorPopover from '@/components/cloud/composer/ModelSelectorPopov
 import ThinkingProcessBlock from '@/components/cloud/chat/ThinkingProcessBlock.vue'
 import FileIcon from '@/components/icons/FileIcon.vue'
 import SidebarNav from '@/components/sidebar/SidebarNav.vue'
-import FileExplorerPanel from '@/components/sidebar/FileExplorerPanel.vue'
-import ConversationPanel from '@/components/sidebar/ConversationPanel.vue'
 import AgentImageAttachments from '@/components/cloud/AgentImageAttachments.vue'
-import ToolCallCard from '@/components/cloud/ToolCallCard.vue'
 import ContextLimitBlockerCard from '@/components/cloud/ContextLimitBlockerCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import * as echarts from 'echarts'
@@ -824,6 +918,9 @@ const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/Chang
 const CompletionEvidenceCard = defineAsyncComponent(() => import('@/components/cloud/CompletionEvidenceCard.vue'))
 const PlanDisplay = defineAsyncComponent(() => import('@/components/cloud/PlanDisplay.vue'))
 const FileChangesSummaryCard = defineAsyncComponent(() => import('@/components/cloud/chat/FileChangesSummaryCard.vue'))
+const ToolCallCard = defineAsyncComponent(() => import('@/components/cloud/ToolCallCard.vue'))
+const FileExplorerPanel = defineAsyncComponent(() => import('@/components/sidebar/FileExplorerPanel.vue'))
+const ConversationPanel = defineAsyncComponent(() => import('@/components/sidebar/ConversationPanel.vue'))
 
 // Core project state
 const projectId = ref(null)
@@ -1104,10 +1201,19 @@ const showModelConfig = ref(false)
 
 // Command palette state
 const showCommandPalette = ref(false)
+const showScrollTopBtn = ref(false)
 const commandSearch = ref('')
 const selectedCommandIndex = ref(0)
 const commandSearchRef = ref(null)
 const commandListRef = ref(null)
+
+const defaultSlashCommands = [
+  { name: 'goal', description: '设定长时自主目标，不达成不停止', category: 'agent' },
+  { name: 'plan', description: '生成详细实施计划与任务分解', category: 'workflow' },
+  { name: 'browser', description: '调用浏览器执行自动化网络搜索与交互', category: 'tool' },
+  { name: 'review', description: '审查本次工作区的所有文件改动', category: 'code' },
+  { name: 'test', description: '执行项目测试并报告结果', category: 'test' },
+]
 
 // Slash command 目录由后端 typed metadata 投影，前端只持有可重建视图。
 const commandList = ref([])
@@ -2617,6 +2723,27 @@ function applySuggestion(suggestion) {
   sendMessage()
 }
 
+function scrollToTopManual() {
+  userScrolled.value = true
+  if (msgContainer.value) {
+    msgContainer.value.scrollTo({
+      top: 0,
+      behavior: 'smooth'
+    })
+  }
+}
+
+function scrollToBottomManual() {
+  userScrolled.value = false
+  showScrollBtn.value = false
+  if (msgContainer.value) {
+    msgContainer.value.scrollTo({
+      top: msgContainer.value.scrollHeight,
+      behavior: 'smooth'
+    })
+  }
+}
+
 // 消息导航
 function navigateMessage(direction) {
   const newIndex = currentMessageIndex.value + direction
@@ -2724,15 +2851,12 @@ function handleScroll() {
     void loadOlderHistory()
   }
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-  // 当距离底部超过 200px 时显示滚动按钮
-  showScrollBtn.value = distanceFromBottom > 200
-  // 如果用户向上滚动超过 100px，标记为手动滚动
-  if (distanceFromBottom > 100) {
+  showScrollBtn.value = distanceFromBottom > 150
+  showScrollTopBtn.value = scrollTop > 150
+  if (distanceFromBottom > 80) {
     userScrolled.value = true
   }
-  // 只在非导航状态下更新当前消息索引，避免干扰程序触发的滚动
   if (!isNavigating.value) {
-    // 使用防抖，避免频繁更新
     if (scrollTimeout) clearTimeout(scrollTimeout)
     scrollTimeout = setTimeout(() => {
       updateCurrentMessageIndex()

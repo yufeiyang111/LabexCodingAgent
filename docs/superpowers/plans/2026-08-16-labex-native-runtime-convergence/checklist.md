@@ -64,6 +64,8 @@
   - [x] C10：随后到达的实时 `OBSERVE` 复用并发送同一份 failure/execution 事实；即使 transport `success=true`，也不会把非零 shell exit 从 error 覆盖回 completed。history reducer 与 live timeline 都有回归。
   - [x] C11：非零 shell exit 的 transport completed 与真实 execution failure 已在工程进度、环境恢复分类、command failure guard、持久化 workspace memory、metrics 与运行日志中分离；模型工具协议仍保留完整输出。
   - [x] C12：恢复时的 `AgentRunProgressProjectionService` 也读取 Tool Part metadata；重启后 completed transport + `failureClass=non_zero_exit` 重放为 repair，last status 也显示 error。
+  - [x] C13：初始 POST SSE 漏收或只收到部分 final 时，前端按同一 task 的 durable Run Message / Part 补齐最终答复；transient SSE 断线也不会阻止随后 `FINAL` 事实落库。
+  - [x] C14：terminal task detail 与 outbox Part 投影短暂不同步时，直连页会有限重读同一 task；只有真实 `assistant:final` Run Message 才能把 partial delta 标记为 durable final。
 - [ ] 计划为 UI projection，不是 tool completion gate。
 - [ ] workspace change 仅刷新正确项目与 task 的文件树。
 

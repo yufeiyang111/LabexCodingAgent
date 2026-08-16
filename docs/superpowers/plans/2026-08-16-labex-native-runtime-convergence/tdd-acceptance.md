@@ -475,3 +475,56 @@ cd backend && mvn -q -Dtest=AgentRunExecutionProgressReducerTest,AgentRunProgres
 **已覆盖的可观察结果**：一条 completed shell Part 带 `failureClass=non_zero_exit` / `execution.status=failed` 后，恢复投影为 `stage=repair`、`lastStatus=error`，不会增加成功 verification；写入前的 unverified changes 也不会在重启后被失败 shell 误清除。
 
 **仍未关闭的风险**：本切片覆盖 durable Part replay，但尚未进行真实 worker 中断、JVM 重启、SSE reconnect 的端到端现场验收；旧历史没有结构化 metadata 时为兼容仍按其原 status 重放。
+
+### 切片 C13：初始 SSE 流漏收 FINAL 时从 durable transcript 恢复（2026-08-16）
+
+**Public seam**：初始 `POST /agent/stream` 的 Vue 消息状态、`AgentSsePublisher` 的 durable/transient 投影边界，以及 task detail 暴露的 `runMessages` / `parts`。
+
+**事故与 Red**：历史运行日志已经写出最终答复，但页面只显示工具/思考时间线，说明“日志写过”不能等价于浏览器已经收到并渲染 `FINAL`。旧的初始直连流只在 approval 等可恢复态转交订阅；普通 terminal stream 结束后不会回读同一 task 的 durable transcript。更糟的是，`streamFinal(...)` 先发送 `FINAL_DELTA`；当 primary SSE 客户端恰在该 transient 帧断开时，`AgentSsePublisher.sendTransient(...)` 会抛出 `IOException`，调用链可能在追加 durable `FINAL` 前退出。
+
+**Green**：`AgentSsePublisher` 将 transient 断线视为观察者关闭：标记连接关闭、继续执行、不把 IOException 传播到 Agent loop；随后 `FINAL` 仍通过既有 lifecycle/outbox 写入 durable Event，并由既有 Part 投影路径持久化。前端新增 `hasDurableFinal`，只在收到 durable `FINAL` 时置位；初始 stream 完成但尚未收到该标记时，以 task ID 请求同一会话、同一 session 的 task snapshot，并将 authoritative Run Message / Part 投影回当前 assistant message。即使只收到了一段 `FINAL_DELTA`，也会用完整 durable final 覆盖；不读取 `AgentTask.summary` 作为最终文本。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\session\processor.ts:248-293`：流式 reasoning/text 的结束会写回持久化 Part；以及 `D:\opencode\opencode-dev\packages\app\src\context\global-sync\event-reducer.ts:228-253`：UI 对 `message.part.updated` 按稳定 Part ID 幂等合并，而不是把连接存活当作事实。LabexAgent 适配为 Spring SSE + outbox + Vue direct-stream fallback；未复制实质源码。
+
+**Red → Green 证据**：
+
+```text
+# Red：主 SSE transient FINAL_DELTA 断线会抛出，阻断后续 durable FINAL
+cd backend && mvn -q -Dtest=AgentSsePublisherDurabilityTest test
+
+# Red：直连流已有局部文本却未收到 durable FINAL 时，不会从 task transcript 补齐
+cd frontend && node --test src/composables/useAgentTaskRuntime.test.mjs src/composables/useAgentEventTimeline.test.mjs src/composables/agentHistoryReducer.test.mjs
+
+# Green：断线不打断 durable final；live/history reducer 与直连 terminal hydration 一致
+cd backend && mvn -q -Dtest=AgentSsePublisherDurabilityTest test
+cd frontend && node --test src/composables/useAgentTaskRuntime.test.mjs src/composables/useAgentEventTimeline.test.mjs src/composables/agentHistoryReducer.test.mjs src/views/agentStreamIntegration.test.mjs
+```
+
+**已覆盖的可观察结果**：浏览器漏收 FINAL、只收到 partial delta、或 final 前 transient client disconnect 时，任务仍可写出 durable final；当前会话不会用 task summary 猜答复，而是从同一 task 的 Run Message/Part 恢复可见文本。已正常收到 FINAL 的会话不会多一次 task snapshot 查询；provider ERROR 仍优先显示既有安全错误，不被 stop final 覆盖。
+
+**仍未关闭的风险**：尚未完成真实浏览器断网/刷新/恢复的现场 smoke，也尚未证明所有 legacy terminal 分支都能产生相同 candidate/accepted/rejected Part 形态。本切片只关闭“最终答复已生成但直连页面为空或截断”的 durable delivery 链。
+
+### 切片 C14：terminal snapshot 滞后时不把 partial delta 认证为 FINAL（2026-08-16）
+
+**Public seam**：`useAgentTaskRuntime.reconcileDirectTerminalTask(...)`：初始直连 SSE 结束后，以同一 task 的 durable Run Message / Part 快照补齐当前 assistant message。
+
+**Red**：C13 的首次回读已经能补齐普通漏收，但 task 已终态而 outbox/Part projection 尚未可读时，快照可能暂时没有 `assistant:final`。旧实现却把页面上已有的任意非空文本（包括只收到的 `FINAL_DELTA`）写为 `hasDurableFinal=true`，从而把 provisional 文本误认证为 durable final，也不再进行后续恢复。
+
+**Green**：runtime 只根据 `runMessages` 中真实的 `messageKey=assistant:final` 设置 `hasDurableFinal`。缺少该 durable Message 时，按集中配置进行有限重读；同一 conversation/session/task 的最终快照一旦出现，才覆盖 partial delta。若重读窗口耗尽，则保持“尚未收到 durable final”，不使用当前内容或 `AgentTask.summary` 猜测成功。
+
+**本地参考与适配**：继续参考 `D:\opencode\opencode-dev\packages\opencode\src\session\processor.ts:248-293` 的流结束持久化 Part，以及 `D:\opencode\opencode-dev\packages\app\src\context\global-sync\event-reducer.ts:228-253` 对 durable Part 的幂等投影。LabexAgent 适配为 Vue 的 direct-stream 收尾读取；未复制实质源码。
+
+**Red → Green 证据**：
+
+```text
+# Red：第一次 terminal snapshot 还没有 final 时，旧实现只读一次并把 partial 文本认证为 durable
+cd frontend && node --test src/composables/useAgentTaskRuntime.test.mjs
+# 新增回归失败：expected task detail requests=2, actual=1
+
+# Green：有限重读后从同一 task 的 assistant:final 覆盖 partial，且只由 durable message 设置 marker
+cd frontend && node --test src/composables/useAgentTaskRuntime.test.mjs
+```
+
+**已覆盖的可观察结果**：FINAL 的 transient 文本不是最终事实。第一次 task detail 缺 final、下一次出现 final 时，用户看到的是完整 durable 答复而不是已被误认证的截断文本；task detail 永远属于当前 conversation/session，切换会话后立即停止恢复。
+
+**仍未关闭的风险**：有限重读不是无限重试；如果 durable projection 持续不可用，页面不会伪造成功，但仍需要既有刷新/事件订阅路径或服务端 outbox 修复来恢复。尚未完成真实浏览器断网/刷新现场 smoke。

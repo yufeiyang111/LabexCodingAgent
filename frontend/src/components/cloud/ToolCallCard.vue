@@ -321,11 +321,19 @@ const headerTitle = computed(() => {
     const statStr = (editStats.value.added > 0 || editStats.value.deleted > 0)
       ? ` (+${editStats.value.added} -${editStats.value.deleted} 行)`
       : ''
-    return `${props.call.name}: ${file}${statStr}`
+    return `${props.call.name || 'edit_file'}: ${file}${statStr}`
   }
   if (isShellTool.value) {
     const cmd = argsObj.value.command || argsObj.value.cmd || ''
-    return cmd ? `${props.call.name}: ${cmd}` : toolLabel.value
+    return cmd ? `运行: ${cmd}` : toolLabel.value
+  }
+  if (isReadTool.value) {
+    const file = argsObj.value.path || argsObj.value.file_path || argsObj.value.filename || ''
+    return file ? `读取: ${file}` : toolLabel.value
+  }
+  if (isSearchTool.value) {
+    const query = argsObj.value.pattern || argsObj.value.query || ''
+    return query ? `搜索: ${query}` : toolLabel.value
   }
   return toolLabel.value
 })

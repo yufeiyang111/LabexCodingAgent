@@ -2,6 +2,7 @@ import { attachDurableInteraction, resolveDurableInteraction } from './agentInte
 import { applyRunMessageSnapshot, applyRunPartSnapshot } from './agentRunPartState.js'
 import { createAgentRuntimeIndex } from './agentRuntimeStore.js'
 import { isTerminalAgentRunState, normalizeAgentRunState } from './agentRunState.js'
+import { DIRECT_TERMINAL_TRANSCRIPT_RECOVERY } from '../constants/agentTaskRuntime.js'
 import { nextTick as vueNextTick } from 'vue'
 
 export function isTerminalAgentTask(task) {
@@ -218,6 +219,11 @@ export function useAgentTaskRuntime(options) {
     }
   }
 
+  function hasDurableFinalMessage(task) {
+    return Array.isArray(task?.runMessages)
+      && task.runMessages.some(message => message?.messageKey === 'assistant:final')
+  }
+
   /**
    * 首次直连流已经结束、但浏览器漏收 FINAL 时，从同一 task 的 durable transcript 补齐可见答复。
    * 不读取 AgentTask.summary；最终文本仍只来自 Run Message / Part 投影。
@@ -229,32 +235,47 @@ export function useAgentTaskRuntime(options) {
     const conversationId = assistantMsg.conversationId || currentAgentSession.value?.conversationId
     if (!conversationId || !ownsConversation(conversationId)) return false
 
-    try {
-      const response = await api.agentTask(projectId.value, assistantMsg.taskId)
-      const task = response?.data
-      if (!task?.taskId || !isTerminalAgentTask(task) || task.conversationId !== conversationId) return false
-      if (currentAgentSession.value?.sessionId && task.sessionId
-          && task.sessionId !== currentAgentSession.value.sessionId) return false
+    for (let attempt = 0; attempt < DIRECT_TERMINAL_TRANSCRIPT_RECOVERY.maxAttempts; attempt++) {
+      try {
+        const response = await api.agentTask(projectId.value, assistantMsg.taskId)
+        if (!ownsConversation(conversationId)) return false
+        const task = response?.data
+        if (!task?.taskId || !isTerminalAgentTask(task) || task.conversationId !== conversationId) return false
+        if (currentAgentSession.value?.sessionId && task.sessionId
+            && task.sessionId !== currentAgentSession.value.sessionId) return false
 
-      assistantMsg.taskId = task.taskId
-      assistantMsg.conversationId = task.conversationId
-      reconcileRecoveredToolCalls(assistantMsg, task)
-      reconcileRecoveredCommandApproval(assistantMsg, task)
-      assistantMsg.runState = normalizeAgentRunState(task.status)
-      assistantMsg.isStreaming = false
-      assistantMsg.hasDurableFinal = Boolean(String(assistantMsg.content || '').trim())
-      if (assistantMsg.timing) assistantMsg.timing.taskId = task.taskId
-      stopMessageTimer(assistantMsg)
-      log('DIRECT_TERMINAL_TRANSCRIPT_HYDRATED', {
-        conversationId,
-        taskId: task.taskId,
-        status: task.status
-      })
-      return Boolean(String(assistantMsg.content || '').trim())
-    } catch (error) {
-      console.warn('Failed to hydrate a direct terminal Agent reply:', error)
-      return false
+        assistantMsg.taskId = task.taskId
+        assistantMsg.conversationId = task.conversationId
+        reconcileRecoveredToolCalls(assistantMsg, task)
+        reconcileRecoveredCommandApproval(assistantMsg, task)
+        assistantMsg.runState = normalizeAgentRunState(task.status)
+        assistantMsg.isStreaming = false
+        assistantMsg.hasDurableFinal = hasDurableFinalMessage(task)
+        if (assistantMsg.timing) assistantMsg.timing.taskId = task.taskId
+        stopMessageTimer(assistantMsg)
+        if (assistantMsg.hasDurableFinal) {
+          log('DIRECT_TERMINAL_TRANSCRIPT_HYDRATED', {
+            conversationId,
+            taskId: task.taskId,
+            status: task.status
+          })
+          return true
+        }
+        log('DIRECT_TERMINAL_TRANSCRIPT_NOT_READY', {
+          conversationId,
+          taskId: task.taskId,
+          status: task.status,
+          attempt: attempt + 1
+        })
+      } catch (error) {
+        console.warn('Failed to hydrate a direct terminal Agent reply:', error)
+        return false
+      }
+      if (attempt + 1 < DIRECT_TERMINAL_TRANSCRIPT_RECOVERY.maxAttempts) {
+        await wait(DIRECT_TERMINAL_TRANSCRIPT_RECOVERY.retryDelayMs)
+      }
     }
+    return false
   }
 
   async function recoverActiveTaskForConversation(conversationId) {

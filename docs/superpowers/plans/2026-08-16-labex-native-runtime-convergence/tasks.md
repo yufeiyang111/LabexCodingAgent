@@ -8,7 +8,7 @@
 - [x] 写入本实施计划与 TDD 验收文档。
 - [x] 记录开始实施前的 `git status --short` 与相关 diff，不覆盖既有未提交改动。
 - [ ] 为三次删除 Skill 未真实落盘的日志建立黑盒回归：模型结论必须与真实文件系统和 tool result 一致。
-- [ ] 为最终答复已生成但前端未显示建立 replay 回归：durable final 在刷新后可见。
+- [x] 为最终答复已生成但前端未显示建立 replay 回归：初始直连流漏收或截断 final 时，按同一 task 的 durable transcript 补齐，刷新/订阅路径继续幂等。
 - [ ] 为工具失败后模型声称完成建立回归：final 中可说明失败，但 verification 不能变成功。
 - [ ] 为连续无进展循环建立回归：停止原因、最后 Part 状态和用户可见提示一致。
 - [ ] 运行现有聚焦测试，记录测试名、结果与任何已有失败，不在本阶段修复无关问题。
@@ -155,6 +155,8 @@
 4. **MCP schema 保真**：`McpToolAdapter` 不再把所有 MCP 参数扁平化为 string，而是保留 server 提供的 JSON Schema（含 integer、array、nested object、required、additionalProperties）。这修复了模型 schema 与参数校验契约不一致的高频失败源。
 5. **native MCP task-scoped exposure**：`ToolExposurePlanner` 对 native profile 禁止读取单例 `ToolRegistry.dynamicTools`；只把当前 student 的可用 MCP 定义附加到本次 request，并把执行 binding 存入 `AgentContext` 的 scoped map。`TOOL_EXPOSURE` durable Event/Part 保存无认证信息的 schema、MCP 路由和 fingerprint；恢复优先重建同一快照，不重新发现工具。工具 schema 中的显式 `null` 也会在 Event 与 outbox 持久化时保留。legacy 的全局动态工具兼容路径不变。
 6. **仍未关闭的边界**：尚未完成真实 MCP 断线/恢复现场 smoke、LSP 基于语言 client 的细粒度 gating，以及 Web/Image 的全部可用性组合验收；这些不能因本轮 unit/runtime wiring 通过而标记为阶段 E 完成。
+7. **直接流最终答复恢复**：`FINAL` 仍先以 durable Event/Part 写入；初始 POST 流结束时，如果 UI 仅收到 provisional `FINAL_DELTA` 或完全漏收 FINAL，则只以同一 task 的 Run Message / Part 补齐答复，不把 `AgentTask.summary` 当作 transcript 事实。一次 transient SSE 写失败只关闭该观察者，不再抛回执行循环，因此失败/取消路径随后仍能提交 durable `FINAL`。
+8. **终态投影短暂滞后**：直连收尾第一次读取 task detail 时，如果还没有 `assistant:final` Run Message，不能因为页面已有 partial delta 就把它认证为 durable final。仅对同一 task 做有限重读，直到 authoritative final 出现；超出窗口仍保持未认证，交给既有刷新/订阅恢复，而不把猜测写成事实。
 
 **本地参考与适配说明**：
 
