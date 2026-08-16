@@ -1,0 +1,228 @@
+<template>
+  <div
+    class="clean-thinking-card"
+    :class="{
+      expanded: isExpanded,
+      'is-streaming': isStreaming
+    }"
+  >
+    <div class="thinking-header-bar" @click="toggleExpand">
+      <div class="thinking-header-left">
+        <span class="icon thinking-chevron" :class="{ rotated: isExpanded }">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </span>
+        <span
+          v-if="isStreaming"
+          class="shimmer-text-stream thinking-preview-title"
+        >
+          {{ streamingTitle || '正在深度思考...' }}
+        </span>
+        <span
+          v-else
+          class="thinking-preview-title"
+        >
+          {{ collapsedTitle || '思考过程' }}
+        </span>
+      </div>
+      <span v-if="elapsedText" class="thinking-meta-time">{{ elapsedText }}</span>
+    </div>
+
+    <!-- 平滑风琴折叠展开 -->
+    <div class="smooth-accordion" :class="{ open: isExpanded }">
+      <div class="smooth-accordion-inner">
+        <slot>
+          <div
+            class="thinking-content-body markdown-rendered"
+            v-html="renderedContent"
+            @click="emit('markdown-click', $event)"
+          ></div>
+        </slot>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, watch } from 'vue'
+
+const props = defineProps({
+  content: {
+    type: String,
+    default: '',
+  },
+  renderedContent: {
+    type: String,
+    default: '',
+  },
+  summary: {
+    type: String,
+    default: '',
+  },
+  isStreaming: {
+    type: Boolean,
+    default: false,
+  },
+  elapsedSeconds: {
+    type: [Number, String],
+    default: null,
+  },
+  defaultOpen: {
+    type: Boolean,
+    default: false,
+  },
+})
+
+const emit = defineEmits(['markdown-click', 'toggle'])
+
+const isExpanded = ref(props.defaultOpen)
+
+watch(
+  () => props.isStreaming,
+  newVal => {
+    if (newVal) {
+      isExpanded.value = true
+    }
+  }
+)
+
+const streamingTitle = computed(() => {
+  if (props.content) {
+    const clean = props.content.replace(/[#*`_]/g, '').trim()
+    if (clean) return clean.slice(0, 45) + (clean.length > 45 ? '...' : '')
+  }
+  return '正在深度思考...'
+})
+
+const collapsedTitle = computed(() => {
+  if (props.summary) return props.summary
+  if (props.content) {
+    const clean = props.content.replace(/[#*`_]/g, '').trim()
+    if (clean) return clean.slice(0, 50) + (clean.length > 50 ? '...' : '')
+  }
+  return '思考过程'
+})
+
+const elapsedText = computed(() => {
+  if (props.elapsedSeconds !== null && props.elapsedSeconds !== undefined) {
+    return `${props.elapsedSeconds}s`
+  }
+  return ''
+})
+
+function toggleExpand() {
+  isExpanded.value = !isExpanded.value
+  emit('toggle', isExpanded.value)
+}
+</script>
+
+<style scoped>
+.clean-thinking-card {
+  background: #fafafa;
+  border: 1px solid #e4e4e7;
+  border-radius: 7px;
+  padding: 7px 11px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  transition: all 0.16s ease;
+  user-select: none;
+}
+
+.clean-thinking-card:hover {
+  border-color: #d4d4d8;
+  background: #f4f4f5;
+}
+
+.clean-thinking-card.is-streaming {
+  border-color: #d4d4d8;
+}
+
+.thinking-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.thinking-header-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.thinking-preview-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #3f3f46;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thinking-chevron {
+  color: #71717a;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.thinking-chevron.rotated {
+  transform: rotate(90deg);
+}
+
+.thinking-meta-time {
+  font-size: 11px;
+  color: #a1a1aa;
+  font-family: 'JetBrains Mono', monospace;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+/* 流光渐变动画 */
+@keyframes shimmer-sweep {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer-text-stream {
+  background: linear-gradient(90deg, #18181b 0%, #71717a 35%, #a1a1aa 50%, #71717a 65%, #18181b 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-sweep 2.2s infinite linear;
+  font-weight: 500;
+  display: inline-block;
+}
+
+/* 平滑风琴动画 */
+.smooth-accordion {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.22s ease;
+  opacity: 0;
+}
+
+.smooth-accordion.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.smooth-accordion-inner {
+  overflow: hidden;
+}
+
+.thinking-content-body {
+  padding-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #3f3f46;
+  font-family: 'JetBrains Mono', monospace;
+  user-select: text;
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+</style>

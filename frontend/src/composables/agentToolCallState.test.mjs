@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { applyStructuredExecutionStatus, upsertDurableToolCallState, visibleToolCallStatus } from './agentToolCallState.js'
+import { applyStructuredExecutionOutcome, applyStructuredExecutionStatus, upsertDurableToolCallState, visibleToolCallStatus } from './agentToolCallState.js'
 
 test('durable tool state merges into one idempotent tool card', () => {
   const message = { toolCalls: [], _nextOrder: 0 }
@@ -67,6 +67,18 @@ test('structured executionStatus leaves ordinary successes untouched', () => {
   assert.equal(call.durableStatus, 'completed')
 })
 
+test('structured execution outcome keeps a transport-completed nonzero exit visibly failed', () => {
+  const call = { toolCallId: 'shell-1', status: 'completed', durableStatus: 'completed' }
+  applyStructuredExecutionOutcome(call, {
+    failureClass: 'non_zero_exit',
+    execution: { status: 'failed', exitCode: 2, workdir: 'frontend' }
+  })
+
+  assert.equal(call.status, 'error')
+  assert.equal(call.durableStatus, 'completed')
+  assert.equal(call.failureClass, 'non_zero_exit')
+  assert.deepEqual(call.executionResult, { status: 'failed', exitCode: 2, workdir: 'frontend' })
+})
 test('durable waiting_approval state preserves a permission request for the approval card', () => {
   const message = { toolCalls: [], _nextOrder: 0 }
   upsertDurableToolCallState(message, {

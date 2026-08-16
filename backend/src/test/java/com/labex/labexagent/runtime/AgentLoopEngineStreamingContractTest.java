@@ -126,6 +126,17 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
+    void sendsTheSameStructuredFailureAndExecutionEvidenceInLiveObservations() {
+        // OBSERVE 是实时投影，不能因 transport success=true 而省略实际执行失败事实；
+        // 前端可在刷新前后使用同一份 durable metadata 渲染结果。
+        assertTrue(source.contains("Map<String, Object> durableMetadata = r.durableResultMetadata();"));
+        assertTrue(source.contains("Object execution = durableMetadata.get(\"execution\");"));
+        assertTrue(source.contains("o.put(\"execution\", execution);"));
+        assertTrue(source.contains("Object failureClass = durableMetadata.get(\"failureClass\");"));
+        assertTrue(source.contains("o.put(\"failureClass\", failureClass);"));
+    }
+
+    @Test
     void preservesStructuredToolEvidenceWhenLegacyTurnsReachTerminalPartStates() {
         // legacy 对话仍可能继续执行；不能在这里退化为 String detail，
         // 否则 workspace identity、mutation 和 verification 都会从 durable Part 中丢失。

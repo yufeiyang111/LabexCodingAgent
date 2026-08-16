@@ -3160,8 +3160,17 @@ public class AgentLoopEngine {
         if (r.getExecutionDurationMs() != null) {
             o.put("executionDurationMs", r.getExecutionDurationMs());
         }
-        Object workspaceMutation = r.durableResultMetadata().get("workspaceMutation");
-        Object workspaceVerification = r.durableResultMetadata().get("workspaceVerification");
+        Map<String, Object> durableMetadata = r.durableResultMetadata();
+        Object execution = durableMetadata.get("execution");
+        if (execution != null) {
+            o.put("execution", execution);
+        }
+        Object failureClass = durableMetadata.get("failureClass");
+        if (failureClass != null) {
+            o.put("failureClass", failureClass);
+        }
+        Object workspaceMutation = durableMetadata.get("workspaceMutation");
+        Object workspaceVerification = durableMetadata.get("workspaceVerification");
         if (!r.getWorkspaceIdentity().isEmpty()) {
             o.put("workspaceIdentity", r.getWorkspaceIdentity());
         }

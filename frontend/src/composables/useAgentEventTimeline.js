@@ -1,6 +1,6 @@
 import { createInternalReasoningBlockStreamFilter, createInternalReasoningTagStreamFilter, stripInternalReasoningBlocks, stripInternalReasoningTags } from '../utils/agentMarkdown.js'
 import { isWaitingInputMisNarration } from '../utils/agentThinking.js'
-import { applyStructuredExecutionStatus, projectToolResultStatus, upsertDurableToolCallState } from './agentToolCallState.js'
+import { applyStructuredExecutionOutcome, projectToolResultStatus, upsertDurableToolCallState } from './agentToolCallState.js'
 import { attachDurableInteraction, resolveDurableInteraction } from './agentInteractionProjection.js'
 import { applyTokenUsageEvent } from './cacheTelemetryStatus.js'
 import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunState.js'
@@ -169,7 +169,13 @@ export function useAgentEventTimeline(options) {
           observed.verificationStatus = resultProjection.verificationStatus
           observed.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
             truncated: data.modelProjectionTruncated === true }
-          applyStructuredExecutionStatus(observed, data.executionStatus)
+          applyStructuredExecutionOutcome(observed, {
+            failureClass: data.failureClass,
+            execution: data.execution,
+            executionStatus: data.executionStatus,
+            executionExitCode: data.executionExitCode,
+            executionDurationMs: data.executionDurationMs
+          })
           if (data.diff) {
             observed.hasDiff = true
             trackFileChange(data, observed)

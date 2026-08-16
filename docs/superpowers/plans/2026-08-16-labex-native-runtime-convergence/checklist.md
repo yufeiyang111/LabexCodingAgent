@@ -61,6 +61,7 @@
 - [x] native final 在 reducer replay / 流式事件回放后仍显示（真实浏览器 smoke 仍待执行）。
 - [ ] tool 失败会在 UI 与 verification 中保留。
   - [x] C9：durable Tool Part / `TOOL_CALL_STATE` 的 `metadata.failureClass` 和 `execution` 已在 reducer 中投影；完成 transport 的非零 shell exit 显示为错误而非绿色完成，native `shell` 卡片可显示命令。真实浏览器 smoke 仍待做。
+  - [x] C10：随后到达的实时 `OBSERVE` 复用并发送同一份 failure/execution 事实；即使 transport `success=true`，也不会把非零 shell exit 从 error 覆盖回 completed。history reducer 与 live timeline 都有回归。
 - [ ] 计划为 UI projection，不是 tool completion gate。
 - [ ] workspace change 仅刷新正确项目与 task 的文件树。
 

@@ -79,6 +79,7 @@
 - [x] 将 native shell 统一到一个实现，legacy duplicate tool 保留但不对 native schema 暴露：native build 仅暴露 `shell`（`RunCommandTool`）；`bash`、`run_command`、`run_tests`、`execute_code` 仅保留 legacy/兼容执行路径。
 - [x] 明确 native `write_file` 与 `apply_patch` 的互斥职责，`edit_file` 仅做 legacy compatibility：新 native build 仅暴露 `write_file`（单文件创建/全量替换）与 `apply_patch`（上下文替换/删除），历史 exposure snapshot 仍按原 schema 回放。
 - [x] 扩展 tool Part metadata 写入 exit status、error class、target、mutation、verification：`ToolResult` 的 durable metadata 已包含执行状态/退出码、稳定 `failureClass`、安全相对 workdir/artifact path，以及既有 workspace identity/mutation/verification；Journal 原样写入 Tool Part/Event。
+  - [x] 实时 `OBSERVE` 投影复用同一份 `failureClass` / `execution` durable metadata，不能由 transport `success=true` 覆盖非零 shell exit 的用户可见失败状态。
 - [ ] 成功 mutation 后发布 durable `WORKSPACE_CHANGED`。
 
 ### 绿测与验收

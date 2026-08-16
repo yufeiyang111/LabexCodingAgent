@@ -79,8 +79,9 @@ export function applyStructuredExecutionStatus(call, executionStatus = '') {
   const normalized = String(executionStatus).toLowerCase()
   call.executionStatus = normalized
   switch (normalized) {
+    case 'failed':
     case 'timed_out':
-      call.durableStatus = 'timed_out'
+      if (normalized === 'timed_out') call.durableStatus = 'timed_out'
       call.status = 'error'
       break
     case 'cancelled':
@@ -93,6 +94,31 @@ export function applyStructuredExecutionStatus(call, executionStatus = '') {
       break
     default:
       break
+  }
+  return call
+}
+
+/**
+ * 将 durable Tool Part 与实时 OBSERVE 的同一份结构化执行事实投影到工具卡，
+ * 不依赖 transport success 或输出文本推断命令是否真正成功。
+ */
+export function applyStructuredExecutionOutcome(call, outcome = {}) {
+  if (!call || !outcome || typeof outcome !== 'object') return call
+  const execution = { ...structuredMetadata(outcome.execution) }
+  if (!execution.status && outcome.executionStatus) execution.status = outcome.executionStatus
+  if (execution.exitCode == null && outcome.executionExitCode != null) execution.exitCode = outcome.executionExitCode
+  if (execution.durationMs == null && outcome.executionDurationMs != null) execution.durationMs = outcome.executionDurationMs
+  if (Object.keys(execution).length > 0) {
+    call.executionResult = { ...(call.executionResult || {}), ...execution }
+  }
+
+  const failureClass = typeof outcome.failureClass === 'string' ? outcome.failureClass.trim().toLowerCase() : ''
+  if (failureClass) call.failureClass = failureClass
+  applyStructuredExecutionStatus(call, execution.status || outcome.executionStatus)
+
+  if (!['waiting_user', 'waiting_approval'].includes(call.status)) {
+    const failureStatus = visibleFailureStatus(call.failureClass)
+    if (failureStatus) call.status = failureStatus
   }
   return call
 }
@@ -122,12 +148,6 @@ export function upsertDurableToolCallState(message, state = {}) {
   call.args = state.arguments || call.args || {}
   call.durableStatus = state.status || call.durableStatus || 'pending'
   const metadata = structuredMetadata(state.metadata)
-  const failureClass = typeof metadata.failureClass === 'string' ? metadata.failureClass.trim() : ''
-  if (failureClass) call.failureClass = failureClass
-  if (metadata.execution && typeof metadata.execution === 'object' && !Array.isArray(metadata.execution)) {
-    call.executionResult = { ...metadata.execution }
-    if (metadata.execution.status) call.executionStatus = String(metadata.execution.status).toLowerCase()
-  }
   if (state.detail !== undefined && state.detail !== null) call.result = state.detail
   if (state.outputTruncated) {
     call.outputTruncated = true
@@ -155,6 +175,10 @@ export function upsertDurableToolCallState(message, state = {}) {
   } else {
     call.status = visibleToolCallStatus(call.durableStatus, call.result, call.failureClass)
   }
+  applyStructuredExecutionOutcome(call, {
+    failureClass: metadata.failureClass,
+    execution: metadata.execution
+  })
   if (call.durableStatus === 'environment_blocked') call.environmentBlocker = state
   return call
 }

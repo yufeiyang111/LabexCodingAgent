@@ -2392,18 +2392,17 @@
   margin: 14px 0 8px;
 }
 .markdown-rendered h2 {
-  font-size: 16.5px;
-  margin: 18px 0 10px;
-  padding: 6px 0 6px 12px;
+  font-size: 16px;
+  font-weight: 600;
+  margin: 16px 0 8px;
+  padding: 4px 0;
   border-bottom: 1px solid var(--ai-border-strong);
-  border-left: 3px solid var(--ai-accent);
-  background: linear-gradient(90deg, var(--ai-accent-bg) 0%, transparent 70%);
+  color: var(--ai-text);
 }
 .markdown-rendered h3 {
-  font-size: 14.5px;
-  margin: 14px 0 6px;
-  padding-left: 10px;
-  border-left: 3px solid var(--ai-border-strong);
+  font-size: 14px;
+  font-weight: 600;
+  margin: 12px 0 6px;
   color: var(--ai-text);
 }
 .markdown-rendered ul,
@@ -2836,30 +2835,23 @@
   gap: 6px;
   margin-bottom: 6px;
   color: var(--ai-text);
+  margin-bottom: 4px;
+  color: var(--ai-text);
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  font-weight: 600;
 }
-.markdown-rendered .msg-callout-title::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.85;
-}
-.markdown-rendered .msg-callout-note { border-left-color: #3b82f6; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #3b82f6 14%); }
-.markdown-rendered .msg-callout-note .msg-callout-title { color: #2563eb; }
-.markdown-rendered .msg-callout-tip { border-left-color: #10b981; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #10b981 14%); }
-.markdown-rendered .msg-callout-tip .msg-callout-title { color: #047857; }
-.markdown-rendered .msg-callout-success { border-left-color: #22c55e; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #22c55e 14%); }
-.markdown-rendered .msg-callout-success .msg-callout-title { color: #15803d; }
-.markdown-rendered .msg-callout-warning { border-left-color: #f59e0b; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #f59e0b 14%); }
-.markdown-rendered .msg-callout-warning .msg-callout-title { color: #b45309; }
-.markdown-rendered .msg-callout-important { border-left-color: #8b5cf6; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #8b5cf6 14%); }
-.markdown-rendered .msg-callout-important .msg-callout-title { color: #6d28d9; }
-.markdown-rendered .msg-callout-error { border-left-color: #ef4444; background: color-mix(in srgb, var(--ai-bg-secondary) 86%, #ef4444 14%); }
-.markdown-rendered .msg-callout-error .msg-callout-title { color: #b91c1c; }
+.markdown-rendered .msg-callout-note { border-color: #e4e4e7; background: #fafafa; }
+.markdown-rendered .msg-callout-note .msg-callout-title { color: #09090b; }
+.markdown-rendered .msg-callout-tip { border-color: #e4e4e7; background: #fafafa; }
+.markdown-rendered .msg-callout-tip .msg-callout-title { color: #09090b; }
+.markdown-rendered .msg-callout-success { border-color: #e4e4e7; background: #fafafa; }
+.markdown-rendered .msg-callout-success .msg-callout-title { color: #09090b; }
+.markdown-rendered .msg-callout-warning { border-color: #e4e4e7; background: #fafafa; }
+.markdown-rendered .msg-callout-warning .msg-callout-title { color: #09090b; }
+.markdown-rendered .msg-callout-important { border-color: #e4e4e7; background: #fafafa; }
+.markdown-rendered .msg-callout-important .msg-callout-title { color: #09090b; }
+.markdown-rendered .msg-callout-error { border-color: #fca5a5; background: #fef2f2; }
+.markdown-rendered .msg-callout-error .msg-callout-title { color: #991b1b; }
 .markdown-rendered .msg-callout p:last-child { margin-bottom: 0; }
 
 /* Modern thinking timeline */

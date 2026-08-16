@@ -1,29 +1,33 @@
 <template>
   <div class="ws-shell" :class="{ 'ws-dark': aiDarkTheme }">
-    <header class="ws-topbar">
-      <button class="ws-btn ws-btn-ghost" @click="goBack">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-        <span>返回</span>
-      </button>
-      <div class="ws-title-section">
-        <AppIcon :size="26" compact />
-        <span class="ws-title">{{ projectName || '工作空间' }}</span>
-      </div>
-      <div class="ws-topbar-right">
-        <button class="ws-btn ws-btn-outline ws-btn-sm ws-theme-settings-btn" @click="themeStore.openSettings()" title="主题设置">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    <!-- 1. 顶部固定导航栏 -->
+    <WorkspaceTopBar
+      :project-name="projectName"
+      :active-path="activePath"
+      :file-content-dirty="fileContentDirty"
+      :saving-file="savingFile"
+      :explorer-visible="explorerVisible"
+      :terminal-visible="terminalPanelVisible"
+      :ai-panel-visible="!aiCollapsed && !isAgentInCenter"
+      @go-back="goBack"
+      @toggle-explorer="explorerVisible = !explorerVisible"
+      @toggle-terminal="toggleTerminalPanel"
+      @toggle-ai-panel="toggleAiPanelLayout"
+      @open-theme-settings="themeStore.openSettings()"
+      @export-project="exportProject"
+      @save-file="saveFile"
+    >
+      <template #theme-button>
+        <button class="ws-btn ws-btn-outline ws-btn-sm ws-theme-settings-btn" title="主题设置" @click="themeStore.openSettings()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           <span>主题</span>
         </button>
-        <button class="ws-btn ws-btn-outline ws-btn-sm" @click="exportProject" title="导出项目">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span>导出</span>
-        </button>
-        <span v-if="fileContentDirty" class="ws-unsaved">未保存</span>
-        <button v-if="activePath" class="ws-btn ws-btn-outline ws-btn-sm" @click="saveFile" :disabled="savingFile">{{ savingFile ? '保存中...' : '保存' }}</button>
-      </div>
-    </header>
+      </template>
+    </WorkspaceTopBar>
+
     <div class="ws-body">
-      <aside class="ws-sidebar" :style="{ width: `${sidebarWidth}px` }">
+      <!-- 2. 左侧资源管理器 / 会话列表面板 -->
+      <aside v-show="explorerVisible" class="ws-sidebar" :style="{ width: `${sidebarWidth}px` }">
         <SidebarNav :view="sidebarView" @change="sidebarView = $event" />
         <FileExplorerPanel
           v-show="sidebarView === 'files'"
@@ -64,17 +68,92 @@
           @create="createNewSession"
         />
       </aside>
-      <div class="ws-resize-handle" @pointerdown="startSidebarResize"></div>
-      <div ref="workspaceCenterRef" class="ws-center">
-      <main class="ws-editor">
-        <div v-if="openFiles.length === 0" class="ws-editor-empty">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-          <p>选择文件开始编辑</p>
-          <p class="ws-editor-hint">从左侧文件树中选择一个文件</p>
+
+      <!-- 左侧栏拖拽拉伸条 -->
+      <div v-if="explorerVisible" class="ws-resize-handle" @pointerdown="startSidebarResize"></div>
+
+      <!-- 3. 中间工作区：支持中心 AI 工作空间 / 代码编辑器 / 底部终端 -->
+      <div
+        ref="workspaceCenterRef"
+        class="ws-center"
+        :class="{ 'is-drop-target': centerDropOverlayActive }"
+        @dragover.prevent="onCenterDragOver"
+        @dragleave="onCenterDragLeave"
+        @drop.prevent="onCenterDrop"
+      >
+        <!-- 拖放 AI 放大提示遮罩 -->
+        <div v-if="centerDropOverlayActive" class="center-drop-zone-overlay">
+          <div class="drop-hint-box">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <span>释放以在中心区域放大 LabexAgent</span>
+          </div>
         </div>
-        <template v-else>
-          <div class="ws-editor-tabs">
-            <div v-for="(f, idx) in openFiles" :key="f.path" class="ws-tab" :class="{ active: idx === activeTabIndex }" @click="switchTab(idx)" @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeFile(idx) } }">
+
+        <!-- 中部 AI 放大主工作区 -->
+        <CenterAiWorkspace
+          v-if="isAgentInCenter"
+          :messages="messages"
+          v-model:agent-input="agentInput"
+          v-model:agent-mode="agentMode"
+          :current-model="currentModelName"
+          :thinking-level="thinkingLevel"
+          :available-models="modelConfigs"
+          :agent-loading="agentLoading"
+          :current-session-name="currentSessionName"
+          :has-older-messages="hasOlderMessages"
+          :loading-older-messages="loadingOlderMessages"
+          :show-thinking-process="showThinkingProcess"
+          :supports-images="currentModelSupportsImages"
+          :selected-code="selectedCode"
+          :pending-images="pendingImageAttachments"
+          :context-usage-status="contextUsageStatus"
+          :token-usage="tokenUsage"
+          :quick-chips="quickChips"
+          :active-path="activePath"
+          :get-merged-items="getMergedItems"
+          :render-thinking-markdown="renderThinkingMarkdown"
+          :render-message-markdown="renderMessageMarkdown"
+          @dock-back="dockAiBackToSidebar"
+          @mode-change="switchMode"
+          @send="sendMessage"
+          @stop="stopGeneration"
+          @trigger-commands="showCommandMenu"
+          @trigger-at-file="atFile"
+          @optimize-prompt="optimizePrompt"
+          @clear-selected-code="selectedCode = ''"
+          @preview-image="openImagePreview"
+          @remove-image="removePendingImage"
+          @image-files="handleDroppedImageFiles"
+          @open-context-dialog="openContextUsageDialog"
+          @change-model="handleSelectModelByName"
+          @change-thinking="handleChangeThinkingLevel"
+          @open-model-config="showModelConfig = true"
+          @load-older-history="loadOlderHistory"
+          @apply-chip="prompt => { agentInput = prompt; sendMessage() }"
+          @markdown-click="handleMarkdownClick"
+          @permission="handlePermissionDecision"
+          @command-approval="handleCommandApproval"
+          @question="handleQuestionReply"
+          @copy-message="copyMessage"
+          @insert-editor="insertToEditor"
+        />
+
+        <!-- 代码编辑器模式 -->
+        <main v-else class="ws-editor">
+          <!-- 标签页条 (支持拖拽调序 + LabexAgent 快速切换) -->
+          <div v-if="openFiles.length > 0 || isAgentInCenter" class="ws-editor-tabs">
+            <div
+              v-for="(f, idx) in openFiles"
+              :key="f.path"
+              class="ws-tab"
+              :class="{ active: idx === activeTabIndex }"
+              draggable="true"
+              @dragstart="onTabDragStart($event, idx)"
+              @dragover.prevent="onTabDragOver($event, idx)"
+              @drop.prevent="onTabDrop($event, idx)"
+              @click="switchTab(idx)"
+              @mouseup="e => { if (e.button === 1) { e.preventDefault(); closeFile(idx) } }"
+            >
               <FileIcon :name="f.name" :size="12" />
               <span class="ws-tab-name">{{ f.name }}</span>
               <span v-if="f.dirty" class="ws-tab-dot"></span>
@@ -83,34 +162,57 @@
               </button>
             </div>
           </div>
-          <div class="ws-monaco"><MonacoEditor v-if="editorReady" v-model="fileContent" :language="detectedLang" :theme="editorTheme" :read-only="activeFileReadOnly" height="100%"/></div>
-        </template>
-      </main>
 
-      <div v-show="terminalPanelVisible" class="ws-terminal-resize-handle" @pointerdown="startTerminalResize" title="拖动调整终端高度"></div>
-      <section v-show="terminalPanelVisible" class="ws-terminal-dock" :class="{ dark: aiDarkTheme }" :style="{ height: `${terminalHeight}px` }">
-        <div class="ws-terminal-dock-header">
-          <span>终端</span>
-          <button class="ws-btn ws-btn-outline ws-btn-icon" @click="toggleTerminalPanel" title="关闭终端">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-        <TerminalPanel ref="terminalPanelRef" :project-id="projectId" :project-path="projectPath" :is-dark="aiDarkTheme" @toggle-theme="toggleAiTheme" @command-finished="onTerminalCommandFinished" />
-      </section>
+          <!-- 空白状态 -->
+          <div v-if="openFiles.length === 0 && !isAgentInCenter" class="ws-editor-empty">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#e5e7eb" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <p>选择文件开始编辑</p>
+            <p class="ws-editor-hint">从左侧文件树中选择一个文件，或将右侧 LabexAgent 拖入此处放大</p>
+          </div>
+
+          <!-- Monaco 编辑器容器 -->
+          <div v-else-if="openFiles.length > 0" class="ws-monaco">
+            <MonacoEditor
+              v-if="editorReady"
+              v-model="fileContent"
+              :language="detectedLang"
+              :theme="editorTheme"
+              :read-only="activeFileReadOnly"
+              height="100%"
+            />
+          </div>
+        </main>
+
+        <!-- 底部终端拉伸条与面板 -->
+        <div v-if="terminalPanelVisible" class="ws-terminal-resize-handle" @pointerdown="startTerminalResize" title="拖动调整终端高度"></div>
+        <section v-show="terminalPanelVisible" class="ws-terminal-dock" :class="{ dark: aiDarkTheme }" :style="{ height: `${terminalHeight}px` }">
+          <div class="ws-terminal-dock-header">
+            <span>终端</span>
+            <button class="ws-btn ws-btn-outline ws-btn-icon" @click="toggleTerminalPanel" title="关闭终端">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <TerminalPanel ref="terminalPanelRef" :project-id="projectId" :project-path="projectPath" :is-dark="aiDarkTheme" @toggle-theme="toggleAiTheme" @command-finished="onTerminalCommandFinished" />
+        </section>
       </div>
 
-      <!-- ==================== AI ASSISTANT SIDEBAR ==================== -->
-      <aside class="ai-panel" :class="{ collapsed: aiCollapsed, dark: aiDarkTheme }">
-        <!-- Resize Handle -->
-        <div v-if="!aiCollapsed" class="ai-resize-handle" @pointerdown="startResize"></div>
+      <!-- 右侧 AI 面板拖拽拉伸条 -->
+      <div v-if="!aiCollapsed && !isAgentInCenter" class="ai-resize-handle" @pointerdown="startResize"></div>
 
+      <!-- ==================== AI ASSISTANT SIDEBAR ==================== -->
+      <aside
+        v-if="!isAgentInCenter"
+        class="ai-panel"
+        :class="{ collapsed: aiCollapsed, dark: aiDarkTheme }"
+        :style="!aiCollapsed ? { width: `${aiPanelWidth}px` } : {}"
+      >
         <!-- Collapsed State: Icon Column -->
         <div v-if="aiCollapsed" class="ai-collapsed-bar">
           <button class="ai-icon-btn" @click="aiCollapsed = false" title="展开 LabexAgent">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           </button>
-          <button class="ai-icon-btn" title="设置">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <button class="ai-icon-btn" title="设置" @click="themeStore.openSettings()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2-2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
           <div class="ai-collapsed-spacer"></div>
           <span class="ai-collapsed-badge" v-if="messages.length > 0">{{ messages.length }}</span>
@@ -118,39 +220,35 @@
 
         <!-- Expanded State -->
         <template v-else>
-          <!-- Top Bar -->
-          <div class="ai-topbar">
+          <!-- Top Bar (支持拖拽到中心) -->
+          <div
+            class="ai-topbar"
+            draggable="true"
+            @dragstart="onAiHeaderDragStart"
+            @dragend="onAiHeaderDragEnd"
+            title="可拖拽此头部至中心区域放大"
+          >
             <button class="ai-topbar-btn" @click="aiCollapsed = true" title="折叠侧边栏">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             </button>
             <div class="ai-topbar-title">
-              <AppIcon :size="22" compact />
+              <AppIcon :size="20" compact />
               <span>LabexAgent</span>
             </div>
             <div class="ai-topbar-actions">
-              <div class="ai-session-select" @click="showConversationPanel" :title="'打开左侧会话列表'">
+              <button class="ai-topbar-btn" @click="moveAiToCenter" title="在中部放大 LabexAgent">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              </button>
+              <div class="ai-session-select" @click="showConversationPanel" title="打开左侧会话列表">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 0 1 9-9"/></svg>
                 <span class="ai-session-name">{{ currentSessionName }}</span>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
               </div>
               <button class="ai-topbar-btn" @click="toggleAiTheme" :title="aiDarkTheme ? '切换亮色主题' : '切换暗色主题'">
-                <svg v-if="aiDarkTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-                <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-              </button>
-              <button class="ai-topbar-btn" @click="openContextUsageDialog" title="查看上下文使用情况">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                <svg v-if="aiDarkTheme" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
               </button>
               <button class="ai-topbar-btn" @click="clearMessages" title="清空会话">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-              <button class="ai-topbar-btn" @click="forkCurrentConversation" title="分支当前会话">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.5 8.5C11 12 13 14 15.5 15.5"/><path d="M6 9v4a5 5 0 0 0 5 5h4"/></svg>
-              </button>
-              <button class="ai-topbar-btn" @click="compactCurrentConversation" title="压缩当前上下文">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l6-6"/><path d="M10 14l-6 6"/></svg>
-              </button>
-              <button class="ai-topbar-btn" title="设置" @click="themeStore.openSettings()">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
             </div>
           </div>
@@ -162,36 +260,6 @@
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 <span class="ai-context-filename">{{ fileName }}</span>
                 <span class="ai-context-lang">{{ detectedLang }}</span>
-              </div>
-              <div class="ai-context-actions">
-                <button class="ai-ctx-btn" @click.stop="refreshContext" title="刷新上下文">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                </button>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" :style="{ transform: contextExpanded ? 'rotate(180deg)' : '' }" class="ai-context-arrow"><polyline points="6 9 12 15 18 9"/></svg>
-              </div>
-            </div>
-            <Transition name="ai-slide">
-              <div v-if="contextExpanded" class="ai-context-detail">
-                <div class="ai-ctx-row">
-                  <span class="ai-ctx-label">文件</span>
-                  <span class="ai-ctx-value">{{ activePath }}</span>
-                </div>
-                <div class="ai-ctx-row" v-if="selectedCode">
-                  <span class="ai-ctx-label">选中代码</span>
-                  <span class="ai-ctx-value ai-ctx-code">{{ selectedCode.slice(0, 50) }}{{ selectedCode.length > 50 ? '...' : '' }}</span>
-                </div>
-                <div class="ai-ctx-row">
-                  <span class="ai-ctx-label">项目</span>
-                  <span class="ai-ctx-value">{{ projectName }}</span>
-                </div>
-              </div>
-            </Transition>
-          </div>
-          <div class="ai-context" v-else>
-            <div class="ai-context-header">
-              <div class="ai-context-info">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                <span class="ai-context-empty">未选择文件</span>
               </div>
             </div>
           </div>
@@ -205,7 +273,6 @@
           </div>
 
           <!-- ==================== CHAT TAB ==================== -->
-          <!-- v-show 而不是 v-if：切换 tab 时保留消息 DOM 与滚动位置，避免回来时从顶部重新渲染 -->
           <div v-show="activeAiTab === 'chat'" :class="['ai-content', { 'is-empty': messages.length === 0 }]">
             <div class="ai-messages" ref="msgContainer" @scroll="handleScroll">
               <button v-if="hasOlderMessages" class="ai-history-load" type="button" :disabled="loadingOlderMessages" @click="loadOlderHistory">
@@ -214,6 +281,12 @@
               <!-- Empty State -->
               <div v-if="messages.length === 0" class="ai-empty">
                 <h2 class="ai-empty-greeting">有什么我可以帮您的吗？</h2>
+                <div class="center-quick-chips" style="margin-top: 12px;">
+                  <button v-for="chip in quickChips" :key="chip.label" class="quick-chip-btn" @click="agentInput = chip.prompt; sendMessage()">
+                    <span v-html="chip.icon"></span>
+                    <span>{{ chip.label }}</span>
+                  </button>
+                </div>
               </div>
 
               <!-- Messages -->
@@ -227,33 +300,18 @@
                     <span class="ai-msg-name">{{ msg.role === 'user' ? 'You' : 'LabexAgent' }}</span>
                   </div>
                   <div class="ai-msg-body">
-                    <!-- Merged Thinking + Tool Calls (by time order) -->
+                    <!-- Merged Thinking + Tool Calls -->
                     <template v-if="(showThinkingProcess && msg.thinkingBlocks && msg.thinkingBlocks.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0)">
                       <template v-for="item in getMergedItems(msg)" :key="item._order">
-                        <div v-if="item.type === 'thinking'" class="ai-thinking-block" :class="{ 'is-open': item.data._open }">
-                          <div class="ai-thinking-header" @click="item.data._open = !item.data._open">
-                            <svg class="ai-think-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :style="{ transform: item.data._open ? 'rotate(90deg)' : '' }"><polyline points="9 18 15 12 9 6"/></svg>
-                            <span>思考过程</span>
-                            <span class="tb-summary" v-if="item.data.summary">{{ item.data.summary }}</span>
-                          </div>
-                          <Transition name="tc-slide">
-                            <div
-                              v-if="item.data._open"
-                              class="ai-thinking-body markdown-rendered"
-                              v-html="renderThinkingMarkdown(item.data.content)"
-                              @click="handleMarkdownClick"
-                            ></div>
-                          </Transition>
-                        </div>
                         <div
-                          v-else-if="item.type === 'context'"
+                          v-if="item.type === 'context'"
                           class="ai-context-management-card"
                           :class="[`is-${item.data.status}`, `is-${item.data.phase}`]"
                           role="status"
                           aria-live="polite"
                         >
                           <div class="context-management-card-header">
-                            <span class="context-management-indicator" aria-hidden="true"></span>
+                            <span class="context-management-indicator context-management-pulse" aria-hidden="true"></span>
                             <strong>{{ contextManagementTitle(item.data) }}</strong>
                             <span class="context-management-status">{{ contextManagementStatusText(item.data) }}</span>
                             <button
@@ -261,7 +319,7 @@
                               class="context-management-cancel"
                               type="button"
                               @click.stop="cancelContextCompaction(item.data)"
-                            >&#21462;&#28040;&#21387;&#32553;</button>
+                            >取消压缩</button>
                           </div>
                           <div class="context-management-card-meta">
                             <span v-if="contextManagementStrategyText(item.data)">{{ contextManagementStrategyText(item.data) }}</span>
@@ -271,6 +329,20 @@
                           </div>
                           <p v-if="item.data.reason" class="context-management-reason">{{ item.data.reason }}</p>
                         </div>
+                        <ThinkingProcessBlock
+                          v-else-if="item.type === 'thinking'"
+                          :content="item.data.content"
+                          :rendered-content="renderThinkingMarkdown(item.data.content)"
+                          :summary="item.data.summary"
+                          :default-open="item.data._open"
+                          @markdown-click="handleMarkdownClick"
+                        >
+                          <div
+                            class="thinking-content-body markdown-rendered"
+                            v-html="renderThinkingMarkdown(item.data.content)"
+                            @click="handleMarkdownClick"
+                          ></div>
+                        </ThinkingProcessBlock>
                         <ToolCallCard
                           v-else-if="item.type === 'tool'"
                           :call="item.data"
@@ -280,36 +352,31 @@
                         />
                       </template>
                     </template>
-                    <!-- Current Thinking (streaming) -->
-                    <div v-if="showThinkingProcess && msg.thinking" class="ai-thinking-block active is-open">
-                      <div class="ai-thinking-header">
-                        <svg class="ai-think-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate(90deg)"><polyline points="9 18 15 12 9 6"/></svg>
-                        <span>思考过程...</span>
-                        <span class="thinking-cursor"></span>
-                      </div>
+
+                    <!-- Realtime Streaming Thinking -->
+                    <ThinkingProcessBlock
+                      v-if="showThinkingProcess && msg.thinking"
+                      :content="msg._thinkingDisplay || msg.thinking"
+                      :rendered-content="renderThinkingMarkdown(msg._thinkingDisplay || msg.thinking)"
+                      :is-streaming="true"
+                      @markdown-click="handleMarkdownClick"
+                    >
                       <div
-                        class="ai-thinking-body markdown-rendered"
+                        class="thinking-content-body markdown-rendered"
                         v-html="renderThinkingMarkdown(msg._thinkingDisplay || '')"
                         @click="handleMarkdownClick"
                       ></div>
-                    </div>
-                    <!-- Content + Loading skeleton -->
+                    </ThinkingProcessBlock>
+
+                    <!-- Content -->
                     <div class="ai-msg-content">
                       <AgentImageAttachments
                         v-if="msg.attachments?.length"
                         :attachments="msg.attachments"
                         variant="message"
                         :show-names="false"
-                        aria-label="&#22270;&#29255;&#38468;&#20214;"
                         @preview="openImagePreview"
                       />
-                      <!-- 骨架屏加载态 -->
-                      <div v-if="msg.isStreaming && !msg.content && !msg.thinking" class="ai-loading-skeleton">
-                        <div class="skeleton-line w-80"></div>
-                        <div class="skeleton-line w-60"></div>
-                        <div class="skeleton-line w-70"></div>
-                      </div>
-                      <!-- 流式内容 -->
                       <ContextLimitBlockerCard
                         v-if="msg.contextLimitBlocker"
                         :blocker="msg.contextLimitBlocker"
@@ -317,6 +384,10 @@
                         :retrying="msg.environmentRetrying"
                         @retry="retryEnvironmentTask(msg)"
                       />
+                      <div v-else-if="msg.isStreaming && !msg.content && !msg.thinking" class="ai-loading-skeleton">
+                        <div class="skeleton-line w-80"></div>
+                        <div class="skeleton-line w-60"></div>
+                      </div>
                       <div v-else class="ai-msg-text markdown-rendered" v-html="renderMessageMarkdown(msg)" @click="handleMarkdownClick"></div>
                       <button
                         v-if="msg.environmentBlocker && !msg.contextLimitBlocker && msg.taskId && msg.environmentBlocker.retryable !== false"
@@ -325,12 +396,19 @@
                         :disabled="msg.environmentRetrying"
                         @click="retryEnvironmentTask(msg)"
                       >
-                        {{ msg.environmentRetrying ? '\u6b63\u5728\u6062\u590d\u4efb\u52a1...' : '\u73af\u5883\u6062\u590d\u540e\u91cd\u8bd5' }}
+                        {{ msg.environmentRetrying ? '正在恢复任务...' : '环境恢复后重试' }}
                       </button>
-                      <!-- 消息时间戳 -->
                       <div v-if="showMessageTimestamps && msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</div>
                     </div>
-                    <!-- Token Usage (on last assistant message) -->
+
+                    <!-- File Changes Summary Card -->
+                    <FileChangesSummaryCard
+                      v-if="msg.role === 'assistant' && (sessionChanges?.length > 0 && i === messages.length - 1)"
+                      :changes="sessionChanges"
+                      @review-all="selectAiTab('review')"
+                      @open-file-diff="file => openFile(file.path)"
+                    />
+
                     <CompletionEvidenceCard
                       v-if="msg.role === 'assistant' && (msg.completionEvidence || msg.completionBlockedEvidence)"
                       :evidence="msg.completionEvidence || msg.completionBlockedEvidence"
@@ -349,197 +427,41 @@
                       <button class="ai-msg-action" title="复制" @click="copyMessage(msg.content)">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                       </button>
-                      <button class="ai-msg-action" title="插入到编辑器" v-if="activePath" @click="insertToEditor(msg.content)">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                      </button>
-                      <button class="ai-msg-action" title="有帮助" :class="{ liked: msg.liked }" @click="msg.liked = true">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
-                      </button>
-                      <button class="ai-msg-action" title="无帮助" :class="{ disliked: msg.disliked }" @click="msg.disliked = true">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>
-                      </button>
                     </div>
                   </div>
                 </div>
               </TransitionGroup>
             </div>
 
-            <!-- Scroll to Bottom -->
-            <button v-if="showScrollBtn" class="ai-scroll-btn" @click="() => { userScrolled = false; scrollDown(true) }">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-            </button>
-
-            <!-- Message Navigator -->
-            <div v-if="messages.length > 2" class="ai-msg-navigator">
-              <button
-                class="nav-btn"
-                :class="{ disabled: currentMessageIndex <= 0 }"
-                @click="navigateMessage(-1)"
-                title="上一条消息"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="18 15 12 9 6 15"/>
-                </svg>
-              </button>
-              <span class="nav-indicator">{{ currentMessageIndex + 1 }}/{{ messages.length }}</span>
-              <button
-                class="nav-btn"
-                :class="{ disabled: currentMessageIndex >= messages.length - 1 }"
-                @click="navigateMessage(1)"
-                title="下一条消息"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="6 9 12 15 18 9"/>
-                </svg>
-              </button>
-            </div>
-
-            <!-- Quick Actions -->
-            <div class="ai-chips" v-if="messages.length === 0">
-              <button v-for="chip in quickChips" :key="chip.label" class="ai-chip" @click="applyChip(chip.prompt)">
-                <span v-html="chip.icon"></span>
-                <span>{{ chip.label }}</span>
-              </button>
-            </div>
-
-            <!-- Input Area -->
-            <div class="ai-input-area">
-              <div v-if="selectedCode" class="ai-input-context">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                <span>已附加选中代码 ({{ selectedCode.length }} 字符)</span>
-                <button class="ai-input-ctx-remove" @click="selectedCode = ''">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-              </div>
-              <!-- 命令选择器下拉框 -->
-              <div v-if="showCommandPalette" class="command-palette">
-                <div class="command-palette-header">
-                  <span class="command-palette-title">可用指令</span>
-                  <span class="command-palette-hint">输入 / 后选择指令</span>
-                </div>
-                <div class="command-palette-search">
-                  <input
-                    v-model="commandSearch"
-                    class="command-search-input"
-                    placeholder="搜索指令..."
-                    @keydown.escape="closeCommandPalette"
-                    @keydown.enter="selectFirstCommand"
-                    @keydown.up.prevent="navigateCommand(-1)"
-                    @keydown.down.prevent="navigateCommand(1)"
-                    ref="commandSearchRef"
-                  />
-                </div>
-                <div class="command-palette-list" ref="commandListRef">
-                  <div
-                    v-for="(cmd, index) in filteredCommands"
-                    :key="cmd.name"
-                    :class="['command-item', { active: selectedCommandIndex === index }]"
-                    @click="selectCommand(cmd)"
-                    @mouseenter="selectedCommandIndex = index"
-                  >
-                    <div class="command-item-main">
-                      <span class="command-name">/{{ cmd.name }}</span>
-                      <span v-if="cmd.aliases" class="command-aliases">
-                        ({{ cmd.aliases.join(', ') }})
-                      </span>
-                    </div>
-                    <div class="command-item-desc">{{ cmd.description }}</div>
-                  </div>
-                  <div v-if="filteredCommands.length === 0" class="command-empty">
-                    未找到匹配的指令
-                  </div>
-                </div>
-              </div>
-              <!-- 1. 外挂的模式切换排 (类似 Claude 的建议指令) -->
-              <div class="ai-quick-actions">
-                <button
-                  v-for="mode in agentModes"
-                  :key="mode.key"
-                  :class="['ai-quick-pill', { active: agentMode === mode.key, transitioning: modeTransitioning }]"
-                  @click="switchMode(mode.key)"
-                >
-                  <svg v-if="mode.icon === 'cube'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-                  <svg v-else-if="mode.icon === 'map'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
-                  <svg v-else-if="mode.icon === 'search'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                  <span>{{ mode.label }}</span>
-                </button>
-              </div>
-
-              <!-- 2. Claude 风格主输入框 -->
-              <div
-                class="ai-input-box"
-                :class="{ 'is-image-dragover': imageDragActive }"
-                @dragenter="handleImageDragEnter"
-                @dragover="handleImageDragOver"
-                @dragleave="handleImageDragLeave"
-                @drop="handleImageDrop"
-              >
-                <!-- 上层文本区 -->
-                <div class="ai-input-text-area">
-                  <textarea v-model="agentInput" rows="1" :placeholder="activePath ? '输入问题，例如：这段代码有什么问题？' : 'How can I help you today?'" @keydown.enter.exact.prevent="sendMessage" @keydown.escape="closeCommandPalette" @input="handleInput" @paste="handleImagePaste" :disabled="agentLoading" ref="aiInputRef"></textarea>
-                </div>
-
-                <div v-if="pendingImageAttachments.length" class="ai-input-image-strip">
-                  <AgentImageAttachments
-                    :attachments="pendingImageAttachments"
-                    :removable="true"
-                    aria-label="&#24453;&#21457;&#36865;&#22270;&#29255;"
-                    @preview="openImagePreview"
-                    @remove="removePendingImage"
-                  />
-                </div>
-
-                <!-- 图片工具栏与发送按钮 -->
-                <div class="ai-input-footer">
-                  <div class="ai-input-toolbar">
-                    <input ref="imageInputRef" class="ai-image-file-input" type="file" multiple :accept="imageAccept" @change="handleImageInput" />
-                    <button type="button" class="ai-toolbar-btn" :class="{ 'is-disabled': !currentModelSupportsImages }" :aria-disabled="!currentModelSupportsImages" :title="imageInputTitle" @click="requestImageInput">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
-                      <span>&#22270;&#29255;</span>
-                    </button>
-                    <button class="ai-toolbar-btn" title="模型配置" @click="showModelConfig = !showModelConfig">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                      <span>模型</span>
-                    </button>
-                    <button class="ai-toolbar-btn" title="优化提示词" @click="optimizePrompt">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-                      <span>优化</span>
-                    </button>
-                    <button class="ai-toolbar-btn" title="引用文件 (@)" @click="atFile">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                      <span>引用</span>
-                    </button>
-                    <button class="ai-toolbar-btn" title="指令 (/)" @click="showCommandMenu">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-                      <span>指令</span>
-                    </button>
-                  </div>
-
-                  <div class="ai-bar-right">
-                    <div v-if="agentLoading" class="ai-generating-indicator">
-                      <span class="gen-dot"></span>
-                    </div>
-                    <ContextUsageIndicator :status="contextUsageStatus" @open="openContextUsageDialog" />
-                    <button
-                      v-if="agentLoading"
-                      class="ai-submit-btn"
-                      @click="stopGeneration"
-                      title="停止生成 (Esc)"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-                    </button>
-                    <button
-                      v-else
-                      class="ai-submit-btn"
-                      @click="sendMessage"
-                      :disabled="!agentInput.trim()"
-                      title="发送 (Enter)"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
+            <!-- Composer Dock (Fixed at bottom) -->
+            <div class="ai-composer-wrapper">
+              <ComposerDock
+                v-model="agentInput"
+                v-model:agent-mode="agentMode"
+                :current-model="currentModelName"
+                :thinking-level="thinkingLevel"
+                :available-models="modelConfigs"
+                :loading="agentLoading"
+                :supports-images="currentModelSupportsImages"
+                :selected-code="selectedCode"
+                :pending-images="pendingImageAttachments"
+                :context-usage-status="contextUsageStatus"
+                :active-path="activePath"
+                @mode-change="switchMode"
+                @send="sendMessage"
+                @stop="stopGeneration"
+                @trigger-commands="showCommandMenu"
+                @trigger-at-file="atFile"
+                @optimize-prompt="optimizePrompt"
+                @clear-selected-code="selectedCode = ''"
+                @preview-image="openImagePreview"
+                @remove-image="removePendingImage"
+                @image-files="handleDroppedImageFiles"
+                @open-context-dialog="openContextUsageDialog"
+                @change-model="handleSelectModelByName"
+                @change-thinking="handleChangeThinkingLevel"
+                @open-model-config="showModelConfig = true"
+              />
             </div>
           </div>
 
@@ -804,17 +726,11 @@
       <!-- ==================== END AI ASSISTANT SIDEBAR ==================== -->
     </div>
 
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="imagePreviewAttachment" class="ai-image-preview-overlay" @click.self="closeImagePreview">
-          <button type="button" class="ai-image-preview-close" @click="closeImagePreview" aria-label="Close image preview">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
-          </button>
-          <img :src="imagePreviewAttachment.previewUrl" :alt="imagePreviewAttachment.name" />
-          <div class="ai-image-preview-caption">{{ imagePreviewAttachment.name }}</div>
-        </div>
-      </Transition>
-    </Teleport>
+    <ImageLightboxModal
+      v-model:visible="showImageLightbox"
+      :src="imageLightboxSrc"
+      :title="imageLightboxTitle"
+    />
 
     <ModelConfigDialog :state="modelConfigDialogState" :actions="modelConfigDialogActions" />
   </div>
@@ -827,7 +743,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, modelConfigApi, agentExtensionApi } from '@/api'
 import { DEFAULT_MAX_TOKENS, modelConfigPresets } from '@/constants/modelPresets'
 import { DEFAULT_AGENT_IMAGE_INPUT_POLICY, imageAcceptValue } from '@/constants/agentImageInput'
-import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
+import WorkspaceTopBar from '@/components/cloud/layout/WorkspaceTopBar.vue'
+import DynamicResizer from '@/components/cloud/layout/DynamicResizer.vue'
+import ImageLightboxModal from '@/components/cloud/layout/ImageLightboxModal.vue'
+import ComposerDock from '@/components/cloud/composer/ComposerDock.vue'
+import ModeSlider from '@/components/cloud/composer/ModeSlider.vue'
+import ModelSelectorPopover from '@/components/cloud/composer/ModelSelectorPopover.vue'
+import ThinkingProcessBlock from '@/components/cloud/chat/ThinkingProcessBlock.vue'
 import FileIcon from '@/components/icons/FileIcon.vue'
 import SidebarNav from '@/components/sidebar/SidebarNav.vue'
 import FileExplorerPanel from '@/components/sidebar/FileExplorerPanel.vue'
@@ -835,9 +757,6 @@ import ConversationPanel from '@/components/sidebar/ConversationPanel.vue'
 import AgentImageAttachments from '@/components/cloud/AgentImageAttachments.vue'
 import ToolCallCard from '@/components/cloud/ToolCallCard.vue'
 import ContextLimitBlockerCard from '@/components/cloud/ContextLimitBlockerCard.vue'
-import CompletionEvidenceCard from '@/components/cloud/CompletionEvidenceCard.vue'
-import ChangesPanel from '@/components/cloud/ChangesPanel.vue'
-import PlanDisplay from '@/components/cloud/PlanDisplay.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import * as echarts from 'echarts'
 import { marked } from 'marked'
@@ -879,6 +798,11 @@ const AgentTimer = defineAsyncComponent(() => import('@/components/cloud/AgentTi
 const ContextUsageIndicator = defineAsyncComponent(() => import('@/components/cloud/ContextUsageIndicator.vue'))
 const ContextUsageDialog = defineAsyncComponent(() => import('@/components/cloud/ContextUsageDialog.vue'))
 const ModelConfigDialog = defineAsyncComponent(() => import('@/components/cloud/ModelConfigDialog.vue'))
+const CenterAiWorkspace = defineAsyncComponent(() => import('@/components/cloud/chat/CenterAiWorkspace.vue'))
+const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/ChangesPanel.vue'))
+const CompletionEvidenceCard = defineAsyncComponent(() => import('@/components/cloud/CompletionEvidenceCard.vue'))
+const PlanDisplay = defineAsyncComponent(() => import('@/components/cloud/PlanDisplay.vue'))
+const FileChangesSummaryCard = defineAsyncComponent(() => import('@/components/cloud/chat/FileChangesSummaryCard.vue'))
 
 // Core project state
 const projectId = ref(null)
@@ -996,6 +920,116 @@ function showConversationPanel() {
 
 // AI Panel UI state
 const aiCollapsed = ref(false)
+const explorerVisible = ref(true)
+const isAgentInCenter = ref(false)
+const aiPanelWidth = ref(420)
+const centerDropOverlayActive = ref(false)
+const isDraggingAi = ref(false)
+const draggedTabIdx = ref(null)
+const showImageLightbox = ref(false)
+const imageLightboxSrc = ref('')
+const imageLightboxTitle = ref('')
+const thinkingLevel = ref('High')
+
+function onAiHeaderDragStart(e) {
+  isDraggingAi.value = true
+  e.dataTransfer?.setData('text/plain', 'ai-panel')
+}
+
+function onAiHeaderDragEnd() {
+  isDraggingAi.value = false
+  centerDropOverlayActive.value = false
+}
+
+function onCenterDragOver(e) {
+  if (isDraggingAi.value) {
+    centerDropOverlayActive.value = true
+  }
+}
+
+function onCenterDragLeave(e) {
+  if (!e.currentTarget.contains(e.relatedTarget)) {
+    centerDropOverlayActive.value = false
+  }
+}
+
+function onCenterDrop(e) {
+  if (isDraggingAi.value) {
+    isAgentInCenter.value = true
+    centerDropOverlayActive.value = false
+    isDraggingAi.value = false
+    ElMessage.success('LabexAgent 已切换至中心主视图')
+  }
+}
+
+function moveAiToCenter() {
+  isAgentInCenter.value = true
+  ElMessage.success('LabexAgent 已切换至中心主视图')
+}
+
+function dockAiBackToSidebar() {
+  isAgentInCenter.value = false
+  aiCollapsed.value = false
+}
+
+function toggleAiPanelLayout() {
+  if (isAgentInCenter.value) {
+    isAgentInCenter.value = false
+    aiCollapsed.value = false
+  } else {
+    aiCollapsed.value = !aiCollapsed.value
+  }
+}
+
+function onTabDragStart(e, idx) {
+  draggedTabIdx.value = idx
+}
+
+function onTabDragOver(e, idx) {
+  // enable drop
+}
+
+function onTabDrop(e, idx) {
+  if (draggedTabIdx.value !== null && draggedTabIdx.value !== idx) {
+    const item = openFiles.value.splice(draggedTabIdx.value, 1)[0]
+    openFiles.value.splice(idx, 0, item)
+    activeTabIndex.value = idx
+  }
+  draggedTabIdx.value = null
+}
+
+function handleSelectModelByName(name) {
+  const found = modelConfigs.value.find(c => c.modelName === name || c.configName === name)
+  if (found) {
+    selectedModelConfigId.value = found.configId
+    ElMessage.success(`已切换模型: ${found.configName || found.modelName}`)
+  }
+}
+
+function handleChangeThinkingLevel(lvl) {
+  thinkingLevel.value = lvl
+  const effort = lvl === 'High' ? 'high' : (lvl === 'Low' ? 'low' : 'medium')
+  mcForm.value.reasoningEffort = effort
+  ElMessage.success(`思考程度已设置为: ${lvl}`)
+}
+
+async function handleDroppedImageFiles(files) {
+  if (!currentModelSupportsImages.value) {
+    ElMessage.warning('当前模型不支持图片输入')
+    return
+  }
+  for (const file of files) {
+    await appendPendingImageFile(file)
+  }
+}
+
+function insertToEditor(text) {
+  if (!text) return
+  fileContent.value = (fileContent.value ? fileContent.value + '\n' : '') + text
+  fileContentDirty.value = true
+  ElMessage.success('已插入到当前文件')
+}
+
 const aiDarkTheme = computed(() => themeStore.effectiveTheme === 'dark')
 const editorTheme = computed(() => aiDarkTheme.value ? 'vs-dark' : 'vs')
 const activeAiTab = ref('chat')
@@ -1931,10 +1965,14 @@ async function hydrateHistoryAttachmentPreview(attachment) {
 
 function openImagePreview(attachment) {
   imagePreviewAttachment.value = attachment
+  imageLightboxSrc.value = attachment.previewUrl || attachment.url || attachment.dataUrl || ''
+  imageLightboxTitle.value = attachment.name || '图片预览'
+  showImageLightbox.value = true
 }
 
 function closeImagePreview() {
   imagePreviewAttachment.value = null
+  showImageLightbox.value = false
 }
 
 function revokeImageObjectUrls(attachments) {
@@ -2653,7 +2691,6 @@ function applyChip(prompt) { agentInput.value = prompt; nextTick(() => aiInputRe
 function toggleAiTheme() { themeStore.toggleLightDark() }
 function refreshContext() { ElMessage.success('上下文已刷新') }
 function copyMessage(content) { navigator.clipboard?.writeText(content); ElMessage.success('已复制') }
-function insertToEditor(content) { ElMessage.success('代码已插入编辑器') }
 function renderMarkdown(text) {
   if (!text) return ''
   const rawHtml = marked.parse(normalizeSpecialMarkdownBlocks(text), { gfm: true, breaks: true, silent: true })

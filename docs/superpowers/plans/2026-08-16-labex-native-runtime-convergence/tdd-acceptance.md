@@ -400,3 +400,32 @@ cd frontend && npm run build
 **已覆盖的可观察结果**：带 `failureClass=non_zero_exit` 的 completed shell Part 在刷新回放后保持 `durableStatus=completed`、但用户可见 `status=error`；失败分类、exit code、相对 workdir 与 artifact path 都保留在 card state。既有正常 completed Tool Part 继续显示 completed；没有 failureClass 的历史 Part 不会被猜测性改写。
 
 **仍未关闭的风险**：本切片不代替真实浏览器中触发 shell、刷新页面和 reconnect 的现场验收；旧历史记录没有 failureClass 时只能保持旧的状态投影。最终回答是否允许仍由后端 completion evidence 决定，前端卡片不应也不能自行决定任务状态。
+### 切片 C10：实时 OBSERVE 不覆盖 durable shell failure（2026-08-16）
+
+**Public seam**：实时 SSE `OBSERVE` 与持久化 `TOOL_CALL_STATE` / 历史 event 共同投影同一个 `toolCallId` 工具卡。
+
+**Red**：先收到一个带 `failureClass=non_zero_exit` 的完成态 shell Tool Part，卡片已正确显示 error；随后旧 `OBSERVE` 只根据 transport `success=true` 重算为 completed，实时页面会从错误回跳到绿色完成。该行为与刷新后的 durable replay 不一致，仍会误导用户和后续验收。
+
+**Green**：统一 `applyStructuredExecutionOutcome(...)` 只消费后端结构化事实：保留安全 `execution` 目标、失败分类与原始 durable status；`execution.status=failed` 和 `failureClass` 都能投影错误。`OBSERVE` 现在携带由 `ToolResult.durableResultMetadata()` 产生的同一份 `execution` 与 `failureClass`，因此事件先后顺序不会再制造第二套 UI 事实。正常 transport 完成不受影响；非零 exit 仍可作为模型可读输出，但用户卡片保持错误。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\session\processor.ts:203-245` 以单一 Tool Part 状态完成/失败更新与 settle；参考 `packages\app\src\context\global-sync\event-reducer.ts:228-253` 按 Part ID 幂等更新 UI store；参考 `packages\opencode\src\session\message-v2.ts:336-370` 把 Tool Part 的 error/pending 状态投影为确定的协议输出。LabexAgent 未复制实质源码；因其是 Spring Boot 多用户 SSE + durable transcript，改为 `ToolResult` metadata 经 `TOOL_CALL_STATE` 和 `OBSERVE` 双投影到既有 Vue reducer。
+
+**Red → Green 证据**：
+
+```text
+# Red：实时 OBSERVE 将已分类的非零 exit 从 error 覆盖回 completed
+cd frontend && node --test src/composables/useAgentEventTimeline.test.mjs
+
+# Green：durable snapshot、history replay、实时 timeline 与统一工具卡状态
+cd frontend && node --test src/composables/agentRunPartState.test.mjs src/composables/agentToolCallState.test.mjs src/composables/agentHistoryReducer.test.mjs src/composables/useAgentEventTimeline.test.mjs
+
+# Green：OBSERVE 后端字段透传、ToolResult/loop guard/shell 契约
+cd backend && mvn -q -Dtest=ToolResultTest,AgentToolCallJournalServiceTest,AgentLoopGuardTest,RunCommandToolTest,ShellToolContractTest,AgentLoopEngineStreamingContractTest test
+
+# Build：Vue SFC 编译与 bundle budget
+cd frontend && npm run build
+```
+
+**已覆盖的可观察结果**：一条 `status=completed` 的 shell Part 只要携带 `failureClass=non_zero_exit` 或 `execution.status=failed`，无论随后收到的是 durable snapshot、历史 `OBSERVE` 还是实时 `OBSERVE`，用户可见卡片均保持 `status=error`；`durableStatus=completed` 保留作 transport 审计，`exitCode`、相对 workdir 和 artifact 路径不会被实时事件丢失。
+
+**仍未关闭的风险**：尚未完成真实浏览器中执行命令、刷新、SSE reconnect 的现场 smoke；本切片也不决定 Agent 是否允许给最终答复，完成/失败仍必须由后端 verification 与 completion evidence 裁决。

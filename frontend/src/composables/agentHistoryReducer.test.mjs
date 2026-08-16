@@ -294,6 +294,28 @@ test('renders unavailable post-edit diagnostics as a warning instead of success'
   assert.equal(target.toolCalls[0].verificationStatus, 'UNAVAILABLE')
 })
 
+test('replays a nonzero shell observation as an error even when transport succeeded', () => {
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'shell', toolCallId: 'shell-history-1', arguments: { command: 'npm run build' } }, target, {})
+  reduceHistoryEvent('TOOL_CALL_STATE', {
+    tool: 'shell',
+    toolCallId: 'shell-history-1',
+    status: 'completed',
+    metadata: { failureClass: 'non_zero_exit', execution: { status: 'failed', exitCode: 2, workdir: 'frontend' } }
+  }, target, {})
+  reduceHistoryEvent('OBSERVE', {
+    toolCallId: 'shell-history-1',
+    success: true,
+    result: 'exit=2\nstatus=failed',
+    executionStatus: 'failed'
+  }, target, {})
+
+  assert.equal(target.toolCalls[0].status, 'error')
+  assert.equal(target.toolCalls[0].durableStatus, 'completed')
+  assert.equal(target.toolCalls[0].failureClass, 'non_zero_exit')
+  assert.equal(target.toolCalls[0].executionResult.exitCode, 2)
+  assert.equal(target.toolCalls[0].executionResult.workdir, 'frontend')
+})
 test('replayed command continuation accepts the durable final after returning to running', () => {
   const target = message()
   target.runState = 'waiting_approval'

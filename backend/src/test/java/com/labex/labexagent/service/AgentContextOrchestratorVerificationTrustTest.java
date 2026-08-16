@@ -5,6 +5,8 @@ import static org.mockito.Mockito.mock;
 
 import com.google.gson.JsonObject;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.execution.ExecutionStatus;
+import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.labexagent.lsp.LspSessionManager;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.run.AgentRunExecutionProgressReducer;
