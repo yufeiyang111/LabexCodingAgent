@@ -1,5 +1,6 @@
 package com.labex.labexagent.service;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.context.AgentRequestTokenEstimator;
@@ -27,6 +28,8 @@ import java.util.Set;
 
 @Service
 public class AgentContextOrchestrator {
+    private static final Gson GSON = new Gson();
+
     private final AgentContextManager contextManager;
     private final ProjectIndexService projectIndexService;
     private final AgentWorkspaceMemoryService workspaceMemoryService;
@@ -104,8 +107,10 @@ public class AgentContextOrchestrator {
                 context.getStage(), context.getWriteCount(), context.getVerificationCount(),
                 context.hasUnverifiedChanges(), context.getTrustedVerificationSources(),
                 context.getUnverifiedChangeTargets());
+        Map<String, Object> durableMetadata = result.durableResultMetadata();
+        JsonObject metadata = durableMetadata.isEmpty() ? null : GSON.toJsonTree(durableMetadata).getAsJsonObject();
         AgentRunExecutionProgressReducer.State next = progressReducer.apply(
-                current, toolName, args, toolStatus(result), result.getContent());
+                current, toolName, args, toolStatus(result), result.getContent(), metadata);
         context.applyExecutionProgressProjection(next.stage(), next.writeCount(), next.verificationCount(),
                 next.hasUnverifiedChanges(), next.trustedVerificationSources(), next.unverifiedChangeTargets());
     }

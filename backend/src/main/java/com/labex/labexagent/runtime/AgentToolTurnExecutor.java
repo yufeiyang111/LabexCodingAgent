@@ -16,7 +16,7 @@ import java.util.concurrent.TimeoutException;
 
 /** 工具本轮的 Schema/模式门禁与执行 watchdog。交互暂停和任务状态仍由上层编排。 */
 @org.springframework.stereotype.Service
-public final class AgentToolTurnExecutor {
+public class AgentToolTurnExecutor {
     private static final ThreadPoolExecutor EXECUTOR = new ThreadPoolExecutor(
             0, 32, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64),
             runnable -> { Thread thread = new Thread(runnable, "labex-agent-tool-turn"); thread.setDaemon(true); return thread; },

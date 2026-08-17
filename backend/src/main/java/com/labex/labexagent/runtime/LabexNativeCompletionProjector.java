@@ -11,7 +11,7 @@ import org.springframework.stereotype.Service;
  * verified completed。</p>
  */
 @Service
-public final class LabexNativeCompletionProjector {
+public class LabexNativeCompletionProjector {
 
     public boolean usesLegacyTextFinalGuards(AgentRuntimeProfile runtimeProfile) {
         return runtimeProfile != AgentRuntimeProfile.LABEX_NATIVE;

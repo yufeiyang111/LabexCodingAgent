@@ -25,7 +25,7 @@ import org.springframework.stereotype.Service;
  */
 @Slf4j
 @Service
-public final class ToolExposurePlanner {
+public class ToolExposurePlanner {
     private final ToolRegistry toolRegistry;
     private final ToolSelectionPolicy toolSelectionPolicy;
     private final AgentSkillService skillService;

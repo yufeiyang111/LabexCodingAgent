@@ -11,7 +11,7 @@ import org.springframework.stereotype.Service;
  * Execution remains deterministic and serial so writes and approvals cannot race each other.
  */
 @Service
-public final class AgentToolCallBatchProtocol {
+public class AgentToolCallBatchProtocol {
 
     public String validateIdentity(AgentModelTurnExecutor.NativeToolCall call) {
         if (call == null) return "toolCall is required";

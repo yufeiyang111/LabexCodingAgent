@@ -88,7 +88,8 @@ public class ApplyPatchTool implements AgentTool {
                 .withWorkspaceChangeEvidence(
                         WorkspaceOperationIdentity.forContext(context, context.getWorkspaceRoot(),
                                 requests.stream().map(DiffService.ChangeRequest::relativePath).toList()),
-                        pendingChanges.stream().map(PendingChange::getId).toList())
+                        pendingChanges.stream().map(PendingChange::getId).toList(),
+                        telemetry == null ? Map.of() : telemetry.workspaceMutation())
                 .withWorkspaceVerification(workspaceVerification);
     }
 

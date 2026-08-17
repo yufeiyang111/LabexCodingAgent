@@ -98,6 +98,40 @@ public class AgentRunTranscriptService {
         appendMessage(taskId, executionEpoch, sequence, providerMessage);
     }
 
+    /**
+     * 写入一次语义稳定的内部收束提示。它仍是可投影的 provider user message，
+     * 但使用 evidence fingerprint 作为 key，确保恢复/重试不会重复污染 transcript。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean appendCompletionReadinessDirective(ExecutionFence fence, Long taskId, long executionEpoch,
+                                                       String evidenceFingerprint, String directive) {
+        requireFence(fence);
+        if (fence.epoch() != executionEpoch) {
+            throw new AgentRunExecutionLeaseService.StaleExecutionFenceException(
+                    AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.STALE_FENCE);
+        }
+        if (taskId == null || taskId <= 0 || evidenceFingerprint == null || evidenceFingerprint.isBlank()) {
+            throw new IllegalArgumentException("taskId and evidenceFingerprint are required");
+        }
+        String key = completionReadinessKey(executionEpoch, evidenceFingerprint);
+        AgentRunMessage existing = messageMapper.selectOne(new LambdaQueryWrapper<AgentRunMessage>()
+                .eq(AgentRunMessage::getTaskId, taskId)
+                .eq(AgentRunMessage::getMessageKey, key)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return false;
+        }
+        LinkedHashMap<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("provider", true);
+        metadata.put("executionEpoch", executionEpoch);
+        metadata.put("synthetic", "completion_readiness");
+        metadata.put("completionReadiness", true);
+        metadata.put("visibility", "internal");
+        metadata.put("evidenceFingerprint", evidenceFingerprint);
+        upsertMessage(taskId, key, nextSequence(taskId), "user", directive, metadata);
+        return true;
+    }
+
     /** 将当前持久化 transcript 按 Provider 协议重建。 */
     public List<Map<String, Object>> loadProjectableTranscript(Long taskId) {
         return loadProjectableTranscriptAfter(taskId, -1L);
@@ -789,6 +823,10 @@ public class AgentRunTranscriptService {
 
     private String providerKey(long epoch, long sequence) {
         return PROVIDER_KEY_PREFIX + epoch + ":message:" + sequence;
+    }
+
+    private String completionReadinessKey(long epoch, String evidenceFingerprint) {
+        return PROVIDER_KEY_PREFIX + epoch + ":completion-readiness:" + safeKey(evidenceFingerprint);
     }
 
     private String toolCallKey(long epoch, long sequence, int index, String id) {

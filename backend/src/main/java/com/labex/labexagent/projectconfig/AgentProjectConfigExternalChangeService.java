@@ -24,7 +24,7 @@ import org.springframework.stereotype.Component;
  * indistinguishable from not found on every read path.
  */
 @Component
-public final class AgentProjectConfigExternalChangeService {
+public class AgentProjectConfigExternalChangeService {
 
     public static final String STATUS_PENDING = "external_change_pending";
     public static final String STATUS_APPLIED = "applied";

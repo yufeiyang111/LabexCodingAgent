@@ -628,3 +628,19 @@ test('history replay keeps evidence details when finalization blocks a generated
   assert.deepEqual(target.completionBlockedEvidence.unresolvedRisks, ['存在文件改动，但没有成功验证证据'])
   assert.equal(target.completionBlockedEvidence.reasonCode, 'completion_evidence_unsatisfied')
 })
+
+
+test('stores completion readiness as state only and does not fabricate a final reply', () => {
+  const target = message()
+  reduceHistoryEvent('COMPLETION_READY', {
+    taskId: 9,
+    reasonCode: 'verified_workspace_change',
+    satisfied: true,
+    changedFiles: ['src/App.vue']
+  }, target)
+
+  assert.equal(target.taskId, 9)
+  assert.equal(target.content, '')
+  assert.equal(target.completionReadiness.reasonCode, 'verified_workspace_change')
+  assert.deepEqual(target.completionReadiness.changedFiles, ['src/App.vue'])
+})

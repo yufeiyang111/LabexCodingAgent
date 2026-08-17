@@ -25,6 +25,7 @@ import com.labex.labexagent.diff.PendingChange;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.WorkspaceContextInvalidator;
+import com.labex.labexagent.tool.FileContentFingerprint;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSupport;
 import com.labex.labexagent.workspace.WorkspaceLeaseService;
@@ -227,7 +228,16 @@ class ApplyPatchToolTest {
         Map<String, Object> mutation = (Map<String, Object>) result.durableResultMetadata().get("workspaceMutation");
         assertThat(mutation)
                 .containsEntry("state", "applied")
-                .containsEntry("changeIds", List.of(stored.get().getChangeId()));
+                .containsEntry("changeIds", List.of(stored.get().getChangeId()))
+                .containsEntry("targets", List.of(Map.of(
+                        "path", "skills/SKILL.md",
+                        "operation", "delete",
+                        "changeId", stored.get().getChangeId(),
+                        "before", Map.of(
+                                "state", "present",
+                                "sha256", FileContentFingerprint.sha256("# skill instructions\n"),
+                                "bytes", (long) "# skill instructions\n".getBytes(java.nio.charset.StandardCharsets.UTF_8).length),
+                        "after", Map.of("state", "absent", "verified", true))));
         @SuppressWarnings("unchecked")
         Map<String, Object> verification = (Map<String, Object>) result.durableResultMetadata()
                 .get("workspaceVerification");

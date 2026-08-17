@@ -89,4 +89,98 @@ class AgentRunExecutionProgressReducerTest {
         assertThat(failed.verificationCount()).isZero();
         assertThat(failed.unverifiedChangeTargets()).isEmpty();
     }
+
+    @Test
+    void mismatchedWorkspacePostconditionKeepsShellMutationUnverifiedAndMovesToRepair() {
+        JsonObject metadata = JsonParser.parseString("""
+                {
+                  "workspaceMutation": {
+                    "state": "applied",
+                    "targets": [{
+                      "path": "skills/SKILL.md",
+                      "operation": "delete",
+                      "after": {"state": "present", "verified": false}
+                    }]
+                  },
+                  "workspaceVerification": {
+                    "state": "mismatch",
+                    "targets": [{
+                      "path": "skills/SKILL.md",
+                      "expectedState": "absent",
+                      "observedState": "present"
+                    }]
+                  }
+                }
+                """).getAsJsonObject();
+
+        AgentRunExecutionProgressReducer.State mismatch = reducer.apply(
+                reducer.initial(), "shell", new JsonObject(), "completed", "exit=0", metadata);
+
+        assertThat(mismatch.stage()).isEqualTo("repair");
+        assertThat(mismatch.writeCount()).isEqualTo(1);
+        assertThat(mismatch.verificationCount()).isZero();
+        assertThat(mismatch.trustedVerificationSources()).isEmpty();
+        assertThat(mismatch.unverifiedChangeTargets()).containsExactly("skills/SKILL.md");
+        assertThat(mismatch.hasUnverifiedChanges()).isTrue();
+    }
+
+    @Test
+    void verifiedWorkspacePostconditionClearsOnlyItsOwnTargetsAndAddsTrustedEvidence() {
+        JsonObject metadata = JsonParser.parseString("""
+                {
+                  "workspaceMutation": {
+                    "state": "applied",
+                    "targets": [{
+                      "path": "skills/SKILL.md",
+                      "operation": "delete",
+                      "after": {"state": "absent", "verified": true}
+                    }]
+                  },
+                  "workspaceVerification": {
+                    "state": "verified",
+                    "targets": [{
+                      "path": "skills/SKILL.md",
+                      "expectedState": "absent",
+                      "observedState": "absent"
+                    }]
+                  }
+                }
+                """).getAsJsonObject();
+        AgentRunExecutionProgressReducer.State prior = new AgentRunExecutionProgressReducer.State(
+                "implement", 1, 0, true, java.util.Set.of(), java.util.Set.of("src/Other.java"));
+
+        AgentRunExecutionProgressReducer.State verified = reducer.apply(
+                prior, "shell", new JsonObject(), "completed", "exit=0", metadata);
+
+        assertThat(verified.stage()).isEqualTo("verify");
+        assertThat(verified.writeCount()).isEqualTo(2);
+        assertThat(verified.verificationCount()).isEqualTo(1);
+        assertThat(verified.trustedVerificationSources()).containsExactly("workspace_postcondition");
+        assertThat(verified.unverifiedChangeTargets()).containsExactly("src/Other.java");
+        assertThat(verified.hasUnverifiedChanges()).isTrue();
+    }
+
+
+    @Test
+    void workspaceMetadataWithAnAbsoluteTargetDoesNotEnterProgressProjection() {
+        JsonObject metadata = JsonParser.parseString("""
+                {
+                  "workspaceMutation": {
+                    "state": "applied",
+                    "targets": [{
+                      "path": "C:/private/secret.txt",
+                      "operation": "delete",
+                      "after": {"state": "absent", "verified": true}
+                    }]
+                  },
+                  "workspaceVerification": {"state": "verified", "targets": []}
+                }
+                """).getAsJsonObject();
+
+        AgentRunExecutionProgressReducer.State projected = reducer.apply(
+                reducer.initial(), "shell", new JsonObject(), "completed", "exit=0", metadata);
+
+        assertThat(projected).isEqualTo(reducer.initial());
+    }
+
 }

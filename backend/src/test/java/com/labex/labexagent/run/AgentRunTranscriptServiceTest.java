@@ -661,4 +661,49 @@ class AgentRunTranscriptServiceTest {
                 Map.of("role", "user", "content", "after"),
                 Map.of("role", "assistant", "content", "continued"));
     }
+    @Test
+    void persistsCompletionReadinessDirectiveAsOneStableProviderMessage() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunExecutionLeaseService leaseService = mock(AgentRunExecutionLeaseService.class);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(messages.selectList(any())).thenReturn(List.of());
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(61L);
+            return 1;
+        });
+
+        boolean appended = new AgentRunTranscriptService(messages, parts, tasks, leaseService)
+                .appendCompletionReadinessDirective(new ExecutionFence(7L, "instance-a", 4L), 7L, 4L,
+                        "evidence-a", "Provide the final response now.");
+
+        assertThat(appended).isTrue();
+        AgentRunMessage message = capturedMessage(messages);
+        assertThat(message.getMessageKey()).isEqualTo("provider:4:completion-readiness:evidence-a");
+        assertThat(message.getRole()).isEqualTo("user");
+        assertThat(message.getContent()).isEqualTo("Provide the final response now.");
+        assertThat(message.getMetadata()).contains("completionReadiness").contains("visibility").contains("internal")
+                .contains("evidence-a");
+    }
+
+    @Test
+    void doesNotDuplicateAnExistingCompletionReadinessDirective() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunExecutionLeaseService leaseService = mock(AgentRunExecutionLeaseService.class);
+        when(messages.selectOne(any())).thenReturn(message(61L,
+                "provider:4:completion-readiness:evidence-a", 12L, "user", "already signalled"));
+
+        boolean appended = new AgentRunTranscriptService(messages, parts, tasks, leaseService)
+                .appendCompletionReadinessDirective(new ExecutionFence(7L, "instance-a", 4L), 7L, 4L,
+                        "evidence-a", "Provide the final response now.");
+
+        assertThat(appended).isFalse();
+        verify(messages, never()).insert(any(AgentRunMessage.class));
+        verify(messages, never()).updateById(any(AgentRunMessage.class));
+    }
 }

@@ -26,6 +26,7 @@ import com.labex.labexagent.run.AgentVerificationRecorder;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.runtime.CancellationToken;
+import com.labex.labexagent.tool.FileContentFingerprint;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.diff.DiffService;
@@ -36,6 +37,7 @@ import com.labex.labexagent.execution.ProcessExecutionIdentity;
 import com.labex.labexagent.execution.ProcessExecutionObserver;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.service.StudentProjectService;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -284,6 +286,30 @@ class CommandApprovalOrchestratorTest {
                         "path", "skills/SKILL.md",
                         "expectedState", "absent",
                         "observedState", "absent")));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> mutation = (Map<String, Object>) toolResult.getValue()
+                .durableResultMetadata().get("workspaceMutation");
+        String beforeContent = "skill instructions\n";
+        long beforeBytes = beforeContent.getBytes(StandardCharsets.UTF_8).length;
+        org.assertj.core.api.Assertions.assertThat(mutation)
+                .containsEntry("state", "applied")
+                .containsEntry("changeIds", List.of("change-71"))
+                .containsEntry("targets", List.of(Map.of(
+                        "path", "skills/SKILL.md",
+                        "operation", "delete",
+                        "changeId", "change-71",
+                        "before", Map.of(
+                                "state", "present",
+                                "sha256", FileContentFingerprint.sha256(beforeContent),
+                                "bytes", beforeBytes),
+                        "after", Map.of("state", "absent", "verified", true))));
+        org.mockito.ArgumentCaptor<Map<String, Object>> workspacePayload = org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(lifecycle).appendEvent(eq(71L), eq("WORKSPACE_CHANGED"), workspacePayload.capture(),
+                eq("command-lifecycle:v1:approval-71:workspace-changed"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> eventMutation = (Map<String, Object>) workspacePayload.getValue()
+                .get("workspaceMutation");
+        org.assertj.core.api.Assertions.assertThat(eventMutation).isEqualTo(mutation);
         org.assertj.core.api.Assertions.assertThat(GSON.toJson(toolResult.getValue().durableResultMetadata()))
                 .doesNotContain(workspace.toAbsolutePath().normalize().toString());
         org.mockito.ArgumentCaptor<String> transcriptResult = org.mockito.ArgumentCaptor.forClass(String.class);

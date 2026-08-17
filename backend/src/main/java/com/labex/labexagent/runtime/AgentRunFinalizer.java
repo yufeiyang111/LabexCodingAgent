@@ -9,7 +9,7 @@ import org.springframework.stereotype.Service;
 
 /** 将模型的 final 文本转换为服务器证据判定，模型本身不能设置完成布尔值。 */
 @Service
-public final class AgentRunFinalizer {
+public class AgentRunFinalizer {
     private final RunCompletionEvidenceService evidenceService;
 
     public AgentRunFinalizer(RunCompletionEvidenceService evidenceService) {

@@ -39,7 +39,7 @@ import org.springframework.stereotype.Component;
  * wired by Task 3.2 and Task 4.2. No second injection path exists here.
  */
 @Component
-public final class ScopedSecretLeaseService {
+public class ScopedSecretLeaseService {
 
     public static final long DEFAULT_LEASE_TTL_SECONDS = 60;
     public static final long MAX_LEASE_TTL_SECONDS = 300;

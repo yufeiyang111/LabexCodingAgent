@@ -142,22 +142,22 @@ onBeforeUnmount(() => { document.removeEventListener('click', closeContextMenu) 
 </script>
 <style scoped>
 .ftn { user-select: none; font-size: 13px; }
-.ftn-row { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 6px; cursor: pointer; color: #374151; transition: background 0.12s ease; margin: 1px 0; outline: none; border: 2px solid transparent; }
-.ftn-row:hover { background: #f3f4f6; }
-.ftn-row:focus, .ftn-row:focus-visible, .ftn-row:active { outline: none !important; background: transparent; }
-.ftn-row.selected { background: #eef2ff; border-color: #c7d2fe; }
-.ftn-row.selected .ftn-name { color: #4338ca; font-weight: 500; }
-.ftn-row.dir.selected { background: #eef2ff; border-color: #c7d2fe; }
-.ftn-arrow { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: #9ca3af; transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1); }
-.ftn-arrow.open { transform: rotate(90deg); color: #6366f1; }
+.ftn-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; cursor: pointer; color: #3f3f46; transition: all 0.12s ease; margin: 2px 0; outline: none; border: 1px solid transparent; }
+.ftn-row:hover { background: #f4f4f5; color: #18181b; }
+.ftn-row:focus, .ftn-row:focus-visible, .ftn-row:active { outline: none !important; }
+.ftn-row.selected { background: #f4f4f5; border-color: #e4e4e7; color: #09090b; font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+.ftn-row.selected .ftn-name { color: #09090b; font-weight: 600; }
+.ftn-row.dir.selected { background: #f4f4f5; border-color: #e4e4e7; }
+.ftn-arrow { width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: #71717a; transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.ftn-arrow.open { transform: rotate(90deg); color: #18181b; }
 .ftn-folder-icon { flex-shrink: 0; display: flex; align-items: center; transition: all 0.15s ease; }
 .ftn-file-icon { flex-shrink: 0; display: flex; align-items: center; }
-.ftn-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 13px; }
-.ftn-count { font-size: 10px; color: #9ca3af; background: #f3f4f6; padding: 1px 6px; border-radius: 8px; flex-shrink: 0; }
-.ftn-children { padding-left: 6px; margin-left: 8px; border-left: 1px solid #e5e7eb; }
-.ftn-loading { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: #9ca3af; font-size: 12px; }
-.ftn-load-more { width: calc(100% - 8px); margin: 5px 4px; padding: 5px 8px; border: 1px solid #dbe1f0; border-radius: 5px; background: #fff; color: #4f46e5; font: inherit; font-size: 12px; cursor: pointer; }
-.ftn-load-more:hover { background: #eef2ff; border-color: #c7d2fe; }
+.ftn-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; }
+.ftn-count { font-size: 10px; color: #a1a1aa; background: #f4f4f5; padding: 1px 6px; border-radius: 8px; flex-shrink: 0; }
+.ftn-children { padding-left: 6px; margin-left: 8px; border-left: 1px solid #e4e4e7; }
+.ftn-loading { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: #71717a; font-size: 12px; }
+.ftn-load-more { width: calc(100% - 8px); margin: 5px 4px; padding: 5px 8px; border: 1px solid #e4e4e7; border-radius: 6px; background: #fff; color: #18181b; font: inherit; font-size: 12px; cursor: pointer; }
+.ftn-load-more:hover { background: #f4f4f5; border-color: #d4d4d8; }
 .ftn-spinner { width: 14px; height: 14px; border: 2px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: ftn-spin 0.6s linear infinite; }
 @keyframes ftn-spin { to { transform: rotate(360deg); } }
 .ftn-action-btn { display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border: none; background: transparent; color: #9ca3af; cursor: pointer; border-radius: 4px; padding: 0; flex-shrink: 0; }

@@ -49,7 +49,7 @@ import org.springframework.stereotype.Component;
  * redaction-safe {@link ValidationError}s and no new revision.
  */
 @Component
-public final class AgentProjectConfigRevisionService {
+public class AgentProjectConfigRevisionService {
 
     /** First accepted revision created for a project. */
     public static final long INITIAL_REVISION = 1L;

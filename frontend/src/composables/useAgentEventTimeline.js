@@ -260,6 +260,11 @@ export function useAgentEventTimeline(options) {
         assistantMsg.plan = data.summary || data.plan || null
         assistantMsg.planJson = data.planJson || null
         break
+      case 'COMPLETION_READY':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.completionReadiness = data
+        scheduleAgentRender()
+        break
       case 'COMPLETION_EVIDENCE':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
         if (data.satisfied === true) {

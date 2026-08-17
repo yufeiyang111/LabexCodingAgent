@@ -5,17 +5,17 @@
         <span class="chevron-icon" :class="{ rotated: isTreeCollapsed }">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
         </span>
-        <span class="header-title-text">文件资源管理器</span>
+        <span class="header-title-text">资源管理器</span>
       </div>
       <div class="ws-sidebar-actions" @click.stop>
         <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="$emit('create-file')" title="新建文件">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
         </button>
-        <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="$emit('create-dir')" title="新建文件夹">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-        </button>
         <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="$emit('refresh')" title="刷新">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+        <button class="ws-btn ws-btn-ghost ws-btn-sm btn-collapse-rail" @click="$emit('collapse-sidebar')" title="收起资源管理器">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
         </button>
       </div>
     </div>

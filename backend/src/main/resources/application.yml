@@ -67,6 +67,8 @@ labex-agent:
     read-max-chars: ${LABEX_AGENT_TOOL_OUTPUT_READ_MAX_CHARS:4000}
     model-max-lines: ${LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_LINES:2000}
     model-max-bytes: ${LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_BYTES:51200}
+  model-turn:
+    total-timeout-ms: ${LABEX_AGENT_MODEL_TURN_TOTAL_TIMEOUT_MS:300000}
   loop:
     hard-max-iterations: ${LABEX_AGENT_HARD_MAX_ITERATIONS:0}
     soft-max-iterations: ${LABEX_AGENT_SOFT_MAX_ITERATIONS:0}

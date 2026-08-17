@@ -6,7 +6,7 @@ import com.labex.labexagent.tool.ToolResult;
 import org.springframework.stereotype.Service;
 
 @Service
-public final class AgentInteractionPauser {
+public class AgentInteractionPauser {
     private final AgentTaskService taskService;
 
     public AgentInteractionPauser(AgentTaskService taskService) {

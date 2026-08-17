@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
  * 在无 Spring 上下文的测试中回退到 {@link WorkerPolicy#fallbackDefaults()}。
  */
 @Component
-public final class WorkerResourceDefaults implements InitializingBean {
+public class WorkerResourceDefaults implements InitializingBean {
 
     @Value("${labex-agent.worker.resources.cpu-millis:1000}")
     private int cpuMillis;

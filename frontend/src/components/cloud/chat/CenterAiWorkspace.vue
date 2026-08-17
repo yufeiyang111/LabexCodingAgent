@@ -202,16 +202,14 @@
                       :is-running="msg.timing.isRunning"
                     />
 
-                    <!-- 消息工具栏与时间 -->
+                    <!-- 消息工具栏与时间 (无边框/无中文，靠近悬浮时显示) -->
                     <div class="msg-actions-bar">
                       <span v-if="msg.timestamp" class="msg-time">{{ formatTime(msg.timestamp) }}</span>
                       <button class="msg-action-btn" title="复制内容" @click.stop="emit('copy-message', msg.content)">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                        <span>复制</span>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                       </button>
                       <button class="msg-action-btn" title="插入到编辑器" v-if="activePath" @click.stop="emit('insert-editor', msg.content)">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        <span>插入</span>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                       </button>
                     </div>
                   </div>
@@ -309,35 +307,23 @@
     <div v-show="currentTab === 'review'" class="center-subtab-pane">
       <ChangesPanel
         :changes="sessionChanges || []"
+        :project-id="projectId"
+        :refresh-key="changesRefreshKey"
         :is-dark="isDark"
         @open-diff="f => emit('open-file-diff', f)"
+        @revert="c => emit('revert-change', c)"
+        @undo="c => emit('undo-change', c)"
       />
     </div>
 
     <!-- ==================== TAB 3: 用量 (USAGE) ==================== -->
-    <div v-show="currentTab === 'usage'" class="center-subtab-pane center-usage-pane">
-      <div class="center-usage-grid">
-        <div class="usage-summary-card">
-          <div class="stat-big-title">总 Token 消耗</div>
-          <div class="stat-big-number">{{ (tokenUsage?.totalTokens || 0) >= 1000 ? ((tokenUsage?.totalTokens || 0) / 1000).toFixed(1) + 'K' : (tokenUsage?.totalTokens || 0) }}</div>
-          <div class="stat-sub">{{ tokenUsage?.callCount || 0 }} 次模型调用</div>
-        </div>
-        <div class="usage-summary-card">
-          <div class="stat-label">输入 Tokens</div>
-          <div class="stat-val prompt">{{ tokenUsage?.promptTokens || 0 }}</div>
-        </div>
-        <div class="usage-summary-card">
-          <div class="stat-label">输出 Tokens</div>
-          <div class="stat-val completion">{{ tokenUsage?.completionTokens || 0 }}</div>
-        </div>
-      </div>
-      <div class="center-usage-chart-wrap" v-if="tokenUsage?.totalTokens > 0">
-        <TokenChart
-          :prompt-tokens="tokenUsage.promptTokens"
-          :completion-tokens="tokenUsage.completionTokens"
-          :call-count="tokenUsage.callCount"
-        />
-      </div>
+    <div v-show="currentTab === 'usage'" class="center-subtab-pane">
+      <UsagePanel
+        :token-usage="tokenUsage"
+        :all-token-stats="allTokenStats"
+        :session-history="sessionHistory"
+        :is-dark="isDark"
+      />
     </div>
 
     <!-- 底部微状态指示条 -->
@@ -365,15 +351,32 @@ const TokenChart = defineAsyncComponent(() => import('../TokenChart.vue'))
 const AgentTimer = defineAsyncComponent(() => import('../AgentTimer.vue'))
 const FileChangesSummaryCard = defineAsyncComponent(() => import('./FileChangesSummaryCard.vue'))
 const ChangesPanel = defineAsyncComponent(() => import('../ChangesPanel.vue'))
+const UsagePanel = defineAsyncComponent(() => import('../UsagePanel.vue'))
 
 const props = defineProps({
   activeTab: {
     type: String,
     default: 'chat',
   },
+  projectId: {
+    type: [Number, String],
+    default: null,
+  },
+  changesRefreshKey: {
+    type: [Number, String],
+    default: 0,
+  },
   sessionChanges: {
     type: Array,
     default: () => [],
+  },
+  sessionHistory: {
+    type: Array,
+    default: () => [],
+  },
+  allTokenStats: {
+    type: Object,
+    default: null,
   },
   isDark: {
     type: Boolean,
@@ -498,6 +501,8 @@ const emit = defineEmits([
   'insert-editor',
   'review-changes',
   'open-file-diff',
+  'revert-change',
+  'undo-change',
   'toggle-terminal',
 ])
 
@@ -540,27 +545,33 @@ const showScrollBtn = ref(false)
 const showScrollTopBtn = ref(false)
 const currentMsgIdx = ref(0)
 
+let centerScrollTimeout = null
 function onScroll(e) {
   const el = e.target
+  if (!el) return
   const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
   showScrollBtn.value = distanceFromBottom > 150
   showScrollTopBtn.value = el.scrollTop > 150
   userScrolled.value = distanceFromBottom > 80
 
-  const items = el.querySelectorAll('.center-msg-item')
-  if (items && items.length > 0) {
-    const containerTop = el.getBoundingClientRect().top + 60
-    let found = 0
-    for (let i = 0; i < items.length; i++) {
-      const r = items[i].getBoundingClientRect()
-      if (r.bottom >= containerTop) {
+  if (centerScrollTimeout) clearTimeout(centerScrollTimeout)
+  centerScrollTimeout = setTimeout(() => {
+    if (!scrollPaneRef.value) return
+    const items = scrollPaneRef.value.querySelectorAll('.center-msg-item')
+    if (items && items.length > 0) {
+      const containerTop = scrollPaneRef.value.getBoundingClientRect().top + 60
+      let found = 0
+      for (let i = 0; i < items.length; i++) {
+        const r = items[i].getBoundingClientRect()
+        if (r.bottom >= containerTop) {
+          found = i
+          break
+        }
         found = i
-        break
       }
-      found = i
+      currentMsgIdx.value = found
     }
-    currentMsgIdx.value = found
-  }
+  }, 120)
 }
 
 function scrollToBottomManual() {
@@ -584,9 +595,12 @@ function scrollToTopManual() {
   }
 }
 
+let centerScrollRaf = null
 function scrollDown(force = false) {
   if (userScrolled.value && !force) return
-  nextTick(() => {
+  if (centerScrollRaf) return
+  centerScrollRaf = requestAnimationFrame(() => {
+    centerScrollRaf = null
     if (scrollPaneRef.value) {
       scrollPaneRef.value.scrollTop = scrollPaneRef.value.scrollHeight
     }
@@ -604,11 +618,15 @@ function navigateMessage(direction) {
 }
 
 watch(
-  () => props.messages,
+  () => [
+    props.messages?.length || 0,
+    props.messages?.[props.messages.length - 1]?.content?.length || 0,
+    props.messages?.[props.messages.length - 1]?._thinkingDisplay?.length || 0
+  ],
   () => {
     scrollDown(false)
   },
-  { deep: true }
+  { flush: 'post' }
 )
 
 defineExpose({
@@ -644,75 +662,7 @@ defineExpose({
   overflow-y: auto;
   padding: 16px;
   background: #ffffff;
-}
-
-.center-usage-pane {
-  max-width: 900px;
-  margin: 0 auto;
-  width: 100%;
-  padding: 24px 20px;
-}
-
-.center-usage-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.usage-summary-card {
-  padding: 14px 16px;
-  background: #fafafa;
-  border: 1px solid #e4e4e7;
-  border-radius: 8px;
-}
-
-.stat-big-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #71717a;
-  text-transform: uppercase;
-}
-
-.stat-big-number {
-  font-size: 24px;
-  font-weight: 700;
-  color: #09090b;
-  font-family: 'JetBrains Mono', monospace;
-  margin: 4px 0;
-}
-
-.stat-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #71717a;
-}
-
-.stat-val {
-  font-size: 18px;
-  font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
-  margin-top: 4px;
-}
-
-.stat-val.prompt {
-  color: #3b82f6;
-}
-
-.stat-val.completion {
-  color: #10b981;
-}
-
-.stat-sub {
-  font-size: 11px;
-  color: #a1a1aa;
-}
-
-.center-usage-chart-wrap {
-  background: #fafafa;
-  border: 1px solid #e4e4e7;
-  border-radius: 8px;
-  padding: 16px;
+  height: calc(100% - 64px);
 }
 
 /* 顶部状态栏与 Tab */
@@ -1032,36 +982,42 @@ defineExpose({
 .msg-actions-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding-top: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.center-msg-card:hover .msg-actions-bar,
+.center-msg-card:focus-within .msg-actions-bar {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .msg-actions-bar .msg-time {
-  font-size: 11px;
-  color: #71717a;
+  font-size: 10px;
+  color: #a1a1aa;
   font-family: 'Inter', -apple-system, sans-serif;
-  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 .msg-action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 7px;
+  justify-content: center;
+  padding: 3px;
   border-radius: 4px;
-  border: 1px solid #e4e4e7;
-  background: #ffffff;
-  color: #3f3f46;
-  font-size: 11px;
-  font-weight: 500;
+  border: none;
+  background: transparent;
+  color: #a1a1aa;
   cursor: pointer;
   transition: all 0.12s ease;
 }
 
 .msg-action-btn:hover {
-  background: #09090b;
-  color: #ffffff;
-  border-color: #09090b;
+  background: #f4f4f5;
+  color: #18181b;
 }
 
 /* 浮动回顶/滚底与导航按钮 */

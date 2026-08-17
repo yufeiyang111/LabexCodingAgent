@@ -590,3 +590,107 @@ cd backend && mvn -q -Dtest=ToolExposurePlannerTest,WebSearchProviderSelectorTes
 cd backend && mvn -q -Dtest=WebFetchToolPolicyTest test
 ```
 **Red → Green 证据**：先新增 declared-size 与未知长度流的边界回归；旧工具缺少 `ResponseTooLargeException` / `readBoundedResponse(...)`，聚焦 Maven 测试在编译期失败。实现后同一测试通过：声明超限不会读 body，未知长度超过上限会中止，等于上限的正文仍可返回。
+
+### 切片 N1：模型 watchdog 不能写成用户取消（2026-08-16）
+
+**Public seam**：`AgentModelTurnExecutor.execute(ModelTurnRequest)`、`AgentModelTurnProperties` 与 `AgentLoopEngine` 的错误投影。
+
+**Red**：复现 `20260817-063430-eba032c4-7917-4d1f-add9-4ff5bf339a5f.md` 暴露的时序：模型第 9 轮工具输出于约 06:36:17 完成，第 10 轮约 45 秒没有模型输出后，旧 executor 将 watchdog timeout 写入 parent `ActiveRun`。Loop 因而命中 cancellation 分支，日志/UI 错报“用户主动取消”。该日志与当前工作日期同为 2026-08-17；诊断不依赖绝对墙钟，而以约 46 秒的单轮间隔与旧 45000ms deadline 的对应关系作为证据。
+
+新增回归要求：
+
+- 20ms watchdog 超时时结果是 `ERROR` 且 `reasonCode=model_timeout`；
+- parent `ActiveRun.isCancellationRequested()` 必须仍为 false；
+- provider 实际收到的 transport token 必须收到本地 cancellation，以终止 HTTP/SSE；
+- parent 的真实用户 cancellation 仍向 provider token 传播；
+- 默认配置为 300000ms，`0` 禁用外层总 deadline。
+
+**Green 命令**：
+
+```text
+cd backend && mvn -q -Dtest=AgentModelTurnExecutorTest,AgentModelTurnPropertiesTest,AgentLoopEngineCancellationTest,AgentLoopEngineStreamingContractTest test
+```
+
+**边界**：本切片保留 provider 原始 CoT/`thinking` 的完整流式和日志投影；既不压缩、过滤，也不从 CoT 文本推断“已完成”。“已有充分 durable evidence 却仍继续探索”的收敛将在下一 Native Loop 切片以 Part/verification 事实实现，不能用关键词或 CoT 正则猜测。
+**Green 证据（2026-08-16）**：初始 Red 命令因新的 `AgentModelTurnProperties` 尚未实现而在 test compile 阶段失败，确认测试先行。实现后以下聚焦命令通过：
+
+```text
+cd backend && mvn -q -Dtest=AgentModelTurnExecutorTest,AgentModelTurnPropertiesTest,AgentLoopEngineCancellationTest,AgentLoopEngineStreamingContractTest,AgentLoopEngineModelErrorPolicyTest,AgentLoopEngineLoopPolicyTest,AgentRunProcessorWiringTest test
+```
+
+随后完整后端验证通过：
+
+```text
+cd backend && mvn -q test
+```
+
+完整套件第一次运行揭示极简 Spring `ApplicationContextRunner` 不提供 configuration-properties bean；这是本切片引入的真实装配回归。修复为 `ObjectProvider<AgentModelTurnProperties>` 默认回退后，聚焦与完整验证均通过。`0` 外层 watchdog、timeout 本地 transport cancellation、parent ActiveRun 未取消、`model_timeout` 投影、真实 parent cancellation 向 provider token 传播以及超时后的 late chunk 静默均由回归覆盖。
+
+### 切片 N2：完成证据就绪后的有限收束（2026-08-17）
+
+**用户症状**：模型已经拿到真实文件改动和验证成功的事实，却继续探索、重复安装或重复检查；同时内部 runtime 提示一旦作为 run message 返回，可能错误出现在前端历史中。
+
+**特征化 / Red**：
+
+1. 新增 `AgentCompletionReadinessServiceTest`、transcript/part/engine wiring 回归，旧实现因没有 completion readiness service、稳定 provider directive 与 `COMPLETION_READY` part 映射而无法编译。
+2. 新增 `AgentRunMessageServiceTest#publicHistoryExcludesInternalCompletionReadinessDirective`。旧实现返回了内部 provider user message，断言预期 1 条公开消息、实际 2 条，固定了“内部执行信息泄漏”的真实边界。
+
+**Green 判定**：
+
+- 已验证的 workspace 改动触发一次 directive 与一次 durable event；只读和未满足证据均不触发；已有 directive 不补发 event。
+- directive 的 deterministic key、epoch fence、metadata、provider projection 与 event-to-part 映射可在恢复后重建。
+- native batch 完成后才进行 readiness 评估；工具输入拒绝、等待审批、等待用户、终止或中断批次不触发。
+- `COMPLETION_READY` 在前端 reducer/timeline 仅保存为状态，既不覆盖 assistant final，也不新建工具调用卡。
+- `visibility=internal` 或兼容 completion-readiness key 的 run message 不出现在 task 的公开 `runMessages` snapshot。
+
+**聚焦验证（已通过）**：
+
+```text
+cd backend && mvn -q -Dtest=AgentCompletionReadinessServiceTest,AgentRunTranscriptServiceTest,AgentRunPartServiceTest,AgentFinalizationRecoveryServiceTest,AgentRunMessageServiceTest,AgentLoopEngineNativeToolBatchWiringTest,AgentRunProcessorWiringTest test
+cd frontend && node --test src/composables/agentRunPartState.test.mjs src/composables/agentHistoryReducer.test.mjs src/composables/useAgentEventTimeline.test.mjs
+```
+
+**人工验收待办**：使用受控 Provider 执行“修改一个文件 → `shell` 验证成功 → 下一轮模型 final”的真实 native task；刷新任务详情并重新订阅 SSE，确认能看到最终答复、状态可恢复，且不会看到 `[Runtime completion readiness]` 指令。随后再执行“验证成功但仍有一个可明确描述的用户需求未完成”的场景，确认模型仍可继续调用工具而非被服务端强制结束。
+
+
+### 切片 N3：Workspace 事实在即时与恢复路径一致（2026-08-17）
+
+**公共 seam**：`ToolResult.durableResultMetadata()` 中的 `workspaceMutation` / `workspaceVerification`，即时 `AgentContext`，`AgentRunPart` durable replay，以及 completion-readiness 的触发条件。
+
+**Red**：
+
+1. direct `apply_patch` 删除虽然改了真实文件，但 result 缺少 per-target before/after；approval shell 只有泛化 `workspace_evidence`；普通 shell 的 snapshot diff 没有附着相同事实。
+2. 新增普通 shell 事实测试时，旧 `AgentLoopEngine` 缺少 `attachSnapshotChanges(AgentContext, Path, ToolResult, List)`；approval target 事实断言也先失败。
+3. 新增 workspace mismatch regression 后，旧 reducer 把 completed shell 留在 `intake`，即时 `AgentContext` 和重启后 `AgentRunProgressProjectionService` 都忽略 metadata；`maybeSignalCompletionReadiness(...)` 仍会调用 readiness service。
+4. Green 前的第一次实现仍将 metadata path 通过 status normalizer 变成小写；大小写敏感 target 会错配。回归精确断言 `skills/SKILL.md`，修复为状态值规范化与路径原值规范化分离。
+
+**Green 判定**：
+
+- direct file mutation、approval shell、普通 shell 都产生同一安全 workspace fact 形状；before/after 不泄露内容和绝对路径。
+- delete 的 expected / observed 都是 `absent` 才允许 `after.verified=true`；present target 还要求实际 SHA-256 与字节数和 durable before/after 内容相符。
+- metadata 进入即时 `AgentContextOrchestrator.afterTool(...)`，并由 `AgentRunProgressProjectionService` 从 Tool Part 重新回放；两个入口复用同一 reducer。
+- verified target 只清除自身；mismatch 进入 `repair` 且保留未验证 target；`C:/...` 等绝对路径不会进入 progress projection。
+- context 有未验证 target 时，completion-readiness 不写 Provider-only directive / `COMPLETION_READY` event。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\session\processor.ts:676-712` 的 step snapshot part、`snapshot\index.ts:44-52,778-795` 的 stable snapshot operations、`tool\shell.ts:482-604` 的 shell result metadata。仅复刻“snapshot 与 result metadata 是 durable step facts”的不变量；没有复制实质源码，也没有把单机 session 假设套入多用户 Spring run。
+
+**Green 命令（已通过）**：
+
+```text
+cd backend && mvn -q -Dtest=AgentRunExecutionProgressReducerTest,AgentRunProgressProjectionServiceTest,AgentContextOrchestratorVerificationTrustTest,AgentLoopEngineNativeToolBatchWiringTest test
+```
+
+**更广回归命令（本轮收尾执行）**：
+
+```text
+cd backend && mvn -q -Dtest=WorkspaceMutationEvidenceTest,AgentRunExecutionProgressReducerTest,AgentRunProgressProjectionServiceTest,AgentContextOrchestratorVerificationTrustTest,AgentLoopEngineNativeToolBatchWiringTest,CommandApprovalOrchestratorTest,DiffServiceCasTest,ApplyPatchToolTest,WriteFileToolTest test
+```
+
+**扩展验证（已通过，2026-08-17）**：完整 `cd backend && mvn -q test` 后检查到 342 份 Surefire XML 全部无 failures/errors；相关前端 reducer/timeline 测试 87/87 通过，`cd frontend && npm run build` 通过。
+
+**人工验收待办**：
+
+1. 用普通 native `shell` 删除一个 Skill 或文件，确认实际文件树删除、Tool Part/Event 都有同一 `workspaceMutation` / `workspaceVerification`；刷新后仍一致。
+2. 用需批准的 shell 删除文件，批准后重复刷新/重订阅，确认 target 是 `absent` 且不出现绝对路径或内部 Provider 指令。
+3. 在受控开发 fixture 注入“snapshot 显示删除、物理文件仍存在”的 mismatch，确认状态进入 repair、模型看见不匹配事实、不会收到 completion-readiness 提示。
+4. 本切片不验收“模型绝不口头假称成功”的全局 final gate；那是用户已明确留到后续的失败/终态收敛工作。

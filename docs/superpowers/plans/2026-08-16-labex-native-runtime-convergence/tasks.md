@@ -272,3 +272,83 @@ mvn -q -Dtest=CommandApprovalOrchestratorTest,AgentToolCallJournalServiceTest,Ag
 9. **C16 Web Search availability exposure（2026-08-16，已完成）**：将 native `web_search` 的 live schema 暴露绑定到当前 Web Search provider 的无副作用可用性判断；不可用 provider 不占用模型 schema，已持久化 snapshot 保持可回放。参考本地 `tool/registry.ts:267-306` 的 provider-aware schema 过滤，并保持 `websearch.ts:99-140` 的调用期 permission / execution 边界。
 
 10. **C17 Web Fetch bounded response（2026-08-16，已完成）**：把 fetch 的连接/请求/重定向/响应体/模型输出限制收敛为配置，在读流前拒绝声明超限、读流中阻止未知长度超限。参考本地 `tool/webfetch.ts:9-11,56-120`；保留既有出站 URL policy，不增加正常网络操作确认。
+
+### 切片 N1：模型超时不再伪装为用户取消（2026-08-16）
+
+**范围**：先收敛 Native Agent Loop 的模型调用边界；不在本切片实现证据驱动 finalization，也不改 Workspace 真实事实链。
+
+1. 新增 `AgentModelTurnProperties`，唯一承载 `labex-agent.model-turn.total-timeout-ms`；默认 300000ms，`0` 关闭 outer watchdog，不替代 provider 的连接、首包或流空闲超时。
+2. `AgentModelTurnExecutor` 为每轮 provider 调用包装独立 transport cancellation token。用户取消从 parent token 向下传播；watchdog timeout 只触发该 token 与 Future/HTTP stream 的本地停止，绝不能调用 `ActiveRun.requestCancellation()`。
+3. `ModelTurnResult` 为失败携带结构化 reason code；timeout 固定为 `model_timeout`。`AgentLoopEngine` 将其终结为失败并投影一致的 `ERROR`/`DONE` 原因，而不是进入 cancelled 分支。
+4. 不处理或重写 provider 原始 `thinking`/`reasoning` 内容：现有完整流式与运行日志落盘语义保持不变。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\provider\provider.ts:35,37-91,1674-1703`：header、SSE chunk 和可选总超时分别建立 abort signal；参考 `packages\opencode\src\session\llm.ts:321,357-366`：每次 stream 拥有独立的 AbortController，并由请求取消信号传入。LabexAgent 适配为 Spring Boot 多用户 durable run：parent `ActiveRun` 只表示用户/生命周期取消，turn-local token 只表示本轮 transport deadline；未复制实质源码。
+
+**验收**：超时日志和 UI 只能显示“模型响应超时 / model_timeout”，不能显示“用户主动取消”；真实用户发起 interrupt 时 provider 仍立即收到取消信号。随后才进入基于 durable Parts/evidence 的 finalization recovery。
+**完成证据（2026-08-16）**：先以缺失 `AgentModelTurnProperties` 的红灯编译失败固定公共边界；实现后聚焦的 executor、properties、cancel、streaming、model-error、loop-policy、wiring 回归通过，随后完整后端 `mvn -q test` 通过。最小 Spring context 起初暴露 properties 注入假设，已改为 `ObjectProvider` 的默认值回退，避免测试/模块化上下文因可选配置缺失而失去运行器。
+
+### 切片 N2：完成证据就绪后的有限收束（2026-08-17）
+
+**范围**：在当前 `AgentLoopEngine` 的 native 已完成工具批次之后，复用既有 `RunCompletionEvidenceService`，而不是读取模型 CoT 或新建计划工具。当 workspace 已真实变更且服务端验证已满足时，写入一次仅供 Provider 消费的 durable 提示，让下一轮模型先判断是否还有**具体未满足的用户要求**；若没有，则输出最终答复。
+
+**不变量**：
+
+- `RunCompletionEvidence` 是唯一完成事实；模型自述、thinking、关键字和计划状态不参与 readiness 判定。
+- 无变更的只读任务、验证失败任务和存在未解决风险的任务不得产生 readiness 指令。
+- 指令的 key 为 `provider:<epoch>:completion-readiness:<evidence-fingerprint>`；同一证据在恢复/重试后只存在一条。
+- 指令写入和 `COMPLETION_READY` event 必须同事务；已存在指令时不得补发第二个 event。
+- 这是“要求模型收束”的事实提示，不是服务器强制终态：模型仍可为可指认的未完成需求调用工具；最终答复仍走已有 finalization evidence gate。
+- Provider-only 指令必须以 `visibility=internal` 标记，并在 `AgentRunMessageService.publicHistory*` 公开投影边界过滤；不可因为刷新、历史加载或 debug snapshot 展示给用户。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\session\prompt.ts:1141-1183`：循环依据持久化 Message/Part 与 pending tool call 决定退出，而非依据模型口头计划；参考 `session/processor.ts:203-246`：tool part 有明确 running/completed/error 终态；参考 `session/message-v2.ts:109-132`：由持久化 message + part 重建回合。LabexAgent 适配为 Spring Boot 多用户 durable task：不逐行复制参考实现，也不把单机 session loop 的“模型 final 即退出”机械迁移为服务端强制完成；改为已验证 workspace 事实的可恢复引导，保留现有 lease、epoch、outbox 和 finalization 约束。
+
+**Red → Green 命令**：
+
+```text
+# Red（新 completion-readiness service / transcript 指令尚不存在）
+cd backend && mvn -q -Dtest=AgentCompletionReadinessServiceTest,AgentRunTranscriptServiceTest,AgentRunPartServiceTest,AgentLoopEngineNativeToolBatchWiringTest test
+
+# Red（内部 Provider 指令曾错误进入公开 task snapshot）
+cd backend && mvn -q -Dtest=AgentRunMessageServiceTest#publicHistoryExcludesInternalCompletionReadinessDirective test
+
+# Green（完成证据、durable transcript/event/part、公开投影和 engine wiring）
+cd backend && mvn -q -Dtest=AgentCompletionReadinessServiceTest,AgentRunTranscriptServiceTest,AgentRunPartServiceTest,AgentFinalizationRecoveryServiceTest,AgentRunMessageServiceTest,AgentLoopEngineNativeToolBatchWiringTest,AgentRunProcessorWiringTest test
+
+# Green（前端只保存 readiness 状态，不生成可见对话/工具卡）
+cd frontend && node --test src/composables/agentRunPartState.test.mjs src/composables/agentHistoryReducer.test.mjs src/composables/useAgentEventTimeline.test.mjs
+```
+
+**完成证据（2026-08-17）**：第一条 Red 命令先因 `AgentCompletionReadinessService` 与 `appendCompletionReadinessDirective(...)` 缺失而在 test compile 阶段失败。实现后，公开历史回归仍如预期失败（内部 `provider:*:completion-readiness:*` message 返回给了 `publicHistory`）；将 internal visibility 写到 transcript 元数据，并在公开 projection 边界过滤后，两个 Red 路径与上述聚焦 Green 命令均通过。该切片未改写或解析 provider 原始 CoT。
+
+
+### 切片 N3：Workspace 真实事实链跨路径收口（2026-08-17）
+
+**范围**：完成当前 Native Agent Loop 所需的 workspace 事实闭环，不新增工具、不读取或解析 CoT，也不提前实现用户已排期到后续的“失败后全局禁止 final”策略。目标是让 direct file mutation、批准命令和普通 native `shell` 都把同一种服务器事实传到即时上下文、durable Tool Part / Event 和恢复投影。
+
+**实现**：
+
+1. `WorkspaceMutationEvidence` 是唯一的公开事实投影：每个 target 只含安全相对路径、操作、before/after 状态、SHA-256、字节数与 `verified`；不写入文件内容或宿主绝对路径。direct 文件工具在 lease 内使用物理写前/写后事实，snapshot 路径以 durable `PendingChange` 作为 before、实际文件系统作为 after。
+2. 审批 shell 的 `CommandApprovalOrchestrator` 与普通 shell 的 `AgentLoopEngine.attachSnapshotChanges(...)` 都调用同一 `WorkspaceMutationEvidence.verifyPostconditions(...)`。因此 snapshot 证明“命令期间变更”，而 physical postcondition 才证明“目标现在符合预期”。
+3. `AgentRunExecutionProgressReducer` 优先消费 durable `workspaceMutation` / `workspaceVerification` metadata，而不是根据工具名或 shell 文本推断。它在即时 `AgentContextOrchestrator.afterTool(...)` 和 `AgentRunProgressProjectionService` 的重放中使用同一规则：verified target 仅清除自身；mismatch 保留 target、进入 `repair`；不存在或 unavailable postcondition 保持未验证。
+4. `AgentLoopEngine.maybeSignalCompletionReadiness(...)` 在 context 存在未验证 target 时不调用 readiness service。该约束只阻止“已有足够事实”提示，并不替代后续的 final/失败状态机。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\session\processor.ts:676-712` 的 step-start / step-finish snapshot 持久化、`snapshot\index.ts:44-52,778-795` 的 `track/patch/restore/revert/diff` 单一 snapshot seam，以及 `tool\shell.ts:482-604` 的 shell output / exit / truncate metadata。LabexAgent 沿用 Spring 多用户、workspace lease、execution epoch、durable transcript 的所有权模型：将参考中的单进程 snapshot 生命周期适配为 change-set + postcondition evidence；未复制实质源码。
+
+**Red → Green 证据**：
+
+```text
+# Red：direct delete 缺少 target before/after 事实；approval 只带笼统字符串；普通 shell 无 fact attachment
+cd backend && mvn -q -Dtest=ApplyPatchToolTest#deleteMutatesTheRealWorkspaceBeforeReportingDurableMutationEvidence test
+cd backend && mvn -q -Dtest=CommandApprovalOrchestratorTest#approvedDeletionProjectsVerifiedWorkspaceEvidenceIntoTheDeferredToolResult test
+cd backend && mvn -q -Dtest=AgentLoopEngineNativeToolBatchWiringTest#shellSnapshotChangesProjectServerVerifiedWorkspaceFacts test
+
+# Red：durable workspace mismatch 原先在 reducer 中被当作普通 completed shell 忽略；readiness 仍会被调用
+cd backend && mvn -q -Dtest=AgentRunExecutionProgressReducerTest,AgentRunProgressProjectionServiceTest,AgentContextOrchestratorVerificationTrustTest,AgentLoopEngineNativeToolBatchWiringTest test
+
+# Green：三条 mutation 路径、即时投影、重启重放、mismatch repair 和 readiness gate
+cd backend && mvn -q -Dtest=WorkspaceMutationEvidenceTest,AgentRunExecutionProgressReducerTest,AgentRunProgressProjectionServiceTest,AgentContextOrchestratorVerificationTrustTest,AgentLoopEngineNativeToolBatchWiringTest,CommandApprovalOrchestratorTest,DiffServiceCasTest,ApplyPatchToolTest,WriteFileToolTest test
+```
+
+**验证记录（2026-08-17）**：上方 workspace 聚焦回归通过；随后执行完整 `cd backend && mvn -q test`，并检查 342 份 Surefire XML，均无 failures/errors。前端相关 reducer/timeline 测试为 87/87 通过，`cd frontend && npm run build` 通过（构建仅给出既有动态 import / third-party PURE comment 提示）。
+
+**已知边界**：workspace postcondition 是文件事实，不等同于业务/编译/测试通过。后续仍需按用户决定的顺序完成 shell 非零/超时/权限/异常的全局 final truthfulness、verification 终态与循环保护 Part 一致性；真实 worker/browser smoke 也未在此切片宣称完成。

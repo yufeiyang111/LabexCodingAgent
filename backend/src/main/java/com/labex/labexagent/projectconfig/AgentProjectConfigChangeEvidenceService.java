@@ -37,7 +37,7 @@ import org.springframework.stereotype.Component;
  * found.
  */
 @Component
-public final class AgentProjectConfigChangeEvidenceService {
+public class AgentProjectConfigChangeEvidenceService {
 
     /** Evidence location relative to the project workspace root. */
     public static final String EVIDENCE_RELATIVE_DIR = ".labex-agent/config-evidence";

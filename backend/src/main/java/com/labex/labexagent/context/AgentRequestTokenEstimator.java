@@ -19,7 +19,7 @@ import org.springframework.stereotype.Service;
  * 更高优先级证据。</p>
  */
 @Service
-public final class AgentRequestTokenEstimator {
+public class AgentRequestTokenEstimator {
     private static final Gson GSON = new Gson();
     private static final int REQUEST_ENVELOPE_TOKENS = 12;
     private static final int MESSAGE_ENVELOPE_TOKENS = 4;

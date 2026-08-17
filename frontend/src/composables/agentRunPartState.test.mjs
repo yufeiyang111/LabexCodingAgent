@@ -157,3 +157,16 @@ test('keeps completion evidence details when a durable finalization blocker foll
   assert.deepEqual(target.completionBlockedEvidence.unresolvedRisks, ['missing verification'])
   assert.equal(target.completionBlockedEvidence.reasonCode, 'completion_evidence_unsatisfied')
 })
+
+
+test('retains completion readiness as internal durable state without replacing visible content', () => {
+  const target = message()
+  applyRunPartSnapshot(target, [
+    { partId: 61, partKey: 'completion:ready:evidence-a', partType: 'completion_readiness',
+      output: '{"taskId":9,"reasonCode":"verified_workspace_change","satisfied":true}', sequence: 19 }
+  ])
+
+  assert.equal(target.content, '')
+  assert.equal(target.completionReadiness.reasonCode, 'verified_workspace_change')
+  assert.equal(target.completionReadiness.satisfied, true)
+})

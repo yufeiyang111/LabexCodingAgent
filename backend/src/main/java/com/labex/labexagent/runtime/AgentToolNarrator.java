@@ -9,7 +9,7 @@ import java.util.Locale;
  * 负责把工具动作与结果转换为用户可见的过程说明，不持有任务或 SSE 状态。
  */
 @org.springframework.stereotype.Service
-public final class AgentToolNarrator {
+public class AgentToolNarrator {
     String buildToolThought(String toolName, JsonObject args, boolean recoveredFromText, String visibleLanguage) {
         String tool = this.safeTool(toolName);
         String target = this.toolTarget(tool, args);

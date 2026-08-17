@@ -185,18 +185,19 @@ class AgentLoopEngineStreamingContractTest {
         assertFalse(source.contains("extracted tool={} args={}"));
     }
     @Test
-    void wrapsProviderStreamWithHardTimeout() {
-        assertTrue(source.contains("PROVIDER_FIRST_EVENT_TIMEOUT_MS"));
+    void keepsModelWatchdogTimeoutSeparateFromUserCancellation() {
+        assertTrue(source.contains("new TurnCancellationToken(request.cancellationToken())"));
+        assertTrue(source.contains("turnCancellationToken.requestTimeoutCancellation()"));
         assertTrue(source.contains("future.get(timeoutMs, TimeUnit.MILLISECONDS)"));
         assertTrue(source.contains("catch (TimeoutException timeout)"));
-        assertTrue(source.contains("cancellationRequester.accept(request.cancellationToken())"));
         assertTrue(source.contains("future.cancel(true)"));
-        assertTrue(source.contains("模型服务响应超时"));
+        assertTrue(source.contains("if (turnCancellationToken.isCancellationRequested())"));
+        assertTrue(source.contains("model_timeout"));
+        assertFalse(source.contains("cancellationRequester.accept(request.cancellationToken())"));
     }
-
     @Test
     void failsFastForModelTimeoutsAndCapsInitialContext() {
-        assertTrue(source.contains("if (this.isModelTimeoutError(errMsg))"));
+        assertTrue(source.contains("\"model_timeout\".equals(lr.get(\"reasonCode\")) || this.isModelTimeoutError(errMsg)"));
         assertTrue(source.contains("scheduleModelRetry("));
         assertTrue(source.contains("sendPersistedEvent(sse, conv, retry.event())"));
         assertFalse(source.contains("sendEvent(sse, conv, \"RETRY_SCHEDULED\""));

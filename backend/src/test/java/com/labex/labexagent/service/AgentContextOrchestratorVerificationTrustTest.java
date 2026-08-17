@@ -13,6 +13,8 @@ import com.labex.labexagent.run.AgentRunExecutionProgressReducer;
 import com.labex.labexagent.runtime.AgentContextManager;
 import com.labex.labexagent.tool.ToolResult;
 import java.nio.file.Files;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -63,6 +65,40 @@ class AgentContextOrchestratorVerificationTrustTest {
         assertThat(context.getStage()).isEqualTo("repair");
         assertThat(context.hasTrustedVerification()).isFalse();
     }
+
+    @Test
+    void workspacePostconditionMismatchFromToolResultStaysUnverifiedInImmediateContext() throws Exception {
+        AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(
+                mock(AgentContextManager.class), mock(ProjectIndexService.class),
+                mock(AgentWorkspaceMemoryService.class), mock(LspSessionManager.class),
+                mock(ProjectCodeMapService.class), new AgentRunExecutionProgressReducer());
+        StudentProject project = new StudentProject();
+        project.setWorkspacePath(Files.createDirectories(workspace).toString());
+        AgentContext context = AgentContext.create("session", 1, project, "conversation", 1L);
+        ToolResult result = ToolResult.ok("exit=0")
+                .withWorkspaceChangeEvidence(null, List.of("change-1"), Map.of(
+                        "state", "applied",
+                        "targets", List.of(Map.of(
+                                "path", "skills/SKILL.md",
+                                "operation", "delete",
+                                "after", Map.of("state", "present", "verified", false)))))
+                .withWorkspaceVerification(Map.of(
+                        "state", "mismatch",
+                        "targets", List.of(Map.of(
+                                "path", "skills/SKILL.md",
+                                "expectedState", "absent",
+                                "observedState", "present"))));
+
+        orchestrator.afterTool(context, "shell", new JsonObject(), result);
+
+        assertThat(context.getStage()).isEqualTo("repair");
+        assertThat(context.getWriteCount()).isEqualTo(1);
+        assertThat(context.getVerificationCount()).isZero();
+        assertThat(context.hasTrustedVerification()).isFalse();
+        assertThat(context.getUnverifiedChangeTargets()).containsExactly("skills/SKILL.md");
+        assertThat(context.hasUnverifiedChanges()).isTrue();
+    }
+
     @Test
     void manualReadWithShaCreatesTrustedVerificationEvidence() throws Exception {
         AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(

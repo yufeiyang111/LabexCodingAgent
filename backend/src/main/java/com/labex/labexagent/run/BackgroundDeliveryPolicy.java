@@ -3,7 +3,7 @@ package com.labex.labexagent.run;
 import org.springframework.stereotype.Component;
 
 @Component
-public final class BackgroundDeliveryPolicy {
+public class BackgroundDeliveryPolicy {
     public Decision evaluate(Request request) {
         if (request == null || request.action() == null) return Decision.deny("delivery action is required");
         if (!request.agentOwnedBranch()) return Decision.deny("human-managed branches are protected");

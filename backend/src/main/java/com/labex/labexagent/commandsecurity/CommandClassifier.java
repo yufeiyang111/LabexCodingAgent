@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service;
  * (bulk deletion, git history/working-tree overwrite, force push) require approval.
  */
 @Service
-public final class CommandClassifier {
+public class CommandClassifier {
     public static final String POLICY_VERSION = "command-policy-v3";
     private static final Pattern CONTROL_CHARACTER = Pattern.compile("[\\p{Cntrl}]");
     private static final Pattern WINDOWS_VARIABLE = Pattern.compile("%[^%\\s]+%", Pattern.CASE_INSENSITIVE);

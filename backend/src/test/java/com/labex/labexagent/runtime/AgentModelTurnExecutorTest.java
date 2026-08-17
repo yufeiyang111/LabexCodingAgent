@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -145,28 +147,74 @@ class AgentModelTurnExecutorTest {
     }
 
     @Test
-    void timesOutAndRequestsCancellation() throws Exception {
-        boolean[] cancelled = {false};
-        CancellationToken token = new CancellationToken() {
-            @Override
-            public boolean isCancellationRequested() { return cancelled[0]; }
-            @Override
-            public Registration onCancellation(Runnable listener) { return Registration.noop(); }
-        };
-        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 20,
-                ignored -> cancelled[0] = true);
+    void waitsForProviderCompletionWhenTheOuterWatchdogIsDisabled() throws Exception {
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 0L);
         LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {
-            try { Thread.sleep(500); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            try {
+                Thread.sleep(40);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            callback.accept(chunk("text_delta", "late but completed", null, null, null));
+            callback.accept(chunk("done", "", null, null, null));
         });
 
-        AgentModelTurnExecutor.ModelTurnRequest request = request(provider, new ArrayList<>()).withCancellationToken(token);
-        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request);
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request(provider, new ArrayList<>()));
+
+        assertEquals(AgentModelTurnExecutor.ResultType.TEXT, result.type());
+        assertEquals("late but completed", result.content());
+    }
+    @Test
+    void timesOutWithoutMarkingTheParentRunAsUserCancelled() throws Exception {
+        AgentCancellationRegistry.ActiveRun parentRun = new AgentCancellationRegistry()
+                .register("timeout-parent", 7, 12, 51L);
+        AtomicReference<CancellationToken> providerToken = new AtomicReference<>();
+        AtomicBoolean providerCancellationObserved = new AtomicBoolean();
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 20);
+        LlmProvider provider = blockingProvider(providerToken, providerCancellationObserved);
+
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(
+                request(provider, new ArrayList<>()).withCancellationToken(parentRun));
 
         assertEquals(AgentModelTurnExecutor.ResultType.ERROR, result.type());
         assertTrue(result.message().contains("超时") || result.message().toLowerCase().contains("timed out"));
-        assertTrue(cancelled[0]);
+        assertFalse(parentRun.isCancellationRequested());
+        assertTrue(providerCancellationObserved.get());
+        assertEquals("model_timeout", result.toMap().get("reasonCode"));
     }
 
+    private LlmProvider blockingProvider(AtomicReference<CancellationToken> providerToken,
+                                         AtomicBoolean providerCancellationObserved) {
+        return new LlmProvider() {
+            @Override public String getProviderId() { return "test"; }
+            @Override public String getProviderName() { return "test"; }
+            @Override public boolean supportsStreaming() { return true; }
+            @Override public boolean supportsToolCalling() { return true; }
+            @Override public ProviderCapabilities capabilities() { return ProviderCapabilities.OPENAI_COMPATIBLE; }
+            @Override public Map<String, Object> chatWithTools(String systemPrompt, List<Map<String, Object>> messages,
+                                                                List<Map<String, Object>> tools, LlmConfig config) {
+                return Map.of();
+            }
+            @Override public void chatStream(String systemPrompt, List<Map<String, Object>> messages,
+                                             List<Map<String, Object>> tools, LlmConfig config,
+                                             Consumer<StreamChunk> callback) {
+                throw new AssertionError("Executor must provide a cancellation token to the provider");
+            }
+            @Override public void chatStream(String systemPrompt, List<Map<String, Object>> messages,
+                                             List<Map<String, Object>> tools, LlmConfig config,
+                                             CancellationToken cancellationToken, Consumer<StreamChunk> callback) {
+                providerToken.set(cancellationToken);
+                try (CancellationToken.Registration ignored = cancellationToken.onCancellation(
+                        () -> providerCancellationObserved.set(true))) {
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        };
+    }
     private AgentModelTurnExecutor.ModelTurnRequest request(LlmProvider provider, List<String> events) {
         return new AgentModelTurnExecutor.ModelTurnRequest(
                 "system", List.of(Map.of("role", "user", "content", "hello")),

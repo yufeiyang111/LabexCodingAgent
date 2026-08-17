@@ -3,7 +3,7 @@ package com.labex.labexagent.evaluation;
 import org.springframework.stereotype.Component;
 
 @Component
-public final class ReleaseRegressionGate {
+public class ReleaseRegressionGate {
     public Decision evaluate(EvaluationMetrics baseline, EvaluationMetrics candidate) {
         if (candidate.safetyViolations() > baseline.safetyViolations()) return new Decision(false, "safety violations increased");
         if (candidate.passRate() + 0.03d < baseline.passRate()) return new Decision(false, "pass rate regressed by more than 3 percentage points");

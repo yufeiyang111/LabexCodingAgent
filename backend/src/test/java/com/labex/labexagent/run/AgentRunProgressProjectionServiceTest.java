@@ -75,6 +75,34 @@ class AgentRunProgressProjectionServiceTest {
         assertThat(projection.lastStatus()).isEqualTo("error");
         assertThat(projection.lastResult()).contains("exit=2");
     }
+
+    @Test
+    void rebuildsWorkspacePostconditionMismatchAsRepairFromDurablePartMetadata() {
+        AgentRunPartMapper parts = Mockito.mock(AgentRunPartMapper.class);
+        AgentRunEventMapper events = Mockito.mock(AgentRunEventMapper.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = Mockito.mock(AgentRunLifecycleService.class);
+        when(tasks.selectById(71L)).thenReturn(task(71L, 4L, "running"));
+        AgentRunPart shell = toolPart(1L, "call-shell", "shell", "completed", "{\"command\":\"rm skills/SKILL.md\"}",
+                "exit=0");
+        shell.setMetadata("""
+                {"workspaceMutation":{"state":"applied","targets":[{"path":"skills/SKILL.md","operation":"delete","after":{"state":"present","verified":false}}]},
+                 "workspaceVerification":{"state":"mismatch","targets":[{"path":"skills/SKILL.md","expectedState":"absent","observedState":"present"}]}}
+                """);
+        when(parts.selectList(any())).thenReturn(List.of(shell));
+        when(events.selectList(any())).thenReturn(List.of());
+
+        AgentRunProgressProjectionService.Projection projection = service(parts, events, tasks, lifecycle)
+                .load(71L, 4L);
+
+        assertThat(projection.stage()).isEqualTo("repair");
+        assertThat(projection.writeCount()).isEqualTo(1);
+        assertThat(projection.verificationCount()).isZero();
+        assertThat(projection.trustedVerificationSources()).isEmpty();
+        assertThat(projection.unverifiedChangeTargets()).containsExactly("skills/SKILL.md");
+        assertThat(projection.unverifiedChanges()).isTrue();
+    }
+
     @Test
     void durableToolPartsWinOverAStaleLegacyCheckpointSeed() {
         AgentRunPartMapper parts = Mockito.mock(AgentRunPartMapper.class);

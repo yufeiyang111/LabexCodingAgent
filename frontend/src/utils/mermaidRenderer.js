@@ -19,63 +19,68 @@ export async function initMermaid() {
   mermaid.initialize({
     startOnLoad: false,
     suppressErrorRendering: true,
-    // 'loose' blocks script injection but allows Chinese and special chars.
-    // 'strict' rejects Chinese text nodes which causes "Syntax error in text".
     securityLevel: 'loose',
-    fontFamily: "'Inter', 'Segoe UI', 'Noto Sans SC', sans-serif",
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
     theme: 'base',
     themeVariables: {
       fontSize: '13px',
-      // Black/neutral palette — clear on any light background
       background: '#ffffff',
-      primaryColor: '#f8fafc',
-      primaryTextColor: '#0f172a',
-      primaryBorderColor: '#374151',
-      secondaryColor: '#f1f5f9',
-      tertiaryColor: '#f8fafc',
-      lineColor: '#374151',
+      primaryColor: '#f4f4f5',
+      primaryTextColor: '#09090b',
+      primaryBorderColor: '#27272a',
+      secondaryColor: '#fafafa',
+      tertiaryColor: '#f4f4f5',
+      lineColor: '#27272a',
       edgeLabelBackground: '#ffffff',
-      mainBkg: '#f8fafc',
-      nodeBorder: '#374151',
-      clusterBkg: '#f8fafc',
-      clusterBorder: '#94a3b8',
-      titleColor: '#0f172a',
-      textColor: '#0f172a',
-      // Sequence diagram
-      actorBorder: '#374151',
-      actorBkg: '#f8fafc',
-      actorTextColor: '#0f172a',
-      actorLineColor: '#374151',
-      signalColor: '#0f172a',
-      signalTextColor: '#0f172a',
-      labelBoxBkgColor: '#f8fafc',
-      labelBoxBorderColor: '#374151',
-      labelTextColor: '#0f172a',
-      loopTextColor: '#0f172a',
-      noteBorderColor: '#94a3b8',
+      mainBkg: '#ffffff',
+      nodeBorder: '#18181b',
+      clusterBkg: '#fafafa',
+      clusterBorder: '#d4d4d8',
+      titleColor: '#09090b',
+      textColor: '#09090b',
+      actorBorder: '#18181b',
+      actorBkg: '#f4f4f5',
+      actorTextColor: '#09090b',
+      actorLineColor: '#27272a',
+      signalColor: '#09090b',
+      signalTextColor: '#09090b',
+      labelBoxBkgColor: '#f4f4f5',
+      labelBoxBorderColor: '#27272a',
+      labelTextColor: '#09090b',
+      loopTextColor: '#09090b',
+      noteBorderColor: '#d4d4d8',
       noteBkgColor: '#fef9c3',
-      noteTextColor: '#0f172a',
-      activationBorderColor: '#374151',
-      activationBkgColor: '#e2e8f0',
+      noteTextColor: '#09090b',
+      activationBorderColor: '#18181b',
+      activationBkgColor: '#e4e4e7',
     }
   })
   initialized = true
 }
 
+function decodeEntities(str) {
+  if (!str) return ''
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+}
+
 export async function renderMermaidDiagram(code) {
   await initMermaid()
   const mermaid = await loadMermaid()
-  const id = `mmd-${Date.now().toString(36)}-${(renderCounter++).toString(36)}`
-  const cleanCode = (code || '').trim()
+  const id = `mmd${Math.random().toString(36).substring(2, 8)}${renderCounter++}`
+  const cleanCode = decodeEntities(code || '').trim()
   if (!cleanCode) {
     return { ok: false, error: 'Mermaid 代码为空' }
   }
   try {
     const { svg } = await mermaid.render(id, cleanCode)
-    // mermaid returns a "Syntax error" SVG instead of throwing — detect and
-    // treat it as a render failure so we show our own error UI.
-    if (svg && svg.includes('Syntax error in text')) {
-      return { ok: false, error: 'Mermaid 语法错误，请检查图表代码' }
+    if (svg && (svg.includes('Syntax error in text') || svg.includes('Syntax error in graph'))) {
+      return { ok: false, error: 'Mermaid 语法解析异常，请核对图表代码' }
     }
     return { ok: true, svg }
   } catch (err) {
@@ -83,7 +88,7 @@ export async function renderMermaidDiagram(code) {
   } finally {
     if (typeof document !== 'undefined' && document.body) {
       const stray = document.querySelectorAll(
-        `body > [id^="dmmd-"], body > [id^="mmd-"], body > svg[id^="mmd-"], body > [id^="d${id}"], body > [id="${id}"]`
+        `body > [id^="dmmd"], body > [id^="mmd"], body > svg[id^="mmd"], body > [id^="d${id}"], body > [id="${id}"]`
       )
       stray.forEach(el => el.remove())
     }

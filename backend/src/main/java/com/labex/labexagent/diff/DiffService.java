@@ -12,6 +12,7 @@ import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.WorkspaceContextInvalidator;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.labexagent.workspace.WorkspaceLeaseService;
+import com.labex.labexagent.workspace.WorkspaceMutationEvidence;
 import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.service.StudentProjectService;
 import java.io.IOException;
@@ -158,6 +159,7 @@ public class DiffService {
                 List<PendingChange> changes = new ArrayList<>();
                 List<AgentFileChange> fileChanges = new ArrayList<>();
                 Map<String, Object> workspaceVerification = Map.of();
+                Map<String, Object> workspaceMutation = Map.of();
 
                 phase = "stage_and_persist";
                 long stageStartedNanos = System.nanoTime();
@@ -191,6 +193,7 @@ public class DiffService {
                 timingMs.put("verifyBeforeHashMs", verifyElapsedMs);
                 log.info("DIFF_APPLY_HASH_VERIFIED taskId={} projectId={} verifyMs={}",
                         taskId, project.getProjectId(), verifyElapsedMs);
+                Map<String, Map<String, Object>> beforeTargetStates = this.captureTargetStates(project, changes);
 
                 List<String> snapshotPaths = changes.stream().map(PendingChange::getRelativePath).toList();
                 phase = "snapshot_before";
@@ -208,6 +211,7 @@ public class DiffService {
                         this.writeChange(project, change);
                     }
                     workspaceVerification = this.verifyAppliedChanges(project, changes);
+                    workspaceMutation = WorkspaceMutationEvidence.fromChanges(changes, beforeTargetStates, workspaceVerification);
                 } catch (Exception e) {
                     this.restoreBatchWrites(project, changes);
                     this.markPendingBatchFailed(fileChanges, changes, e);
@@ -238,7 +242,7 @@ public class DiffService {
                     timingMs.put("contextInvalidationMs", contextInvalidationElapsedMs);
                     long totalElapsedMs = elapsedMs(totalStartedNanos);
                     timingMs.put("totalMs", totalElapsedMs);
-                    this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs), workspaceVerification));
+                    this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs), workspaceVerification, workspaceMutation));
                     log.info("DIFF_APPLY_DEFERRED taskId={} projectId={} changeCount={} beforeSnapshotMs={} writeMs={} deferredRecordMs={} metadataRefreshDispatchMs={} contextInvalidationMs={} totalMs={}",
                             taskId, project.getProjectId(), changes.size(), beforeSnapshotElapsedMs, writeElapsedMs,
                             deferredRecordElapsedMs, metadataRefreshElapsedMs, contextInvalidationElapsedMs, totalElapsedMs);
@@ -281,7 +285,7 @@ public class DiffService {
                 timingMs.put("refreshAndInvalidateMs", refreshElapsedMs);
                 long totalElapsedMs = elapsedMs(totalStartedNanos);
                 timingMs.put("totalMs", totalElapsedMs);
-                this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs), workspaceVerification));
+                this.lastApplyTelemetry.set(new ApplyTelemetry("complete", Map.copyOf(timingMs), workspaceVerification, workspaceMutation));
                 log.info("DIFF_APPLY_COMPLETE taskId={} projectId={} totalMs={} stageMs={} verifyMs={} beforeSnapshotMs={} writeMs={} afterSnapshotMs={} snapshotDiffMs={} recordsMs={} refreshMs={}",
                         taskId, project.getProjectId(), totalElapsedMs, stageElapsedMs, verifyElapsedMs,
                         beforeSnapshotElapsedMs, writeElapsedMs, afterSnapshotElapsedMs, snapshotDiffElapsedMs,
@@ -292,7 +296,7 @@ public class DiffService {
         } catch (Exception failure) {
             long totalElapsedMs = elapsedMs(totalStartedNanos);
             timingMs.put("totalMs", totalElapsedMs);
-            this.lastApplyTelemetry.set(new ApplyTelemetry(phase, Map.copyOf(timingMs), Map.of()));
+            this.lastApplyTelemetry.set(new ApplyTelemetry(phase, Map.copyOf(timingMs), Map.of(), Map.of()));
             log.warn("DIFF_APPLY_FAILED taskId={} projectId={} phase={} elapsedMs={} errorType={} error={}",
                     taskId, project.getProjectId(), phase, totalElapsedMs,
                     failure.getClass().getSimpleName(), failure.getMessage());
@@ -388,12 +392,38 @@ public class DiffService {
             target.put("observedState", regularFile ? "present" : "missing_or_not_regular");
             target.put("expectedSha256", expectedHash);
             target.put("observedSha256", observedHash);
+            target.put("expectedBytes", expectedBytes);
+            target.put("observedBytes", observedBytes);
             targets.add(Map.copyOf(target));
             if (!matched) {
                 throw new IOException("Post-write verification failed for target: " + change.getRelativePath());
             }
         }
         return Map.of("state", "verified", "targets", List.copyOf(targets));
+    }
+
+    private Map<String, Map<String, Object>> captureTargetStates(StudentProject project, List<PendingChange> changes)
+            throws IOException {
+        Map<String, Map<String, Object>> states = new LinkedHashMap<>();
+        for (PendingChange change : changes) {
+            if (change == null || change.getRelativePath() == null || change.getRelativePath().isBlank()) {
+                continue;
+            }
+            Path file = this.resolveChangePath(project, change.getRelativePath());
+            states.put(change.getRelativePath(), this.targetState(file));
+        }
+        return Map.copyOf(states);
+    }
+
+    private Map<String, Object> targetState(Path file) throws IOException {
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+            return Map.of("state", "absent");
+        }
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+            return Map.of("state", "not_regular");
+        }
+        long bytes = Files.size(file);
+        return Map.of("state", "present", "sha256", this.sha256(file), "bytes", bytes);
     }
 
     private void restoreBatchWrites(StudentProject project, List<PendingChange> changes) {
@@ -968,9 +998,15 @@ public class DiffService {
     }
 
     public record ApplyTelemetry(String phase, Map<String, Long> timingMs,
-                                 Map<String, Object> workspaceVerification) {
+                                 Map<String, Object> workspaceVerification,
+                                 Map<String, Object> workspaceMutation) {
+        public ApplyTelemetry(String phase, Map<String, Long> timingMs,
+                              Map<String, Object> workspaceVerification) {
+            this(phase, timingMs, workspaceVerification, Map.of());
+        }
+
         static ApplyTelemetry empty() {
-            return new ApplyTelemetry("none", Map.of(), Map.of());
+            return new ApplyTelemetry("none", Map.of(), Map.of(), Map.of());
         }
     }
 

@@ -152,7 +152,11 @@ export function applyRunPartSnapshot(message, parts = [], options = {}) {
       message.content = stripInternalReasoningBlocks(part.output)
       return
     }
-    if (type === 'completion_evidence') {
+    if (type === 'completion_readiness') {
+      message.completionReadiness = parseJson(part.output, parseJson(part.input, {}))
+      return
+    }
+        if (type === 'completion_evidence') {
       const evidence = parseJson(part.output, parseJson(part.input, {}))
       if (evidence.satisfied === true) {
         message.completionEvidence = evidence

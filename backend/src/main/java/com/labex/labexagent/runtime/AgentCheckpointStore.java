@@ -23,7 +23,7 @@ import org.springframework.stereotype.Service;
  * durable Message/Part/Event 后再参与恢复。</p>
  */
 @Service
-public final class AgentCheckpointStore {
+public class AgentCheckpointStore {
     private static final Set<Integer> LEGACY_VERSIONS = Set.of(1, 2);
     private static final int MAX_INVENTORY_ENTRIES = 10_000;
     private static final long MAX_CHECKPOINT_BYTES = 1_048_576L;

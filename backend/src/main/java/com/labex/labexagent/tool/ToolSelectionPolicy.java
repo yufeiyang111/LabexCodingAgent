@@ -16,7 +16,7 @@ import java.util.Set;
  * 内部服务能力，后者只暴露当前模式完成任务真正需要的原子能力。</p>
  */
 @org.springframework.stereotype.Service
-public final class ToolSelectionPolicy {
+public class ToolSelectionPolicy {
     private static final Set<String> IMAGE_TOOLS = Set.of("understand_image", "image");
     private static final Set<String> WEB_SEARCH_TOOLS = Set.of("web_search", "websearch");
     private static final Set<String> WEB_FETCH_TOOLS = Set.of("web_fetch", "webfetch");

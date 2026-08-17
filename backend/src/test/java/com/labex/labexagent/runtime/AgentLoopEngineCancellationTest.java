@@ -1,7 +1,7 @@
 package com.labex.labexagent.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -31,7 +31,7 @@ class AgentLoopEngineCancellationTest {
     }
 
     @Test
-    void streamsModelResponsesWithTheActiveRunCancellationToken() throws Exception {
+    void forwardsUserCancellationToAnIsolatedProviderToken() throws Exception {
         AgentCancellationRegistry.ActiveRun run = new AgentCancellationRegistry()
                 .register("session-7", 7, 12, 51L);
         CapturingProvider provider = new CapturingProvider();
@@ -40,10 +40,13 @@ class AgentLoopEngineCancellationTest {
                 "system", List.of(Map.of("role", "user", "content", "hi")), List.of(), provider,
                 new LlmProvider.LlmConfig("key", "https://example.test", "model", 32, 0.1),
                 1, 51L, "en", run, new NoopSink()));
-        assertSame(run, provider.cancellationToken);
+
+        assertNotSame(run, provider.cancellationToken);
+        assertFalse(provider.cancellationToken.isCancellationRequested());
+        run.requestCancellation();
+        assertTrue(provider.cancellationToken.isCancellationRequested());
         assertEquals(AgentModelTurnExecutor.ResultType.TEXT, result.type());
     }
-
     private static final class NoopSink implements AgentModelTurnExecutor.EventSink {
         public void durable(String type, Object data) {}
         public void transientEvent(String type, Object data) {}

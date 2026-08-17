@@ -8,7 +8,7 @@ import org.springframework.stereotype.Service;
 
 /** 生成不可变的 Provider 请求消息，并在发送前执行原生工具协议校验。 */
 @Service
-public final class AgentProviderMessageProjector {
+public class AgentProviderMessageProjector {
     private final AgentProviderProtocolValidator validator;
 
     public AgentProviderMessageProjector() {

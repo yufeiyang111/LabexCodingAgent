@@ -1,4 +1,4 @@
-﻿import { ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 
 const DEFAULT_LANGUAGE_MAP = {
   js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', vue: 'html',
@@ -34,7 +34,7 @@ export function useWorkspaceFiles(options) {
   const fileContentDirty = ref(false)
   const activeFileReadOnly = ref(false)
   const savingFile = ref(false)
-  const editorReady = ref(false)
+  const editorReady = ref(true)
   const openFiles = ref([])
   const activeTabIndex = ref(-1)
   const detectedLang = ref('plaintext')
@@ -125,7 +125,8 @@ export function useWorkspaceFiles(options) {
     activeFileReadOnly.value = Boolean(file.readOnly)
     fileContent.value = file.content
     fileContentDirty.value = Boolean(file.dirty)
-    detectedLang.value = file.lang
+    detectedLang.value = file.lang || languageForPath(file.path)
+    editorReady.value = true
     queueMicrotask(() => { suppressDirtyTracking = false })
   }
 

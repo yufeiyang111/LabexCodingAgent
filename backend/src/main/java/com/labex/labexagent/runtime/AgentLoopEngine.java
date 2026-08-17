@@ -84,6 +84,8 @@ import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.tool.ToolSchemaCanonicalizer;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
+import com.labex.labexagent.workspace.WorkspaceMutationEvidence;
+import com.labex.labexagent.workspace.WorkspaceOperationIdentity;
 import com.labex.labexagent.worker.SandboxWorker;
 import com.labex.labexagent.worker.WorkerRunSpec;
 import com.labex.labexagent.llm.CacheTelemetry;
@@ -185,7 +187,6 @@ public class AgentLoopEngine {
             new ArrayBlockingQueue<>(128),
             new AgentThreadFactory(),
             new ThreadPoolExecutor.AbortPolicy());
-    private static final long PROVIDER_FIRST_EVENT_TIMEOUT_MS = 45_000L;
     private static final int MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES = 2;
     private static final int MAX_NATIVE_TOOL_INPUT_FAILURE_ROUNDS = 2;
     private final StudentProjectService studentProjectService;
@@ -248,6 +249,7 @@ public class AgentLoopEngine {
     private AgentTaskEventSubscriptionService taskEventSubscriptionService;
     private AgentRunFinalizer runFinalizer;
     private AgentFinalizationRecoveryService finalizationRecoveryService;
+    private AgentCompletionReadinessService completionReadinessService;
     private LabexNativeCompletionProjector nativeCompletionProjector;
     private AgentRunArtifactService artifactService;
     private AgentToolCallJournalService toolCallJournalService;
@@ -381,6 +383,12 @@ public class AgentLoopEngine {
     void setFinalizationRecoveryService(AgentFinalizationRecoveryService finalizationRecoveryService) {
         this.finalizationRecoveryService = requireRuntimeDependency(
                 finalizationRecoveryService, "finalizationRecoveryService");
+    }
+
+    @Autowired
+    void setCompletionReadinessService(AgentCompletionReadinessService completionReadinessService) {
+        this.completionReadinessService = requireRuntimeDependency(
+                completionReadinessService, "completionReadinessService");
     }
 
     @Autowired
@@ -1119,7 +1127,11 @@ public class AgentLoopEngine {
                                             this.completeCancelledRun(sse, conv, task, project, runLog, i, visibleLanguage, emitter);
                                             return;
                                         }
-                                        this.projectModelStepCompleted(sse, conv, ctx, i, type);
+                                        if ("error".equals(type)) {
+                                            this.projectModelStepFailed(sse, conv, ctx, i, modelTurnResult.reasonCode());
+                                        } else {
+                                            this.projectModelStepCompleted(sse, conv, ctx, i, type);
+                                        }
                                         this.appendRunLog(runLog, "\n- Model response type: `" + this.safeLogText(type) + "`\n");
                                         log.info("Iteration {}, type: {}", i, type);
                                         this.appendRunLog(runLog, this.renderModelTurnOutput(lr));
@@ -1814,15 +1826,20 @@ public class AgentLoopEngine {
                             executed = true;
                             break block19;
                         }
-                        if (this.isModelTimeoutError(errMsg)) {
+                        if ("model_timeout".equals(lr.get("reasonCode")) || this.isModelTimeoutError(errMsg)) {
                             String modelFailTitle = this.localText(visibleLanguage, "模型响应超时", "Model response timed out");
                             String modelFailReason = this.localText(visibleLanguage,
-                                    "模型服务未及时返回首个响应，本次运行已停止。请检查模型服务、代理配置或更换模型。",
-                                    "The model service did not return an initial response in time, so this run was stopped. Check the provider, proxy, or try another model.");
-                            this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg, "iteration", i));
+                                    "模型调用在配置的时限内未完成，本次运行已停止。请检查模型服务、代理配置或更换模型。",
+                                    "The model call did not finish within its configured time limit, so this run was stopped. Check the provider, proxy, or try another model.");
+                            String modelTimeoutReasonCode = "model_timeout";
+                            this.appendRunLog(runLog, "- reason_code: `" + modelTimeoutReasonCode + "`\n");
+                            this.sendEvent(sse, conv, "ERROR", Map.of("message", modelFailTitle + ": " + errMsg,
+                                    "iteration", i, "reasonCode", modelTimeoutReasonCode));
                             this.streamFinal(sse, conv, this.buildStopFinal(modelFailTitle, modelFailReason, project, runLog, visibleLanguage), visibleLanguage);
-                            this.failTaskAndProject(sse, conv, task, modelFailTitle, errMsg);
-                            this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle, "iterations", i));
+                            this.failTaskAndProject(sse, conv, task, modelFailTitle,
+                                    "reasonCode=" + modelTimeoutReasonCode + "\n" + errMsg);
+                            this.sendEvent(sse, conv, "DONE", Map.of("message", modelFailTitle,
+                                    "iterations", i, "reasonCode", modelTimeoutReasonCode));
                             emitter.complete();
                             return;
                         }
@@ -2264,8 +2281,10 @@ public class AgentLoopEngine {
             this.diffService.clearLastApplyTelemetry();
             this.diffService.awaitDeferredSnapshots(ctx.getTaskId(), "before_tool:" + this.safeTool(name));
             GitSnapshotService.Snapshot beforeSnapshot = null;
+            Path snapshotWorkingPath = null;
             boolean snapshotCommand = this.shouldSnapshotCommandTool(name);
             if (snapshotCommand) {
+                snapshotWorkingPath = this.snapshotCommandWorkingDirectory(ctx, args);
                 phase = "snapshot_before_command";
                 this.sendToolExecutionEvent(sse, conv, "TOOL_PHASE_CHANGED", ctx, name, toolCallId,
                         phase, elapsedMs(totalStartedNanos), Map.of());
@@ -2314,7 +2333,7 @@ public class AgentLoopEngine {
                         ctx.getConversationId(), ctx.getTaskId(), name, beforeSnapshot, afterSnapshot);
                 snapshotDiffElapsedMs = elapsedMs(diffStartedNanos);
                 if (!changes.isEmpty()) {
-                    this.attachSnapshotChanges(result, changes);
+                    this.attachSnapshotChanges(ctx, snapshotWorkingPath, result, changes);
                 }
             }
 
@@ -3013,7 +3032,52 @@ public class AgentLoopEngine {
         return snapshotCommand && result != null && !result.isApprovalRequired();
     }
 
-    private void attachSnapshotChanges(ToolResult result, List<PendingChange> changes) {
+    private Path snapshotCommandWorkingDirectory(AgentContext context, JsonObject args) {
+        if (context == null || context.getWorkspaceRoot() == null) {
+            return null;
+        }
+        Path workspaceRoot = context.getWorkspaceRoot().toAbsolutePath().normalize();
+        String requestedWorkdir = ToolSupport.stringArgMulti(args, "", "workdir", "working_directory",
+                "workingDirectory", "cwd");
+        if (requestedWorkdir.isBlank()) {
+            return workspaceRoot;
+        }
+        try {
+            // 在命令运行前解析，确保即便命令删除自身工作目录，identity 仍保持稳定且不暴露绝对路径。
+            return ToolSupport.resolve(context, requestedWorkdir);
+        } catch (RuntimeException invalidWorkdir) {
+            return workspaceRoot;
+        }
+    }
+
+    private void attachSnapshotChanges(AgentContext context, Path snapshotWorkingPath, ToolResult result,
+                                       List<PendingChange> changes) {
+        if (context == null || result == null || changes == null || changes.isEmpty()) {
+            return;
+        }
+        List<String> changedPaths = changes.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(PendingChange::getRelativePath)
+                .filter(path -> path != null && !path.isBlank())
+                .distinct()
+                .sorted()
+                .toList();
+        List<String> changeIds = changes.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(PendingChange::getId)
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        Path identityWorkdir = snapshotWorkingPath == null ? context.getWorkspaceRoot() : snapshotWorkingPath;
+        Map<String, Object> workspaceVerification = WorkspaceMutationEvidence.verifyPostconditions(
+                context.getProject(), changes);
+        Map<String, Object> workspaceMutation = WorkspaceMutationEvidence.fromChanges(changes,
+                WorkspaceMutationEvidence.snapshotBeforeStates(changes), workspaceVerification);
+        WorkspaceOperationIdentity identity = WorkspaceOperationIdentity.forContext(context, identityWorkdir,
+                changedPaths);
+        result.withWorkspaceChangeEvidence(identity, changeIds, workspaceMutation)
+                .withWorkspaceVerification(workspaceVerification);
+
         StringBuilder diff = new StringBuilder();
         int shown = 0;
         for (PendingChange change : changes) {
@@ -3028,9 +3092,9 @@ public class AgentLoopEngine {
             result.setDiff(this.limitForContext(diff.toString(), 60000));
         }
         String content = result.getContent() == null ? "" : result.getContent();
-        result.setContent(content + "\n\n[Workspace snapshot] Recorded " + changes.size() + " file change(s). You can undo them in the Changes panel.");
+        result.setContent(content + "\n\n[Workspace snapshot] Recorded " + changes.size()
+                + " file change(s). You can undo them in the Changes panel.");
     }
-
     private String permissionInput(String name, JsonObject args) {
         if (args == null) {
             return "";
@@ -3629,7 +3693,12 @@ public class AgentLoopEngine {
     private void projectModelStepFailed(AgentSsePublisher sse, AgentConversation conversation,
                                         AgentContext context, int iteration, Exception failure) throws Exception {
         String errorType = failure == null ? "unknown" : failure.getClass().getSimpleName();
-        this.projectModelStep(sse, conversation, context, iteration, "MODEL_STEP_FAILED", "", errorType);
+        this.projectModelStepFailed(sse, conversation, context, iteration, errorType);
+    }
+
+    private void projectModelStepFailed(AgentSsePublisher sse, AgentConversation conversation,
+                                        AgentContext context, int iteration, String reason) throws Exception {
+        this.projectModelStep(sse, conversation, context, iteration, "MODEL_STEP_FAILED", "", reason);
     }
 
     private void projectModelStepBlocked(AgentSsePublisher sse, AgentConversation conversation,
@@ -4342,6 +4411,10 @@ public class AgentLoopEngine {
                                     + "Retry with complete JSON object arguments that exactly match the selected tool schema. Do not repeat rejected arguments."));
         }
 
+        if (batchResult.terminal() == LabexNativeToolBatchExecutor.Terminal.CONTINUE && !nativeInputRejected) {
+            this.maybeSignalCompletionReadiness(sse, conversation, task, context, runLog, iteration);
+        }
+
         LabexNativeToolBatchExecutor.Outcome terminalOutcome = batchResult.terminalOutcome();
         switch (batchResult.terminal()) {
             case CONTINUE:
@@ -4423,6 +4496,32 @@ public class AgentLoopEngine {
                 return NativeToolBatchProcessingOutcome.continues(nextInputFailureRounds);
         }
         throw new IllegalStateException("Unhandled native tool batch terminal state: " + batchResult.terminal());
+    }
+
+    /**
+     * 仅对已验证的 workspace mutation 写入一次 durable 收束提示。
+     * 这不是强制 final：模型仍可在指出具体未满足用户要求后继续使用工具。
+     */
+    private void maybeSignalCompletionReadiness(AgentSsePublisher sse, AgentConversation conversation,
+                                                AgentTask task, AgentContext context, Path runLog,
+                                                int iteration) throws Exception {
+        if (task == null || task.getTaskId() == null || context == null || context.getExecutionFence() == null
+                || context.hasUnverifiedChanges()) {
+            return;
+        }
+        AgentCompletionReadinessService.Signal signal = requireCompletionReadinessService().signalIfReady(
+                context.getExecutionFence(), task.getTaskId(), context.getExecutionEpoch(),
+                task.getStudentId(), task.getProjectId(), context.hasTrustedVerification());
+        if (!signal.signaled()) {
+            return;
+        }
+        this.appendRunLog(runLog, "\n- Completion readiness persisted after iteration " + iteration
+                + "; the next model turn must either name a concrete unmet requirement or provide its final response.\n");
+        this.sendPersistedEvent(sse, conversation, signal.event());
+    }
+
+    private AgentCompletionReadinessService requireCompletionReadinessService() {
+        return requireRuntimeDependency(this.completionReadinessService, "completionReadinessService");
     }
 
     private String nativeBatchToolResultForModel(LabexNativeToolBatchExecutor.Admission admission,

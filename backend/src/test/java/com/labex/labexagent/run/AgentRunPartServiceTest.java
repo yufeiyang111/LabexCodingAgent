@@ -760,4 +760,28 @@ class AgentRunPartServiceTest {
         assertEquals(1, restored);
     }
 
+    @Test
+    void persistsCompletionReadinessAsOneStableCurrentEpochPart() {
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessageService messages = mock(AgentRunMessageService.class);
+        AgentRunMessage message = new AgentRunMessage();
+        message.setRunMessageId(62L);
+        when(messages.recordEventMessage(anyLong(), anyString(), any(), anyLong())).thenReturn(message);
+        when(parts.selectOne(any())).thenReturn(null);
+        when(tasks.selectById(7L)).thenReturn(task());
+
+        AgentRunPart result = new AgentRunPartService(parts, tasks, messages)
+                .recordEventPart(7L, "COMPLETION_READY", Map.of(
+                        "taskId", 7L,
+                        "executionEpoch", 4L,
+                        "evidenceFingerprint", "evidence-a",
+                        "reasonCode", "verified_workspace_change",
+                        "satisfied", true), 27L);
+
+        assertThat(result.getPartType()).isEqualTo("completion_readiness");
+        assertThat(result.getPartKey()).isEqualTo("completion:ready:evidence-a");
+        assertThat(result.getStatus()).isEqualTo("completed");
+        assertThat(result.getInputJson()).contains("verified_workspace_change").contains("evidence-a");
+    }
 }

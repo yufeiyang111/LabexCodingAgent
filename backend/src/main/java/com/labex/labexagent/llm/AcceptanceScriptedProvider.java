@@ -21,7 +21,7 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @Profile("acceptance & !prod")
-public final class AcceptanceScriptedProvider implements LlmProvider {
+public class AcceptanceScriptedProvider implements LlmProvider {
     private static final Logger log = LoggerFactory.getLogger(AcceptanceScriptedProvider.class);
     private static final String PROVIDER_ID = "acceptance_scripted";
     private static final Pattern ISOLATION_MARKER = Pattern.compile("\\[acceptance:isolation:([^]\\r\\n]+)]");

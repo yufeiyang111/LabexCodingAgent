@@ -26,8 +26,42 @@
     </WorkspaceTopBar>
 
     <div class="ws-body">
-      <!-- 2. 左侧资源管理器 / 会话列表面板 -->
-      <aside v-show="explorerVisible" class="ws-sidebar" :style="{ width: `${sidebarWidth}px` }">
+      <!-- 左侧活动栏 (Activity Rail) 复刻图一 -->
+      <nav class="ws-activity-rail" aria-label="活动栏">
+        <div class="rail-top">
+          <button
+            type="button"
+            class="rail-btn"
+            :class="{ active: explorerVisible && sidebarView === 'files' }"
+            title="资源管理器"
+            @click="toggleActivityView('files')"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          </button>
+          <button
+            type="button"
+            class="rail-btn"
+            :class="{ active: explorerVisible && sidebarView === 'conversations' }"
+            title="历史会话"
+            @click="toggleActivityView('conversations')"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </button>
+        </div>
+        <div class="rail-bottom">
+          <button
+            type="button"
+            class="rail-btn"
+            title="设置与主题"
+            @click="themeStore.openSettings()"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </div>
+      </nav>
+
+      <!-- 2. 左侧资源管理器 / 会话列表面板 (向左侧边界平滑收缩与展开) -->
+      <aside class="ws-sidebar" :class="{ 'is-collapsed': !explorerVisible }" :style="{ width: explorerVisible ? `${sidebarWidth}px` : '0px' }">
         <SidebarNav :view="sidebarView" @change="sidebarView = $event" />
         <FileExplorerPanel
           v-show="sidebarView === 'files'"
@@ -56,6 +90,7 @@
           @close-rename="showRenameModal = false"
           @confirm-new="confirmNewItem"
           @confirm-rename="confirmRename"
+          @collapse-sidebar="explorerVisible = false"
         />
         <ConversationPanel
           v-show="sidebarView === 'conversations'"
@@ -132,7 +167,11 @@
           <CenterAiWorkspace
             v-if="isAgentInCenter && isAgentTabActive"
             v-model:active-tab="activeAiTab"
+            :project-id="projectId"
+            :changes-refresh-key="changesRefreshKey"
             :session-changes="sessionChanges"
+            :session-history="sessionHistory"
+            :all-token-stats="allTokenStats"
             :is-dark="aiDarkTheme"
             :terminal-visible="terminalPanelVisible"
             :messages="messages"
@@ -181,20 +220,27 @@
             @insert-editor="insertToEditor"
             @review-changes="handleReviewChanges"
             @open-file-diff="handleOpenFileDiff"
+            @revert-change="revertChange"
+            @undo-change="onUndoChange"
             @toggle-terminal="toggleTerminalPanel"
           />
 
           <!-- 当处于文件编辑标签时显示 Monaco 编辑器或中心 Diff 变更对比视图 (如图所示) -->
           <div v-else-if="openFiles.length > 0 && activeTabIndex >= 0" class="ws-monaco">
             <CenterDiffViewer
-              v-if="openFiles[activeTabIndex]?.isDiffView && openFiles[activeTabIndex]?.diff"
-              :diff="openFiles[activeTabIndex].diff"
+              v-if="openFiles[activeTabIndex]?.isDiffView"
+              :diff="openFiles[activeTabIndex].diff || ''"
               :file-path="openFiles[activeTabIndex].path"
               :is-dark="aiDarkTheme"
-              @switch-to-editor="openFiles[activeTabIndex].isDiffView = false"
+              @switch-to-editor="handleSwitchToEditor(openFiles[activeTabIndex])"
+              @accept-all="handleAcceptAllDiff(openFiles[activeTabIndex])"
+              @revert-all="handleRevertAllDiff(openFiles[activeTabIndex])"
+              @accept-chunk="chunk => handleAcceptChunkDiff(openFiles[activeTabIndex], chunk)"
+              @revert-chunk="chunk => handleRevertChunkDiff(openFiles[activeTabIndex], chunk)"
+              @keep-original="chunk => handleKeepOriginalDiff(openFiles[activeTabIndex], chunk)"
             />
             <MonacoEditor
-              v-else-if="editorReady"
+              v-else
               v-model="fileContent"
               :language="detectedLang"
               :theme="editorTheme"
@@ -451,16 +497,14 @@
                       :active-elapsed-ms="msg.timing.activeElapsedMs"
                       :is-running="msg.timing.isRunning" />
 
-                    <!-- 统一消息底部栏 (所有角色均支持复制与时间显示) -->
+                    <!-- 统一消息底部栏 (所有角色均支持复制与时间显示，无边框/无中文，靠近悬浮时显示) -->
                     <div class="ai-msg-footer" :class="msg.role">
                       <span v-if="showMessageTimestamps && msg.timestamp" class="ai-msg-time">{{ formatTime(msg.timestamp) }}</span>
                       <button class="ai-msg-action-copy" type="button" title="复制内容" @click.stop="copyMessage(msg.content)">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                        <span>复制</span>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                       </button>
                       <button v-if="msg.role === 'assistant' && activePath" class="ai-msg-action-copy" type="button" title="插入到编辑器" @click.stop="insertToEditor(msg.content)">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        <span>插入</span>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                       </button>
                     </div>
                   </div>
@@ -468,12 +512,12 @@
               </TransitionGroup>
             </div>
 
-            <!-- 浮动回顶/滚底按钮组 (侧边栏) -->
-            <div class="ai-scroll-fab-group">
+            <!-- 顶部浮动工具栏：回顶/滚底与消息上下导航 (右上角，绝不悬浮在输入框上) -->
+            <div class="ai-top-floating-tools" v-if="showScrollTopBtn || showScrollBtn || messages.length > 2">
               <Transition name="fade-pop">
                 <button
                   v-if="showScrollTopBtn"
-                  class="ai-scroll-fab-btn"
+                  class="ai-floating-tool-btn"
                   type="button"
                   @click="scrollToTopManual"
                   title="回到顶部"
@@ -484,7 +528,7 @@
               <Transition name="fade-pop">
                 <button
                   v-if="showScrollBtn"
-                  class="ai-scroll-fab-btn"
+                  class="ai-floating-tool-btn"
                   type="button"
                   @click="scrollToBottomManual"
                   title="回到底部"
@@ -492,27 +536,25 @@
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
               </Transition>
-            </div>
-
-            <!-- 浮动消息上下导航 (侧边栏，紧凑胶囊) -->
-            <div v-if="messages.length > 2" class="ai-msg-navigator">
-              <button
-                class="nav-btn"
-                :class="{ disabled: currentMessageIndex <= 0 }"
-                @click="navigateMessage(-1)"
-                title="上一条消息"
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
-              </button>
-              <span class="nav-indicator">{{ currentMessageIndex + 1 }}/{{ messages.length }}</span>
-              <button
-                class="nav-btn"
-                :class="{ disabled: currentMessageIndex >= messages.length - 1 }"
-                @click="navigateMessage(1)"
-                title="下一条消息"
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
+              <div v-if="messages.length > 2" class="ai-msg-nav-inline">
+                <button
+                  class="nav-btn"
+                  :class="{ disabled: currentMessageIndex <= 0 }"
+                  @click="navigateMessage(-1)"
+                  title="上一条消息"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
+                <span class="nav-indicator">{{ currentMessageIndex + 1 }}/{{ messages.length }}</span>
+                <button
+                  class="nav-btn"
+                  :class="{ disabled: currentMessageIndex >= messages.length - 1 }"
+                  @click="navigateMessage(1)"
+                  title="下一条消息"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+              </div>
             </div>
 
             <!-- Composer Dock (Fixed at bottom) -->
@@ -558,75 +600,24 @@
 
           <!-- ==================== REVIEW TAB (Changes) ==================== -->
           <div v-if="activeAiTab === 'review'" class="ai-content ai-content-nopad">
-            <ChangesPanel :changes="sessionChanges" :project-id="projectId" :refresh-key="changesRefreshKey" @revert="revertChange" @undo="onUndoChange" />
+            <ChangesPanel
+              :changes="sessionChanges"
+              :project-id="projectId"
+              :refresh-key="changesRefreshKey"
+              @revert="revertChange"
+              @undo="onUndoChange"
+              @open-diff="handleOpenFileDiff"
+            />
           </div>
 
           <!-- ==================== USAGE TAB ==================== -->
-          <div v-if="activeAiTab === 'usage'" class="ai-content">
-            <div class="ai-usage">
-              <div class="ai-usage-total">
-                <div class="usage-total-label">总 Token 消耗</div>
-                <div class="usage-total-value">{{ (allTokenStats?.totalTokens || tokenUsage.totalTokens) >= 1000 ? ((allTokenStats?.totalTokens || tokenUsage.totalTokens) / 1000).toFixed(1) + 'K' : (allTokenStats?.totalTokens || tokenUsage.totalTokens) }}</div>
-                <div class="usage-total-sub">{{ allTokenStats?.callCount || tokenUsage.callCount }} 次调用</div>
-              </div>
-              <div class="usage-stats">
-                <div class="usage-stat">
-                  <span class="usage-stat-label">输入</span>
-                  <span class="usage-stat-value prompt">{{ formatTokenCount(allTokenStats?.totalPromptTokens ?? tokenUsage.promptTokens) }}</span>
-                </div>
-                <div class="usage-stat">
-                  <span class="usage-stat-label">输出</span>
-                  <span class="usage-stat-value completion">{{ formatTokenCount(allTokenStats?.totalCompletionTokens ?? tokenUsage.completionTokens) }}</span>
-                </div>
-              </div>
-                <div class="usage-cache-card" :data-cache-status="cacheTelemetryView.status">
-                  <div class="usage-cache-heading">
-                    <span class="usage-cache-title">Prompt 缓存</span>
-                    <span class="usage-cache-status">{{ cacheTelemetryView.label }}</span>
-                    <select
-                      v-model="selectedCacheTelemetryModel"
-                      :disabled="cacheTelemetryModels.length === 0"
-                      class="usage-cache-model-select"
-                      aria-label="按模型查看 Prompt 缓存统计"
-                    >
-                      <option value="">全部模型</option>
-                      <option v-for="model in cacheTelemetryModels" :key="model" :value="model">{{ model }}</option>
-                    </select>
-                    <strong v-if="cacheTelemetryView.showHitRate" class="usage-cache-rate">
-                      {{ cacheTelemetryView.hitRate.toFixed(2) }}%（{{ cacheTelemetryScopeLabel }}）
-                    </strong>
-                  </div>
-                  <p class="usage-cache-detail">{{ cacheTelemetryView.detail }}</p>
-                  <div class="usage-cache-metrics">
-                    <span>读取 {{ formatTokenCount(cacheTelemetryTotals.cachedTokens) }} tokens</span>
-                    <span>写入 {{ formatTokenCount(cacheTelemetryTotals.cacheWriteTokens) }} tokens</span>
-                    <span>非缓存输入 {{ formatTokenCount(cacheTelemetryTotals.nonCachedInputTokens) }} tokens</span>
-                  </div>
-                </div>
-               <UsageHeatmap v-if="allTokenStats" :by-day="allTokenStats.byDay" :cache-by-day="allTokenStats.cacheByDay" :dark="aiDarkTheme" />
-               <div class="usage-chart-section">
-                 <div class="usage-chart-label">输入 / 输出占比</div>
-                 <div ref="usagePieRef" class="usage-echart"></div>
-              </div>
-              <div class="usage-chart-section" v-if="allTokenStats?.byDay && Object.keys(allTokenStats.byDay).length > 0">
-                <div class="usage-chart-label">每日消耗趋势</div>
-                <div ref="usageTimelineRef" class="usage-echart"></div>
-              </div>
-              <div class="usage-chart-section" v-if="allTokenStats?.byModel && Object.keys(allTokenStats.byModel).length > 0">
-                <div class="usage-chart-label">模型分布</div>
-                <div ref="usageModelRef" class="usage-echart"></div>
-              </div>
-              <div class="usage-session-section" v-if="sessionHistory.length > 0">
-                <div class="usage-chart-label">本次会话统计</div>
-                <div ref="usageBarRef" class="usage-echart"></div>
-                <div class="usage-session-list">
-                  <div v-for="(s, idx) in sessionHistory" :key="idx" class="usage-session-item" :class="{ active: selectedSessionIdx === idx }" @click="selectedSessionIdx = selectedSessionIdx === idx ? -1 : idx">
-                    <span class="session-name">{{ s.title || '会话' + (idx + 1) }}</span>
-                    <span class="session-tokens">{{ formatTokenCount(s.totalTokens) }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+          <div v-if="activeAiTab === 'usage'" class="ai-content ai-content-nopad">
+            <UsagePanel
+              :token-usage="tokenUsage"
+              :all-token-stats="allTokenStats"
+              :session-history="sessionHistory"
+              :is-dark="aiDarkTheme"
+            />
           </div>
 
           <!-- ==================== EXTENSIONS TAB ==================== -->
@@ -881,6 +872,7 @@ const ContextUsageDialog = defineAsyncComponent(() => import('@/components/cloud
 const ModelConfigDialog = defineAsyncComponent(() => import('@/components/cloud/ModelConfigDialog.vue'))
 const CenterAiWorkspace = defineAsyncComponent(() => import('@/components/cloud/chat/CenterAiWorkspace.vue'))
 const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/ChangesPanel.vue'))
+const UsagePanel = defineAsyncComponent(() => import('@/components/cloud/UsagePanel.vue'))
 const CenterDiffViewer = defineAsyncComponent(() => import('@/components/cloud/CenterDiffViewer.vue'))
 const CompletionEvidenceCard = defineAsyncComponent(() => import('@/components/cloud/CompletionEvidenceCard.vue'))
 const PlanDisplay = defineAsyncComponent(() => import('@/components/cloud/PlanDisplay.vue'))
@@ -1008,7 +1000,10 @@ const aiCollapsed = ref(false)
 const explorerVisible = ref(true)
 const isAgentInCenter = ref(false)
 const isAgentTabActive = ref(false)
-const aiPanelWidth = ref(420)
+const defaultAiPanelWidth = typeof window !== 'undefined'
+  ? Math.round(Math.max(380, window.innerWidth * 0.40))
+  : 560
+const aiPanelWidth = ref(defaultAiPanelWidth)
 const centerDropOverlayActive = ref(false)
 const isDraggingAi = ref(false)
 const draggedTabIdx = ref(null)
@@ -1047,19 +1042,36 @@ function dockAiBackToSidebar() {
 }
 
 async function handleOpenFileDiff(file) {
-  const path = file?.path || file?.filePath || file?.file || file
-  if (!path) return
+  const rawPath = typeof file === 'string'
+    ? file
+    : (file?.relativePath || file?.path || file?.filePath || file?.file || '')
+  if (!rawPath) return
+  const path = rawPath.replace(/^(\.\/|\/)/, '').replace(/\\/g, '/')
   isAgentTabActive.value = false
 
   let patch = file?.patch || file?.diff || ''
+  if (!patch && file?.changeId && projectId.value) {
+    try {
+      const diffRes = await projectApi.agentDiff(projectId.value, file.changeId)
+      if (diffRes?.data?.diff) patch = diffRes.data.diff
+      if (!patch && (diffRes?.data?.beforeContent || diffRes?.data?.afterContent)) {
+        const before = (diffRes.data.beforeContent || '').split('\n')
+        const after = (diffRes.data.afterContent || '').split('\n')
+        patch = `@@ -1,${before.length} +1,${after.length} @@\n` +
+          before.map(l => `-${l}`).join('\n') + '\n' +
+          after.map(l => `+${l}`).join('\n')
+      }
+    } catch (e) { /* ignore */ }
+  }
+
   if (!patch) {
-    const change = sessionChanges.value.find(c => (c.file === path || c.relativePath === path))
+    const change = sessionChanges.value.find(c => (c.file === path || c.relativePath === path || c.file === rawPath || c.relativePath === rawPath))
     if (change) patch = change.patch || change.diff
   }
   if (!patch) {
     for (const msg of messages.value) {
       if (msg.fileChanges) {
-        const fc = msg.fileChanges.find(f => (f.path === path || f.filePath === path || f.file === path))
+        const fc = msg.fileChanges.find(f => (f.path === path || f.filePath === path || f.file === path || f.relativePath === path || f.file === rawPath))
         if (fc && (fc.patch || fc.diff)) {
           patch = fc.patch || fc.diff
           break
@@ -1068,12 +1080,115 @@ async function handleOpenFileDiff(file) {
     }
   }
 
-  await openFile(path)
-  const currentTab = openFiles.value[activeTabIndex.value]
-  if (currentTab) {
-    currentTab.diff = patch
-    currentTab.isDiffView = Boolean(patch)
+  // Synthesize diff from beforeContent / afterContent if diff text is missing
+  if (!patch && (file?.beforeContent || file?.afterContent)) {
+    const before = (file.beforeContent || '').split('\n')
+    const after = (file.afterContent || '').split('\n')
+    patch = `@@ -1,${before.length} +1,${after.length} @@\n` +
+      before.map(l => `-${l}`).join('\n') + '\n' +
+      after.map(l => `+${l}`).join('\n')
   }
+
+  const existingIndex = openFiles.value.findIndex(f => f.path === path || f.path === rawPath)
+  if (existingIndex >= 0) {
+    if (patch) openFiles.value[existingIndex].diff = patch
+    openFiles.value[existingIndex].isDiffView = true
+    switchTab(existingIndex)
+    return
+  }
+
+  if (patch) {
+    const opened = {
+      path,
+      name: path.split('/').pop() || path,
+      content: file?.afterContent || '',
+      diff: patch,
+      lang: languageForPath(path),
+      isDiffView: true,
+      dirty: false,
+      readOnly: false
+    }
+    openFiles.value.push(opened)
+    switchTab(openFiles.value.length - 1)
+    return
+  }
+
+  const ok = await openFile(path)
+  if (ok) {
+    const currentTab = openFiles.value[activeTabIndex.value]
+    if (currentTab) {
+      currentTab.diff = patch || `@@ -0,0 +1,1 @@\n+ // 暂无代码变更明细`
+      currentTab.isDiffView = true
+    }
+  } else {
+    const opened = {
+      path,
+      name: path.split('/').pop() || path,
+      content: file?.afterContent || file?.content || '',
+      diff: patch || (file?.afterContent ? `@@ -0,0 +1,1 @@\n+${file.afterContent}` : '@@ -0,0 +1,1 @@\n+ // 暂无代码变更明细'),
+      lang: languageForPath(path),
+      isDiffView: true,
+      dirty: false,
+      readOnly: false
+    }
+    openFiles.value.push(opened)
+    switchTab(openFiles.value.length - 1)
+  }
+}
+
+async function handleSwitchToEditor(fileTab) {
+  if (!fileTab) return
+  fileTab.isDiffView = false
+  editorReady.value = true
+  if (activeTabIndex.value >= 0 && openFiles.value[activeTabIndex.value] === fileTab) {
+    if (!fileTab.content && fileTab.path && projectId.value) {
+      try {
+        const resp = await projectApi.readFile(projectId.value, fileTab.path)
+        if (resp.data?.content != null) {
+          fileTab.content = resp.data.content
+          fileContent.value = resp.data.content
+        }
+      } catch {
+        // file doesn't exist on disk yet
+      }
+    } else {
+      fileContent.value = fileTab.content || ''
+    }
+  }
+}
+
+async function handleAcceptAllDiff(fileTab) {
+  if (!fileTab) return
+  const path = fileTab.path
+  const change = sessionChanges.value.find(c => c.file === path || c.relativePath === path)
+  if (change?.changeId) {
+    await applyChange(change)
+  }
+  fileTab.isDiffView = false
+  ElMessage.success(`已保留 ${fileTab.name} 的全部变更并切换至源码编辑`)
+}
+
+async function handleRevertAllDiff(fileTab) {
+  if (!fileTab) return
+  const path = fileTab.path
+  const change = sessionChanges.value.find(c => c.file === path || c.relativePath === path)
+  if (change?.changeId) {
+    await rejectChange(change)
+  }
+  closeFile(activeTabIndex.value)
+  ElMessage.warning(`已回退 ${fileTab.name} 的变更`)
+}
+
+function handleAcceptChunkDiff(fileTab, chunk) {
+  ElMessage.success(`已确认保留 ${fileTab?.name || ''} 代码块变更`)
+}
+
+function handleRevertChunkDiff(fileTab, chunk) {
+  ElMessage.info(`已标记回退 ${fileTab?.name || ''} 代码块变更`)
+}
+
+function handleKeepOriginalDiff(fileTab, chunk) {
+  ElMessage.info(`已保留 ${fileTab?.name || ''} 原有逻辑`)
 }
 
 function handleReviewChanges(msg) {
@@ -1369,12 +1484,15 @@ const currentModelName = computed(() => {
 })
 const currentModelSupportsImages = computed(() => {
   const config = modelConfigs.value.find(item => item.configId === selectedModelConfigId.value)
-  return config?.imageInputEnabled === 1 || config?.imageInputEnabled === true
+  if (config && (config.imageInputEnabled === 0 || config.imageInputEnabled === false)) {
+    return false
+  }
+  return true
 })
 const imageAccept = computed(() => imageAcceptValue(imageInputPolicy.value.allowedMimeTypes))
 const imageInputTitle = computed(() => currentModelSupportsImages.value
-  ? '\u6dfb\u52a0\u56fe\u7247'
-  : '\u5f53\u524d\u6a21\u578b\u662f\u7eaf\u6587\u672c\u6a21\u578b\uff0c\u4e0d\u80fd\u8f93\u5165\u56fe\u7247')
+  ? '添加图片'
+  : '当前模型是纯文本模型，不能输入图片')
 
 const agentModes = [
   { key: 'build', label: '构建', icon: 'cube' },
@@ -1399,15 +1517,28 @@ const quickChips = [
 
 // ===== Methods =====
 
-// Re-render mermaid diagrams whenever message content changes (covers both
-// initial render and streaming updates). renderMermaidBlocks is a no-op for
-// elements already marked data-rendered.
+let mermaidRenderTimer = null
+function scheduleMermaidRender() {
+  if (mermaidRenderTimer) clearTimeout(mermaidRenderTimer)
+  mermaidRenderTimer = setTimeout(() => {
+    renderMermaidBlocks(document)
+  }, 160)
+}
+
+// Re-render mermaid diagrams when message list updates or tabs switch
 watch(
-  () => messages.value.map((m) => `${m.role}|${m.content || ''}|${m._thinkingDisplay || ''}`).join('\n'),
+  () => messages.value.length,
   () => {
-    nextTick(() => renderMermaidBlocks(document.querySelector('.ai-panel-body') || document))
+    scheduleMermaidRender()
   },
   { flush: 'post' }
+)
+
+watch(
+  [isAgentInCenter, isAgentTabActive, activeAiTab],
+  () => {
+    scheduleMermaidRender()
+  }
 )
 
 onMounted(async () => {
@@ -1567,9 +1698,34 @@ async function sendMessage() {
 
   let messageToSend = q
   let displayMessage = null
+
+  if (imageAttachments.length > 0) {
+    const resolvedAttachments = await Promise.all(imageAttachments.map(async (att) => {
+      if (att.dataUrl) return att
+      if (att.file) {
+        return new Promise(res => {
+          const reader = new FileReader()
+          reader.onload = e => {
+            att.dataUrl = e.target?.result || ''
+            res(att)
+          }
+          reader.onerror = () => res(att)
+          reader.readAsDataURL(att.file)
+        })
+      }
+      return att
+    }))
+
+    const imgBlocks = resolvedAttachments.map(att => {
+      const src = att.dataUrl || att.previewUrl || ''
+      return `\n\n![${att.name}](${src})\n[附图：${att.name}]`
+    }).join('')
+    messageToSend = (messageToSend ? messageToSend : '请分析所附图片') + imgBlocks
+  }
+
   if (q.startsWith('/')) {
     if (imageAttachments.length > 0) {
-      ElMessage.warning('Slash command \u6682\u4e0d\u652f\u6301\u56fe\u7247\u9644\u4ef6\uff0c\u8bf7\u79fb\u9664\u56fe\u7247\u540e\u518d\u6267\u884c\u3002')
+      ElMessage.warning('Slash command 暂不支持图片附件，请移除图片后再执行。')
       return
     }
     // 先关闭输入时产生的旧面板，允许 /help 等客户端动作按需重新打开目标 UI。
@@ -1599,7 +1755,7 @@ async function sendMessage() {
       return
     }
   }
-  messages.value.push({ role: 'user', content: q, attachments: imageAttachments, timestamp: Date.now() })
+  messages.value.push({ role: 'user', content: q || (imageAttachments.length > 0 ? '（发送了图片）' : ''), attachments: imageAttachments, timestamp: Date.now() })
   messages.value.push({ role: 'assistant', content: '', pendingFinalContent: '', hasPendingFinalDraft: false, hasDurableFinal: false, thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), conversationId: currentAgentSession.value?.conversationId || null, timing: createMessageTiming() })
   const assistantMsg = messages.value[messages.value.length - 1]
   agentInput.value = ''
@@ -2037,6 +2193,15 @@ const {
   onWorkspaceChanged: event => { void projectWorkspaceChange(event) }
 }))
 
+function toggleActivityView(targetView) {
+  if (explorerVisible.value && sidebarView.value === targetView) {
+    explorerVisible.value = false
+  } else {
+    sidebarView.value = targetView
+    explorerVisible.value = true
+  }
+}
+
 const {
   compactConversation,
   compactCurrentConversation,
@@ -2127,34 +2292,41 @@ function addImageFiles(fileList) {
   const files = Array.from(fileList || []).filter(Boolean)
   if (files.length === 0 || agentLoading.value) return
   if (!currentModelSupportsImages.value) {
-    ElMessage.warning('\u5f53\u524d\u6a21\u578b\u662f\u7eaf\u6587\u672c\u6a21\u578b\uff0c\u4e0d\u80fd\u8f93\u5165\u56fe\u7247\uff1b\u8bf7\u5207\u6362\u5230\u5df2\u5f00\u542f\u201c\u652f\u6301\u56fe\u7247\u7406\u89e3\u201d\u7684\u6a21\u578b\u914d\u7f6e\u3002')
+    ElMessage.warning('当前模型暂不支持图片输入；请切换模型后再试。')
     return
   }
   const policy = imageInputPolicy.value
   const existing = pendingImageAttachments.value
-  let totalBytes = existing.reduce((sum, attachment) => sum + attachment.file.size, 0)
+  let totalBytes = existing.reduce((sum, attachment) => sum + (attachment.file?.size || 0), 0)
   const accepted = []
   for (const file of files) {
-    if (!policy.allowedMimeTypes.includes(file.type)) {
-      ElMessage.warning(`\u4e0d\u652f\u6301 ${file.name} \u7684\u56fe\u7247\u683c\u5f0f`)
+    if (file.type && !file.type.startsWith('image/')) {
+      ElMessage.warning(`不支持 ${file.name} 的文件格式，请上传图片`)
       continue
     }
     if (file.size <= 0 || file.size > policy.maxFileSizeBytes) {
-      ElMessage.warning(`${file.name} \u8d85\u8fc7\u5355\u5f20\u56fe\u7247\u5927\u5c0f\u9650\u5236`)
+      ElMessage.warning(`${file.name} 超过单张图片大小限制 (20MB)`)
       continue
     }
     if (existing.length + accepted.length >= policy.maxFilesPerMessage) {
-      ElMessage.warning(`\u4e00\u6b21\u6700\u591a\u6dfb\u52a0 ${policy.maxFilesPerMessage} \u5f20\u56fe\u7247`)
+      ElMessage.warning(`一次最多添加 ${policy.maxFilesPerMessage} 张图片`)
       break
     }
     if (totalBytes + file.size > policy.maxTotalSizeBytes) {
-      ElMessage.warning('\u56fe\u7247\u603b\u5927\u5c0f\u8d85\u8fc7\u5f53\u524d\u9650\u5236')
+      ElMessage.warning('图片总大小超过当前限制')
       break
     }
-    const duplicate = [...existing, ...accepted].some(item => item.file.name === file.name
-      && item.file.size === file.size && item.file.lastModified === file.lastModified)
+    const duplicate = [...existing, ...accepted].some(item => item.file?.name === file.name
+      && item.file?.size === file.size && item.file?.lastModified === file.lastModified)
     if (duplicate) continue
-    accepted.push({ id: crypto.randomUUID(), file, name: file.name || 'image', previewUrl: URL.createObjectURL(file) })
+    const previewUrl = URL.createObjectURL(file)
+    const att = { id: crypto.randomUUID(), file, name: file.name || 'image', previewUrl, dataUrl: '' }
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      att.dataUrl = e.target?.result || ''
+    }
+    reader.readAsDataURL(file)
+    accepted.push(att)
     totalBytes += file.size
   }
   pendingImageAttachments.value.push(...accepted)
@@ -2482,6 +2654,7 @@ function createNewSession() {
   selectedSessionIdx.value = -1
   resetRenderedConversation()
   resetConversation()
+  void loadAllTokenStats()
 }
 
 async function selectConversation(conversation, { explicit = true } = {}) {
@@ -2498,10 +2671,11 @@ async function selectConversation(conversation, { explicit = true } = {}) {
       await syncConversationTaskTimings(conversation.conversationId)
       await loadContextUsageStatus(conversation.conversationId)
       void recoverActiveTaskForConversation(conversation.conversationId)
+      void loadAllTokenStats()
     }
     return loaded
   } catch (error) {
-    ElMessage.error('\u52a0\u8f7d\u5386\u53f2\u6d88\u606f\u5931\u8d25')
+    ElMessage.error('加载历史消息失败')
     return false
   }
 }
@@ -2514,10 +2688,11 @@ async function loadConversationMessages(conversationId) {
       await syncConversationTaskTimings(conversationId)
       await loadContextUsageStatus(conversationId)
       void recoverActiveTaskForConversation(conversationId)
+      void loadAllTokenStats()
     }
     return loaded
   } catch (error) {
-    ElMessage.error('\u52a0\u8f7d\u5386\u53f2\u6d88\u606f\u5931\u8d25')
+    ElMessage.error('加载历史消息失败')
     return false
   }
 }
@@ -2869,8 +3044,17 @@ function renderThinkingMarkdown(text) {
 }
 
 function renderMessageMarkdown(message) {
-  const isAssistant = message?.role === 'assistant'
-  return getCachedMarkdown(isAssistant ? 'message_assistant' : 'message_user', message?.content)
+  if (!message) return ''
+  if (message._renderedHtml && message._renderedContent === message.content && !message.isStreaming) {
+    return message._renderedHtml
+  }
+  const isAssistant = message.role === 'assistant'
+  const html = getCachedMarkdown(isAssistant ? 'message_assistant' : 'message_user', message.content)
+  if (!message.isStreaming) {
+    message._renderedContent = message.content
+    message._renderedHtml = html
+  }
+  return html
 }
 
 // 格式化时间戳
@@ -2911,12 +3095,18 @@ function updateCurrentMessageIndex() {
   currentMessageIndex.value = closestIndex
 }
 
-// 优化的滚动函数
+// rAF 优化的滚动函数
+let scrollRafId = null
 function scrollDown(force = false) {
   if (!msgContainer.value) return
-  // 如果是强制滚动或者用户没有手动滚动过，则滚动到底部
   if (force || !userScrolled.value) {
-    msgContainer.value.scrollTop = msgContainer.value.scrollHeight
+    if (scrollRafId) return
+    scrollRafId = requestAnimationFrame(() => {
+      scrollRafId = null
+      if (msgContainer.value) {
+        msgContainer.value.scrollTop = msgContainer.value.scrollHeight
+      }
+    })
   }
 }
 
@@ -3058,16 +3248,22 @@ function enhanceMarkdownHtml(html) {
       tabChart.type = 'button'
       tabChart.className = 'mermaid-tab is-active'
       tabChart.dataset.view = 'chart'
-      tabChart.innerHTML = `${iconSvg('chart')}<span>图表</span>`
+      tabChart.innerHTML = `${iconSvg('chart')}<span>图表预览</span>`
       const tabCode = document.createElement('button')
       tabCode.type = 'button'
       tabCode.className = 'mermaid-tab'
       tabCode.dataset.view = 'code'
-      tabCode.innerHTML = `${iconSvg('code')}<span>代码</span>`
+      tabCode.innerHTML = `${iconSvg('code')}<span>Mermaid 源码</span>`
       tabs.append(tabChart, tabCode)
 
       const tools = document.createElement('div')
       tools.className = 'mermaid-tools'
+      const copyBtn = document.createElement('button')
+      copyBtn.type = 'button'
+      copyBtn.className = 'mermaid-tool-btn'
+      copyBtn.dataset.action = 'copy'
+      copyBtn.title = '复制源码'
+      copyBtn.innerHTML = iconSvg('copy')
       const zoomOut = document.createElement('button')
       zoomOut.type = 'button'
       zoomOut.className = 'mermaid-tool-btn'
@@ -3092,7 +3288,7 @@ function enhanceMarkdownHtml(html) {
       fs.dataset.action = 'fullscreen'
       fs.title = '全屏'
       fs.innerHTML = iconSvg('fullscreen')
-      tools.append(zoomOut, zoomIn, dl, fs)
+      tools.append(copyBtn, zoomOut, zoomIn, dl, fs)
 
       const header = document.createElement('div')
       header.className = 'mermaid-header'
@@ -3100,6 +3296,7 @@ function enhanceMarkdownHtml(html) {
 
       const chartArea = document.createElement('div')
       chartArea.className = 'mermaid-chart'
+      chartArea.style.display = 'flex'
       const status = document.createElement('div')
       status.className = 'mermaid-status'
       status.textContent = '正在渲染图表…'
@@ -3107,7 +3304,7 @@ function enhanceMarkdownHtml(html) {
 
       const codeArea = document.createElement('div')
       codeArea.className = 'mermaid-code'
-      codeArea.hidden = true
+      codeArea.style.display = 'none'
       const codePre = document.createElement('pre')
       const codeEl = document.createElement('code')
       codeEl.className = 'language-mermaid'
@@ -3341,7 +3538,7 @@ function handleMarkdownClick(event) {
     }
   }
 
-  // Mermaid — tab switch
+  // Mermaid — tab switch (Preview vs Code - mutually exclusive display)
   const mermaidTab = event.target?.closest?.('.mermaid-tab')
   if (mermaidTab) {
     const block = mermaidTab.closest('.mermaid-block')
@@ -3350,17 +3547,28 @@ function handleMarkdownClick(event) {
     block.querySelectorAll('.mermaid-tab').forEach((t) => t.classList.toggle('is-active', t === mermaidTab))
     const chart = block.querySelector('.mermaid-chart')
     const code = block.querySelector('.mermaid-code')
-    if (chart) chart.hidden = view !== 'chart'
-    if (code) code.hidden = view !== 'code'
+    if (view === 'chart') {
+      if (chart) chart.style.display = 'flex'
+      if (code) code.style.display = 'none'
+    } else {
+      if (chart) chart.style.display = 'none'
+      if (code) code.style.display = 'block'
+    }
     return
   }
 
-  // Mermaid — tool button (zoom in/out, download, fullscreen)
+  // Mermaid — tool button (copy, zoom in/out, download, fullscreen)
   const toolBtn = event.target?.closest?.('.mermaid-tool-btn')
   if (toolBtn) {
     const block = toolBtn.closest('.mermaid-block')
     if (!block) return
     const action = toolBtn.dataset.action
+    if (action === 'copy') {
+      const code = block.dataset.code || ''
+      navigator.clipboard?.writeText(code)
+      ElMessage.success('Mermaid 源码已复制')
+      return
+    }
     if (action === 'zoom-in' || action === 'zoom-out') {
       const svg = block.querySelector('.mermaid-chart svg')
       if (!svg) return
@@ -3560,7 +3768,7 @@ function startResize(e) {
     : document.querySelector('.ai-panel')
   if (!panel) return
   const startX = e.clientX
-  const startWidth = aiPanelWidth.value || panel.offsetWidth || 420
+  const startWidth = aiPanelWidth.value || panel.offsetWidth || (typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.40) : 560)
   let latestX = startX
   document.body.classList.add('is-resizing-ai')
   panel.classList.add('is-resizing')
@@ -3569,7 +3777,7 @@ function startResize(e) {
   const applyWidth = () => {
     resizeFrame = null
     const diff = startX - latestX
-    const width = Math.max(280, Math.min(startWidth + diff, window.innerWidth * 0.7))
+    const width = Math.max(300, Math.min(startWidth + diff, window.innerWidth * 0.8))
     aiPanelWidth.value = Math.round(width)
   }
   const onMove = event => {

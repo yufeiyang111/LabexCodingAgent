@@ -31,7 +31,7 @@ import org.springframework.stereotype.Component;
  * profile, so projects that never opted into project-level configuration keep working.
  */
 @Component
-public final class AgentEffectiveProjectConfigService {
+public class AgentEffectiveProjectConfigService {
 
     /** Canonical digest of an absent optional policy node. */
     private static final String EMPTY_OBJECT_DIGEST =

@@ -20,18 +20,14 @@ import com.labex.labexagent.run.CommandFailureGuard;
 import com.labex.labexagent.run.EnvironmentBlockerClassifier;
 import com.labex.labexagent.tool.ToolResult;
 import com.labex.labexagent.workspace.ProjectWorkspace;
-import com.labex.labexagent.workspace.SecureWorkspacePath;
+import com.labex.labexagent.workspace.WorkspaceMutationEvidence;
 import com.labex.labexagent.workspace.WorkspaceOperationIdentity;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.network.NetworkAccessService;
 import com.labex.labexagent.runtime.AgentCancellationRegistry;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.service.StudentProjectService;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.Path;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -731,7 +727,7 @@ public class CommandApprovalOrchestrator {
             toolResult.withWorkspaceIdentity(identity);
         }
         if (evidence.hasChanges()) {
-            toolResult.withWorkspaceChangeEvidence(identity, evidence.changeIds());
+            toolResult.withWorkspaceChangeEvidence(identity, evidence.changeIds(), evidence.workspaceMutation());
         }
         if (evidence.hasWorkspaceVerification()) {
             toolResult.withWorkspaceVerification(evidence.workspaceVerification());
@@ -793,47 +789,12 @@ public class CommandApprovalOrchestrator {
     }
 
     /**
-     * Snapshot 证明“命令期间观察到变更”，这里再对每个安全相对 target 做一次真实文件系统后置检查。
-     * 它不试图猜测任意 shell 命令的意图，只验证已落入 change-set 的实际 target，避免把 rm -f 的
+     * Snapshot 证明“命令期间观察到变更”，审批 shell 与普通 shell 随后复用同一份实际 target 复核。
+     * 它不从命令文本或快照差异单独猜测成功，只验证已落入 change-set 的 target，避免把 rm -f 的
      * 空成功或快照后的竞争误投影成已验证删除。
      */
     private Map<String, Object> verifyWorkspacePostconditions(StudentProject project, List<PendingChange> changes) {
-        List<PendingChange> safeChanges = changes == null ? List.of() : changes.stream()
-                .filter(Objects::nonNull)
-                .filter(change -> change.getRelativePath() != null && !change.getRelativePath().isBlank())
-                .toList();
-        if (safeChanges.isEmpty()) {
-            return Map.of("state", "no_change", "targets", List.of());
-        }
-        try {
-            SecureWorkspacePath workspace = ProjectWorkspace.paths(project);
-            List<Map<String, Object>> targets = new ArrayList<>();
-            boolean verified = true;
-            for (PendingChange change : safeChanges) {
-                String expectedState = "delete".equalsIgnoreCase(change.getChangeType())
-                        ? "absent" : "regular_file";
-                Path target = workspace.resolveForCreate(change.getRelativePath());
-                String observedState;
-                if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-                    observedState = "absent";
-                } else if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
-                    observedState = "regular_file";
-                } else {
-                    observedState = "not_regular_file";
-                }
-                boolean targetVerified = expectedState.equals(observedState);
-                verified = verified && targetVerified;
-                Map<String, Object> targetEvidence = new LinkedHashMap<>();
-                targetEvidence.put("path", change.getRelativePath().replace('\\', '/'));
-                targetEvidence.put("expectedState", expectedState);
-                targetEvidence.put("observedState", observedState);
-                targets.add(Map.copyOf(targetEvidence));
-            }
-            return Map.of("state", verified ? "verified" : "mismatch", "targets", List.copyOf(targets));
-        } catch (RuntimeException exception) {
-            // 工作区不可检查时不虚构成功，只持久化可解释的安全状态。
-            return Map.of("state", "unavailable", "targets", List.of());
-        }
+        return WorkspaceMutationEvidence.verifyPostconditions(project, changes);
     }
 
     private void failApprovedToolCall(CommandApproval approval, String detail) {
@@ -933,10 +894,8 @@ public class CommandApprovalOrchestrator {
         if (identity != null) {
             additional.put("workspaceIdentity", identity.toPayload());
         }
-        if (evidence.hasChanges()) {
-            additional.put("workspaceMutation", Map.of(
-                    "state", "applied",
-                    "changeIds", evidence.changeIds()));
+        if (evidence.hasChanges() && !evidence.workspaceMutation().isEmpty()) {
+            additional.put("workspaceMutation", evidence.workspaceMutation());
         }
         if (evidence.hasWorkspaceVerification()) {
             additional.put("workspaceVerification", evidence.workspaceVerification());
@@ -968,10 +927,11 @@ public class CommandApprovalOrchestrator {
 
     private record WorkspaceChangeEvidence(String status, int changedFileCount, List<String> changedPaths,
                                            List<PendingChange> changes,
-                                           Map<String, Object> workspaceVerification) {
+                                           Map<String, Object> workspaceVerification,
+                                           Map<String, Object> workspaceMutation) {
         private static WorkspaceChangeEvidence unavailable() {
             return new WorkspaceChangeEvidence("unavailable", 0, List.of(), List.of(),
-                    Map.of("state", "unavailable", "targets", List.of()));
+                    Map.of("state", "unavailable", "targets", List.of()), Map.of());
         }
 
         private static WorkspaceChangeEvidence from(List<PendingChange> changes,
@@ -983,7 +943,7 @@ public class CommandApprovalOrchestrator {
                 return new WorkspaceChangeEvidence("no_change", 0, List.of(), List.of(),
                         workspaceVerification == null || workspaceVerification.isEmpty()
                                 ? Map.of("state", "no_change", "targets", List.of())
-                                : Map.copyOf(workspaceVerification));
+                                : Map.copyOf(workspaceVerification), Map.of());
             }
             List<String> paths = safeChanges.stream()
                     .map(PendingChange::getRelativePath)
@@ -992,10 +952,13 @@ public class CommandApprovalOrchestrator {
                     .sorted()
                     .limit(40)
                     .toList();
-            return new WorkspaceChangeEvidence("captured", safeChanges.size(), List.copyOf(paths),
-                    List.copyOf(safeChanges), workspaceVerification == null || workspaceVerification.isEmpty()
+            Map<String, Object> verification = workspaceVerification == null || workspaceVerification.isEmpty()
                     ? Map.of("state", "unavailable", "targets", List.of())
-                    : Map.copyOf(workspaceVerification));
+                    : Map.copyOf(workspaceVerification);
+            Map<String, Object> mutation = WorkspaceMutationEvidence.fromChanges(safeChanges,
+                    WorkspaceMutationEvidence.snapshotBeforeStates(safeChanges), verification);
+            return new WorkspaceChangeEvidence("captured", safeChanges.size(), List.copyOf(paths),
+                    List.copyOf(safeChanges), verification, mutation);
         }
 
         private boolean hasChanges() {

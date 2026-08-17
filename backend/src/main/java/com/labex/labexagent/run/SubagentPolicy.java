@@ -3,7 +3,7 @@ package com.labex.labexagent.run;
 import org.springframework.stereotype.Component;
 
 @Component
-public final class SubagentPolicy {
+public class SubagentPolicy {
     public static final int MAX_PARALLEL_SUBAGENTS = 4;
 
     public void validateSpawn(Long parentSubagentId, int activeSiblings, int tokenBudget) {

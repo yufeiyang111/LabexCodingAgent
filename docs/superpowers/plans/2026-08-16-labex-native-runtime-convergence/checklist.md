@@ -47,10 +47,13 @@
 - [ ] normal install、build、test、lint、dev、Git add/commit 可用。
 - [ ] destructive、越界、secret、生产高风险操作受结构化保护。
 - [x] shell 结果记录 exit、error、target、证据：C8 已将退出码、稳定 `failureClass`、安全相对 workdir/artifact path 与既有 identity/verification 写入 durable Tool Part/Event；真实 worker/browser 现场仍待验收。
-- [ ] 文件 mutation 记录 before/after 与 target identity。
-- [ ] 删除失败不会产生成功 verification。
-  - [x] direct `write_file` / `apply_patch` 已在 workspace lease 内记录真实写后 verification；临时 workspace 删除回归已覆盖文件、change-set、ToolResult/Part/Event 投影一致。
-  - [x] approval `shell` 已将 snapshot change-set 的真实 postcondition（delete=absent，其它=regular_file）与 identity/changeId 写回原 ToolResult、既有 Tool Part 和 `WORKSPACE_CHANGED`；真实 worker 与浏览器刷新验收仍待完成。
+- [x] 文件 mutation 记录 before/after 与 target identity。
+  - [x] direct `write_file` / `apply_patch` 在 workspace lease 内采集真实写前状态和真实写后 verification；临时 workspace 删除回归覆盖文件、change-set、ToolResult/Part/Event 投影一致。
+  - [x] approval `shell` 与普通 native `shell` 都从 durable snapshot change-set 取得写前事实，再对实际 workspace 执行写后 postcondition；只投影安全相对路径、hash、字节数、changeId 与 task/epoch identity。
+- [x] 删除失败不会产生成功 verification。
+  - [x] `delete` 只有 observed `absent` 才会是 target `after.verified=true`；`create` / `modify` / `rename` 必须实际 `present` 且 hash、字节数一致。mismatch、unavailable 或脏绝对路径不能被投影为 verified。
+  - [x] 同一份 `workspaceMutation` / `workspaceVerification` metadata 同时驱动即时 `AgentContext` 与重启后的 durable Part replay；mismatch 保留目标为未验证并进入 repair，Native completion-readiness 不会因此写入提示。
+  - [ ] 真实 worker、浏览器文件树刷新和断线恢复验收仍待完成。
 - [ ] 重复恢复不会产生第二次副作用。
   - [x] approval consume 的第二次执行不会再次启动命令或 resume（聚焦回归已覆盖）；完整断线/worker 接管恢复仍待验收。
 
@@ -86,10 +89,41 @@
 
 - [ ] 每个实现切片有红灯和绿灯证据（本轮 ToolExposure/MCP schema 切片已补齐；其余未完成切片仍待补）。
 - [x] 当前阶段 A 的后端聚焦测试通过。
-- [x] 完整后端测试通过（2026-08-16：`cd backend && mvn -q clean test`）。
-- [ ] 前端 reducer 测试通过。
+- [x] 完整后端测试通过（2026-08-17：`cd backend && mvn -q test`；342 份 Surefire XML 报告均无 failures/errors）。
+- [x] 相关前端 reducer/timeline 聚焦测试通过（2026-08-17：87/87）。
+- [x] 前端生产构建通过（2026-08-17：`cd frontend && npm run build`）。
 - [ ] 浏览器 smoke 覆盖删除、final、刷新、重连。
 - [ ] 旧 conversation legacy 回归通过。
 - [ ] native conversation 端到端真实读写验证通过。
 - [ ] 文档、DTO、schema、reducer、事件同步更新。
 - [ ] 已审查 diff；未提交、未推送，除非用户明确要求。
+
+## 切片 N1：模型超时与用户取消分离（2026-08-16）
+
+- [x] 在单轮模型调用中使用独立的 transport cancellation token；watchdog 只能终止该次 provider stream，不能写入 ActiveRun 的用户取消状态。
+- [x] `model_timeout` 作为结构化失败原因投影到运行日志、`ERROR`/`DONE` 事件和任务终态；不得落为 `cancelled` 或“用户主动取消”。
+- [x] 将外层模型轮次总超时集中为 `labex-agent.model-turn.total-timeout-ms`，默认 300000ms；`0` 明确表示关闭外层总时限，provider 自身超时仍生效。
+- [x] 原始 provider `thinking`/`reasoning` 流继续按现有逐 delta、完整落盘策略透传；本切片不摘要、不隐藏、不以 CoT 文本驱动状态迁移。
+- [x] 聚焦回归覆盖：watchdog 超时不会取消 parent ActiveRun，provider transport 被本地取消，真实用户取消仍向 provider token 传播。
+- N1 验证：聚焦 runtime 回归与当时的完整后端 `mvn -q test` 均通过。事故日志与当前工作日期同为 2026-08-17；诊断依据是旧 45000ms watchdog 与约 46 秒无模型输出的对应关系，而非把墙钟日期误判为取消原因。
+
+## 切片 N2：完成证据就绪后的有限收束（2026-08-17）
+
+- [x] 仅在 native 编码/改动任务已有真实 workspace 改动，且 `RunCompletionEvidence` 满足时，向下一轮 Provider transcript 写入一次 durable completion-readiness 指令。
+- [x] 指令以 `task + epoch + evidence fingerprint` 作为稳定身份；恢复、重放和同一证据重复观察不会重复写入。
+- [x] transcript 指令与 `COMPLETION_READY` durable event 在同一事务内写入；只有两者均成功持久化才向实时 SSE 投影该事件。
+- [x] 不从 CoT、关键词或计划文本猜测“已完成”，不强制关闭工具；模型只能在能够指出具体未满足用户要求时继续探索，否则应直接给出最终答复。
+- [x] 只读/分析任务与未验证/无改动任务不会触发该提示，避免服务端验证事实抢占用户语义。
+- [x] completion-readiness 指令标记为 `visibility=internal`，任务公开 snapshot 会过滤它；兼容同一类旧 key，避免内部 Provider 指令错误显示到前端。
+- [x] 聚焦后端回归通过：证据门槛、幂等、transaction event、transcript、Part、finalization、公开历史与 Native batch wiring。
+- [x] 聚焦前端 reducer 回归通过：`COMPLETION_READY` 仅成为状态投影，不渲染为对话文本或工具卡。
+- [ ] 仍需真实浏览器/受控 Provider smoke：验证一次已通过的真实文件改动后模型在下一轮立即 final，且刷新/重连不显示内部指令。
+
+
+## 切片 N3：Workspace 真实事实链跨路径收口（2026-08-17）
+
+- [x] 直接文件工具、审批命令和普通 native `shell` 都复用 `WorkspaceMutationEvidence` 投影 `workspaceMutation` / `workspaceVerification`，不从模型参数或命令文本猜测文件结果。
+- [x] 真实 postcondition mismatch 不会把 target 写成 `verified=true`；相对路径大小写保持原样，非法绝对路径不会进入运行进度或 prompt。
+- [x] `AgentRunExecutionProgressReducer` 是即时上下文和 durable Part replay 的唯一 progress 规则：已验证 target 只清除自身，mismatch 保留未验证 target 并进入 repair。
+- [x] `maybeSignalCompletionReadiness(...)` 在存在未验证 workspace target 时直接返回；这是 readiness nudge 的事实门槛，不是对模型最终答复的全局强制拦截。
+- [ ] 仍未实现用户另行排期的“所有 tool failure 后禁止最终答复假称成功”、循环保护最终 Part 一致性和真实浏览器 / worker smoke。

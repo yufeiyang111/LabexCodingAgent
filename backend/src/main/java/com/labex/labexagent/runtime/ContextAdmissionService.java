@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Set;
 
 @org.springframework.stereotype.Service
-public final class ContextAdmissionService {
+public class ContextAdmissionService {
     private static final Set<String> STATIC_CATEGORIES = Set.of(
             "systemPrompt", "toolDefinitions", "fixedInstructions", "skillsAndInstructions");
 

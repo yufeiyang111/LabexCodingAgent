@@ -44,7 +44,7 @@ import org.springframework.stereotype.Component;
  * read-back mismatches and fails closed.
  */
 @Component
-public final class AgentProjectConfigFileWriter {
+public class AgentProjectConfigFileWriter {
 
     /** Lock file location is outside the protected tree so it never pollutes the tree digest. */
     public static final String LOCK_RELATIVE_PATH = ".labex-agent/.config-writer.lock";

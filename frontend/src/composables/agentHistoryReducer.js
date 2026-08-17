@@ -386,6 +386,10 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       }
       break
     case 'PLAN_UPDATE': message.plan = data.summary || data.plan || null; message.planJson = data.planJson || null; break
+    case 'COMPLETION_READY':
+      message.taskId = data.taskId || message.taskId || null
+      message.completionReadiness = data
+      break
     case 'COMPLETION_EVIDENCE':
       message.taskId = data.taskId || message.taskId || null
       if (data.satisfied === true) {

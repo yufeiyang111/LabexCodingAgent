@@ -26,7 +26,7 @@ import org.springframework.stereotype.Component;
  * (catalog, policy, tool schema) consumes it in the capability phase (Tasks 3.x).
  */
 @Component
-public final class AgentRunConfigSnapshotService {
+public class AgentRunConfigSnapshotService {
 
     /** Epoch used for the pre-queue snapshot of a newly created task. */
     public static final long INITIAL_EPOCH = 0L;

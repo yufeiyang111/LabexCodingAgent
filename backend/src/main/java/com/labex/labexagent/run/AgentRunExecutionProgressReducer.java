@@ -1,7 +1,9 @@
 package com.labex.labexagent.run;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.labex.labexagent.workspace.WorkspaceMutationEvidence;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -15,7 +17,7 @@ import org.springframework.stereotype.Component;
  * <p>该类不读写数据库，也不依赖 SSE。运行时增量投影和 JVM 重启后的完整重放必须复用同一套规则。</p>
  */
 @Component
-public final class AgentRunExecutionProgressReducer {
+public class AgentRunExecutionProgressReducer {
 
     private static final Set<String> NON_SETTLED_STATUSES = Set.of(
             "", "pending", "running", "streaming", "waiting_approval", "waiting_user", "skipped", "interrupted");
@@ -45,6 +47,11 @@ public final class AgentRunExecutionProgressReducer {
         }
         if (!"completed".equals(normalizedStatus) && !"success".equals(normalizedStatus)) {
             return state;
+        }
+
+        WorkspaceMutationProgress workspaceMutation = workspaceMutation(metadata);
+        if (workspaceMutation.hasTargets()) {
+            return applyWorkspaceMutation(state, workspaceMutation);
         }
 
         String tool = normalize(toolName);
@@ -79,6 +86,49 @@ public final class AgentRunExecutionProgressReducer {
             return state.withVerification(tool, Set.of(), false);
         }
         return state;
+    }
+
+    /**
+     * Workspace mutation 的 target 和写后 verification 都由服务端投影。它优先于工具名启发式，
+     * 这样普通 shell、审批 shell 与直接文件工具在同一 reducer 中保持一致。
+     */
+    private State applyWorkspaceMutation(State state, WorkspaceMutationProgress mutation) {
+        State changed = state.withWorkspaceMutation(mutation.targets());
+        if ("verified".equals(mutation.verificationState()) && mutation.allTargetsVerified()) {
+            return changed.withWorkspacePostcondition(mutation.targets());
+        }
+        if ("mismatch".equals(mutation.verificationState())
+                || ("verified".equals(mutation.verificationState()) && !mutation.allTargetsVerified())) {
+            return changed.withStage("repair");
+        }
+        return changed;
+    }
+
+    private WorkspaceMutationProgress workspaceMutation(JsonObject metadata) {
+        JsonObject mutation = object(metadata, "workspaceMutation");
+        if (!"applied".equals(text(mutation, "state"))) {
+            return WorkspaceMutationProgress.none();
+        }
+        JsonArray rawTargets = array(mutation, "targets");
+        LinkedHashSet<String> targets = new LinkedHashSet<>();
+        boolean allTargetsVerified = true;
+        for (JsonElement rawTarget : rawTargets) {
+            if (rawTarget == null || rawTarget.isJsonNull() || !rawTarget.isJsonObject()) {
+                continue;
+            }
+            JsonObject target = rawTarget.getAsJsonObject();
+            String path = WorkspaceMutationEvidence.normalizeRelativePath(rawText(target, "path"));
+            if (path.isBlank()) {
+                continue;
+            }
+            targets.add(path);
+            allTargetsVerified &= bool(object(target, "after"), "verified");
+        }
+        if (targets.isEmpty()) {
+            return WorkspaceMutationProgress.none();
+        }
+        String verificationState = text(object(metadata, "workspaceVerification"), "state");
+        return new WorkspaceMutationProgress(Set.copyOf(targets), verificationState, allTargetsVerified);
     }
 
     private boolean isManualVerificationRead(State state, String tool, JsonObject arguments, String output) {
@@ -164,15 +214,38 @@ public final class AgentRunExecutionProgressReducer {
         return source.getAsJsonObject(key);
     }
 
-    private static String text(JsonObject source, String key) {
+    private static JsonArray array(JsonObject source, String key) {
+        if (source == null || key == null || !source.has(key) || source.get(key).isJsonNull()
+                || !source.get(key).isJsonArray()) {
+            return new JsonArray();
+        }
+        return source.getAsJsonArray(key);
+    }
+
+    private static boolean bool(JsonObject source, String key) {
+        if (source == null || key == null || !source.has(key) || source.get(key).isJsonNull()) {
+            return false;
+        }
+        try {
+            return source.get(key).getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static String rawText(JsonObject source, String key) {
         if (source == null || key == null || !source.has(key) || source.get(key).isJsonNull()) {
             return "";
         }
         try {
-            return normalize(source.get(key).getAsString());
+            return source.get(key).getAsString().trim();
         } catch (RuntimeException ignored) {
             return "";
         }
+    }
+
+    private static String text(JsonObject source, String key) {
+        return normalize(rawText(source, key));
     }
 
     private static boolean nonZeroExit(JsonObject execution) {
@@ -188,6 +261,23 @@ public final class AgentRunExecutionProgressReducer {
 
     private static String normalize(String value) {
         return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private record WorkspaceMutationProgress(Set<String> targets, String verificationState,
+                                             boolean allTargetsVerified) {
+        private WorkspaceMutationProgress {
+            targets = targets == null || targets.isEmpty()
+                    ? Set.of() : Collections.unmodifiableSet(new LinkedHashSet<>(targets));
+            verificationState = normalize(verificationState);
+        }
+
+        static WorkspaceMutationProgress none() {
+            return new WorkspaceMutationProgress(Set.of(), "", false);
+        }
+
+        boolean hasTargets() {
+            return !targets.isEmpty();
+        }
     }
 
     public record State(String stage,
@@ -217,6 +307,23 @@ public final class AgentRunExecutionProgressReducer {
             }
             return new State("verify", writeCount, verificationCount + 1, unverified,
                     sources, remainingTargets);
+        }
+
+        public State withWorkspaceMutation(Set<String> changedTargets) {
+            LinkedHashSet<String> targets = new LinkedHashSet<>(unverifiedChangeTargets);
+            if (changedTargets != null) {
+                targets.addAll(changedTargets);
+            }
+            return new State("implement", writeCount + 1, verificationCount, true,
+                    trustedVerificationSources, targets);
+        }
+
+        public State withWorkspacePostcondition(Set<String> verifiedTargets) {
+            LinkedHashSet<String> remaining = new LinkedHashSet<>(unverifiedChangeTargets);
+            if (verifiedTargets != null) {
+                remaining.removeAll(verifiedTargets);
+            }
+            return withVerification("workspace_postcondition", remaining, !remaining.isEmpty());
         }
 
         private static Set<String> normalizedSet(Set<String> values, boolean lowerCase) {

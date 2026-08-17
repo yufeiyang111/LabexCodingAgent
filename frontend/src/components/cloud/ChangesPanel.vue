@@ -14,7 +14,14 @@
     </div>
 
     <div v-else class="cp-file-list">
-      <div v-for="(change, i) in allChanges" :key="change.changeId || i" class="cp-file-row" :class="{ active: expandedId === (change.changeId || i) }" @click="toggleFile(change)">
+      <div
+        v-for="(change, i) in allChanges"
+        :key="change.changeId || i"
+        class="cp-file-row"
+        :class="{ active: expandedId === (change.changeId || change.relativePath || change.file || i) }"
+        @click="handleClickFile(change, i)"
+        title="点击展开查看代码变动并同步在中心标签页打开"
+      >
         <span class="cp-status-icon" :class="'cp-' + (change.changeType || 'modify')">
           <svg v-if="change.changeType === 'create'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           <svg v-else-if="change.changeType === 'delete'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -73,7 +80,7 @@ const props = defineProps({
   refreshKey: { type: [Number, String], default: 0 }
 })
 
-const emit = defineEmits(['revert', 'undo'])
+const emit = defineEmits(['revert', 'undo', 'open-diff'])
 
 const expandedId = ref(null)
 const expandedChange = ref(null)
@@ -114,8 +121,13 @@ onMounted(loadBackendChanges)
 
 watch(() => props.refreshKey, loadBackendChanges)
 
-function toggleFile(change) {
-  const id = change.changeId || change.file
+function handleClickFile(change, i) {
+  toggleFile(change, i)
+  emit('open-diff', change)
+}
+
+function toggleFile(change, i) {
+  const id = change.changeId || change.relativePath || change.file || i
   if (expandedId.value === id) {
     expandedId.value = null
     expandedChange.value = null

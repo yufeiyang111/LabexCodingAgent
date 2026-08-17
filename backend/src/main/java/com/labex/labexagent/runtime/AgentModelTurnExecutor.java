@@ -9,23 +9,26 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 
 /**
  * 执行单次模型流式调用，只负责 Provider 能力协商、流拼装、超时和原生工具调用身份。
  * 任务状态和工具执行仍由 AgentLoopEngine 及生命周期服务负责。
  */
 @org.springframework.stereotype.Service
-public final class AgentModelTurnExecutor {
+public class AgentModelTurnExecutor {
     private static final Logger log = LoggerFactory.getLogger(AgentModelTurnExecutor.class);
     private static final ExecutorService DEFAULT_EXECUTOR = new ThreadPoolExecutor(
             0, 16, 30L, TimeUnit.SECONDS, new SynchronousQueue<>(),
@@ -33,10 +36,20 @@ public final class AgentModelTurnExecutor {
 
     private final ExecutorService executorService;
     private final long timeoutMs;
-    private final Consumer<CancellationToken> cancellationRequester;
+
+    /** Spring 运行时从集中化配置读取单轮总 watchdog；最小装配上下文缺少 properties 时安全回退默认值。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentModelTurnExecutor(ObjectProvider<AgentModelTurnProperties> propertiesProvider) {
+        this(DEFAULT_EXECUTOR, configuredTimeout(propertiesProvider));
+    }
+
+    private static long configuredTimeout(ObjectProvider<AgentModelTurnProperties> propertiesProvider) {
+        AgentModelTurnProperties properties = propertiesProvider == null ? null : propertiesProvider.getIfAvailable();
+        return properties == null ? AgentModelTurnProperties.DEFAULT_TOTAL_TIMEOUT_MS : properties.getTotalTimeoutMs();
+    }
 
     public AgentModelTurnExecutor() {
-        this(DEFAULT_EXECUTOR, 45_000L);
+        this(DEFAULT_EXECUTOR, AgentModelTurnProperties.DEFAULT_TOTAL_TIMEOUT_MS);
     }
 
     AgentModelTurnExecutor(long timeoutMs) {
@@ -44,16 +57,9 @@ public final class AgentModelTurnExecutor {
     }
 
     AgentModelTurnExecutor(ExecutorService executorService, long timeoutMs) {
-        this(executorService, timeoutMs, AgentModelTurnExecutor::requestCancellation);
-    }
-
-    AgentModelTurnExecutor(ExecutorService executorService, long timeoutMs,
-                           Consumer<CancellationToken> cancellationRequester) {
         this.executorService = executorService;
-        this.timeoutMs = timeoutMs;
-        this.cancellationRequester = cancellationRequester;
+        this.timeoutMs = Math.max(0L, timeoutMs);
     }
-
     ModelTurnResult execute(ModelTurnRequest request) throws Exception {
         ProviderCapabilities capabilities = request.provider().capabilities();
         if (!capabilities.streaming()) {
@@ -129,9 +135,13 @@ public final class AgentModelTurnExecutor {
         InternalReasoningBoundary.VisibleStreamFilter visibleContentFilter =
                 new InternalReasoningBoundary.VisibleStreamFilter(publishThinking, collectVisible);
 
+        TurnCancellationToken turnCancellationToken = new TurnCancellationToken(request.cancellationToken());
         Future<?> future = executorService.submit(() -> request.provider().chatStream(
                 request.systemPrompt(), request.messages(), request.tools(), request.config(),
-                request.cancellationToken(), chunk -> {
+                turnCancellationToken, chunk -> {
+                    if (turnCancellationToken.isCancellationRequested()) {
+                        return;
+                    }
                     try {
                         switch (chunk.eventType()) {
                             case CANCELLED -> {
@@ -171,21 +181,45 @@ public final class AgentModelTurnExecutor {
                     }
                 }));
 
+        FailureReason failureReason = FailureReason.NONE;
         try {
-            future.get(timeoutMs, TimeUnit.MILLISECONDS);
+            if (timeoutMs > 0L) {
+                future.get(timeoutMs, TimeUnit.MILLISECONDS);
+            } else {
+                future.get();
+            }
         } catch (TimeoutException timeout) {
-            cancellationRequester.accept(request.cancellationToken());
+            turnCancellationToken.requestTimeoutCancellation();
             future.cancel(true);
+            failureReason = FailureReason.MODEL_TIMEOUT;
             error.set(localText(request.visibleLanguage(),
                     "模型服务响应超时，已自动停止本次请求。请检查模型服务、网络或换一个模型后重试。",
                     "Model service timed out, so this request was stopped. Check the provider, network, or try another model."));
-        } catch (Exception failure) {
-            cancellationRequester.accept(request.cancellationToken());
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            turnCancellationToken.requestTransportCancellation();
             future.cancel(true);
-            Throwable cause = failure.getCause() == null ? failure : failure.getCause();
-            error.set(cause.getMessage());
+            if (request.cancellationToken().isCancellationRequested()) {
+                cancelled[0] = true;
+            } else {
+                error.set(localText(request.visibleLanguage(),
+                        "模型流式调用被运行线程中断。",
+                        "Model stream execution was interrupted."));
+            }
+        } catch (Exception failure) {
+            turnCancellationToken.requestTransportCancellation();
+            future.cancel(true);
+            if (request.cancellationToken().isCancellationRequested()) {
+                cancelled[0] = true;
+            } else {
+                Throwable cause = failure.getCause() == null ? failure : failure.getCause();
+                String failureMessage = cause.getMessage();
+                error.set(failureMessage == null || failureMessage.isBlank()
+                        ? "Provider stream failed without an error message." : failureMessage);
+            }
+        } finally {
+            turnCancellationToken.close();
         }
-
         if (error.get() == null && !cancelled[0] && !terminalEvent[0]) {
             error.set("Provider stream ended before terminal event; response may be truncated.");
         }
@@ -203,7 +237,7 @@ public final class AgentModelTurnExecutor {
 
         Map<String, Object> usageValue = usage.get() == null ? Map.of() : usage.get();
         if (error.get() != null) {
-            return ModelTurnResult.error(error.get(), content.toString(), thinking.toString(), usageValue);
+            return ModelTurnResult.error(failureReason, error.get(), content.toString(), thinking.toString(), usageValue);
         }
         if (cancelled[0] || request.cancellationToken().isCancellationRequested()) {
             return ModelTurnResult.cancelled(content.toString(), thinking.toString(), usageValue);
@@ -223,9 +257,68 @@ public final class AgentModelTurnExecutor {
         return ModelTurnResult.text(finalContent, thinking.toString(), usageValue);
     }
 
-    private static void requestCancellation(CancellationToken cancellationToken) {
-        if (cancellationToken instanceof AgentCancellationRegistry.ActiveRun activeRun) {
-            activeRun.requestCancellation();
+    /**
+     * 单轮 provider transport 的取消边界：parent 只承载用户/生命周期取消，
+     * watchdog 与执行线程中断只能标记本轮，不能反向污染 ActiveRun。
+     */
+    private static final class TurnCancellationToken implements CancellationToken, AutoCloseable {
+        private final CancellationToken parent;
+        private final AtomicBoolean transportCancellationRequested = new AtomicBoolean();
+        private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
+        private final Registration parentRegistration;
+
+        private TurnCancellationToken(CancellationToken parent) {
+            this.parent = parent == null ? CancellationToken.none() : parent;
+            this.parentRegistration = this.parent.onCancellation(this::notifyCancellation);
+        }
+
+        @Override
+        public boolean isCancellationRequested() {
+            return transportCancellationRequested.get() || parent.isCancellationRequested();
+        }
+
+        @Override
+        public Registration onCancellation(Runnable listener) {
+            if (listener == null) {
+                throw new IllegalArgumentException("listener is required");
+            }
+            AtomicBoolean invoked = new AtomicBoolean();
+            Runnable once = () -> {
+                if (invoked.compareAndSet(false, true)) {
+                    listener.run();
+                }
+            };
+            listeners.add(once);
+            if (isCancellationRequested()) {
+                once.run();
+            }
+            return () -> listeners.remove(once);
+        }
+
+        void requestTimeoutCancellation() {
+            requestTransportCancellation();
+        }
+
+        void requestTransportCancellation() {
+            if (transportCancellationRequested.compareAndSet(false, true)) {
+                notifyCancellation();
+            }
+        }
+
+        private void notifyCancellation() {
+            for (Runnable listener : listeners) {
+                try {
+                    listener.run();
+                } catch (RuntimeException ignored) {
+                    // 单个 transport listener 失败不能阻止其它 HTTP/SSE 请求停下。
+                }
+            }
+        }
+
+        @Override
+        public void close() {
+            parentRegistration.close();
+            listeners.clear();
         }
     }
 
@@ -234,6 +327,22 @@ public final class AgentModelTurnExecutor {
     }
 
     enum ResultType { TEXT, TOOL_CALL, ERROR, CANCELLED }
+
+    enum FailureReason {
+        NONE(""),
+        MODEL_TIMEOUT("model_timeout"),
+        PROVIDER_ERROR("provider_error");
+
+        private final String code;
+
+        FailureReason(String code) {
+            this.code = code;
+        }
+
+        String code() {
+            return code;
+        }
+    }
 
     record NativeToolCall(String toolName, String toolArguments, String toolCallId, int toolCallIndex) {
         Map<String, Object> toMap() {
@@ -247,26 +356,38 @@ public final class AgentModelTurnExecutor {
     }
 
     record ModelTurnResult(ResultType type, String content, String thinking, String message,
-                           List<NativeToolCall> toolCalls, Map<String, Object> usage) {
+                           List<NativeToolCall> toolCalls, Map<String, Object> usage,
+                           FailureReason failureReason) {
         ModelTurnResult {
             toolCalls = toolCalls == null ? List.of() : List.copyOf(toolCalls);
+            failureReason = failureReason == null ? FailureReason.NONE : failureReason;
         }
 
         static ModelTurnResult text(String content, String thinking, Map<String, Object> usage) {
-            return new ModelTurnResult(ResultType.TEXT, content, thinking, "", List.of(), usage);
+            return new ModelTurnResult(ResultType.TEXT, content, thinking, "", List.of(), usage, FailureReason.NONE);
         }
 
         static ModelTurnResult toolCalls(String content, String thinking, List<NativeToolCall> toolCalls,
                                          Map<String, Object> usage) {
-            return new ModelTurnResult(ResultType.TOOL_CALL, content, thinking, "", toolCalls, usage);
+            return new ModelTurnResult(ResultType.TOOL_CALL, content, thinking, "", toolCalls, usage, FailureReason.NONE);
         }
 
         static ModelTurnResult error(String message, String content, String thinking, Map<String, Object> usage) {
-            return new ModelTurnResult(ResultType.ERROR, content, thinking, message, List.of(), usage);
+            return error(FailureReason.PROVIDER_ERROR, message, content, thinking, usage);
+        }
+
+        static ModelTurnResult error(FailureReason failureReason, String message, String content,
+                                     String thinking, Map<String, Object> usage) {
+            FailureReason effectiveReason = failureReason == null || failureReason == FailureReason.NONE
+                    ? FailureReason.PROVIDER_ERROR : failureReason;
+            return new ModelTurnResult(ResultType.ERROR, content, thinking, message, List.of(), usage, effectiveReason);
         }
 
         static ModelTurnResult cancelled(String content, String thinking, Map<String, Object> usage) {
-            return new ModelTurnResult(ResultType.CANCELLED, content, thinking, "", List.of(), usage);
+            return new ModelTurnResult(ResultType.CANCELLED, content, thinking, "", List.of(), usage, FailureReason.NONE);
+        }
+        String reasonCode() {
+            return failureReason.code();
         }
 
         String toolName() {
@@ -299,7 +420,10 @@ public final class AgentModelTurnExecutor {
             });
             result.put("content", content == null ? "" : content);
             if (thinking != null && !thinking.isEmpty()) result.put("thinking", thinking);
-            if (type == ResultType.ERROR) result.put("message", message == null ? "" : message);
+            if (type == ResultType.ERROR) {
+                result.put("message", message == null ? "" : message);
+                result.put("reasonCode", reasonCode());
+            }
             if (type == ResultType.TOOL_CALL && !toolCalls.isEmpty()) {
                 NativeToolCall first = toolCalls.get(0);
                 result.put("tool", first.toolName());

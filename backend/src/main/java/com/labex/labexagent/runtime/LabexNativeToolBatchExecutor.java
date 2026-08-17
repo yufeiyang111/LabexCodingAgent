@@ -21,7 +21,7 @@ import org.springframework.stereotype.Service;
  * structured batch 的 durable 协议、串行顺序与 Part 状态机。</p>
  */
 @Service
-public final class LabexNativeToolBatchExecutor {
+public class LabexNativeToolBatchExecutor {
     private static final String CANCELLATION_DETAIL =
             "Interrupted because the run was cancelled before this tool call started.";
 

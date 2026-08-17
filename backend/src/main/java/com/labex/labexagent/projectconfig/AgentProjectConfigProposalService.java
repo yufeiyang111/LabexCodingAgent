@@ -60,7 +60,7 @@ import org.springframework.stereotype.Component;
  * CAS authority; the revision reader never writes proposals.
  */
 @Component
-public final class AgentProjectConfigProposalService {
+public class AgentProjectConfigProposalService {
 
     public static final String STATUS_PENDING = "pending";
     public static final String STATUS_APPLYING = "applying";

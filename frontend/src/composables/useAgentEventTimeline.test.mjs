@@ -612,3 +612,20 @@ test('keeps durable evidence visible when finalization blocks a generated summar
   assert.deepEqual(assistant.completionBlockedEvidence.unresolvedRisks, ['存在文件改动，但没有成功验证证据'])
   assert.equal(assistant.completionBlockedEvidence.reasonCode, 'completion_evidence_unsatisfied')
 })
+
+
+test('projects completion readiness without rendering an internal directive as a reply', () => {
+  const state = harness()
+  const assistant = message()
+
+  state.handleAgentEvent({ type: 'COMPLETION_READY', data: {
+    taskId: 9,
+    reasonCode: 'verified_workspace_change',
+    satisfied: true
+  } }, assistant)
+
+  assert.equal(assistant.taskId, 9)
+  assert.equal(assistant.content, '')
+  assert.equal(assistant.completionReadiness.reasonCode, 'verified_workspace_change')
+  assert.equal(state.calls.filter(call => call[0] === 'render').length, 1)
+})

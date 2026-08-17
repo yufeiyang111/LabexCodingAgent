@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service;
  * preserve spaces, quotes and operators because those characters change Bash/PowerShell semantics.
  */
 @Service
-public final class CommandNormalizer {
+public class CommandNormalizer {
     public static final String VERSION = "command-normalizer-v1";
 
     public NormalizedCommand normalize(CommandRequest request) {

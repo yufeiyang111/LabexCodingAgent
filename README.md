@@ -239,6 +239,12 @@ Agent `web_search` 只返回搜索发现结果和来源 URL，不抓取结果正
 
 `web_search` 保持独立的 Exa / Parallel MCP 检索路径，不使用上述模型配置代替搜索提供商。
 
+#### Model turn timeout (optional)
+
+| Variable | Default | Description |
+|---|---:|---|
+| `LABEX_AGENT_MODEL_TURN_TOTAL_TIMEOUT_MS` | `300000` | Outer per-model-turn watchdog in milliseconds. A timeout is recorded as `model_timeout` and fails the task; it never means that the user cancelled the task. Set `0` to disable only this outer total deadline. Provider-level connection, header, read, and stream inactivity timeouts still apply. |
+
 #### Agent interaction timeout (optional)
 
 | Variable | Default | Description |

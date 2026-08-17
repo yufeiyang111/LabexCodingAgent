@@ -229,6 +229,30 @@ class AgentRunMessageServiceTest {
     }
 
     @Test
+    void publicHistoryExcludesInternalCompletionReadinessDirective() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessage directive = new AgentRunMessage();
+        directive.setMessageKey("provider:4:runtime-directive:evidence-123");
+        directive.setRole("user");
+        directive.setContent("[Runtime completion readiness] internal directive");
+        directive.setMetadata("{\"visibility\":\"internal\",\"synthetic\":\"completion_readiness\"}");
+        AgentRunMessage legacyDirective = new AgentRunMessage();
+        legacyDirective.setMessageKey("provider:4:completion-readiness:legacy-evidence");
+        legacyDirective.setRole("user");
+        legacyDirective.setContent("[Runtime completion readiness] legacy internal directive");
+        AgentRunMessage finalMessage = new AgentRunMessage();
+        finalMessage.setMessageKey("assistant:final");
+        finalMessage.setRole("assistant");
+        finalMessage.setContent("done");
+        when(messages.selectList(any())).thenReturn(List.of(directive, legacyDirective, finalMessage));
+
+        List<Map<String, Object>> history = new AgentRunMessageService(messages, tasks).publicHistory(7L);
+
+        assertThat(history).singleElement().extracting(item -> item.get("messageKey"))
+                .isEqualTo("assistant:final");
+    }
+    @Test
     void reasoningEventKeepsReasoningBodyButRemovesPrivateBlocksFromVisibleMetadata() {
         AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
         AgentTaskMapper tasks = mock(AgentTaskMapper.class);

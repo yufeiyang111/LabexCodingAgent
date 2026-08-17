@@ -219,6 +219,15 @@ public class ToolResult {
         return this;
     }
 
+    public ToolResult withWorkspaceChangeEvidence(WorkspaceOperationIdentity identity, List<String> changeIds,
+                                                   Map<String, Object> observedMutation) {
+        this.withWorkspaceChangeEvidence(identity, changeIds);
+        if (observedMutation != null && !observedMutation.isEmpty()) {
+            this.workspaceMutation = Map.copyOf(observedMutation);
+        }
+        return this;
+    }
+
     /** 写后验证由 workspace 写入所有者生成，只投影安全的相对目标和摘要。 */
     public ToolResult withWorkspaceVerification(Map<String, Object> verification) {
         this.workspaceVerification = verification == null || verification.isEmpty() ? Map.of() : Map.copyOf(verification);

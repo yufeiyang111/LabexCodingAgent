@@ -19,14 +19,17 @@ import com.labex.entity.AgentChangeSet;
 import com.labex.entity.AgentFileChange;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.service.AgentTaskService;
+import com.labex.labexagent.tool.FileContentFingerprint;
 import com.labex.labexagent.service.WorkspaceContextInvalidator;
 import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.service.StudentProjectService;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
@@ -114,6 +117,24 @@ class DiffServiceCasTest {
         assertEquals("applied", storedChange.get().getStatus());
         DiffService.ApplyTelemetry telemetry = service.consumeLastApplyTelemetry();
         assertEquals("complete", telemetry.phase());
+        String beforeContent = "class Original {}\n";
+        String afterContent = "class AgentEdit {}\n";
+        assertEquals(Map.of(
+                "state", "applied",
+                "changeIds", List.of(applied.getId()),
+                "targets", List.of(Map.of(
+                        "path", "Main.java",
+                        "operation", "modify",
+                        "changeId", applied.getId(),
+                        "before", Map.of(
+                                "state", "present",
+                                "sha256", FileContentFingerprint.sha256(beforeContent),
+                                "bytes", (long) beforeContent.getBytes(StandardCharsets.UTF_8).length),
+                        "after", Map.of(
+                                "state", "present",
+                                "sha256", FileContentFingerprint.sha256(afterContent),
+                                "bytes", (long) afterContent.getBytes(StandardCharsets.UTF_8).length,
+                                "verified", true)))), telemetry.workspaceMutation());
         assertTrue(telemetry.timingMs().containsKey("snapshotBeforeMs"));
         verify(snapshots, times(2)).capture(eq(project), any(String.class), eq(List.of("Main.java")));
         verify(snapshots, never()).capture(any(StudentProject.class), any(String.class));

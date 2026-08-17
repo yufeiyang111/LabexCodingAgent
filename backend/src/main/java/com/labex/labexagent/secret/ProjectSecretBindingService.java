@@ -37,7 +37,7 @@ import org.springframework.stereotype.Component;
  * computed from an injected clock (UTC by default), the same convention the lease side uses.
  */
 @Component
-public final class ProjectSecretBindingService {
+public class ProjectSecretBindingService {
 
     /** Encrypted envelopes live under the existing SecretStore under the WORKER_ENV scope. */
     public static final SecretStore.SecretScope BINDING_SCOPE = SecretStore.SecretScope.WORKER_ENV;

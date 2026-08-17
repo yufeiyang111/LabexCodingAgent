@@ -10,7 +10,7 @@ import org.springframework.stereotype.Service;
 
 /** 从 durable transcript 和 compaction 记录构造唯一 Provider 消息投影。 */
 @Service
-public final class AgentTranscriptProjectionService {
+public class AgentTranscriptProjectionService {
     private final AgentRunTranscriptService transcriptService;
     private final AgentProviderMessageProjector providerProjector;
     private final AgentCompactionService compactionService;

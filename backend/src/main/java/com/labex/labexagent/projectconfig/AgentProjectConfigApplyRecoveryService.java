@@ -65,7 +65,7 @@ import org.springframework.stereotype.Component;
  * Task 0.8 expired-lease reconciler — before any scheduler is added here.
  */
 @Component
-public final class AgentProjectConfigApplyRecoveryService {
+public class AgentProjectConfigApplyRecoveryService {
 
     public static final String STATUS_APPLYING = "applying";
     public static final String STATUS_APPLIED = "applied";

@@ -95,7 +95,8 @@ public class WriteFileTool implements AgentTool {
                     .withDiff(change.getDiff()).withPendingChangeId(change.getId())
                     .withWorkspaceChangeEvidence(
                             WorkspaceOperationIdentity.forContext(context, context.getWorkspaceRoot(), List.of(cleaned)),
-                            List.of(change.getId()))
+                            List.of(change.getId()),
+                            telemetry == null ? Map.of() : telemetry.workspaceMutation())
                     .withWorkspaceVerification(workspaceVerification);
         } catch (Exception failure) {
             log.warn("WRITE_FILE_TOOL_FAILED taskId={} path={} applyMs={} totalMs={} errorType={} error={}",

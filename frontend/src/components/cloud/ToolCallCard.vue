@@ -16,7 +16,7 @@
 
         <!-- 语义化标题结构 -->
         <div class="tc-title-tokens">
-          <strong class="tc-tool-name">{{ call.name || 'tool' }}:</strong>
+          <strong class="tc-tool-name" :class="{ 'is-running': call.status === 'running' }">{{ call.name || 'tool' }}:</strong>
           <span class="tc-tool-arg-main">{{ toolMainArg }}</span>
           <span v-if="toolSubInfo" class="tc-tool-sub-info">({{ toolSubInfo }})</span>
         </div>
@@ -542,6 +542,56 @@ function setQuestionAnswer(option) {
   font-weight: 700;
   color: #09090b;
   flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+/* 工具正在调用时的光影流动动画 (Flowing Shimmer Animation) */
+.tc-tool-name.is-running,
+.tc-card.tc-running .tc-tool-name {
+  background: linear-gradient(
+    90deg,
+    #09090b 0%,
+    #2563eb 25%,
+    #60a5fa 50%,
+    #2563eb 75%,
+    #09090b 100%
+  );
+  background-size: 200% 100%;
+  color: transparent !important;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: toolNameFlowLight 2s linear infinite;
+  display: inline-block;
+  text-shadow: 0 0 1px rgba(37, 99, 235, 0.15);
+}
+
+.tc-card.dark .tc-tool-name.is-running,
+.tc-card.is-dark .tc-tool-name.is-running,
+.tc-card.dark.tc-running .tc-tool-name,
+:deep(.dark) .tc-running .tc-tool-name {
+  background: linear-gradient(
+    90deg,
+    #e4e4e7 0%,
+    #60a5fa 25%,
+    #93c5fd 50%,
+    #60a5fa 75%,
+    #e4e4e7 100%
+  );
+  background-size: 200% 100%;
+  color: transparent !important;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: toolNameFlowLight 2s linear infinite;
+  text-shadow: 0 0 2px rgba(147, 197, 253, 0.35);
+}
+
+@keyframes toolNameFlowLight {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: -100% 50%;
+  }
 }
 
 .tc-tool-arg-main {
@@ -598,6 +648,7 @@ function setQuestionAnswer(option) {
   color: #3b82f6;
   border-color: #bfdbfe;
   background: #eff6ff;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.15);
 }
 
 .badge-icon-spin {

@@ -2,6 +2,8 @@ package com.labex.labexagent.run;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentTask;
 import com.labex.mapper.AgentRunMessageMapper;
@@ -108,7 +110,7 @@ public class AgentRunMessageService {
     }
 
     public List<Map<String, Object>> publicHistory(Long taskId) {
-        return history(taskId).stream().map(this::publicPayload).toList();
+        return history(taskId).stream().filter(this::isPubliclyVisible).map(this::publicPayload).toList();
     }
 
     /** 按任务批量读取公开消息投影，避免历史页产生 task N+1 查询。 */
@@ -124,7 +126,7 @@ public class AgentRunMessageService {
                 .orderByAsc(AgentRunMessage::getRunMessageId));
         Map<Long, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
         for (AgentRunMessage message : stored == null ? List.<AgentRunMessage>of() : stored) {
-            if (message == null || message.getTaskId() == null) continue;
+            if (message == null || message.getTaskId() == null || !isPubliclyVisible(message)) continue;
             grouped.computeIfAbsent(message.getTaskId(), ignored -> new java.util.ArrayList<>())
                     .add(publicPayload(message));
         }
@@ -132,8 +134,27 @@ public class AgentRunMessageService {
         return Map.copyOf(grouped);
     }
 
-    private AgentRunMessage upsert(Long taskId, String messageKey, long sequence, String role,
-                                   String status, String content, Object metadata) {
+    /** Provider transcript 中仅供模型消费的内部指令不得通过任务公开快照回显。
+     */
+    private boolean isPubliclyVisible(AgentRunMessage message) {
+        String key = message == null || message.getMessageKey() == null ? "" : message.getMessageKey();
+        // 兼容本次上线前已经写入但尚未带 visibility metadata 的完成收束指令。
+        if (key.contains(":completion-readiness:")) return false;
+        String metadata = message == null ? "" : message.getMetadata();
+        if (metadata == null || metadata.isBlank()) return true;
+        try {
+            JsonElement parsed = JsonParser.parseString(metadata);
+            if (!parsed.isJsonObject()) return true;
+            JsonElement visibility = parsed.getAsJsonObject().get("visibility");
+            return visibility == null || !visibility.isJsonPrimitive()
+                    || !"internal".equalsIgnoreCase(visibility.getAsString());
+        } catch (RuntimeException ignored) {
+            // 旧数据可能保存了非 JSON metadata；解析失败时保持历史公开行为，避免误隐藏用户消息。
+            return true;
+        }
+    }
+
+    private AgentRunMessage upsert(Long taskId, String messageKey, long sequence, String role,                                   String status, String content, Object metadata) {
         LocalDateTime now = LocalDateTime.now();
         AgentRunMessage message = messageMapper.selectOne(new LambdaQueryWrapper<AgentRunMessage>()
                 .eq(AgentRunMessage::getTaskId, taskId)

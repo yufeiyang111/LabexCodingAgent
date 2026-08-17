@@ -210,6 +210,12 @@ public class AgentRunPartService {
                 yield upsertPart(taskId, messageId, "completion:evidence", "completion_evidence",
                         satisfied ? "completed" : "error", null, null, data, GSON.toJson(data), sequence);
             }
+            case "COMPLETION_READY" -> {
+                String fingerprint = text(data, "evidenceFingerprint");
+                yield upsertPart(taskId, messageId,
+                        "completion:ready:" + (fingerprint.isBlank() ? sequence : fingerprint),
+                        "completion_readiness", "completed", null, null, data, GSON.toJson(data), sequence);
+            }
             case "CONTEXT_STATUS", "CONTEXT_STATS", "COMPACTION_STARTED",
                  "COMPACTION_COMPLETED", "COMPACTION_FAILED", "CONTEXT_PRUNED" ->
                     upsertPart(taskId, messageId, "context:" + sequence, "context", "completed",
@@ -661,7 +667,7 @@ public class AgentRunPartService {
 
     private boolean supportsEventPart(String eventType) {
         return switch (eventType) {
-            case "THINK", "FINAL", "ERROR", "COMPLETION_EVIDENCE", "TOOL_EXPOSURE",
+            case "THINK", "FINAL", "ERROR", "COMPLETION_EVIDENCE", "COMPLETION_READY", "TOOL_EXPOSURE",
                  "CONTEXT_STATUS", "CONTEXT_STATS", "COMPACTION_STARTED",
                  "COMPACTION_COMPLETED", "COMPACTION_FAILED", "CONTEXT_PRUNED",
                  "RUN_STATE_WAITING_APPROVAL", "RUN_STATE_WAITING_USER",
