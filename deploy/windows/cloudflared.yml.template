@@ -1,0 +1,16 @@
+# LabexAgent Windows Tunnel 模板。
+# 启动脚本会把证书路径和前端端口写入 %LOCALAPPDATA%\LabexAgent\cloudflared.yml。
+tunnel: 5c191e4a-3fb0-4ed4-817a-959bc401bb6b
+credentials-file: '__CREDENTIALS_FILE__'
+
+ingress:
+  # WebSocket 和 SSE 都走后端的 /api context-path。
+  - hostname: labexagent.123845.xyz
+    path: '^/api/ws(?:/.*)?$'
+    service: http://127.0.0.1:8080
+  - hostname: labexagent.123845.xyz
+    path: '^/api(?:/.*)?$'
+    service: http://127.0.0.1:8080
+  - hostname: labexagent.123845.xyz
+    service: http://127.0.0.1:__FRONTEND_PORT__
+  - service: http_status:404

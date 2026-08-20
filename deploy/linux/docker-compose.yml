@@ -1,5 +1,5 @@
-# LabexAgent Linux Web 部署 Compose（backend + MySQL）。
-# Nginx/Caddy 反向代理与静态前端在 T3.3 接入。
+# LabexAgent Linux Web 生产部署 Compose。
+# 前端静态文件与 Caddy 配置由 build-release.ps1 生成并上传。
 #
 # 安全说明（必读）：
 # backend 挂载 /var/run/docker.sock 用于创建一次性 Worker 容器。这等同于
@@ -9,8 +9,6 @@
 #   1. backend 容器以独立低权限用户运行（compose 已设置 user）；
 #   2. socket 挂载为只读（ro）；
 #   3. 宿主机对 2375 TCP 不开放任何端口（compose 不映射任何 docker 端口）。
-version: "3.8"
-
 services:
   mysql:
     image: mysql:8.0
@@ -21,6 +19,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${LABEX_AGENT_DB_PASSWORD:?DB password required}
       MYSQL_DATABASE: labex_agent
+      MYSQL_USER: ${LABEX_AGENT_DB_USERNAME:-labex}
+      MYSQL_PASSWORD: ${LABEX_AGENT_DB_PASSWORD:?DB password required}
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
@@ -28,25 +28,70 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    mem_limit: 512m
+    pids_limit: 256
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 128m
+    pids_limit: 128
 
   backend:
     image: ${LABEX_AGENT_BACKEND_IMAGE:?backend image required}
     restart: unless-stopped
     user: "1000:1000"
+    group_add:
+      - "${LABEX_AGENT_DOCKER_SOCKET_GID:?docker socket gid required}"
     depends_on:
       mysql:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     env_file:
       - .env.production
     environment:
       SPRING_PROFILES_ACTIVE: production
       LABEX_AGENT_DB_URL: jdbc:mysql://mysql:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      LABEX_AGENT_AUTH_REDIS_URL: redis://redis:6379
       LABEX_AGENT_PROJECT_BASE_PATH: /srv/labex-agent/workspaces
       LABEX_AGENT_UPLOAD_PATH: /srv/labex-agent/uploads
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /srv/labex-agent/workspaces:/srv/labex-agent/workspaces
-      - /srv/labex-agent/uploads:/srv/labex-agent/uploads
+      - /srv/labex-agent/data/workspaces:/srv/labex-agent/workspaces
+      - /srv/labex-agent/data/uploads:/srv/labex-agent/uploads
+    mem_limit: 768m
+    cpus: 1.50
+    pids_limit: 512
+
+  caddy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      LABEX_AGENT_PUBLIC_HOST: ${LABEX_AGENT_PUBLIC_HOST:?public host required}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend-dist:/usr/share/caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    mem_limit: 128m
+    pids_limit: 128
 
 volumes:
   mysql-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,19 @@
+{$LABEX_AGENT_PUBLIC_HOST} {
+	request_body {
+		max_size 100MB
+	}
+
+	encode zstd gzip
+
+	# API、SSE 和 WebSocket 统一交给 Spring Boot。
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+
+	# 其余路径由 Vue SPA 提供，前端路由回退到 index.html。
+	handle {
+		root * /usr/share/caddy
+		try_files {path} /index.html
+		file_server
+	}
+}

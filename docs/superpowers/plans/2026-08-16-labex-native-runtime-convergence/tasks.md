@@ -352,3 +352,25 @@ cd backend && mvn -q -Dtest=WorkspaceMutationEvidenceTest,AgentRunExecutionProgr
 **验证记录（2026-08-17）**：上方 workspace 聚焦回归通过；随后执行完整 `cd backend && mvn -q test`，并检查 342 份 Surefire XML，均无 failures/errors。前端相关 reducer/timeline 测试为 87/87 通过，`cd frontend && npm run build` 通过（构建仅给出既有动态 import / third-party PURE comment 提示）。
 
 **已知边界**：workspace postcondition 是文件事实，不等同于业务/编译/测试通过。后续仍需按用户决定的顺序完成 shell 非零/超时/权限/异常的全局 final truthfulness、verification 终态与循环保护 Part 一致性；真实 worker/browser smoke 也未在此切片宣称完成。
+
+### 切片 N4：同会话跨 Task Provider 投影（2026-08-17）
+
+#### 先写红测
+
+- [x] 新 Task 的 `loadProviderMessages(taskId)` 必须按“稳定历史 Task → 当前 Task durable transcript”的顺序提供消息，同时 `loadDurableProjection(taskId)` 仍只能返回当前 Task。
+- [x] 当前 Task ownership 缺失时 Provider projection 必须 fail closed，不能把任意 conversation/global memory 当作回退。
+- [x] 当 Provider 请求包含跨 Task 会话前缀时，Task compaction 仍只能从当前 Task durable transcript 选择边界。
+
+#### 最小实现
+
+- [x] `AgentTranscriptProjectionService` 以 `AgentTask` 的 student/project/conversation identity 为入口，读取 `AgentConversationMemoryProjectionService.project(..., beforeTaskIdExclusive=taskId)` 的稳定历史，并在 Provider 边界合并、复制、协议校验。
+- [x] 保持 `loadDurableProjection(...)` 和 interaction-resume projection Task-only，避免初始化与恢复把 conversation prefix 错当本 Task 事实。
+- [x] `AgentLoopEngine.selectDurableCompaction(...)` 改为明确读取 Task-only durable projection；预算/真实 Provider 调用仍读取统一 Provider projection。
+- [x] Spring wiring 显式提供 Task mapper 与 conversation projection 依赖。
+
+#### 绿测与验收
+
+- [x] 聚焦后端回归：`AgentTranscriptProjectionServiceTest`、`AgentTranscriptProjectionServiceWiringTest`、`AgentLoopEngineContextBudgetTest`。
+- [ ] 真实 Provider 验收：同一 Conversation 先确认实现方向，再创建新 Task 要求继续实施；模型应引用上一次的稳定结论而不是再次询问方向。
+- [ ] 隔离验收：不同 Conversation、无 conversation identity 的 Task、刷新/恢复中的同 Task 不得混入其他会话历史或重复当前 Task。
+- [ ] 后续阶段：实施会话级自动 compaction 和可控的跨会话 workspace memory 提炼；不得以 workspace 工具日志替代 Conversation transcript。

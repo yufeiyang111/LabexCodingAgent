@@ -127,3 +127,14 @@
 - [x] `AgentRunExecutionProgressReducer` 是即时上下文和 durable Part replay 的唯一 progress 规则：已验证 target 只清除自身，mismatch 保留未验证 target 并进入 repair。
 - [x] `maybeSignalCompletionReadiness(...)` 在存在未验证 workspace target 时直接返回；这是 readiness nudge 的事实门槛，不是对模型最终答复的全局强制拦截。
 - [ ] 仍未实现用户另行排期的“所有 tool failure 后禁止最终答复假称成功”、循环保护最终 Part 一致性和真实浏览器 / worker smoke。
+
+### N4：同会话跨 Task Provider 投影（2026-08-17）
+
+- [x] Provider 请求历史由“稳定 Conversation 前缀 + 当前 Task durable transcript”构成；前缀顺序在当前 Task 之前。
+- [x] 使用当前 `AgentTask` 的 student/project/conversation identity 与 `beforeTaskIdExclusive=taskId`，不重复投影当前 Task。
+- [x] `loadDurableProjection(...)` / interaction resume 仍是 Task-only，不能因 conversation 前缀破坏首次 append 或可恢复 Tool Part。
+- [x] 找不到当前 Task 时 fail closed；不从 UI、日志、`buildMemoryContext` 字符串或全局 workspace memory 回退。
+- [x] Provider 合并后重新执行原生工具协议校验；跨 Task 历史不会形成孤立 tool result。
+- [x] Task compaction 只读取当前 Task durable transcript；预算与真实请求仍统计完整 Provider projection。
+- [ ] 会话级自动 compaction 尚未实现；跨 Task 历史过大时必须给出明确 context-limit 结果，不能将会话前缀写入 Task compaction。
+- [ ] 真实 Provider + 浏览器验收：同一 Conversation 的下一 Task 可引用上一稳定方案；新 Conversation 不泄漏；刷新/恢复不重复历史。

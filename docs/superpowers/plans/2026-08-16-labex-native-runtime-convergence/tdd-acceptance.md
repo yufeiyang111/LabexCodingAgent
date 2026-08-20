@@ -694,3 +694,42 @@ cd backend && mvn -q -Dtest=WorkspaceMutationEvidenceTest,AgentRunExecutionProgr
 2. 用需批准的 shell 删除文件，批准后重复刷新/重订阅，确认 target 是 `absent` 且不出现绝对路径或内部 Provider 指令。
 3. 在受控开发 fixture 注入“snapshot 显示删除、物理文件仍存在”的 mismatch，确认状态进入 repair、模型看见不匹配事实、不会收到 completion-readiness 提示。
 4. 本切片不验收“模型绝不口头假称成功”的全局 final gate；那是用户已明确留到后续的失败/终态收敛工作。
+
+### 切片 N4：同会话跨 Task Provider 投影（2026-08-17）
+
+**公共 seam**：`AgentTranscriptProjectionService.loadProviderMessages(taskId)`；它是模型真实请求、预算与运行时 progress projection 的 durable 输入边界。`loadDurableProjection(taskId)` 和 `loadDurableProjectionForInteractionResume(taskId)` 则保留为 Task-only 的恢复边界。
+
+**事故特征化**：2026-08-17 中同一 Conversation 的 Task 1979 已输出确定的产品迭代方向，而 Task 1980 再次要求用户选择方向。第二个 Task 的运行上下文是 lean boot，尽管服务层可构造 `buildMemoryContext(...)`，该字符串没有进入实际 Provider request；`providerMessagesForInvocation(...)` 仅来自当前 Task durable projection。
+
+**Red**：
+
+1. 新增跨 Task 回归前，`AgentTranscriptProjectionService` 没有会话投影依赖；红测明确报 `NoSuchMethodException`，暴露 Provider projection 缺少 owning Task 与 Conversation 历史输入。
+2. 加入会话前缀的回归后，旧 `selectDurableCompaction(...)` 仍调用统一 Provider projection，选择结果从 `conversation request` 开始，证明会把跨 Task 前缀错误写入当前 Task compaction。
+
+**Green 判定**：
+
+- `loadProviderMessages(1980)` 的精确顺序为稳定历史 Task 的 user/final → 当前 Task durable messages；`loadDurableProjection(1980)` 仍精确等于当前 Task messages。
+- 会话投影使用 `beforeTaskIdExclusive=1980`，当前 Task 不会作为自己的历史重复出现。
+- 无法读到 owning `AgentTask` 时抛出明确错误，禁止从全局/内存字符串回退。
+- Task compaction 的 compacted head 从 `task old request` 开始，不会从 conversation prefix 开始；预算与实际 Provider 调用仍包含完整统一投影。
+
+**本地参考与适配**：参考 `D:\opencode\opencode-dev\packages\opencode\src\session\prompt.ts:1141-1347` 的每轮 persistent message graph → model messages，`session\message-v2.ts:142-415,532-590` 的消息协议与 compaction checkpoint，及 `session\compaction.ts:97-112,198-250` 的真实 turn/tail 选择。LabexAgent 未复制实质代码；适配为 Spring Boot 多用户 `AgentTask`/epoch、MyBatis durable transcript 和独立 Conversation 历史投影。
+
+**Green 命令（已通过）**：
+
+```text
+cd backend && mvn -q -Dtest=AgentTranscriptProjectionServiceTest,AgentTranscriptProjectionServiceWiringTest,AgentLoopEngineContextBudgetTest test
+```
+
+**完整后端回归（已通过）**：
+
+```text
+cd backend && mvn -q test
+# Surefire XML：343 份报告，1637 tests，0 failures，0 errors，15 skipped
+```
+
+**人工验收待办**：
+
+1. 在同一 Conversation 中先让模型输出“开发方向 / 待办”，随后发送“按刚刚的方向开始实施”；新 Task 的模型首轮应能引用稳定结论，不应要求重复选择。
+2. 在不同 Conversation 发送相同后续命令，确认不会获取前一 Conversation 的规划；无 conversation identity 的 Task 只看到自身 transcript。
+3. 对包含历史前缀的 Task 触发 context budget：确认显示的是明确的 context-limit/后续收敛路径，而不是把历史写进当前 Task compaction；会话级自动 compaction 留在下一切片。

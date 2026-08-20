@@ -240,3 +240,12 @@ native 把以下概念分离：模型生成最终候选、系统接受最终候�
 - **LabexAgent 适配**：`AgentLoopEngine` 的所有 Provider transcript 追加改为委托 `AgentProviderTranscriptAppender`，由该唯一入口负责复制、序号和 fenced durable 写入；原有 `AgentTranscriptProjectionService` 继续为 Provider 调用、预算与 compaction 提供唯一读取投影。新增受控 Provider + H2/MyBatis 黑盒，直接验证真实 Run Message/Part/Event/outbox 写入顺序和 approval 未伪终结。
 - **未复制实质代码**：仅参考边界与不变量，未复制本地参考快照中的 TypeScript 实现。
 - **退出条件**：仍需 public `AgentLoopEngine` start/resume 受控 Provider、交互恢复、compaction/overflow、断线 replay 和浏览器现场验证；在这些验收完成前，不声明阶段 B 完成。
+
+### 2026-08-17 N4 实施记录：同会话跨 Task Provider 投影
+
+- **事故与根因**：同一 Conversation 的新 Task 虽可经 `AgentConversationMemoryProjectionService` 读取稳定历史，但旧 `AgentLoopEngine` 只把 `conversationService.buildMemoryContext(...)` 用于语言判断，没有将该结果送入 Provider；实际请求只读取当前 Task 的 `AgentRunMessage` / `AgentRunPart` 投影。因此 2026-08-17 的后续 Task 会再次询问已在上一 Task 确认的开发方向，不是模型本身忘记，而是事实链在 Provider 边界断开。
+- **本地参考**：`D:/opencode/opencode-dev/packages/opencode/src/session/prompt.ts:1141-1347` 每轮从持久化消息图转换请求；`session/message-v2.ts:142-415,532-590` 保持消息/工具协议并按 compaction checkpoint 选择历史；`session/compaction.ts:97-112,198-250` 以真实 user turn 和完整 tail 处理压缩。
+- **复刻的不变量**：模型每次调用看到的历史必须来自可重放的持久化事实；历史前缀不能只是 UI/日志/语言判断的旁路字符串；当前运行的 tool call/result 仍保持 Task 独占、协议安全的顺序。
+- **LabexAgent 适配**：`AgentTranscriptProjectionService.loadProviderMessages(taskId)` 先读取当前 Task 的 durable projection，再按当前 `AgentTask` 的 student/project/conversation identity 读取 `beforeTaskIdExclusive=taskId` 的稳定会话历史，并在 Provider 边界合并和校验。`loadDurableProjection(...)` 与 interaction-resume projection 保持 Task-only，避免新 Task 初始化时误认为自己已有 transcript。缺少当前 Task 事实时 fail closed；没有 conversation identity 时只使用当前 Task，不使用未绑定的全局记忆。
+- **压缩边界**：Provider 的预算统计包含会话前缀，但 Task compaction 只能选择当前 Task transcript，绝不把跨 Task 前缀写入当前 Task 的 compaction epoch。会话级自动 compaction 尚未实现：当跨 Task 历史本身过大时，本切片明确停止并进入 context-limit 路径，而不是错误压缩/篡改 Task transcript。
+- **未复制实质代码**：只参考上述持久化消息图与 compaction 边界；没有复制 TypeScript 实现，也没有把单机 session 假设套入多用户 durable Task/epoch。

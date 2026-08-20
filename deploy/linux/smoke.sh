@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # LabexAgent Linux 生产基础设施 smoke（T3.4 第一轮）。
 # 验证 production profile 全链路：MySQL 容器 + backend JAR + Docker Worker image + 真实命令执行。
 # 不依赖任何模型配置（Agent 任务链路见 scripts/acceptance/linux-runtime.sh）。
@@ -11,6 +11,7 @@ set -euo pipefail
 BACKEND_JAR="${1:-$(pwd)/backend/target/labex-agent-backend-1.0.0.jar}"
 WORKER_IMAGE="${2:-labex-agent-sandbox:opencode-2026-08-14}"
 MYSQL_IMAGE="mysql:8.0"
+REDIS_IMAGE="redis:7-alpine"
 COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="/srv/labex-agent"
 WORKSPACES="$BASE_DIR/workspaces"
@@ -33,6 +34,7 @@ chown -R 1001:1001 "$WORKSPACES" "$UPLOADS" 2>/dev/null || chmod -R 777 "$WORKSP
 
 echo "==> [2/7] 启动 MySQL 容器"
 docker rm -f "${HOSTNAME_PREFIX}-mysql" >/dev/null 2>&1 || true
+docker rm -f "${HOSTNAME_PREFIX}-redis" >/dev/null 2>&1 || true
 docker run -d --name "${HOSTNAME_PREFIX}-mysql" \
   -e MYSQL_ROOT_PASSWORD="labex-smoke-root" \
   -e MYSQL_DATABASE="labex_agent" \
@@ -47,12 +49,21 @@ for i in $(seq 1 60); do
 done
 echo "    MySQL 就绪（容器 $(docker inspect -f '{{.Id}}' "${HOSTNAME_PREFIX}-mysql" | cut -c1-12)）"
 
+docker run -d --name "${HOSTNAME_PREFIX}-redis" -p 127.0.0.1:16379:6379 "$REDIS_IMAGE" >/dev/null
+for i in $(seq 1 60); do
+  docker exec "${HOSTNAME_PREFIX}-redis" redis-cli ping >/dev/null 2>&1 && break
+  [ "$i" = "60" ] && { echo "Redis 未就绪"; exit 1; }
+  sleep 2
+done
+echo "    Redis 就绪（容器 $(docker inspect -f '{{.Id}}' "${HOSTNAME_PREFIX}-redis" | cut -c1-12)）"
+
 echo "==> [3/7] 启动 backend（production profile + Docker Worker）"
 export SERVER_PORT="18080"
 export SPRING_PROFILES_ACTIVE="production"
 export LABEX_AGENT_DB_URL="jdbc:mysql://127.0.0.1:13306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
 export LABEX_AGENT_DB_USERNAME="labex"
 export LABEX_AGENT_DB_PASSWORD="labex-smoke"
+export LABEX_AGENT_AUTH_REDIS_URL="redis://127.0.0.1:16379"
 export LABEX_AGENT_JWT_SECRET="$(head -c 64 /dev/urandom | base64 -w0)"
 export LABEX_AGENT_SECRET_STORE_MASTER_KEY="$(head -c 32 /dev/urandom | base64 -w0)"
 export LABEX_AGENT_WORKER_DOCKER_IMAGE="$WORKER_IMAGE"
@@ -118,6 +129,7 @@ cat >"$REPORT" <<EOF
   "backendPid": $BACKEND_PID,
   "backendStart": "$(date -Iseconds)",
   "mysqlContainer": "$(docker inspect -f '{{.Id}}' "${HOSTNAME_PREFIX}-mysql" | cut -c1-12)",
+  "redisContainer": "$(docker inspect -f '{{.Id}}' "${HOSTNAME_PREFIX}-redis" | cut -c1-12)",
   "workerImage": "$WORKER_IMAGE",
   "workerImageId": "$(docker image inspect "$WORKER_IMAGE" --format '{{.Id}}' | cut -c8-19)",
   "projectId": $PROJECT_ID,
@@ -128,4 +140,5 @@ EOF
 cat "$REPORT"
 kill $BACKEND_PID 2>/dev/null || true
 docker rm -f "${HOSTNAME_PREFIX}-mysql" >/dev/null 2>&1 || true
+docker rm -f "${HOSTNAME_PREFIX}-redis" >/dev/null 2>&1 || true
 echo "==> smoke.sh 完成（exit 0）"

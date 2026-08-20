@@ -1,374 +1,164 @@
 # LabexAgent
 
-LabexAgent 是从 Labex 云编程工作台剥离出来的独立版本。保留了 Agent 工作区、项目文件操作、终端、模型配置、Skills、MCP 服务配置、流式对话、以及改动 diff 的 apply / reject / undo 流程，并加了一层简单的用户名密码登录用于隔离用户数据。
+<div align="center">
 
-## 项目结构
+**自主 AI 编程 Agent 与云端编程工作区**
 
-- `backend/` —— Spring Boot 3 + Java 17 + MyBatis-Plus + JWT 鉴权 + Agent 运行时 + 项目 / 工作区 API。
-- `frontend/` —— Vue 3 + Vite + Pinia + Element Plus + Monaco 编辑器 + 工作区 UI。
+[![Java](https://img.shields.io/badge/Java-17-orange.svg)](https://www.oracle.com/java/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.2.5-brightgreen.svg)](https://spring.io/projects/spring-boot)
+[![Vue](https://img.shields.io/badge/Vue-3.4.21-blue.svg)](https://vuejs.org/)
+[![Vite](https://img.shields.io/badge/Vite-5.1.6-646CFF.svg)](https://vitejs.dev/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0%2B-4479A1.svg)](https://www.mysql.com/)
+[![Tests](https://img.shields.io/badge/Backend%20Tests-1714%20PASS-success.svg)]()
+
+</div>
 
 ---
 
-## 支持矩阵与发布状态
+LabexAgent 是从 Labex 云编程工作台剥离出来的独立版本：Spring Boot 3 后端 + Vue 3 前端，提供 Agent 工作区、项目文件操作、终端、MCP 服务配置、流式对话，以及改动 diff 的 apply / reject / undo 流程。鉴权用 JWT，subject 是用户数字 ID（前端代码仍以 `studentId` 命名沿用历史逻辑）。
 
-| 部署形态 | 状态 | 说明 |
-|---|---|---|
-| **Windows local** | ✅ Verified | 默认 `local` profile 使用 WSL2 Debian + bubblewrap Worker（或显式 `unsafe-local` 诊断模式）；真实浏览器验收、后端全量测试、前端全量测试均通过（见下方发布标签）。 |
-| **Linux local** | ⚠️ Partial | 后端与 WSL Worker 的 Linux Shell 契约已被真实进程验收覆盖，但完整「Linux 主机后端 + 浏览器」闭环尚未在 Linux 主机上整体验收。 |
-| **Linux Web（生产）** | ❌ Unverified | Docker Worker、MySQL 生产配置、Nginx/Caddy 反向代理、HTTPS、生产前端部署尚未完成验收（对应计划 T3.1–T3.4）。 |
+Agent 运行时参考 OpenCode 的架构：以数据库为唯一持久化事实源（运行状态、可重放事件、模型 transcript、审批交互），SSE 向前端推送事件，前端按事件 reducer 渲染。
 
-**当前发布标签：`Local Usable`**
+---
 
-依据（2026-08-13 实测）：
+## 目录
 
-- 后端全量 `mvn test`：1550 tests，0 failures，0 errors；
-- 前端 `npm test`：244 pass；`npm run build` 通过 chunk budget；
-- 真实浏览器验收 `scripts/acceptance/run-all.ps1 -RestartBrowserBackend` 全绿：package / acceptance unit / backend restart / browser runtime 四段全部 PASS，浏览器证据 40+ 项全 true，`consoleErrors=0`、`networkErrors=0`；
-- restart / replay / compaction / approval / cancellation 持久化证据全绿。
+- [功能概览](#功能概览)
+- [项目结构](#项目结构)
+- [1. 环境依赖](#1-环境依赖)
+- [2. 配置](#2-配置)
+- [3. 数据库初始化](#3-数据库初始化)
+- [4. 启动后端](#4-启动后端)
+- [5. 启动前端](#5-启动前端)
+- [6. 使用流程](#6-使用流程)
+- [7. Agent 工具集](#7-agent-工具集)
+- [8. 生产部署](#8-生产部署)
+- [9. 常见问题](#9-常见问题)
+- [License & Notices](#license--notices)
 
-已知限制（不影响 Local Usable）：
+---
 
-- 交互式 WebSocket PTY 未恢复，REST managed terminal 是当前唯一可用终端路径；
-- Docker Worker 与 Linux 生产部署未验收，不能宣称 `Linux Web Ready`；
-- 多用户并发隔离、限流、配额、监控告警等工业化能力未完成，不能宣称 `Public Multi-user Ready`。
+## 功能概览
 
-OpenCode 运行时对齐状态（design reference only）见 [docs/coding-agent-industrialization/opencode-alignment-status.md](docs/coding-agent-industrialization/opencode-alignment-status.md)，第三方声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- **Agent 工作区**：流式对话（SSE）、工具调用进度、任务状态机（running / waiting_approval / completed / failed / cancelled）、改动 diff 审查与 apply / reject / undo。
+- **运行时状态**：任务状态、执行 epoch、租约由 `AgentTask` + `AgentRunLifecycleService` 唯一管理；可重放事件走 `AgentRunEvent` 事务型 outbox；模型 transcript 与 tool call/result 落库到 `AgentRunMessage` / `AgentRunPart`，重启后可恢复。
+- **上下文管理**：基于持久化 transcript 投影生成 provider 请求，支持上下文压缩（compaction）与 token 预算控制。
+- **工具与权限**：31 个内置工具（文件、搜索、命令执行、测试、LSP、Web 搜索、计划、提问等），危险操作在 `waiting_approval` 等待前端审批；命令有黑白名单校验。
+- **终端**：基于 WebSocket 的项目内交互式终端（xterm.js）。
+- **MCP**：按用户配置连接 MCP server 并适配为工具。
+- **工作区记忆**：跨会话的 workspace 记忆、项目代码索引（repo map、文件树）。
+
+---
+
+## 项目结构
+
+```text
+LabexAgent/
+├── backend/                          # 后端服务（Spring Boot 3 + Java 17 + Maven）
+│   ├── src/main/java/com/labex/
+│   │   ├── controller/               # REST 控制器（Auth、StudentProject、Agent）
+│   │   ├── service/                  # 业务服务（Auth、StudentProject、Terminal）
+│   │   ├── entity/ + mapper/         # MyBatis-Plus 实体与 Mapper（表名沿用 t_ 前缀）
+│   │   ├── filter/ + security/       # JWT 鉴权过滤器与工具
+│   │   ├── config/                   # Security、MyBatis-Plus、WebSocket 配置
+│   │   ├── common/                   # 统一返回 Result
+│   │   ├── labexagent/               # Agent 核心层
+│   │   │   ├── runtime/              # AgentLoopEngine（主循环）、SSE 推送、ToolCall 解析
+│   │   │   ├── run/                  # 任务生命周期、Part 持久化、transcript 投影、compaction、恢复
+│   │   │   ├── tool/                 # 工具接口与 31 个实现（tool/impl/）
+│   │   │   ├── permission/           # 工具调用权限规则与审批
+│   │   │   ├── llm/                  # LLM Provider 抽象与 OpenAI-Compatible 实现
+│   │   │   ├── mcp/                  # MCP server 连接与工具适配
+│   │   │   ├── diff/                 # 改动快照、apply/reject/undo（GitSnapshotService）
+│   │   │   ├── service/              # 对话、任务、上下文编排、交互、token 统计等
+│   │   │   ├── prompt/               # 系统提示词装配
+│   │   │   ├── terminal/             # 项目内终端（WebSocket）
+│   │   │   ├── command/              # Agent 内部命令
+│   │   │   ├── worker/ + preview/    # 沙箱执行与 Web 预览
+│   │   │   ├── websearch/            # 网络搜索
+│   │   │   ├── lsp/                  # lsp4j 语言服务器进程管理
+│   │   │   ├── skill/                # 用户自定义 skill 扫描
+│   │   │   ├── network/              # 出站 URL 校验（SSRF 防护）
+│   │   │   ├── attachment/ + multimodal/  # 输入附件与图片理解
+│   │   │   └── ...                   # 其余子包按职责划分
+│   │   ├── rag/                      # 独立 LLM 抽象（RAG / 图片理解 / Web 搜索用）
+│   │   └── monitor/                  # 站点访问统计与监控
+│   └── src/main/resources/
+│       ├── application.yml           # 后端配置（含 labex-agent.* 环境变量默认值）
+│       └── sql/schema.sql            # 数据库全量 DDL（启动时自动执行）
+├── frontend/                         # 前端应用（Vue 3 + Vite + Element Plus）
+│   └── src/
+│       ├── views/                    # Login、CloudSpace、CloudWorkspace、ops 监控
+│       ├── components/cloud/         # 工作区子组件
+│       ├── components/terminal/      # xterm.js 终端封装
+│       ├── components/MonacoEditor.vue
+│       ├── stores/ + api/            # Pinia 状态与统一 API 封装
+│       └── styles/                   # 全局主题样式
+├── deploy/linux/                     # 生产部署（Dockerfile、docker-compose、nginx/Caddy）
+├── deploy/windows/                   # Windows 公网部署脚本
+├── scripts/                          # 验收脚本等
+└── docs/                             # 设计文档、迭代记录、计划
+```
 
 ---
 
 ## 1. 环境依赖
 
-启动前先装好以下软件。
-
-| 依赖 | 版本要求 | 验证命令 |
+| 依赖 | 版本 | 验证命令 |
 |---|---|---|
-| Java（JDK） | 17 及以上 | `java -version` |
-| Maven | 3.9 及以上 | `mvn -v` |
-| Node.js | 18 及以上 | `node -v` |
-| npm | 9 及以上（Node 18 自带） | `npm -v` |
-| MySQL / MariaDB | 当前 Spring Boot JDBC 驱动支持的稳定版本（服务需启动） | `mysql --version` |
+| JDK | 17 | `java -version` |
+| Maven | 3.8+ | `mvn -v` |
+| Node.js | 18+ | `node -v` |
+| MySQL | 8.0+ | `mysql --version` |
+| Redis | 7+ | `redis-cli ping` |
 
-确认 MySQL 服务在 `localhost:3306`（默认端口）上可访问。如果你的 MySQL 用了别的地址或端口，请相应修改下面 `LABEX_AGENT_DB_URL` 的值。
+Windows 本地开发（命令执行走 WSL2）还需要 WSL2 + Debian（可选，`unsafe-local` 诊断模式可绕过沙箱）。
 
 ---
 
-## 2. 环境变量
+## 2. 配置
 
-后端会自动读取仓库根目录或 `backend/` 目录下的 `.env` 文件，也可以直接读取当前 shell / IDE 里的环境变量。MySQL 密码没有安全通用的默认值，首次启动前请至少设置 `LABEX_AGENT_DB_PASSWORD`。
+复制 `.env.example` 为 `.env`（根目录），后端启动时会读取。所有环境变量都有默认值，不配置也能本地跑起来，但生产环境必须覆盖：
 
-推荐做法：在 shell 里 export，或者在 IDE 的运行配置里设置。
-
-### 2.1 必填项（实际使用时必须改）
-
-| 变量 | 示例值 | 说明 |
+| 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `LABEX_AGENT_DB_URL` | `jdbc:mysql://localhost:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true` | MySQL JDBC 地址 |
-| `LABEX_AGENT_DB_USERNAME` | `root` | 数据库用户名 |
-| `LABEX_AGENT_DB_PASSWORD` | 你的 MySQL 密码 | 数据库密码 |
-| `LABEX_AGENT_JWT_SECRET` | 一段随机字符串，至少 64 字节 | JWT 签名密钥（**必须**改默认值） |
-| `LABEX_AGENT_SECRET_STORE_MASTER_KEY` | Base64 编码的随机 32 字节 | 模型 API key 与 MCP Authorization header 的 AES-GCM 主密钥；生产环境**必须**设置，开发环境仅有固定的兼容回退值 |
+| `LABEX_AGENT_DB_URL` | `jdbc:mysql://localhost:3306/labex_agent?...` | MySQL 连接串 |
+| `LABEX_AGENT_DB_USERNAME` / `LABEX_AGENT_DB_PASSWORD` | `root` / 无 | 数据库账号 |
+| `LABEX_AGENT_JWT_SECRET` | 占位 | JWT 签名密钥，生产必须 ≥64 字节高熵串 |
+| `LABEX_AGENT_SECRET_STORE_MASTER_KEY` | 占位 | AES-GCM 主密钥（加密模型 API Key 与 MCP 凭证） |
+| `LABEX_AGENT_AUTH_REDIS_URL` | `redis://localhost:6379` | 认证限流 / 验证码 / OAuth 状态存储（Redis 必用） |
+| `LABEX_AGENT_PROJECT_BASE_PATH` | `D:/LabexAgent/workspaces` | 用户工作区根路径 |
 
-### 2.2 存储路径（可选，默认值在 Windows 下可用）
+认证模块：注册 / 登录 / 图形验证码（按风险阈值按需生成）/ GitHub、Google OAuth（可选，未配置时登录页隐藏按钮）/ 邀请注册。第三方登录不会自动建号，需先在账号设置中绑定。
 
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `LABEX_AGENT_PROJECT_BASE_PATH` | `D:/LabexAgent/workspaces` | 用户工作区所在目录 |
-| `LABEX_AGENT_WEBSOCKET_ALLOWED_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | 允许连接云终端 WebSocket 的前端来源；生产环境必须设置为实际 HTTPS 域名 |
-| `LABEX_AGENT_UPLOAD_PATH` | `D:/LabexAgent/uploads` | 上传文件存放目录 |
+模型配置：主 Agent 使用用户在前端「模型配置」中创建的 OpenAI-Compatible 模型（API Key / Base URL / 模型名 / 推理程度），凭证加密存储。RAG 图片理解等辅助能力可选配 `MINIMAX_API_KEY`、`TAVILY_API_KEY`。
 
-如果你是 macOS / Linux，建议把这两个值改成自己家目录下的路径，例如 `~/labex-agent/workspaces`。
-### 2.2.1 Agent 验证与自动恢复策略
+站点监控（可选）：`/ops` 页面查看 PV/UV、热门路径、状态码分布、访问明细与系统资源曲线。入口用独立访问校验码，配置 `LABEX_AGENT_MONITOR_ACCESS_CODE` 后启用；IP 归属地用离线 `ip2region_v4.xdb` 库（本地查询，不外发访客 IP）。
 
-Agent 不会把所有失败都当成代码错误。命令失败会先识别 DNS/网络/依赖解析等环境阻塞；同一任务、同一命令、同一工作目录的重复失败会被持久化熔断，避免审批死循环。
-
-| 变量 | 默认值 | 说明 |
-|---|---:|---|
-| `LABEX_AGENT_AUTO_REPAIR_ENABLED` | `true` | 普通测试/编译失败时，允许模型按“读取错误 → 修改 → 有限重试”推进；环境阻塞不会自动修改依赖配置。 |
-| `LABEX_AGENT_MAX_AUTOMATIC_REPAIRS` | `3` | 普通代码失败最多给模型的自动修复建议次数。 |
-| `LABEX_AGENT_MAX_REPEATED_COMMAND_FAILURES` | `2` | 同一命令在同一任务中的普通失败上限；达到后不再创建新审批。 |
-| `LABEX_AGENT_MAX_ENVIRONMENT_FAILURES` | `1` | DNS、网络、Maven 父 POM/依赖解析等环境失败的尝试上限。 |
-| `LABEX_AGENT_VERIFICATION_STRATEGY` | `auto` | 验证策略：`auto`、`test`、`compile`、`build`、`offline_test`、`manual`。例如 Maven 可切换到 `compile` 或 `offline_test`，不会再强制使用 `mvn test`。 |
-| `LABEX_AGENT_FALLBACK_VERIFICATION_STRATEGY` | `manual` | 当前策略不可用时的安全回退策略；默认只提示人工确认，不猜测新的命令。 |
-| `LABEX_AGENT_HARD_MAX_ITERATIONS` | `0` | Agent 总轮数最终保险丝；`0` 表示不设置任意总轮数上限。 |
-| `LABEX_AGENT_REPEATED_TOOL_CALL_THRESHOLD` | `3` | 完全相同工具输入或短工具调用循环的触发次数；首次命中会要求模型自动换策略。 |
-| `LABEX_AGENT_MAX_TOOL_CYCLE_LENGTH` | `3` | 可识别的交替工具调用循环最大长度，例如 `A-B-A-B-A-B`。 |
-| `LABEX_AGENT_MAX_AUTOMATIC_STRATEGY_SWITCHES` | `1` | 同一循环模式允许 Agent 自动切换策略的次数；之后升级为持久化用户问题。 |
-| `LABEX_AGENT_MAX_NON_PROGRESS_ITERATIONS` | `8` | 连续没有成功工具进展的模型回合上限；防止空答复、反复失败或策略无效时无限消耗请求。 |
-| `LABEX_AGENT_RUNTIME_PROFILE_DEFAULT` | `labex-legacy` | 仅影响新建对话的运行时 profile；已有对话和恢复 task 始终使用已持久化的 snapshot。当前可选 `labex-legacy`、`labex-native`。 |
-| `LABEX_AGENT_FINALIZATION_RECOVERY_LIMIT` | `1` | 同一份 durable 完成证据下，最终答复被服务端拒绝后允许的自动纠正次数；`0` 表示直接以明确失败结束。 |
-| `LABEX_AGENT_LEGACY_REMOVAL_VERSION` | `1.1.0` | 旧版 history/checkpoint reader 达到删除门槛后的目标版本；为空时永远不报告可删除。 |
-| `LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS` | `14` | 旧 reader pending 存量归零且无新命中后的连续观察天数；任何新命中都会重置观察起点。 |
-
-用户点击“环境恢复后重试”时，Agent 会开启新的失败代际，但仍受上述次数限制；切换验证策略也会生成不同的命令指纹，从而避免旧失败记录阻塞新策略。
-
-
-#### 命令网络访问审批
-
-沙箱网络**默认开启**（WSL Worker 不挂 `--unshare-net`，Docker Worker 使用 `--network bridge`），`curl`/`wget`/`pip`/`npm`/`mvn`/`gradle`/`go` 等构建与网络命令、`git fetch/pull/clone` 及普通 `git push` 直接执行，不再需要审批。需要完全离线沙箱时设置 `LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED=false`。
-
-仍需审批的是**破坏性命令**：`rm`/`del`/`rmdir`/`truncate`/`drop`/`flushall`、`git reset --hard`/`clean`/`checkout --`/`rm`/`stash drop`、`git push --force`（`--force-with-lease` 放行）、以及 `docker` 命令。读取 `.env` 等密钥文件也会弹审批。硬拦截（直接拒绝且不可重试）保留：`shutdown`/`mkfs`/`format`、`/etc/passwd`、`.ssh`、云元数据地址、PowerShell 编码命令；`repo_clone` 默认 DENY。
-
-`web_search`、`web_fetch` 走它们自己的受控服务路径，不进入命令审批链。
-### Agent 忽略文件
-
-项目根目录可以放置 `.labex-agentignore`，用于排除不希望进入 Agent 上下文、代码索引和搜索结果的生成物或大型日志。
-
-规则使用类 Git ignore 语法，支持目录、文件名和 glob 模式。`Repo Map`、`grep`、`glob` 和 `list_files` 都会尊重这些规则；以 `#` 开头的行是注释。
-
-```text
-# 排除 Agent 不需要读取的生成物
-node_modules/
-logs/
-generated/**
-*.log
-```
-
-`.labex-agentignore` 只影响 Agent 的上下文和搜索边界，不是操作系统级安全隔离。超过 20 MiB 的文件不会自动进入 Agent 上下文；`.git` 和 `.labex` 等内部目录会始终排除。
-
-### 2.2.2 历史页加载预算（可选）
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `LABEX_AGENT_HISTORY_MAX_PAGE_EVENTS_BUDGET` | `1000` | 历史消息单页最多返回的 run event 总数（跨任务累计）；超出部分留到更早的页，用户上翻时才继续加载 |
-| `LABEX_AGENT_HISTORY_MAX_PART_OUTPUT_CHARS` | `4000` | 历史页工具输出截断长度（字符），完整输出仍持久化在数据库，仅影响浏览时的传输与渲染 |
-
-### 2.3 Execution isolation
-
-On Windows, the default `local` profile runs the **WSL2 Debian + bubblewrap** Worker. Agent commands, tests, interactive terminals, and LSP child processes use this Worker instead of falling back to the Windows host.
-
-Every invocation receives separate mount, PID, network, IPC, and UTS namespaces with all Linux capabilities dropped. Only the current project workspace is writable at `/workspace`; WSL `/mnt/c`, `/mnt/d`, and the `/proc/<pid>/root` host-filesystem bypass are unavailable. Runtime, Java, and Maven configuration directories are read-only. Control-plane secrets such as model API keys, JWT secrets, and database passwords are never forwarded to the Worker.
-
-Before first use, install a WSL distribution (default name: `Debian`) and the required tools. Run the following in PowerShell; skip tools that are already installed:
-
-```powershell
-wsl --install -d Debian   # Run only when WSL/the distribution is not installed; reboot when Windows asks.
-wsl -d Debian -- bash -lc "apt-get update && apt-get install -y bubblewrap nodejs npm git python3 openjdk-21-jdk-headless maven"
-```
-
-If the distribution has a different name, set it before starting the backend:
-
-```powershell
-$env:LABEX_AGENT_WSL_DISTRIBUTION = "your WSL distribution name"
-```
-
-The local Worker is acceptance-tested with Node.js, npm, Git, Python 3, Java 21, Maven, JDTLS, TypeScript Language Server, Vue Language Server, and Pyright inside the isolated environment. The default Java LSP command starts JDTLS with a 256 MiB initial heap; override it through `LABEX_LSP_JAVA_CMD` only when a larger workspace needs more memory.
-
-For Monaco LSP completion, place `jdtls`, `typescript-language-server`, `vue-language-server`, and `pyright-langserver` in the same WSL distribution, then configure Linux commands through `LABEX_LSP_*_CMD` when needed. For an offline local setup, copy a trusted pre-existing LSP runtime into the WSL native `/usr/local/lib` path and expose only wrappers under `/usr/local/bin`; do not point the sandbox at an executable under `/mnt/c` or another Windows drive.
-
-Use the explicit `unsafe-local` profile only to diagnose isolation failures. It executes child processes directly on the Windows host and must not be used for regular Agent work or demonstrations.
-
-**执行后端选择规则：** 本地开发可使用 `local`（WSL Worker）或显式 `unsafe-local`（仅诊断）；**Linux Web 部署必须使用 Docker Worker**——production profile 下未配置 `LABEX_AGENT_WORKER_DOCKER_IMAGE`（或仍是 smoke 镜像）时后端拒绝启动。生产配置校验（DB 凭据、JWT、Secret Store、HTTPS 来源、Linux 路径、权限 profile）在启动前 fail-fast，完整示例见 [deploy/linux/](deploy/linux/)。
-
-For a server deployment, switch to the Docker Worker:
-
-| Variable | Example | Purpose |
-|---|---|---|
-| `SPRING_PROFILES_ACTIVE` | `production` | Disables the local WSL Worker and enables production startup validation. |
-| `LABEX_AGENT_WORKER_DOCKER_IMAGE` | `registry.example.com/labex-agent-sandbox:2026-07` | Required prebuilt OCI image containing the shell, language runtimes, package managers, and LSP tools. |
-| `LABEX_AGENT_PERMISSION_PROFILE` | `labex-standard` | 默认受管 Worker Shell 权限 profile；`safe` 仅保留 direct-command 兼容，`full_access` 还需要显式 unsafe-local opt-in。 |
-| `LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED` | `true` | 沙箱网络开关。默认 `true`：WSL 不带 `--unshare-net`、Docker 用 `--network bridge`，网络命令无需审批；`false` 恢复无网络沙箱。 |
-
-The Docker daemon must be available. The Docker Worker mounts only the current project workspace, uses a read-only root filesystem, applies CPU/memory/PID limits, and removes ordinary terminal or command containers after completion. Its network is `bridge` by default and becomes isolated only when `LABEX_AGENT_WORKER_NETWORK_DEFAULT_ENABLED=false`. Do not bake model API keys, JWT secrets, or database credentials into the image.
-
-### 2.3.1 Managed project previews
-
-Ordinary shell commands remain bounded and must not be used to keep a development server alive. The Agent uses a separately managed preview process for long-running services: it returns a URL only after an HTTP readiness request to the configured port succeeds, stores status/output metadata without persisting the command text, and stops the child process explicitly or when the backend shuts down. A backend restart marks an in-memory preview handle unavailable rather than claiming that a stale URL is still ready.
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `LABEX_AGENT_PREVIEW_ENABLED` | `true` | Enables managed previews. Set to `false` to reject preview starts. |
-| `LABEX_AGENT_PREVIEW_STARTUP_TIMEOUT_MS` | `30000` | Maximum time to wait for HTTP readiness. |
-| `LABEX_AGENT_PREVIEW_POLL_INTERVAL_MS` | `250` | Readiness polling interval. |
-| `LABEX_AGENT_PREVIEW_CONNECT_TIMEOUT_MS` | `1000` | Per-request HTTP connect timeout. |
-| `LABEX_AGENT_PREVIEW_OUTPUT_MAX_CHARS` | `60000` | Maximum captured stdout/stderr characters in the preview artifact; excess output is discarded after a marker. |
-| `LABEX_AGENT_PREVIEW_FAILURE_HINT_MAX_CHARS` | `512` | Maximum characters of the already-redacted stdout/stderr tail returned with a failed preview result. The full artifact remains the diagnostic source. |
-| `LABEX_AGENT_PREVIEW_OUTPUT_DRAIN_TIMEOUT_MS` | `1000` | Maximum time to drain stdout/stderr after a preview process exits or is stopped. |
-| `LABEX_AGENT_PREVIEW_MIN_PORT` / `LABEX_AGENT_PREVIEW_MAX_PORT` | `1024` / `65535` | Allowed preview-port range. |
-| `LABEX_AGENT_PREVIEW_READINESS_HOST` / `LABEX_AGENT_PREVIEW_PUBLIC_HOST` | `127.0.0.1` / `localhost` | Host used for readiness / URL returned to the browser. |
-
-For a WSL Worker, bind the application to `0.0.0.0` (for example `npm run dev -- --host 0.0.0.0`) and choose a port that the Windows host can reach through WSL localhost forwarding. The browser-visible URL is valid only on the configured `public-host`; production deployments should put it behind the deployment's authenticated reverse proxy rather than exposing arbitrary worker ports.
-
-### 2.3.2 Durable tool-output paging
-
-Large tool results are persisted in the durable Tool Part, while the Provider receives a bounded preview. When that preview is truncated, the Agent receives the originating `tool_call_id` and can use `read_tool_output` to page through the same task's raw output by `offset` and `limit`. The read is constrained to the active task, student, and project; it does not expose another run's output. Keep pages narrow and follow `next_offset` rather than asking the model to reload an entire log.
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `LABEX_AGENT_TOOL_OUTPUT_READ_MAX_CHARS` | `4000` | Maximum UTF-16 characters returned by one `read_tool_output` call. Values are clamped to 256-20000. |
-| `LABEX_AGENT_READ_FILE_CANDIDATE_LIMIT` | `3` | Maximum workspace-relative candidate paths returned after `read_file` cannot find the requested file. Values are clamped to 1-10. |
-| `LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_LINES` | `2000` | Maximum number of lines projected from durable Tool Parts to the model. Values are clamped to 1-20000. |
-| `LABEX_AGENT_TOOL_OUTPUT_MODEL_MAX_BYTES` | `51200` | Maximum UTF-8 bytes projected to the model, aligned with OpenCode's 50 KiB tool-output limit. Values are clamped to 1024-1048576. |
-
-### 2.4 AI 集成（可选）
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `MINIMAX_API_KEY` | _空_ | 旧 RAG / 兼容调用链的 MiniMax key；主 Agent 请通过界面中的用户模型配置设置模型和 key |
-| `MINIMAX_BASE_URL` | `https://api.minimaxi.com/v1` | MiniMax API 地址 |
-| `MINIMAX_API_HOST` | `https://api.minimaxi.com` | MiniMax API 主机 |
-| `MINIMAX_MODEL` | `MiniMax-M2.7-highspeed` | 默认模型名 |
-| `TAVILY_API_KEY` | _空_ | RAG 子系统可选搜索 key；Agent `web_search` 不会自动调用它 |
-| `EXA_API_KEY` | _空_ | Agent `web_search` 的 Exa MCP key；未设置时使用 Exa MCP 的匿名访问能力（以服务端策略为准） |
-| `PARALLEL_API_KEY` | _空_ | 仅当显式启用 Parallel 时使用的 MCP key |
-| `LABEX_AGENT_WEB_SEARCH_PROVIDER` | `auto` | `auto` 使用 Exa；可显式设为 `exa`、`parallel` 或 `public_fallback` |
-| `LABEX_AGENT_WEB_SEARCH_EXA_ENABLED` | `true` | 是否允许 Exa MCP provider |
-| `LABEX_AGENT_WEB_SEARCH_PARALLEL_ENABLED` | `false` | 是否允许 Parallel MCP provider；默认关闭且不会自动选择 |
-| `LABEX_AGENT_WEB_SEARCH_PUBLIC_FALLBACK_ENABLED` | `true` | Exa 发生可恢复故障时，是否使用 DuckDuckGo/Bing 公开结果页兜底 |
-| `LABEX_AGENT_WEB_SEARCH_TIMEOUT_SECONDS` | `25` | 每次 Agent 搜索 provider 请求的超时秒数 |
-| `LABEX_AGENT_WEB_SEARCH_MAX_RESPONSE_BYTES` | `1048576` | 单次 provider 响应最大字节数 |
-| `LABEX_AGENT_WEB_FETCH_CONNECT_TIMEOUT_SECONDS` | `20` | `web_fetch` 连接超时秒数 |
-| `LABEX_AGENT_WEB_FETCH_REQUEST_TIMEOUT_SECONDS` | `60` | `web_fetch` 单次请求总超时秒数 |
-| `LABEX_AGENT_WEB_FETCH_MAX_REDIRECTS` | `5` | `web_fetch` 最多跟随的已校验重定向次数 |
-| `LABEX_AGENT_WEB_FETCH_MAX_RESPONSE_BYTES` | `1048576` | `web_fetch` 在解码前允许读取的最大响应字节数 |
-| `LABEX_AGENT_WEB_FETCH_DEFAULT_MAX_CHARS` | `12000` | `web_fetch` 未传 `max_chars` 时返回给模型的默认字符数 |
-| `LABEX_AGENT_WEB_FETCH_MIN_MAX_CHARS` | `1000` | `web_fetch.max_chars` 的最小值 |
-| `LABEX_AGENT_WEB_FETCH_MAX_MAX_CHARS` | `50000` | `web_fetch.max_chars` 的最大值 |
-
-Agent `web_search` 只返回搜索发现结果和来源 URL，不抓取结果正文；需要读取某个来源时由 Agent 使用 `web_fetch`。在 `auto` 模式下，Exa 是唯一自动尝试的付费/托管 provider；发生可恢复失败后才使用免费的 DuckDuckGo/Bing 结果页兜底。Agent 不会自动调用 Tavily 或 Parallel。
-
-`web_fetch` 仍可正常读取公开 HTTP(S) 文档，不增加用户确认；但会在读取响应体前校验声明长度，并在流式读取时执行字节上限，以防止异常页面在输出截断前耗尽服务端内存。
-
-
-#### 主 Agent 的用户模型配置
-
-主 Agent 不再以 `MINIMAX_*` 环境变量作为模型选择和调用路径。用户需在工作区的「模型配置」中创建并选中一个 OpenAI-Compatible 配置，由其 API Key、Base URL 和模型名称驱动对话、工具循环和上下文压缩。
-
-- 「推理程度」可选 `low`、`medium`、`high`、`xhigh`。系统会将它作为 `reasoning_effort` 发给支持的服务；兼容网关拒绝该字段时会安全地去掉该字段后重试一次。
-- 只有显式勾选「支持图片理解」的模型配置才能调用 `understand_image`。图片会被验证并转为受限的 data URL，不会回退到 MiniMax 或其他全局模型。
-- 「启用 Prompt Cache Key」仍是一个供应商兼容性开关。开启时，系统会用模型配置、稳定系统提示和工具定义生成不可逆路由键，以提高同一稳定前缀的 KV Cache 命中率。
-
-`web_search` 保持独立的 Exa / Parallel MCP 检索路径，不使用上述模型配置代替搜索提供商。
-
-#### Model turn timeout (optional)
-
-| Variable | Default | Description |
-|---|---:|---|
-| `LABEX_AGENT_MODEL_TURN_TOTAL_TIMEOUT_MS` | `300000` | Outer per-model-turn watchdog in milliseconds. A timeout is recorded as `model_timeout` and fails the task; it never means that the user cancelled the task. Set `0` to disable only this outer total deadline. Provider-level connection, header, read, and stream inactivity timeouts still apply. |
-
-#### Agent interaction timeout (optional)
-
-| Variable | Default | Description |
-|---|---|---|
-| `LABEX_AGENT_INTERACTION_TIMEOUT_POLL_INTERVAL_MS` | `30000` | Milliseconds between backend scans for expired question or permission interactions. If the run is still waiting when an interaction expires, the backend records a `RUN_INTERACTION_TIMED_OUT` event and marks the run as failed. Lower values release stuck runs sooner but increase database polling. |
-
-#### Durable model retry (optional)
-
-| Variable | Default | Description |
-|---|---|---|
-| `LABEX_AGENT_RETRY_POLL_INTERVAL_MS` | `1000` | Milliseconds between scans for persisted `retrying` tasks whose `next_retry_at` is due. Recoverable model failures are retried at most twice with persisted retry metadata, so a backend restart does not discard a pending retry. |
-
-#### Execution lease and heartbeat (optional)
-
-| Variable | Default | Description |
-|---|---|---|
-| `LABEX_AGENT_INSTANCE_ID` | generated at startup | Stable identifier for one backend instance. Set it explicitly when running multiple instances. |
-| `LABEX_AGENT_PROCESS_HOST_ID` | hashed local host fallback | Stable host identity used with PID and process start time during command recovery. Set it explicitly for multi-host deployments. The stored value is a SHA-256-derived fingerprint, not the raw configured value. |
-| `LABEX_AGENT_EXECUTION_LEASE_DURATION_MS` | `30000` | Duration of the durable execution lease held by an active Agent task. |
-| `LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS` | `10000` | Lease renewal interval. If renewal loses the fencing token, the local Agent run is cancelled. |
-
-### 2.5 语言服务器（可选，仅供 Monaco LSP 用）
-
-| 变量 | 默认值 |
-|---|---|
-| `LABEX_LSP_JAVA_CMD` | `jdtls` |
-| `LABEX_LSP_TS_CMD` | `typescript-language-server --stdio` |
-| `LABEX_LSP_VUE_CMD` | `vue-language-server --stdio` |
-| `LABEX_LSP_PY_CMD` | `pyright-langserver --stdio` |
-
-只有想让浏览器里的编辑器有 LSP 智能提示时才需要配，否则保持默认即可。
-
-### 2.6 Windows PowerShell 快速导出
-
-```powershell
-$env:LABEX_AGENT_DB_URL        = "jdbc:mysql://localhost:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
-$env:LABEX_AGENT_DB_USERNAME   = "root"
-$env:LABEX_AGENT_DB_PASSWORD   = "你的 MySQL 密码"
-$env:LABEX_AGENT_JWT_SECRET    = "替换成一串至少 64 字节的随机字符串"
-$env:LABEX_AGENT_SECRET_STORE_MASTER_KEY = "替换成 Base64 编码的随机 32 字节"
-$env:MINIMAX_API_KEY           = "你的 MiniMax key"
-$env:TAVILY_API_KEY            = "你的 Tavily key"
-```
-
-生产服务器额外设置：
-
-```powershell
-$env:SPRING_PROFILES_ACTIVE = "production"
-$env:LABEX_AGENT_WORKER_DOCKER_IMAGE = "registry.example.com/labex-agent-sandbox:2026-07"
-```
-
-### 2.7 bash / zsh 快速导出
-
-```bash
-export LABEX_AGENT_DB_URL='jdbc:mysql://localhost:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true'
-export LABEX_AGENT_DB_USERNAME='root'
-export LABEX_AGENT_DB_PASSWORD='你的 MySQL 密码'
-export LABEX_AGENT_JWT_SECRET='替换成一串至少 64 字节的随机字符串'
-export LABEX_AGENT_SECRET_STORE_MASTER_KEY='替换成 Base64 编码的随机 32 字节'
-export MINIMAX_API_KEY='你的 MiniMax key'
-export TAVILY_API_KEY='你的 Tavily key'
-```
-
-生产服务器额外设置：
-
-```bash
-export SPRING_PROFILES_ACTIVE='production'
-export LABEX_AGENT_WORKER_DOCKER_IMAGE='registry.example.com/labex-agent-sandbox:2026-07'
-```
-
-> 仓库根目录的 `.env.example` 里也有同一套变量名，可以复制为 `.env` 后填写真实值；不要提交真实 `.env`。
+完整环境变量表见 `.env.example` 与 `backend/src/main/resources/application.yml`。
 
 ---
 
-## 3. 数据库准备
-
-**首次**启动后端之前，先手动建一个空数据库。Spring Boot 会在启动时自动执行 `backend/src/main/resources/sql/schema.sql` 建表（见配置 `spring.sql.init.mode: always`），所以你**不需要**手动导入 SQL。
-
-已有数据库启动时会通过 JDBC 元数据检查缺少列，只对缺失列执行加性 `ALTER TABLE ... ADD COLUMN` ；不会执行 `DROP` 、`TRUNCATE` 或删除数据。随后后端会把旧 `api_key` 和 `auth_header` 记录加密迁移并清空明文列。升级前仍应先备份数据库，回滚时恢复该备份并部署旧版本，详见 `docs/coding-agent-industrialization/secret-store-migration.md`。
+## 3. 数据库初始化
 
 ```sql
 CREATE DATABASE labex_agent CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-这是唯一需要手动执行的 SQL。
+后端配置 `spring.sql.init.mode: always`，启动时自动执行 `schema.sql` 建表（表名沿用历史 `t_` 前缀，约 40 张表）。已有数据库通过 JDBC 元数据做加性 `ALTER TABLE` 迁移，不会清表删库。
+
+> 注意：手工改库前先备份 `schema.sql`，否则下次启动会按该文件重建表结构。
 
 ---
 
 ## 4. 启动后端
 
-从仓库根目录进入：
-
-### Windows（PowerShell）
-
-```powershell
-cd backend
-mvn spring-boot:run
-```
-
-### macOS / Linux
-
 ```bash
 cd backend
 mvn spring-boot:run
 ```
 
-当控制台打出类似 `Started LabexAgentApplication in x.xx seconds` 的日志时，后端就起来了。
-
-- API 基础路径：`http://localhost:8080/api`
-- 健康检查（如果开了 actuator）：`http://localhost:8080/api/actuator/health`
-
-### 用仓库自带的 Maven 配置启动（可选）
-
-如果需要用本地 Maven 配置：
-
-```bash
-mvn -s settings-local.xml spring-boot:run
-```
-
-### 生产隔离 Worker
-
-生产 profile 没有配置 `LABEX_AGENT_WORKER_DOCKER_IMAGE` 时，后端会拒绝启动。镜像必须先构建并由 Docker 守护进程拉取完成；未启动 Docker 时，命令、终端、LSP 或 stdio MCP 会返回基础设施错误，而不会回退到宿主机执行。
-
-### 打成可执行 JAR
+打 JAR 并运行：
 
 ```bash
 cd backend
@@ -376,131 +166,93 @@ mvn clean package -DskipTests
 java -jar target/labex-agent-backend-*.jar
 ```
 
-### Fresh release start after runtime state changes
-
-When changing Java enums, state machines, or other runtime-linkage types, stop the old backend process completely. Do not rely on IDE HotSwap. On Windows, the release launcher now checks for an existing Labex backend JVM **before building** and refuses to continue if one is still running:
-
-```powershell
-cd backend
-.\scripts\start-release.ps1
-```
-
-To run only the startup fence without building or launching a process:
-
-```powershell
-.\scripts\start-release.ps1 -PreflightOnly
-```
-
-The launcher fence covers starts performed through this script. A manually launched old JAR or an IDE process outside the launcher must still be stopped by the operator; it is not possible for this script to control an unmanaged deployment. See `docs/agent-context-provider-smoke-test.md` for a safe real-provider context smoke test.
-
-Current OpenCode-style runtime alignment, Session/Message/Part persistence, recovery invariants, and acceptance evidence are documented in [`docs/coding-agent-industrialization/opencode-alignment-status.md`](docs/coding-agent-industrialization/opencode-alignment-status.md).
+- REST 根路径：`http://localhost:8080/api`（`server.servlet.context-path=/api`）
+- WebSocket 终端端点：`/api/ws/terminal`（与 SSE 不共享连接）
 
 ---
 
 ## 5. 启动前端
 
-**另开一个**终端，从仓库根目录进入：
-
 ```bash
 cd frontend
-npm install        # 仅首次或依赖变更后需要执行
+npm install
 npm run dev
 ```
 
-Vite 开发服务器监听：
-
-- URL：`http://localhost:3000`
-- 绑定地址：`0.0.0.0`（同一局域网下其他设备可访问）
-- API 代理：`/api/*` → `http://localhost:8080/api/*`（含 WebSocket 透传，见 `vite.config.js`）
-
-### 生产构建
-
-```bash
-cd frontend
-npm run build      # 产物输出到 frontend/dist
-npm run preview    # 本地预览生产构建
-```
+- 前端地址：`http://localhost:3000`
+- `vite.config.js` 里 `/api` 代理到 `http://localhost:8080`（`ws: true` 透传 WebSocket，流式对话依赖此配置；改代理后必须重启 dev server）
+- 生产构建：`npm run build`（产物在 `frontend/dist`）
 
 ---
 
-## 6. 首次使用流程
+## 6. 使用流程
 
-1. 按顺序启动 MySQL、后端、前端。
-2. 浏览器打开 `http://localhost:3000`。
-3. 注册第一个用户。如果前端 UI 暂未提供注册页，可以直接调用 API：
-
-```bash
-curl -X POST http://localhost:8080/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"test","password":"test123"}'
-```
-
-4. 用刚注册的账号登录。
-5. 创建一个工作区，就可以跟 Agent 对话了。
-
-登录后下发的 JWT 以用户数字 ID 作为 subject，所以剥离出来的 Agent / 项目代码可以继续沿用原本的 `studentId` 归属校验逻辑。
+1. 打开 `http://localhost:3000`，注册 / 登录。
+2. 创建项目（或上传压缩包 / 克隆已有代码库）。
+3. 在「模型配置」中添加一个 OpenAI-Compatible 模型（如 DeepSeek、Qwen、GPT 等），作为主 Agent 的 provider。
+4. 进入工作区，输入需求开始对话。Agent 执行工具时：
+   - 文件改动会以 diff 形式展示，可逐条 Apply / Reject / Undo；
+   - 危险命令（`rm -rf`、`git reset --hard`、`git push --force`、读取 `.env` 等）会先等待你审批；
+   - 输入框输入 `/` 可调出快捷指令（`/plan`、`/test`、`/help`、`/clear` 等）；
+   - 支持拖拽 / 粘贴图片给模型做多模态理解。
 
 ---
 
-## 7. 鉴权接口
+## 7. Agent 工具集
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `POST` | `/api/auth/register` | 注册新用户 |
-| `POST` | `/api/auth/login` | 登录，返回 JWT |
-| `GET`  | `/api/auth/userinfo` | 获取当前用户信息（需要 JWT） |
+`tool/impl/` 下有 34 个工具实现；其中 `invalid` 是内部占位（不注册给模型），`repo_clone`、`external_directory` 已禁用。实际注册给模型的工具 **31 个**，按 `ToolRegistry` 的模式白名单暴露（plan / explore 模式受限，build 模式默认全量）：
 
-后续请求请在 Header 里带上 `Authorization: Bearer <token>`。
+| 类别 | 工具 |
+|---|---|
+| 文件 | `read_file` `write_file` `edit_file` `apply_patch` `list_files` |
+| 搜索 | `grep` `glob` `search_code` `repo_map` `project_overview` |
+| 执行 | `run_command` `bash` `run_tests` `execute_code` `read_tool_output` |
+| LSP | `lsp` |
+| 网络 | `web_search` `web_fetch` |
+| 计划 | `create_plan` `plan_exit` `todo_write` |
+| 交互 | `question` `task` `context_note` |
+| 扩展 | `mcp_call` `skill` `understand_image` |
+| 预览 | `start_preview` `stop_preview` |
+| 配置 | `propose_project_config`（及兼容别名 `repo_overview`→`project_overview`、`todowrite`/`todo`→`todo_write`、`lsp_symbols`/`diagnostics`→`lsp` 等） |
 
----
-
-## 8. 端口速查
-
-| 服务 | 默认端口 | 在哪里改 |
-|---|---|---|
-| 后端 | `8080`（context 为 `/api`） | `backend/src/main/resources/application.yml` |
-| 前端开发服务器 | `3000` | `frontend/vite.config.js` → `server.port` |
-| MySQL | `3306` | MySQL 服务端配置 |
-
-如果端口被占用，要么释放它（Windows：`netstat -ano | findstr :8080` + 任务管理器；macOS/Linux：`lsof -i :8080`），要么改上面的值，同时把 Vite 代理的 target 同步改成新的后端地址。
+新增工具：实现 `labexagent/tool/AgentTool` 接口，在 `ToolRegistry` 注册，权限规则加到 `permission/DefaultPermissionRuleset`。
 
 ---
 
-## 9. 常见问题排查
+## 8. 生产部署
 
-### 后端启动报 `Communications link failure`
-MySQL 没启动，或者 URL / 用户名 / 密码不对。检查 MySQL 服务状态和 `LABEX_AGENT_DB_*` 这几个环境变量。
+Linux 生产部署配置在 [deploy/linux/](deploy/linux/)：`backend.Dockerfile`、`docker-compose.yml`、`nginx.conf` / `Caddyfile`、初始化与迁移脚本、构建发布脚本、`smoke.sh` 冒烟检查，以及独立的 `deploy/linux/README.md`。
 
-### 后端报 `Unknown database 'labex_agent'`
-你跳过了第 3 步。先手动建数据库再重启。
+要点：
+1. `SPRING_PROFILES_ACTIVE=production`；
+2. 配置生产沙箱镜像（`LABEX_AGENT_WORKER_DOCKER_IMAGE`）、高熵 `LABEX_AGENT_JWT_SECRET`、`LABEX_AGENT_SECRET_STORE_MASTER_KEY`；
+3. Nginx / Caddy 反代 + HTTPS，注意 WebSocket / SSE 透传（`proxy_buffering off` 等）。
 
-### 报 `JWT secret must be at least 64 bytes`
-`LABEX_AGENT_JWT_SECRET` 为空或者太短。开发环境会对短占位串派生 512-bit 签名 key 以避免启动/登录中断；生产环境请换成至少 64 字节的高熵随机字符串。
+生产 profile 启动时做 Fail-Fast 自检：发现 Windows 路径残留、默认弱密钥、未配置沙箱镜像或不安全权限 profile 会拒绝启动并输出诊断。
 
-### 前端所有请求都报 "Network Error"
-- 后端没起来，或
-- Vite 代理的 target 跟实际后端地址不一致。
-
-打开浏览器 DevTools → Network，看看失败的请求到底打到 `localhost:3000/api/...` 还是别的地址，返回码是什么。
-
-### 流式对话不是一段段出来的
-确认 `vite.config.js` 里 `proxy['/api'].ws: true` 还在。没有这个配置，WebSocket 升级会回退成 HTTP，Agent 回复就变成一次性刷出来。
-
-### 端口被占用
-- Windows：`netstat -ano | findstr :8080`，再 `taskkill /PID <pid> /F`。
-- macOS / Linux：`lsof -ti:8080 | xargs kill -9`。
-
-### Agent 对话一上来就 401 / 403
-`MINIMAX_API_KEY` 没配或配错了。其他功能（登录、项目、文件）不受影响。
-
-### 首次 `mvn` 构建特别慢
-Maven 在第一次运行时要把整个依赖树下载下来。后续构建会很快。确认网络可用，或者在 `backend/settings-local.xml` 里配镜像。
+Windows 公网部署脚本在 [deploy/windows/](deploy/windows/)。
 
 ---
 
-## 10. 其他说明
+## 9. 常见问题
 
-- 原 Labex 项目文件运行时不再被本项目依赖。
-- 工作区运行时数据存放在 `LABEX_AGENT_PROJECT_BASE_PATH` 下。
-- `node_modules/`、`dist/`、`target/`、`workspaces/`、`uploads/` 这些生成目录已被 `.gitignore` 忽略。
-- **不要**提交真实密钥。仓库里的 `.env.example` 只有占位符。
+**Q1: 后端报数据库连接失败？**
+确认 MySQL 在 `3306` 监听、库已创建、`.env` 中的连接串与账号密码正确。
+
+**Q2: 提示 JWT secret 太短？**
+HS512 要求 ≥64 字节。本地占位符会自动派生安全密钥；生产必须配置高熵随机串（`openssl rand -base64 64`）。
+
+**Q3: 前端请求 Network Error？**
+确认后端在 `8080` 启动、`vite.config.js` 代理 target 正确；改过代理配置要重启 dev server。
+
+**Q4: 流式对话变成一次性返回？**
+`vite.config.js` 里 `proxy['/api']` 的 `ws: true` 被去掉，或反代没有关闭 buffering 且未透传 Upgrade 头。
+
+**Q5: 命令执行报 WSL / bubblewrap 错误？**
+确认 WSL2 正常且 Debian 里已装 bubblewrap（`wsl -d Debian -- bash -lc "apt-get install -y bubblewrap"`）。仅调试可临时用 `unsafe-local` 诊断 profile。
+
+---
+
+## License & Notices
+
+- 架构参考 OpenCode（MIT），复刻与适配记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 `docs/` 下迭代文档。

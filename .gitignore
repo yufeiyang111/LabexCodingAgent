@@ -24,6 +24,16 @@ Thumbs.db
 
 # Test output
 frontend/test-output.txt
+frontend/frontend-test-output.txt
+/frontend-test-output.txt
+/frontend-build-final.txt
+
+# Local UI previews and diff review scratch files (not part of the project)
+/agent-ui-demo.html
+/labex-ui-redesign.html
+/workspace_redesign_preview.html
+/.tmp-diff-review.txt
+/.labex-agent-focused-diff.txt
 
 # Logs
 *.log
