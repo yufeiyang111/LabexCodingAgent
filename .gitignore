@@ -67,15 +67,8 @@ docs/个人资料/
 LabexAgent.md
 CLAUDE.md
 
-# docs: keep personal/private documentation ignored; only the agent-self-configuration package is version-visible
-docs/*
-!docs/superpowers/
-docs/superpowers/*
-!docs/superpowers/agent-self-configuration/
-!docs/coding-agent-industrialization/
-!docs/coding-agent-industrialization/opencode-alignment-status.md
-
-# 架构治理规则与执行计划必须进入版本控制
+# docs: entire directory is private and never pushed to the repository
+docs/
 
 # Native Windows sandbox helper: keep build output and generated binaries ignored; helper source, contract and test fixtures stay visible
 sandbox/windows-helper/build*/
@@ -84,18 +77,6 @@ sandbox/windows-helper/**/*.dll
 sandbox/windows-helper/**/*.pdb
 sandbox/windows-helper/**/*.obj
 sandbox/windows-helper/**/*.lib
-
-# OpenCode-first agent usability iteration plan (versioned)
-!docs/superpowers/plans/
-!docs/superpowers/plans/2026-08-12-opencode-first-agent-usability/
-!docs/superpowers/plans/2026-08-12-opencode-first-agent-usability/*.md
-
-# OpenCode-first iteration evidence (versioned)
-!docs/iterations/
-docs/iterations/*
-!docs/iterations/2026-08-12-iteration-82-opencode-shell-baseline.md
-!docs/iterations/2026-08-14-iteration-83-context-token-cache-phase0-unified-ledger.md
-!docs/iterations/2026-08-14-iteration-84-context-slimming-phase1.md
 
 # AI agent scratch and dev-server artifacts
 .codex-tmp/

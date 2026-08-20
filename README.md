@@ -15,15 +15,24 @@
 
 ---
 
-LabexAgent 是从 Labex 云编程工作台剥离出来的独立版本：Spring Boot 3 后端 + Vue 3 前端，提供 Agent 工作区、项目文件操作、终端、MCP 服务配置、流式对话，以及改动 diff 的 apply / reject / undo 流程。鉴权用 JWT，subject 是用户数字 ID（前端代码仍以 `studentId` 命名沿用历史逻辑）。
+LabexAgent 是一个自托管的 AI 编程 Agent 平台：Spring Boot 3 后端 + Vue 3 前端，为每个用户提供独立的云端工作区。核心能力包括 Agent 对话与工具调用、项目文件操作、交互式终端、MCP 服务配置、流式对话，以及文件改动的 diff 审查与 apply / reject / undo 流程。鉴权走 JWT，subject 是用户数字 ID。
 
-Agent 运行时参考 OpenCode 的架构：以数据库为唯一持久化事实源（运行状态、可重放事件、模型 transcript、审批交互），SSE 向前端推送事件，前端按事件 reducer 渲染。
+## 特性
+
+- **Agent 工作区**：流式对话（SSE 推送）、工具调用过程实时可见、任务状态机（running / waiting_approval / completed / failed / cancelled）、改动 diff 审查与逐条 apply / reject / undo。
+- **运行时状态管理**：任务状态、执行 epoch、租约由 `AgentTask` + `AgentRunLifecycleService` 唯一管理；可重放事件走 `AgentRunEvent` 事务型 outbox；模型 transcript 与 tool call/result 落库到 `AgentRunMessage` / `AgentRunPart`，进程重启后可按事件游标恢复，浏览器刷新或 SSE 断线不影响任务推进。
+- **上下文与压缩**：基于持久化 transcript 投影生成 provider 请求，支持上下文压缩（compaction）、token 预算控制与超预算时的结构化处理。
+- **工具与权限**：内置 31 个工具（文件、搜索、命令执行、测试、LSP、Web 搜索、计划、提问、MCP 等），危险操作进入 `waiting_approval` 等待前端审批；终端命令另有黑白名单校验，出站请求有 SSRF 防护。
+- **多模态输入**：对话中支持拖拽 / 粘贴图片，由图片理解工具交给模型分析。
+- **交互式终端**：基于 WebSocket 的项目内终端（xterm.js），可运行 shell 命令与语言运行时。
+- **MCP 支持**：按用户配置连接 MCP server 并自动适配为 Agent 工具。
+- **工作区记忆**：跨会话的 workspace 记忆与项目代码索引（repo map、文件树），帮助 Agent 在多次对话中保持对项目的理解。
 
 ---
 
 ## 目录
 
-- [功能概览](#功能概览)
+- [技术栈](#技术栈)
 - [项目结构](#项目结构)
 - [1. 环境依赖](#1-环境依赖)
 - [2. 配置](#2-配置)
@@ -34,19 +43,21 @@ Agent 运行时参考 OpenCode 的架构：以数据库为唯一持久化事实�
 - [7. Agent 工具集](#7-agent-工具集)
 - [8. 生产部署](#8-生产部署)
 - [9. 常见问题](#9-常见问题)
-- [License & Notices](#license--notices)
+- [License](#license)
 
 ---
 
-## 功能概览
+## 技术栈
 
-- **Agent 工作区**：流式对话（SSE）、工具调用进度、任务状态机（running / waiting_approval / completed / failed / cancelled）、改动 diff 审查与 apply / reject / undo。
-- **运行时状态**：任务状态、执行 epoch、租约由 `AgentTask` + `AgentRunLifecycleService` 唯一管理；可重放事件走 `AgentRunEvent` 事务型 outbox；模型 transcript 与 tool call/result 落库到 `AgentRunMessage` / `AgentRunPart`，重启后可恢复。
-- **上下文管理**：基于持久化 transcript 投影生成 provider 请求，支持上下文压缩（compaction）与 token 预算控制。
-- **工具与权限**：31 个内置工具（文件、搜索、命令执行、测试、LSP、Web 搜索、计划、提问等），危险操作在 `waiting_approval` 等待前端审批；命令有黑白名单校验。
-- **终端**：基于 WebSocket 的项目内交互式终端（xterm.js）。
-- **MCP**：按用户配置连接 MCP server 并适配为工具。
-- **工作区记忆**：跨会话的 workspace 记忆、项目代码索引（repo map、文件树）。
+| 层 | 技术 |
+|---|---|
+| 后端 | Java 17 · Spring Boot 3 · MyBatis-Plus · Spring Security · Spring WebSocket |
+| 前端 | Vue 3 · Vite · Pinia · Vue Router · Element Plus · xterm.js · Monaco Editor |
+| 数据库 | MySQL 8.0+（schema 启动时自动执行，表名沿用历史 `t_` 前缀） |
+| 缓存 / 会话 | Redis 7+（认证限流、验证码、OAuth 状态） |
+| 鉴权 | JWT（HS512）+ BCrypt 密码哈希 + 图形验证码 + OAuth（GitHub / Google，可选） |
+| 模型接入 | OpenAI-Compatible 协议（DeepSeek、Qwen、GPT 等），密钥加密存储 |
+| 部署 | Docker / docker-compose / Nginx / Caddy（Linux），PowerShell 脚本（Windows） |
 
 ---
 
@@ -96,8 +107,7 @@ LabexAgent/
 │       └── styles/                   # 全局主题样式
 ├── deploy/linux/                     # 生产部署（Dockerfile、docker-compose、nginx/Caddy）
 ├── deploy/windows/                   # Windows 公网部署脚本
-├── scripts/                          # 验收脚本等
-└── docs/                             # 设计文档、迭代记录、计划
+└── scripts/                          # 验收脚本等
 ```
 
 ---
@@ -112,28 +122,28 @@ LabexAgent/
 | MySQL | 8.0+ | `mysql --version` |
 | Redis | 7+ | `redis-cli ping` |
 
-Windows 本地开发（命令执行走 WSL2）还需要 WSL2 + Debian（可选，`unsafe-local` 诊断模式可绕过沙箱）。
+Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅调试时可临时用 `unsafe-local` 诊断模式绕过沙箱，生产环境禁用。
 
 ---
 
 ## 2. 配置
 
-复制 `.env.example` 为 `.env`（根目录），后端启动时会读取。所有环境变量都有默认值，不配置也能本地跑起来，但生产环境必须覆盖：
+复制根目录 `.env.example` 为 `.env`，后端启动时读取。所有环境变量都有默认值，不配置也能本地跑起来，但生产环境必须覆盖以下几项：
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `LABEX_AGENT_DB_URL` | `jdbc:mysql://localhost:3306/labex_agent?...` | MySQL 连接串 |
 | `LABEX_AGENT_DB_USERNAME` / `LABEX_AGENT_DB_PASSWORD` | `root` / 无 | 数据库账号 |
-| `LABEX_AGENT_JWT_SECRET` | 占位 | JWT 签名密钥，生产必须 ≥64 字节高熵串 |
+| `LABEX_AGENT_JWT_SECRET` | 占位 | JWT 签名密钥，生产必须为 ≥64 字节的高熵串 |
 | `LABEX_AGENT_SECRET_STORE_MASTER_KEY` | 占位 | AES-GCM 主密钥（加密模型 API Key 与 MCP 凭证） |
 | `LABEX_AGENT_AUTH_REDIS_URL` | `redis://localhost:6379` | 认证限流 / 验证码 / OAuth 状态存储（Redis 必用） |
 | `LABEX_AGENT_PROJECT_BASE_PATH` | `D:/LabexAgent/workspaces` | 用户工作区根路径 |
 
-认证模块：注册 / 登录 / 图形验证码（按风险阈值按需生成）/ GitHub、Google OAuth（可选，未配置时登录页隐藏按钮）/ 邀请注册。第三方登录不会自动建号，需先在账号设置中绑定。
+**认证模块**：注册 / 登录 / 图形验证码（按风险阈值按需生成）/ GitHub、Google OAuth（可选，未配置时登录页隐藏按钮）/ 邀请注册。第三方登录不会自动建号，需先在账号设置中绑定。
 
-模型配置：主 Agent 使用用户在前端「模型配置」中创建的 OpenAI-Compatible 模型（API Key / Base URL / 模型名 / 推理程度），凭证加密存储。RAG 图片理解等辅助能力可选配 `MINIMAX_API_KEY`、`TAVILY_API_KEY`。
+**模型配置**：主 Agent 使用用户在前端「模型配置」中创建的 OpenAI-Compatible 模型（API Key / Base URL / 模型名 / 推理程度），凭证加密存储。RAG 图片理解等辅助能力可选配 `MINIMAX_API_KEY`、`TAVILY_API_KEY`。
 
-站点监控（可选）：`/ops` 页面查看 PV/UV、热门路径、状态码分布、访问明细与系统资源曲线。入口用独立访问校验码，配置 `LABEX_AGENT_MONITOR_ACCESS_CODE` 后启用；IP 归属地用离线 `ip2region_v4.xdb` 库（本地查询，不外发访客 IP）。
+**站点监控（可选）**：`/ops` 页面查看 PV/UV、热门路径、状态码分布、访问明细与系统资源曲线。入口用独立访问校验码，配置 `LABEX_AGENT_MONITOR_ACCESS_CODE` 后启用；IP 归属地使用离线 `ip2region_v4.xdb` 库本地查询，不外发访客 IP。
 
 完整环境变量表见 `.env.example` 与 `backend/src/main/resources/application.yml`。
 
@@ -169,6 +179,8 @@ java -jar target/labex-agent-backend-*.jar
 - REST 根路径：`http://localhost:8080/api`（`server.servlet.context-path=/api`）
 - WebSocket 终端端点：`/api/ws/terminal`（与 SSE 不共享连接）
 
+仓库自带 Maven 配置：`mvn -s settings-local.xml spring-boot:run`（默认空 mirror）。
+
 ---
 
 ## 5. 启动前端
@@ -180,15 +192,16 @@ npm run dev
 ```
 
 - 前端地址：`http://localhost:3000`
-- `vite.config.js` 里 `/api` 代理到 `http://localhost:8080`（`ws: true` 透传 WebSocket，流式对话依赖此配置；改代理后必须重启 dev server）
+- `vite.config.js` 里 `/api` 代理到 `http://localhost:8080`（`ws: true` 透传 WebSocket，流式对话依赖此配置；**改了代理配置必须重启 dev server**）
 - 生产构建：`npm run build`（产物在 `frontend/dist`）
+- 本地预览：`npm run preview`
 
 ---
 
 ## 6. 使用流程
 
 1. 打开 `http://localhost:3000`，注册 / 登录。
-2. 创建项目（或上传压缩包 / 克隆已有代码库）。
+2. 创建项目（支持本地新建、上传压缩包、克隆已有代码库）。
 3. 在「模型配置」中添加一个 OpenAI-Compatible 模型（如 DeepSeek、Qwen、GPT 等），作为主 Agent 的 provider。
 4. 进入工作区，输入需求开始对话。Agent 执行工具时：
    - 文件改动会以 diff 形式展示，可逐条 Apply / Reject / Undo；
@@ -224,9 +237,10 @@ npm run dev
 Linux 生产部署配置在 [deploy/linux/](deploy/linux/)：`backend.Dockerfile`、`docker-compose.yml`、`nginx.conf` / `Caddyfile`、初始化与迁移脚本、构建发布脚本、`smoke.sh` 冒烟检查，以及独立的 `deploy/linux/README.md`。
 
 要点：
+
 1. `SPRING_PROFILES_ACTIVE=production`；
 2. 配置生产沙箱镜像（`LABEX_AGENT_WORKER_DOCKER_IMAGE`）、高熵 `LABEX_AGENT_JWT_SECRET`、`LABEX_AGENT_SECRET_STORE_MASTER_KEY`；
-3. Nginx / Caddy 反代 + HTTPS，注意 WebSocket / SSE 透传（`proxy_buffering off` 等）。
+3. Nginx / Caddy 反代 + HTTPS，注意 WebSocket / SSE 透传（`proxy_buffering off`、透传 Upgrade 头等）。
 
 生产 profile 启动时做 Fail-Fast 自检：发现 Windows 路径残留、默认弱密钥、未配置沙箱镜像或不安全权限 profile 会拒绝启动并输出诊断。
 
@@ -253,6 +267,6 @@ HS512 要求 ≥64 字节。本地占位符会自动派生安全密钥；生产�
 
 ---
 
-## License & Notices
+## License
 
-- 架构参考 OpenCode（MIT），复刻与适配记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 `docs/` 下迭代文档。
+本项目源码以 MIT 许可证发布。部分架构设计参考 OpenCode（MIT License, Copyright (c) 2024 SST Inc），复刻与适配记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
