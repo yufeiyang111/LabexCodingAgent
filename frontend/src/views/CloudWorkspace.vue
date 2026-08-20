@@ -8,10 +8,12 @@
       :saving-file="savingFile"
       :explorer-visible="explorerVisible"
       :terminal-visible="terminalPanelVisible"
+      :preview-visible="webPreviewVisible"
       :ai-panel-visible="!aiCollapsed && !isAgentInCenter"
       @go-back="goBack"
       @toggle-explorer="explorerVisible = !explorerVisible"
       @toggle-terminal="toggleTerminalPanel"
+      @toggle-preview="webPreviewVisible = !webPreviewVisible"
       @toggle-ai-panel="toggleAiPanelLayout"
       @open-theme-settings="themeStore.openSettings()"
       @export-project="exportProject"
@@ -169,7 +171,7 @@
             v-model:active-tab="activeAiTab"
             :project-id="projectId"
             :changes-refresh-key="changesRefreshKey"
-            :session-changes="sessionChanges"
+            :session-changes="effectiveChanges"
             :session-history="sessionHistory"
             :all-token-stats="allTokenStats"
             :is-dark="aiDarkTheme"
@@ -192,6 +194,7 @@
             :token-usage="tokenUsage"
             :quick-chips="quickChips"
             :active-path="activePath"
+            :command-list="commandList"
             :get-merged-items="getMergedItems"
             :render-thinking-markdown="renderThinkingMarkdown"
             :render-message-markdown="renderMessageMarkdown"
@@ -223,6 +226,8 @@
             @revert-change="revertChange"
             @undo-change="onUndoChange"
             @toggle-terminal="toggleTerminalPanel"
+            @open-file="handleOpenFile"
+            @open-preview="handleOpenPreview"
           />
 
           <!-- 当处于文件编辑标签时显示 Monaco 编辑器或中心 Diff 变更对比视图 (如图所示) -->
@@ -269,6 +274,22 @@
           <TerminalPanel ref="terminalPanelRef" :project-id="projectId" :project-path="projectPath" :is-dark="aiDarkTheme" @toggle-theme="toggleAiTheme" @command-finished="onTerminalCommandFinished" />
         </section>
       </div>
+
+      <!-- 4. 实时 Web 预览视窗 (支持拖拽调整宽度) -->
+      <div v-if="webPreviewVisible" class="ws-resize-handle preview-resize" @pointerdown="startPreviewResize" title="拖动调整实时预览宽度"></div>
+      <section
+        v-if="webPreviewVisible"
+        class="ws-preview-container"
+        :style="{ width: `${webPreviewWidth}px` }"
+      >
+        <WebPreviewPanel
+          :url="webPreviewUrl"
+          :refresh-key="previewRefreshKey"
+          :is-dark="aiDarkTheme"
+          @close="webPreviewVisible = false"
+          @url-change="url => webPreviewUrl = url"
+        />
+      </section>
 
       <!-- 右侧 AI 面板拖拽拉伸条 -->
       <div v-if="!aiCollapsed && !isAgentInCenter" class="ai-resize-handle" @pointerdown="startResize"></div>
@@ -354,18 +375,29 @@
               </button>
               <!-- Empty State -->
               <div v-if="messages.length === 0" class="ai-empty">
+                <div class="ai-empty-icon-box">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
                 <h2 class="ai-empty-greeting">有什么我可以帮您的吗？</h2>
-                <div class="center-quick-chips" style="margin-top: 12px;">
-                  <button v-for="chip in quickChips" :key="chip.label" class="quick-chip-btn" @click="agentInput = chip.prompt; sendMessage()">
-                    <span v-html="chip.icon"></span>
-                    <span>{{ chip.label }}</span>
+                <p class="ai-empty-subtext">输入需求，LabexAgent 将自动执行代码检索、架构设计、文件重构与测试验证</p>
+                <div class="ai-quick-chips-grid">
+                  <button
+                    v-for="chip in quickChips"
+                    :key="chip.label"
+                    class="ai-quick-chip-card"
+                    @click="agentInput = chip.prompt; sendMessage()"
+                    type="button"
+                    :title="chip.prompt"
+                  >
+                    <span class="chip-icon-wrap" v-html="chip.icon"></span>
+                    <span class="chip-label-text">{{ chip.label }}</span>
                   </button>
                 </div>
               </div>
 
               <!-- Messages -->
               <TransitionGroup :key="conversationRenderEpoch" name="ai-msg" tag="div" class="ai-msg-list">
-                <div v-for="(msg, i) in messages" :key="i" class="ai-msg" :class="msg.role">
+                <div v-for="(msg, i) in messages" :key="msg.taskId || msg.id || msg.timestamp || ('msg-' + i)" class="ai-msg" :class="msg.role">
                   <div class="ai-msg-header">
                     <div class="ai-msg-avatar">
                       <svg v-if="msg.role === 'user'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -423,6 +455,8 @@
                           @permission="handlePermissionDecision"
                           @command-approval="handleCommandApproval"
                           @question="handleQuestionReply"
+                          @open-file="handleOpenFile"
+                          @open-preview="handleOpenPreview"
                         />
                       </template>
                     </template>
@@ -472,12 +506,23 @@
                       >
                         {{ msg.environmentRetrying ? '正在恢复任务...' : '环境恢复后重试' }}
                       </button>
+                      <button
+                        v-if="msg.loopGuardStop?.recoverable && msg.taskId"
+                        type="button"
+                        class="ai-environment-retry"
+                        :disabled="msg.loopGuardResuming"
+                        @click="resumeLoopGuardTask(msg)"
+                      >
+                        {{ msg.loopGuardResuming ? '正在恢复任务...' : '从当前进展继续' }}
+                      </button>
                     </div>
 
-                    <!-- File Changes Summary Card (常驻于任务底部) -->
+                    <!-- File Changes Summary Card (按当前助理轮次/消息独立展示该次对话产生的变更) -->
                     <FileChangesSummaryCard
-                      v-if="msg.role === 'assistant' && i === messages.length - 1"
-                      :changes="sessionChanges || []"
+                      v-if="msg.role === 'assistant' && getMessageChanges(msg).length > 0"
+                      :changes="getMessageChanges(msg)"
+                      :additions="getMessageAdditions(msg)"
+                      :deletions="getMessageDeletions(msg)"
                       @review-all="selectAiTab('review')"
                       @open-file-diff="handleOpenFileDiff"
                     />
@@ -571,6 +616,7 @@
                 :pending-images="pendingImageAttachments"
                 :context-usage-status="contextUsageStatus"
                 :active-path="activePath"
+                :commands="commandList"
                 @mode-change="switchMode"
                 @send="sendMessage"
                 @stop="stopGeneration"
@@ -601,7 +647,7 @@
           <!-- ==================== REVIEW TAB (Changes) ==================== -->
           <div v-if="activeAiTab === 'review'" class="ai-content ai-content-nopad">
             <ChangesPanel
-              :changes="sessionChanges"
+              :changes="effectiveChanges"
               :project-id="projectId"
               :refresh-key="changesRefreshKey"
               @revert="revertChange"
@@ -855,7 +901,21 @@ import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
 import { applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
 import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
 import { enhanceFileLinks } from '@/utils/fileLinks'
-import 'highlight.js/styles/github.css'
+import { normalizeWorkspacePath, languageForPath } from '@/utils/pathUtils'
+import { resolveEffectiveChanges, resolveMessageChanges, resolveMessageStats } from '@/composables/useEffectiveChanges'
+import 'highlight.js/styles/github-dark.css'
+
+function getMessageChanges(msg) {
+  return resolveMessageChanges(msg)
+}
+
+function getMessageAdditions(msg) {
+  return resolveMessageStats(msg).additions
+}
+
+function getMessageDeletions(msg) {
+  return resolveMessageStats(msg).deletions
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -880,6 +940,27 @@ const FileChangesSummaryCard = defineAsyncComponent(() => import('@/components/c
 const ToolCallCard = defineAsyncComponent(() => import('@/components/cloud/ToolCallCard.vue'))
 const FileExplorerPanel = defineAsyncComponent(() => import('@/components/sidebar/FileExplorerPanel.vue'))
 const ConversationPanel = defineAsyncComponent(() => import('@/components/sidebar/ConversationPanel.vue'))
+const WebPreviewPanel = defineAsyncComponent(() => import('@/components/cloud/preview/WebPreviewPanel.vue'))
+
+// Web 实时预览状态
+const webPreviewVisible = ref(false)
+const webPreviewUrl = ref('http://localhost:3000')
+const webPreviewWidth = ref(520)
+const previewRefreshKey = ref(0)
+let previewDebounceTimer = null
+
+function handleOpenPreview(url) {
+  if (url) {
+    webPreviewUrl.value = url
+    webPreviewVisible.value = true
+  }
+}
+
+function handleOpenFile(path) {
+  if (path) {
+    openFile(path)
+  }
+}
 
 // Core project state
 const projectId = ref(null)
@@ -1046,10 +1127,31 @@ async function handleOpenFileDiff(file) {
     ? file
     : (file?.relativePath || file?.path || file?.filePath || file?.file || '')
   if (!rawPath) return
-  const path = rawPath.replace(/^(\.\/|\/)/, '').replace(/\\/g, '/')
+  const path = normalizeWorkspacePath(rawPath) || rawPath.replace(/^(\.\/|\/)/, '').replace(/\\/g, '/')
+
+  // 关键优化：点击审查时若 AI 处于中心放大模式，自动停靠回右侧边栏，让出左侧主区域展示代码 Diff
+  if (isAgentInCenter.value) {
+    isAgentInCenter.value = false
+    aiCollapsed.value = false
+  }
   isAgentTabActive.value = false
 
   let patch = file?.patch || file?.diff || ''
+  let afterContent = file?.afterContent || ''
+
+  // 1. 如果没有 patch，从 effectiveChanges 中检索（已包含 sessionChanges, fileChanges, toolCalls）
+  if (!patch) {
+    const change = effectiveChanges.value.find(c => {
+      const cNorm = normalizeWorkspacePath(c.file || c.relativePath || '')
+      return cNorm === path || c.file === path || c.relativePath === path || c.file === rawPath || c.relativePath === rawPath
+    })
+    if (change) {
+      patch = change.patch || change.diff || ''
+      if (!afterContent && change.afterContent) afterContent = change.afterContent
+    }
+  }
+
+  // 2. 如果依然没有 patch 且有 changeId，从后端 Diff API 异步获取
   if (!patch && file?.changeId && projectId.value) {
     try {
       const diffRes = await projectApi.agentDiff(projectId.value, file.changeId)
@@ -1060,80 +1162,63 @@ async function handleOpenFileDiff(file) {
         patch = `@@ -1,${before.length} +1,${after.length} @@\n` +
           before.map(l => `-${l}`).join('\n') + '\n' +
           after.map(l => `+${l}`).join('\n')
+        if (diffRes.data.afterContent) afterContent = diffRes.data.afterContent
       }
     } catch (e) { /* ignore */ }
   }
 
-  if (!patch) {
-    const change = sessionChanges.value.find(c => (c.file === path || c.relativePath === path || c.file === rawPath || c.relativePath === rawPath))
-    if (change) patch = change.patch || change.diff
-  }
-  if (!patch) {
-    for (const msg of messages.value) {
-      if (msg.fileChanges) {
-        const fc = msg.fileChanges.find(f => (f.path === path || f.filePath === path || f.file === path || f.relativePath === path || f.file === rawPath))
-        if (fc && (fc.patch || fc.diff)) {
-          patch = fc.patch || fc.diff
-          break
-        }
-      }
-    }
-  }
-
-  // Synthesize diff from beforeContent / afterContent if diff text is missing
-  if (!patch && (file?.beforeContent || file?.afterContent)) {
-    const before = (file.beforeContent || '').split('\n')
-    const after = (file.afterContent || '').split('\n')
+  // 3. Synthesize diff from beforeContent / afterContent if diff text is missing
+  if (!patch && (file?.beforeContent || file?.afterContent || afterContent)) {
+    const targetAfter = afterContent || file?.afterContent || ''
+    const before = (file?.beforeContent || '').split('\n')
+    const after = targetAfter.split('\n')
     patch = `@@ -1,${before.length} +1,${after.length} @@\n` +
       before.map(l => `-${l}`).join('\n') + '\n' +
       after.map(l => `+${l}`).join('\n')
   }
 
-  const existingIndex = openFiles.value.findIndex(f => f.path === path || f.path === rawPath)
+  // 4. 若依然没有 patch，从工作区异步读取该文件源码并合成全量 Diff
+  if (!patch && projectId.value) {
+    try {
+      const resp = await projectApi.readFile(projectId.value, path)
+      if (resp?.data?.content != null) {
+        const content = resp.data.content
+        afterContent = content
+        const lines = content.split('\n')
+        patch = `@@ -0,0 +1,${lines.length} @@\n` + lines.map(l => `+${l}`).join('\n')
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  const finalDiff = patch || (afterContent ? `@@ -0,0 +1,1 @@\n+${afterContent}` : '@@ -0,0 +1,1 @@\n+ // 暂无代码变更明细')
+  const finalContent = afterContent || file?.afterContent || file?.content || ''
+
+  // 5. 如果已有打开的文件标签，激活它并强制切换至 Diff 视图
+  const existingIndex = openFiles.value.findIndex(f => {
+    const fNorm = normalizeWorkspacePath(f.path)
+    return fNorm === path || f.path === path || f.path === rawPath
+  })
   if (existingIndex >= 0) {
-    if (patch) openFiles.value[existingIndex].diff = patch
+    openFiles.value[existingIndex].diff = finalDiff
+    openFiles.value[existingIndex].content = finalContent || openFiles.value[existingIndex].content || ''
     openFiles.value[existingIndex].isDiffView = true
     switchTab(existingIndex)
     return
   }
 
-  if (patch) {
-    const opened = {
-      path,
-      name: path.split('/').pop() || path,
-      content: file?.afterContent || '',
-      diff: patch,
-      lang: languageForPath(path),
-      isDiffView: true,
-      dirty: false,
-      readOnly: false
-    }
-    openFiles.value.push(opened)
-    switchTab(openFiles.value.length - 1)
-    return
+  // 6. 创建全新的 Diff 视图 Tab 并激活
+  const opened = {
+    path,
+    name: path.split('/').pop() || path,
+    content: finalContent,
+    diff: finalDiff,
+    lang: languageForPath(path),
+    isDiffView: true,
+    dirty: false,
+    readOnly: false
   }
-
-  const ok = await openFile(path)
-  if (ok) {
-    const currentTab = openFiles.value[activeTabIndex.value]
-    if (currentTab) {
-      currentTab.diff = patch || `@@ -0,0 +1,1 @@\n+ // 暂无代码变更明细`
-      currentTab.isDiffView = true
-    }
-  } else {
-    const opened = {
-      path,
-      name: path.split('/').pop() || path,
-      content: file?.afterContent || file?.content || '',
-      diff: patch || (file?.afterContent ? `@@ -0,0 +1,1 @@\n+${file.afterContent}` : '@@ -0,0 +1,1 @@\n+ // 暂无代码变更明细'),
-      lang: languageForPath(path),
-      isDiffView: true,
-      dirty: false,
-      readOnly: false
-    }
-    openFiles.value.push(opened)
-    switchTab(openFiles.value.length - 1)
-  }
+  openFiles.value.push(opened)
+  switchTab(openFiles.value.length - 1)
 }
 
 async function handleSwitchToEditor(fileTab) {
@@ -1162,10 +1247,16 @@ async function handleAcceptAllDiff(fileTab) {
   const path = fileTab.path
   const change = sessionChanges.value.find(c => c.file === path || c.relativePath === path)
   if (change?.changeId) {
-    await applyChange(change)
+    try {
+      await projectApi.applyDiff(projectId.value, change.changeId)
+      ElMessage.success(`已保留 ${fileTab.name} 的变更`)
+    } catch {
+      ElMessage.info(`已确认保留 ${fileTab.name}`)
+    }
+  } else {
+    ElMessage.success(`已保留 ${fileTab.name} 的变更`)
   }
   fileTab.isDiffView = false
-  ElMessage.success(`已保留 ${fileTab.name} 的全部变更并切换至源码编辑`)
 }
 
 async function handleRevertAllDiff(fileTab) {
@@ -1173,10 +1264,16 @@ async function handleRevertAllDiff(fileTab) {
   const path = fileTab.path
   const change = sessionChanges.value.find(c => c.file === path || c.relativePath === path)
   if (change?.changeId) {
-    await rejectChange(change)
+    try {
+      await projectApi.rejectDiff(projectId.value, change.changeId)
+      ElMessage.success(`已回退 ${fileTab.name} 的变更`)
+    } catch {
+      ElMessage.info(`已标记回退 ${fileTab.name}`)
+    }
+  } else {
+    ElMessage.success(`已回退 ${fileTab.name} 的变更`)
   }
   closeFile(activeTabIndex.value)
-  ElMessage.warning(`已回退 ${fileTab.name} 的变更`)
 }
 
 function handleAcceptChunkDiff(fileTab, chunk) {
@@ -1192,26 +1289,36 @@ function handleKeepOriginalDiff(fileTab, chunk) {
 }
 
 function handleReviewChanges(msg) {
-  if (msg?.fileChanges && msg.fileChanges.length > 0) {
+  const changes = (msg ? getMessageChanges(msg) : []) || sessionChanges.value || []
+
+  // 1. 将 AI 视图停靠回右侧边栏，右侧边栏切换至审查 Tab (Modified Files)
+  if (isAgentInCenter.value) {
+    isAgentInCenter.value = false
+    aiCollapsed.value = false
+  }
+  activeAiTab.value = 'review'
+  selectAiTab('review')
+
+  // 2. 同步变更并在左侧主工作区以 Diff 模式直接打开第 1 个变更文件
+  if (changes.length > 0) {
     const existing = new Set(sessionChanges.value.map(c => c.file || c.relativePath))
-    msg.fileChanges.forEach(f => {
-      const p = f.path || f.filePath || f.file
+    changes.forEach(f => {
+      const p = f.path || f.filePath || f.file || f.relativePath
       if (p && !existing.has(p)) {
         sessionChanges.value.push({
           file: p,
           relativePath: p,
-          status: f.type || 'modify',
+          status: f.status || f.type || 'modify',
           additions: f.additions || 0,
           deletions: f.deletions || 0,
-          patch: f.patch || ''
+          patch: f.patch || f.diff || ''
         })
       }
     })
+    void handleOpenFileDiff(changes[0])
+  } else if (sessionChanges.value.length > 0) {
+    void handleOpenFileDiff(sessionChanges.value[0])
   }
-  if (isAgentInCenter.value) {
-    aiCollapsed.value = false
-  }
-  selectAiTab('review')
 }
 
 function moveAiToCenter() {
@@ -1509,10 +1616,26 @@ const aiTabs = [
 ]
 
 const quickChips = [
-  { label: '解释代码', prompt: '请解释当前文件的代码逻辑', icon: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>' },
-  { label: '生成测试', prompt: '为当前代码生成单元测试', icon: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
-  { label: '重构函数', prompt: '请重构当前函数，提升可读性和性能', icon: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>' },
-  { label: '查找 Bug', prompt: '请检查当前代码中的潜在 bug', icon: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2l1.88 1.88M14.12 3.88L16 2M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-9M6.53 9C4.6 8.8 3 7.1 3 5M6 13H2M20 5c0 2.1-1.6 3.8-3.53 4M18 13h4M20 9v4"/></svg>' },
+  {
+    label: '解释代码',
+    prompt: '请解释当前文件的核心逻辑与实现细节',
+    icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
+  },
+  {
+    label: '生成测试',
+    prompt: '为当前代码编写完整的单元测试与边界用例',
+    icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>'
+  },
+  {
+    label: '重构函数',
+    prompt: '请重构当前函数，提升可读性、模块化与执行性能',
+    icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>'
+  },
+  {
+    label: '查找 Bug',
+    prompt: '请检查当前代码中的潜在 bug、边界漏洞与未捕获异常',
+    icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2"><path d="M8 2l1.88 1.88M14.12 3.88L16 2M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-9M6.53 9C4.6 8.8 3 7.1 3 5M6 13H2M20 5c0 2.1-1.6 3.8-3.53 4M18 13h4M20 9v4"/></svg>'
+  },
 ]
 
 // ===== Methods =====
@@ -1585,11 +1708,38 @@ onBeforeUnmount(() => {
     clearTimeout(terminalRefreshTimer)
     terminalRefreshTimer = null
   }
-  // 清理滚动防抖定时器
+  if (previewDebounceTimer) {
+    clearTimeout(previewDebounceTimer)
+    previewDebounceTimer = null
+  }
+  // 清理滚动防抖定时器与图表渲染定时器
   if (scrollTimeout) {
     clearTimeout(scrollTimeout)
     scrollTimeout = null
   }
+  if (mermaidRenderTimer) {
+    clearTimeout(mermaidRenderTimer)
+    mermaidRenderTimer = null
+  }
+  if (agentRenderFrame != null) {
+    cancelAnimationFrame(agentRenderFrame)
+    agentRenderFrame = null
+  }
+  if (scrollRafId != null) {
+    cancelAnimationFrame(scrollRafId)
+    scrollRafId = null
+  }
+  if (resizeFrame != null) {
+    cancelAnimationFrame(resizeFrame)
+    resizeFrame = null
+  }
+
+  // 销毁 ECharts 图表实例
+  if (usagePieChart) { usagePieChart.dispose(); usagePieChart = null }
+  if (usageBarChart) { usageBarChart.dispose(); usageBarChart = null }
+  if (usageTimelineChart) { usageTimelineChart.dispose(); usageTimelineChart = null }
+  if (usageModelChart) { usageModelChart.dispose(); usageModelChart = null }
+
   // 清理所有消息中的 thinking 动画定时器
   messages.value.forEach(msg => {
     if (msg._thinkingTimer) {
@@ -1602,7 +1752,7 @@ onBeforeUnmount(() => {
 })
 
 async function exportProject() {
-  try { const r = await projectApi.exportProject(projectId.value); const blob = r.data instanceof Blob ? r.data : new Blob([r.data], { type: 'application/zip' }); const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = (projectName.value || 'project') + '.zip'; document.body.appendChild(a); a.click(); document.body.removeChild(a); window.URL.revokeObjectURL(url); ElMessage.success('导出成功') } catch (e) { ElMessage.error('导出失败: ' + (e?.response?.data?.message || e?.message || '未知错误')) }
+  try { const r = await projectApi.exportProject(projectId.value); const blob = r instanceof Blob ? r : new Blob([r], { type: 'application/zip' }); const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = (projectName.value || 'project') + '.zip'; document.body.appendChild(a); a.click(); document.body.removeChild(a); window.URL.revokeObjectURL(url); ElMessage.success('导出成功') } catch (e) { ElMessage.error('导出失败: ' + (e?.response?.data?.message || e?.message || '未知错误')) }
 }
 
 async function loadCommandCatalog() {
@@ -1728,8 +1878,6 @@ async function sendMessage() {
       ElMessage.warning('Slash command 暂不支持图片附件，请移除图片后再执行。')
       return
     }
-    // 先关闭输入时产生的旧面板，允许 /help 等客户端动作按需重新打开目标 UI。
-    closeCommandPalette()
     try {
       const commandResult = await resolveSlashCommand({
         raw: q,
@@ -1977,6 +2125,28 @@ async function handleCommandApproval(payload) {
   }
 }
 
+async function resumeLoopGuardTask(assistantMsg) {
+  const taskId = assistantMsg?.taskId
+  if (!taskId || !assistantMsg?.loopGuardStop?.recoverable || assistantMsg.loopGuardResuming) return
+  assistantMsg.loopGuardResuming = true
+  try {
+    await projectApi.agentResumeLoopGuard(projectId.value, taskId)
+    assistantMsg.loopGuardStop = null
+    assistantMsg.error = null
+    assistantMsg.isStreaming = true
+    agentLoading.value = true
+    await replayResumedAgent(taskId, assistantMsg)
+  } catch (error) {
+    const message = error?.response?.data?.message || error?.message || '恢复任务失败'
+    assistantMsg.error = message
+    assistantMsg.loopGuardStop = assistantMsg.loopGuardStop || {}
+    assistantMsg.loopGuardStop.message = message
+    ElMessage.error(message)
+  } finally {
+    assistantMsg.loopGuardResuming = false
+  }
+}
+
 async function retryEnvironmentTask(assistantMsg) {
   const taskId = assistantMsg?.taskId
   if (!taskId || assistantMsg.environmentRetrying) return
@@ -2016,8 +2186,8 @@ async function replayResumedAgent(taskId, assistantMsg, conversationId) {
 
 async function handlePermissionDecision(payload) {
   const result = await submitPermissionDecision(payload)
-  if (!result.success || (payload?.call?.status === 'error' && payload?.action !== 'reject')) return
-  const call = payload.call
+  const call = payload?.call || messages.value.flatMap(message => message?.toolCalls || []).find(toolCall => toolCall?.toolCallId === payload?.toolCallId)
+  if (!result.success || (call?.status === 'error' && payload?.action !== 'reject')) return
   const request = call?.networkRequest || call?.permissionRequest
   const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
   const taskId = request?.taskId || assistantMsg?.taskId
@@ -2032,7 +2202,7 @@ async function handlePermissionDecision(payload) {
 async function handleQuestionReply(payload) {
   const result = await submitQuestionReply(payload)
   if (result.reason === 'answer_required') {
-    ElMessage.warning('\u8bf7\u5148\u8f93\u5165\u56de\u7b54')
+    ElMessage.warning('请先输入回答')
     return
   }
   if (result.reason === 'request_missing') {
@@ -2040,7 +2210,7 @@ async function handleQuestionReply(payload) {
     return
   }
   if (result.success) {
-    const call = payload.call
+    const call = payload?.call || messages.value.flatMap(message => message?.toolCalls || []).find(toolCall => toolCall?.toolCallId === payload?.toolCallId)
     const assistantMsg = messages.value.find(message => message?.toolCalls?.includes(call))
     const taskId = call?.questionRequest?.taskId || assistantMsg?.taskId
     if (assistantMsg && taskId) {
@@ -2074,7 +2244,22 @@ const currentAgentSession = ref(null)
 const selectedModelConfigId = ref(null)
 const modelConfigs = ref([])
 const sessionChanges = ref([])
+const effectiveChanges = computed(() => resolveEffectiveChanges(sessionChanges.value, messages.value))
 const changesRefreshKey = ref(0)
+
+// 当代码变更生效时自动触发预览无缝热刷新
+watch(
+  () => effectiveChanges.value,
+  (newChanges) => {
+    if (webPreviewVisible.value && newChanges && newChanges.length > 0) {
+      if (previewDebounceTimer) clearTimeout(previewDebounceTimer)
+      previewDebounceTimer = setTimeout(() => {
+        previewRefreshKey.value++
+      }, 500)
+    }
+  },
+  { deep: true }
+)
 const { projectWorkspaceChange } = createWorkspaceMutationProjection({
   projectId,
   loadRoot
@@ -2119,7 +2304,8 @@ const conversationState = useConversationState({
   currentAgentSession,
   replayHistoryEvent,
   onHistoryAttachments: hydrateHistoryAttachmentPreviews,
-  onHistoryLoaded: initialScroll
+  onHistoryLoaded: initialScroll,
+  onClearMessages: msgs => msgs.forEach(m => revokeImageObjectUrls(m.attachments || []))
 })
 const {
   conversations,
@@ -2792,8 +2978,19 @@ async function deleteConversation(conversation) {
 }
 
 function getMergedItems(msg) {
+  if (!msg) return []
+  const thinkCount = msg.thinkingBlocks?.length || 0
+  const ctxCount = msg.contextManagementEvents?.length || 0
+  const toolCount = msg.toolCalls?.length || 0
+  const showThinking = showThinkingProcess.value
+  const versionKey = `${showThinking}:${thinkCount}:${ctxCount}:${toolCount}:${msg._nextOrder || 0}`
+
+  if (msg._mergedItemsCache && msg._mergedItemsCacheKey === versionKey) {
+    return msg._mergedItemsCache
+  }
+
   const items = []
-  if (showThinkingProcess.value && msg.thinkingBlocks) {
+  if (showThinking && msg.thinkingBlocks) {
     for (const tb of msg.thinkingBlocks) {
       items.push({ type: 'thinking', data: tb, _order: tb._order || 0 })
     }
@@ -2809,6 +3006,8 @@ function getMergedItems(msg) {
     }
   }
   items.sort((a, b) => a._order - b._order)
+  msg._mergedItemsCache = items
+  msg._mergedItemsCacheKey = versionKey
   return items
 }
 
@@ -3202,6 +3401,30 @@ function sanitizeMarkdownHtml(html) {
   return template.innerHTML
 }
 
+const codeHighlightCache = new Map()
+const MAX_HIGHLIGHT_CACHE_SIZE = 500
+
+function getHighlightedCode(rawCode, lang) {
+  const key = `${lang}::${rawCode}`
+  if (codeHighlightCache.has(key)) return codeHighlightCache.get(key)
+  let result = ''
+  try {
+    if (lang !== 'text' && hljs.getLanguage(lang)) {
+      result = hljs.highlight(rawCode, { language: lang }).value
+    } else {
+      result = rawCode
+    }
+  } catch {
+    result = rawCode
+  }
+  if (codeHighlightCache.size > MAX_HIGHLIGHT_CACHE_SIZE) {
+    const firstKey = codeHighlightCache.keys().next().value
+    codeHighlightCache.delete(firstKey)
+  }
+  codeHighlightCache.set(key, result)
+  return result
+}
+
 function enhanceMarkdownHtml(html) {
   if (typeof document === 'undefined') return html
   const template = document.createElement('template')
@@ -3228,7 +3451,7 @@ function enhanceMarkdownHtml(html) {
 
     if (code) {
       if (lang !== 'text' && hljs.getLanguage(lang)) {
-        code.innerHTML = hljs.highlight(rawCode, { language: lang }).value
+        code.innerHTML = getHighlightedCode(rawCode, lang)
         code.classList.add('hljs')
       } else {
         code.textContent = rawCode
@@ -3486,13 +3709,60 @@ function handleMarkdownClick(event) {
   // File path — open in workspace
   const fileLink = event.target?.closest?.('.file-link')
   if (fileLink) {
-    const path = fileLink.dataset.path
-    if (path) {
-      openFile(path).then(() => {
-        if (!openFiles.value.some((f) => f.path === path)) {
-          ElMessage.warning(`无法打开 ${path}`)
+    const raw = fileLink.dataset.path || ''
+    const cleanPath = normalizeWorkspacePath(raw) || raw.replace(/^(\.\/|\/)/, '').replace(/\\/g, '/')
+    if (cleanPath) {
+      async function tryOpenFile(targetPath) {
+        const existingIdx = openFiles.value.findIndex(f => {
+          const fNorm = normalizeWorkspacePath(f.path)
+          return fNorm === targetPath || fNorm.endsWith('/' + targetPath) || f.path === targetPath
+        })
+        if (existingIdx >= 0) {
+          isAgentTabActive.value = false
+          switchTab(existingIdx)
+          return true
         }
-      })
+        const ok = await openFile(targetPath, { silent: true })
+        if (ok) {
+          isAgentTabActive.value = false
+          return true
+        }
+        return false
+      }
+
+      void (async () => {
+        // 1. 尝试直接打开
+        let success = await tryOpenFile(cleanPath)
+        if (success) return
+
+        // 2. 尝试从会话变更与工具调用历史中模糊匹配完整相对路径 (如 base.html -> templates/base.html)
+        const candidates = []
+        for (const c of effectiveChanges.value || []) {
+          const p = normalizeWorkspacePath(c.file || c.relativePath || '')
+          if (p && (p === cleanPath || p.endsWith('/' + cleanPath) || p.split('/').pop() === cleanPath)) {
+            if (!candidates.includes(p)) candidates.push(p)
+          }
+        }
+
+        for (const cand of candidates) {
+          success = await tryOpenFile(cand)
+          if (success) return
+        }
+
+        // 3. 若普通文件打开失败，检查是否属于变更记录中的文件，若是则直接打开 Diff 对比
+        const matchChange = effectiveChanges.value.find(c => {
+          const p = normalizeWorkspacePath(c.file || c.relativePath || '')
+          return p === cleanPath || p.endsWith('/' + cleanPath) || p.split('/').pop() === cleanPath
+        })
+        if (matchChange) {
+          handleOpenFileDiff(matchChange)
+          return
+        }
+
+        if (!success) {
+          ElMessage.warning(`无法打开 ${cleanPath}，未在项目中找到该文件`)
+        }
+      })()
     }
     return
   }
@@ -3797,6 +4067,29 @@ function startResize(e) {
     handle.removeEventListener('pointercancel', finish)
   }
   handle.addEventListener('pointermove', onMove)
+  handle.addEventListener('pointerup', finish)
+  handle.addEventListener('pointercancel', finish)
+}
+
+function startPreviewResize(e) {
+  const handle = e.currentTarget
+  const startX = e.clientX
+  const startWidth = webPreviewWidth.value
+  let latestX = startX
+  let frame = null
+  handle.setPointerCapture?.(e.pointerId)
+  const apply = () => {
+    frame = null
+    webPreviewWidth.value = Math.max(320, Math.min(startWidth - (latestX - startX), window.innerWidth * 0.7))
+  }
+  const move = event => { latestX = event.clientX; if (frame == null) frame = requestAnimationFrame(apply) }
+  const finish = () => {
+    if (frame != null) { cancelAnimationFrame(frame); frame = null; apply() }
+    handle.removeEventListener('pointermove', move)
+    handle.removeEventListener('pointerup', finish)
+    handle.removeEventListener('pointercancel', finish)
+  }
+  handle.addEventListener('pointermove', move)
   handle.addEventListener('pointerup', finish)
   handle.addEventListener('pointercancel', finish)
 }

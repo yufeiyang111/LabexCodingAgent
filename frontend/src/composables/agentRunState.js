@@ -4,6 +4,7 @@ const RECOVERABLE_RUN_STATES = new Set([
   'waiting_user',
   'waiting_workspace',
   'waiting_environment',
+  'waiting_recovery',
   'retrying',
   'retry_backoff'
 ])

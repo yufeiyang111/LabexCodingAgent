@@ -109,21 +109,33 @@ export function resolveCacheTelemetryScope(stats = null, model = '') {
 
 export function resolveCacheTelemetryView(stats = null, live = null) {
   const source = stats?.cacheStatus ? stats : (live || {})
-  const status = normalizeStatus(source.cacheStatus)
-  const hitRate = typeof source.cacheHitRate === 'number' && Number.isFinite(source.cacheHitRate)
+  const cached = finiteNumber(source.cachedTokens ?? source.totalCachedTokens)
+  const write = finiteNumber(source.cacheWriteTokens ?? source.totalCacheWriteTokens)
+  const prompt = finiteNumber(source.promptTokens ?? source.totalPromptTokens)
+
+  let status = normalizeStatus(source.cacheStatus)
+  if (status !== 'disabled' && status !== 'not_reported' && status !== 'miss' && cached === 0 && write === 0 && prompt === 0) {
+    status = 'not_reported'
+  } else if (cached === 0 && status === 'hit') {
+    status = write > 0 ? 'write_only' : 'miss'
+  }
+
+  const rawHitRate = typeof source.cacheHitRate === 'number' && Number.isFinite(source.cacheHitRate)
     ? source.cacheHitRate
     : null
+  const hitRate = (status === 'not_reported' || status === 'disabled')
+    ? null
+    : rawHitRate
+
   return {
     status,
     ...STATUS_META[status],
     hitRate,
     showHitRate: REPORTED_CACHE_STATUSES.has(status) && hitRate !== null,
     ledger: {
-      cacheReadTokens: finiteNumber(source.cachedTokens ?? source.totalCachedTokens),
-      cacheWriteTokens: finiteNumber(source.cacheWriteTokens ?? source.totalCacheWriteTokens),
-      nonCachedInputTokens: Math.max(0,
-        finiteNumber(source.promptTokens ?? source.totalPromptTokens)
-        - finiteNumber(source.cachedTokens ?? source.totalCachedTokens))
+      cacheReadTokens: cached,
+      cacheWriteTokens: write,
+      nonCachedInputTokens: Math.max(0, prompt - cached)
     },
     sessionScoped: true
   }

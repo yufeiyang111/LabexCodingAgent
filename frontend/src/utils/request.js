@@ -37,20 +37,46 @@ service.interceptors.response.use(
       return body
     }
     const message = body?.message || '请求失败'
-    ElMessage.error(message)
+    if (!response.config?.silent) {
+      ElMessage.error(message)
+    }
     return Promise.reject(new Error(message))
   },
   (error) => {
     const status = error.response?.status
+    const responseData = error.response?.data
+    console.error('[request] failed:', {
+      url: error.config?.url,
+      method: error.config?.method,
+      status,
+      responseData,
+      message: error.message,
+      cause: error.cause?.message
+    })
     if (status === 401 || status === 403) {
       const userStore = useUserStore()
       userStore.logout()
-      ElMessage.error('登录已失效，请重新登录')
+      if (!error.config?.silent) {
+        ElMessage.error('登录已失效，请重新登录')
+      }
       router.push('/login')
     } else if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')) {
-      ElMessage.error(error.config?.timeoutMessage || '请求超时')
+      if (!error.config?.silent) {
+        ElMessage.error(error.config?.timeoutMessage || '请求超时')
+      }
     } else {
-      ElMessage.error(error.response?.data?.message || error.message || '网络异常')
+      const detail = responseData?.message || responseData?.error || (responseData ? JSON.stringify(responseData) : '')
+      const message = [detail, error.message].filter(Boolean).join('（')
+      if (!error.config?.silent) {
+        ElMessage.error(status ? `请求失败(${status})：${detail || error.message || '网络异常'}` : error.message || '网络异常')
+      }
+      const enhanced = new Error(message ? `${message}` : '请求失败')
+      enhanced.name = error.name
+      enhanced.status = status
+      enhanced.response = error.response
+      enhanced.config = error.config
+      enhanced.cause = error.cause || error
+      return Promise.reject(enhanced)
     }
     return Promise.reject(error)
   }

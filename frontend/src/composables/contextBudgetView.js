@@ -1,4 +1,4 @@
-﻿const STATIC_KEYS = new Set(['systemPrompt', 'toolDefinitions', 'fixedInstructions', 'skillsAndInstructions'])
+const STATIC_KEYS = new Set(['systemPrompt', 'toolDefinitions', 'fixedInstructions', 'skillsAndInstructions'])
 
 export function normalizeContextBudget(status = {}) {
   const categories = status?.categories || {}
@@ -29,9 +29,11 @@ export function normalizeContextBudget(status = {}) {
     reservedOutputTokens,
     inputCapacityTokens,
     softLimitTokens,
+    contextWindowTokens,
     usedTokens,
     distanceToSoftLimitTokens: Math.max(0, softLimitTokens - usedTokens),
     usedAgainstSoftLimitPercent: ratio(usedTokens, softLimitTokens),
+    usedAgainstWindowPercent: ratio(usedTokens, contextWindowTokens),
     softLimitOfWindowPercent: ratio(softLimitTokens, contextWindowTokens),
     softLimitSource: hasBackendSoftLimit ? 'backend' : 'input_capacity_fallback',
     staticCategories,

@@ -78,7 +78,7 @@
       </button>
     </div>
 
-    <div class="terminal-policy-notice" role="status">
+    <div v-if="hasManagedTerminal" class="terminal-policy-notice" role="status">
       受管终端正在运行：命令会通过权限策略和 REST 会话执行。
     </div>
 
@@ -114,6 +114,7 @@ import {
 } from '@element-plus/icons-vue'
 import {
   useTerminalManager,
+  useTerminalWebSocket,
   VSCODE_DARK_THEME,
   VSCODE_LIGHT_THEME
 } from '@/composables/useTerminal'
@@ -149,7 +150,12 @@ const terminalHosts = ref([])
 const showSearchBar = ref(false)
 const searchText = ref('')
 const currentCwd = ref('')
+// Tracks whether any terminal is using managed REST mode (for the policy notice bar)
+const hasManagedTerminal = ref(false)
 let terminalHostCounter = 0
+
+// Per-terminal WebSocket connections, keyed by terminal id
+const wsConnections = new Map()
 
 function setTermRef(id, el) {
   if (el) {
@@ -163,7 +169,6 @@ function switchTerminal(id) {
   setActiveTerminalId(id)
   nextTick(() => {
     fitTerminal(id)
-    // 确保终端获得焦点
     const termData = getTerminal(id)
     if (termData) {
       termData.terminal.focus()
@@ -174,6 +179,8 @@ function switchTerminal(id) {
 function setActiveTerminalId(id) {
   setActiveTerminal(id)
 }
+
+// ─── Managed REST terminal helpers (fallback) ───
 
 function renderManagedOutput(termData, output) {
   termData.terminal.reset()
@@ -231,16 +238,9 @@ async function runManagedCommand(command, termData) {
   }
 }
 
-async function createNewTerminal() {
-  let session
-  try {
-    const response = await projectApi.terminalCreateSession(props.projectId)
-    session = response.data
-  } catch (error) {
-    ElMessage.error(error?.message || 'Terminal session initialization failed')
-    return
-  }
+// ─── Terminal creation: WebSocket PTY first, REST fallback ───
 
+async function createNewTerminal() {
   const hostId = `terminal-host-${++terminalHostCounter}`
   terminalHosts.value.push({ id: hostId, terminalId: null })
   await nextTick()
@@ -249,6 +249,129 @@ async function createNewTerminal() {
   if (!container) {
     terminalHosts.value = terminalHosts.value.filter(host => host.id !== hostId)
     ElMessage.error('Terminal container initialization failed')
+    return
+  }
+
+  // Try WebSocket PTY mode first
+  const ptySuccess = await tryCreatePtyTerminal(hostId, container)
+  if (ptySuccess) return
+
+  // Fallback to managed REST terminal
+  await createManagedTerminal(hostId, container)
+}
+
+async function tryCreatePtyTerminal(hostId, container) {
+  return new Promise((resolve) => {
+    const termWs = useTerminalWebSocket(props.projectId)
+    let termData = null
+    let resolved = false
+
+    function finish(success) {
+      if (resolved) return
+      resolved = true
+      if (!success) {
+        termWs.disconnect()
+        if (termData) {
+          removeTerminal(termData.id)
+          termData = null
+        }
+      }
+      resolve(success)
+    }
+
+    termWs.connect({
+      onConnect() {
+        // WebSocket connected — request PTY session from backend
+        termWs.createTerminalSession(
+          currentCwd.value,
+          120,
+          30
+        )
+      },
+
+      onCreated(sid) {
+        // Backend PTY session confirmed: create the xterm instance now
+        termData = createTerminal(container, {
+          name: `Terminal ${terminals.value.length + 1}`,
+          theme: props.isDark ? VSCODE_DARK_THEME : VSCODE_LIGHT_THEME,
+          onRawInput: (data) => termWs.sendInput(data)
+        })
+
+        termData.managedSessionId = sid
+        const host = terminalHosts.value.find(item => item.id === hostId)
+        if (host) host.terminalId = termData.id
+
+        wsConnections.set(termData.id, termWs)
+
+        // Sync resize events to PTY
+        const resizeDisposable = termData.terminal.onResize(({ cols, rows }) => {
+          termWs.resize(cols, rows)
+        })
+        termData.disposables.push(resizeDisposable)
+
+        nextTick(() => {
+          fitTerminal(termData.id)
+          termData.terminal.focus()
+        })
+
+        emit('terminal-created', termData.id)
+        finish(true)
+      },
+
+      onOutput(data) {
+        if (termData) {
+          termData.terminal.write(data)
+        }
+      },
+
+      onExit(code) {
+        if (termData) {
+          termData.terminal.write(`\r\n\x1b[33m[Process exited with code ${code}]\x1b[0m\r\n`)
+        }
+      },
+
+      onError(msg) {
+        console.warn('[Terminal] WebSocket error:', msg)
+        finish(false)
+      },
+
+      onDisabled() {
+        finish(false)
+      },
+
+      onDisconnect() {
+        if (termData) {
+          termData.terminal.write('\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n')
+        } else {
+          finish(false)
+        }
+      },
+
+      onReconnectFailed() {
+        if (termData) {
+          termData.terminal.write('\r\n\x1b[31m[Reconnection failed. Please create a new terminal.]\x1b[0m\r\n')
+        }
+      }
+    })
+
+    // Timeout: if PTY session isn't established within 3 seconds, fall back to REST
+    setTimeout(() => {
+      if (!resolved) {
+        finish(false)
+      }
+    }, 3000)
+  })
+}
+
+async function createManagedTerminal(hostId, container) {
+  hasManagedTerminal.value = true
+  let session
+  try {
+    const response = await projectApi.terminalCreateSession(props.projectId)
+    session = response.data
+  } catch (error) {
+    ElMessage.error(error?.message || 'Terminal session initialization failed')
+    terminalHosts.value = terminalHosts.value.filter(host => host.id !== hostId)
     return
   }
 
@@ -273,21 +396,42 @@ async function createNewTerminal() {
 }
 
 function splitTerminal() {
-  // 简单实现：创建新终端
   createNewTerminal()
 }
 
 async function closeTerminal(id) {
   const termData = getTerminal(id)
+
+  // Clean up WebSocket connection if PTY mode
+  const termWs = wsConnections.get(id)
+  if (termWs) {
+    termWs.closeTerminal()
+    termWs.disconnect()
+    wsConnections.delete(id)
+  }
+
   removeTerminal(id)
   terminalHosts.value = terminalHosts.value.filter(host => host.terminalId !== id)
-  if (termData?.managedSessionId) {
+
+  if (termData?.managedSessionId && !termData.isPtyMode) {
     try {
       await projectApi.terminalDeleteSession(props.projectId, termData.managedSessionId)
     } catch {
       // The local xterm has already been disposed; backend cleanup can be retried on the next session.
     }
   }
+
+  // Update managed terminal flag
+  hasManagedTerminal.value = terminals.value.some(t => !t.isPtyMode)
+
+  if (terminals.value.length > 0 && activeTerminalId.value) {
+    nextTick(() => {
+      fitTerminal(activeTerminalId.value)
+      const active = getActiveTerminal()
+      active?.terminal?.focus()
+    })
+  }
+
   emit('terminal-closed', id)
 }
 
@@ -299,11 +443,22 @@ function clearActiveTerminal() {
 
 async function killActiveTerminal() {
   const active = getActiveTerminal()
-  if (!active?.managedSessionId) return
+  if (!active) return
+
+  // PTY mode: close the PTY session via WebSocket
+  const termWs = wsConnections.get(active.id)
+  if (termWs) {
+    termWs.closeTerminal()
+    return
+  }
+
+  // Managed REST mode: stop the running command
+  if (!active.managedSessionId) return
   try {
-    const result = response.data || {}
-    renderManagedOutput(active, result.session)
-    renderManagedExecution(active, result)
+    const response = await projectApi.terminalStopSession(props.projectId, active.managedSessionId)
+    const result = response?.data || {}
+    renderManagedOutput(active, result.session?.output ?? result.output)
+    renderManagedExecution(active, result.session || result)
   } catch (error) {
     ElMessage.error(error?.message || 'Failed to stop terminal command')
   }
@@ -344,7 +499,9 @@ onMounted(() => {
 
   // 自动创建第一个终端
   nextTick(() => {
-    createNewTerminal()
+    if (terminals.value.length === 0) {
+      createNewTerminal()
+    }
   })
 })
 
@@ -352,6 +509,12 @@ onUnmounted(() => {
   if (resizeObserver) {
     resizeObserver.disconnect()
   }
+  // Clean up all WebSocket connections
+  for (const [id, termWs] of wsConnections) {
+    termWs.closeTerminal()
+    termWs.disconnect()
+  }
+  wsConnections.clear()
 })
 
 watch(() => props.isDark, isDark => {

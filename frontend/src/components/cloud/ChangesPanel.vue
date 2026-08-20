@@ -73,6 +73,7 @@
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { projectApi } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
+import { normalizeWorkspacePath } from '@/utils/pathUtils'
 
 const props = defineProps({
   changes: { type: Array, default: () => [] },
@@ -90,11 +91,12 @@ const backendChanges = ref([])
 const allChanges = computed(() => {
   const merged = [...backendChanges.value]
   for (const c of props.changes) {
-    if (!merged.find(m => (m.relativePath || m.file) === c.file)) {
+    const normFile = normalizeWorkspacePath(c.file || c.relativePath)
+    if (!merged.find(m => normalizeWorkspacePath(m.relativePath || m.file) === normFile)) {
       merged.push({
         changeId: null,
-        relativePath: c.file,
-        file: c.file,
+        relativePath: normFile,
+        file: normFile,
         changeType: c.status || 'modify',
         diff: c.patch,
         beforeContent: '',
@@ -140,8 +142,9 @@ function toggleFile(change, i) {
 
 function shortenPath(p) {
   if (!p) return ''
-  const parts = p.replace(/\\/g, '/').split('/')
-  if (parts.length <= 2) return p
+  const norm = normalizeWorkspacePath(p)
+  const parts = norm.split('/')
+  if (parts.length <= 2) return norm
   return '...' + '/' + parts.slice(-2).join('/')
 }
 

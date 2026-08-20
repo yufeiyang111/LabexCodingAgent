@@ -4,7 +4,14 @@
     <div class="tc-header" @click="expanded = !expanded">
       <div class="tc-header-left">
         <!-- 专用语义化图标 -->
-        <span v-if="isSearchTool" class="tc-type-icon search" title="搜索工具">
+        <!-- 专用语义化图标 (全量纯净 SVG 图标，绝不使用 Emoji) -->
+        <span v-if="isTaskTool" class="tc-type-icon subagent" title="子代理">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </span>
+        <span v-else-if="isStartPreviewTool" class="tc-type-icon preview" title="Web 预览服务">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </span>
+        <span v-else-if="isSearchTool" class="tc-type-icon search" title="搜索工具">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         </span>
         <span v-else-if="isEditTool" class="tc-type-icon symbol" title="代码编辑">&lt;&gt;</span>
@@ -12,13 +19,22 @@
         <span v-else-if="isReadTool" class="tc-type-icon read" title="文件读取">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         </span>
-        <span v-else class="tc-type-icon default">⚡</span>
+        <span v-else class="tc-type-icon default">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </span>
 
         <!-- 语义化标题结构 -->
         <div class="tc-title-tokens">
-          <strong class="tc-tool-name" :class="{ 'is-running': call.status === 'running' }">{{ call.name || 'tool' }}:</strong>
-          <span class="tc-tool-arg-main">{{ toolMainArg }}</span>
-          <span v-if="toolSubInfo" class="tc-tool-sub-info">({{ toolSubInfo }})</span>
+          <template v-if="isTaskTool && subagentData">
+            <strong class="tc-tool-name is-subagent" :class="{ 'is-running': call.status === 'running' }">{{ subagentData.name }}:</strong>
+            <span class="tc-subagent-type-pill">{{ subagentData.subagentType }}</span>
+            <span class="tc-tool-arg-main">{{ subagentData.description }}</span>
+          </template>
+          <template v-else>
+            <strong class="tc-tool-name" :class="{ 'is-running': call.status === 'running' }">{{ call.name || 'tool' }}:</strong>
+            <span class="tc-tool-arg-main">{{ toolMainArg }}</span>
+            <span v-if="toolSubInfo" class="tc-tool-sub-info">({{ toolSubInfo }})</span>
+          </template>
         </div>
       </div>
 
@@ -36,6 +52,83 @@
     <!-- 展开详情 (流畅过渡折叠) -->
     <Transition name="tc-slide">
       <div v-if="expanded" class="tc-body">
+        <!-- 专有：子代理任务专属可视化面板 -->
+        <div v-if="isTaskTool && subagentData" class="tc-subagent-card-body">
+          <!-- 任务诉求 -->
+          <div class="tc-subagent-section">
+            <div class="tc-subagent-section-title">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+              <span>探索目标</span>
+            </div>
+            <div class="tc-subagent-prompt-box">{{ subagentData.prompt || subagentData.description }}</div>
+          </div>
+
+          <!-- 正在运行中动画 -->
+          <div v-if="call.status === 'running'" class="tc-subagent-running-pulse">
+            <svg class="badge-icon-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+            <span>子代理正在独立调研代码库与依赖，请稍候...</span>
+          </div>
+
+          <!-- 结构化结论 -->
+          <div v-if="call.status === 'completed' || call.result" class="tc-subagent-results">
+            <!-- 调研发现 -->
+            <div v-if="subagentData.findings" class="tc-subagent-section">
+              <div class="tc-subagent-section-title">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <span>调研发现 (Findings)</span>
+              </div>
+              <div class="tc-subagent-markdown-box" v-html="renderSubagentMarkdown(subagentData.findings)"></div>
+            </div>
+
+            <!-- 关联文件 (支持一键打开) -->
+            <div v-if="subagentData.relevantFiles.length > 0" class="tc-subagent-section">
+              <div class="tc-subagent-section-title">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <span>关联文件 (点击在编辑器中打开)</span>
+              </div>
+              <div class="tc-subagent-files-grid">
+                <button
+                  v-for="(fpath, fIdx) in subagentData.relevantFiles"
+                  :key="fIdx"
+                  type="button"
+                  class="tc-subagent-file-chip"
+                  @click.stop="emitOpenFile(fpath)"
+                  :title="'打开 ' + fpath"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                  <span class="tc-subagent-file-name">{{ fpath }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 后续建议 -->
+            <div v-if="subagentData.nextSteps" class="tc-subagent-section">
+              <div class="tc-subagent-section-title">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                <span>后续建议 (Suggested Next Steps)</span>
+              </div>
+              <div class="tc-subagent-markdown-box" v-html="renderSubagentMarkdown(subagentData.nextSteps)"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 专有：Web 实时预览启动快捷动作 -->
+        <div v-if="isStartPreviewTool && previewUrlFromOutput" class="tc-preview-action-box">
+          <div class="tc-preview-meta">
+            <span class="tc-preview-dot"></span>
+            <span class="tc-preview-url-text">{{ previewUrlFromOutput }}</span>
+          </div>
+          <div class="tc-preview-btns">
+            <button type="button" class="tc-btn-open-preview" @click.stop="emitOpenPreview(previewUrlFromOutput)">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              <span>在右侧视窗打开预览</span>
+            </button>
+            <a :href="previewUrlFromOutput" target="_blank" class="tc-btn-ext-preview" @click.stop title="在新标签页打开">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </a>
+          </div>
+        </div>
+
         <!-- Edit File Special Diff View -->
         <div v-if="isEditTool && editDiffLines.length > 0" class="tc-edit-diff-box">
           <div
@@ -50,8 +143,8 @@
           </div>
         </div>
 
-        <!-- Args Section -->
-        <div v-if="call.args && (!isEditTool || editDiffLines.length === 0)" class="tc-section">
+        <!-- Args Section (非 Subagent 工具展示普通参数) -->
+        <div v-if="call.args && (!isEditTool || editDiffLines.length === 0) && !isTaskTool" class="tc-section">
           <div class="tc-section-header">
             <span class="tc-section-label">调用参数</span>
           </div>
@@ -106,8 +199,8 @@
           完整结果已保留；模型上下文使用 {{ call.projection.modelProjectionChars }} / {{ call.projection.resultChars }} 字符的受限投影。
         </div>
 
-        <!-- Result Section -->
-        <div v-if="call.result && (!isEditTool || editDiffLines.length === 0)" class="tc-section">
+        <!-- Result Section (非 Subagent 工具展示普通结果) -->
+        <div v-if="call.result && (!isEditTool || editDiffLines.length === 0) && !isTaskTool" class="tc-section">
           <div class="tc-section-header">
             <span class="tc-section-label">执行输出</span>
             <button
@@ -226,7 +319,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['permission', 'command-approval', 'question'])
+const emit = defineEmits(['permission', 'command-approval', 'question', 'open-file', 'open-preview'])
 
 const expanded = ref(false)
 const answerDraft = ref('')
@@ -236,6 +329,8 @@ const isEditTool = computed(() => ['edit_file', 'write_file', 'apply_patch'].inc
 const isShellTool = computed(() => ['shell', 'bash', 'run_command', 'execute_code', 'run_tests'].includes(props.call.name))
 const isReadTool = computed(() => ['read_file', 'retrieve_context'].includes(props.call.name))
 const isSearchTool = computed(() => ['grep_search', 'list_files', 'glob', 'grep', 'search_code', 'lsp_symbols'].includes(props.call.name))
+const isTaskTool = computed(() => ['task', 'subagent'].includes(props.call.name))
+const isStartPreviewTool = computed(() => ['start_preview'].includes(props.call.name))
 
 const isPermissionAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.permissionRequest)
 const isNetworkAsk = computed(() => props.call.status === 'waiting_approval' && !!props.call.networkRequest)
@@ -254,6 +349,109 @@ const argsObj = computed(() => {
   }
   return props.call.args || {}
 })
+
+// 子代理数据结构化解析
+const subagentData = computed(() => {
+  if (!isTaskTool.value) return null
+  const args = argsObj.value
+  const name = args.name || args.agent_name || args.role || ''
+  const subagentType = args.subagent_type || args.type || 'general'
+  const prompt = args.prompt || args.task || args.question || args.description || ''
+  const description = args.description || name || prompt || ''
+
+  let summary = description
+  let findings = ''
+  const relevantFiles = []
+  let nextSteps = ''
+  const rawResult = props.call.result || ''
+
+  if (rawResult && typeof rawResult === 'string') {
+    const summaryMatch = rawResult.match(/<summary>([\s\S]*?)<\/summary>/i)
+    if (summaryMatch) summary = summaryMatch[1].trim()
+
+    const nameMatch = rawResult.match(/<name>([\s\S]*?)<\/name>/i)
+    const effectiveName = name || (nameMatch ? nameMatch[1].trim() : '')
+
+    let body = rawResult
+    const taskResultMatch = rawResult.match(/<task_result>([\s\S]*?)<\/task_result>/i)
+    if (taskResultMatch) body = taskResultMatch[1].trim()
+
+    const findingsMatch = body.match(/##\s*(?:Findings|调研发现)([\s\S]*?)(?=##|$)/i)
+    if (findingsMatch) findings = findingsMatch[1].trim()
+
+    const filesMatch = body.match(/##\s*(?:Relevant Files|关联文件)([\s\S]*?)(?=##|$)/i)
+    if (filesMatch) {
+      const filesText = filesMatch[1].trim()
+      const lines = filesText.split('\n')
+      for (const line of lines) {
+        const cleaned = line.replace(/^[-*•\d.)\s]+/, '').trim().replace(/[`]/g, '')
+        if (cleaned && !cleaned.startsWith('#') && (cleaned.includes('/') || cleaned.includes('.'))) {
+          relevantFiles.push(cleaned)
+        }
+      }
+    }
+
+    const nextStepsMatch = body.match(/##\s*(?:Suggested Next Steps|后续建议)([\s\S]*?)(?=##|$)/i)
+    if (nextStepsMatch) nextSteps = nextStepsMatch[1].trim()
+
+    if (!findings && !relevantFiles.length && !nextSteps) {
+      findings = body
+    }
+
+    return {
+      name: effectiveName || description || '代码调研子代理',
+      subagentType,
+      prompt,
+      description: summary,
+      findings,
+      relevantFiles,
+      nextSteps,
+      isBackground: Boolean(args.background)
+    }
+  }
+
+  return {
+    name: name || description || '代码调研子代理',
+    subagentType,
+    prompt,
+    description,
+    findings: '',
+    relevantFiles: [],
+    nextSteps: '',
+    isBackground: Boolean(args.background)
+  }
+})
+
+// Web 实时预览 URL 提取
+const previewUrlFromOutput = computed(() => {
+  if (!isStartPreviewTool.value || !props.call.result) return ''
+  const text = String(props.call.result)
+  const match = text.match(/preview_url=(https?:\/\/[^\s\n]+)/i)
+  if (match) return match[1].trim()
+  const directMatch = text.match(/(https?:\/\/(?:localhost|127\.0\.0\.1|[\w.-]+):\d+[^\s\n]*)/i)
+  if (directMatch) return directMatch[1].trim()
+  return ''
+})
+
+function emitOpenFile(path) {
+  if (path) emit('open-file', path)
+}
+
+function emitOpenPreview(url) {
+  if (url) emit('open-preview', url)
+}
+
+function renderSubagentMarkdown(text) {
+  if (!text) return ''
+  const escaped = String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/`([^`]+)`/g, '<code class="tc-subagent-inline-code">$1</code>')
+    .replace(/\n\n+/g, '</p><p>')
+    .replace(/\n/g, '<br/>')
+  return '<p>' + escaped + '</p>'
+}
 
 const editStats = computed(() => {
   if (!isEditTool.value) return { added: 0, deleted: 0 }
@@ -274,6 +472,9 @@ const editStats = computed(() => {
 
 // 主参数提取 (图一精炼显示)
 const toolMainArg = computed(() => {
+  if (isTaskTool.value && subagentData.value) {
+    return subagentData.value.name
+  }
   if (isSearchTool.value) {
     const p = argsObj.value.pattern || argsObj.value.query || argsObj.value.path || ''
     return p ? `"${p}"` : ''
@@ -372,7 +573,7 @@ function escapeHtml(str) {
 }
 
 const formattedCodeLines = computed(() => {
-  if (!props.call.result || typeof props.call.result !== 'string') return []
+  if (!expanded.value || !props.call.result || typeof props.call.result !== 'string') return []
   const text = truncate(props.call.result, 3000)
   const lines = text.split('\n')
   const lang = detectedCodeLang.value
@@ -438,6 +639,7 @@ function copyOutput(text) {
 
 function emitPermission(action) {
   emit('permission', {
+    call: props.call,
     toolCallId: props.call.toolCallId,
     action,
     permissionRequest: props.call.permissionRequest,
@@ -448,6 +650,7 @@ function emitPermission(action) {
 function emitCommandApproval(action) {
   commandSubmitting.value = true
   emit('command-approval', {
+    call: props.call,
     toolCallId: props.call.toolCallId,
     action,
     commandApproval: props.call.commandApproval
@@ -458,6 +661,7 @@ function emitCommandApproval(action) {
 function emitQuestion(action) {
   if (!questionRequestReady.value) return
   emit('question', {
+    call: props.call,
     toolCallId: props.call.toolCallId,
     requestId: questionRequest.value.requestId || questionRequest.value.interactionId,
     action,
@@ -477,17 +681,20 @@ function setQuestionAnswer(option) {
   border-radius: 8px;
   margin: 6px 0;
   overflow: hidden;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
 }
 
 .tc-card:hover {
   border-color: #d4d4d8;
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
 }
 
 .tc-card.is-expanded {
   border-color: #d4d4d8;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05);
 }
 
 /* 头部 (Figure 1) */
@@ -738,8 +945,9 @@ function setQuestionAnswer(option) {
 
 .tc-arg-cmd {
   font-family: 'JetBrains Mono', monospace;
-  background: #18181b;
-  color: #f8fafc;
+  background: #f4f4f5;
+  color: #09090b;
+  border: 1px solid #e4e4e7;
   padding: 3px 8px;
   border-radius: 5px;
   font-size: 11.5px;
@@ -1054,7 +1262,225 @@ function setQuestionAnswer(option) {
 
 .tc-slide-enter-to,
 .tc-slide-leave-from {
-  max-height: 600px;
+  max-height: 1200px;
   opacity: 1;
+}
+
+/* 子代理专用高质感样式 */
+.tc-type-icon.subagent {
+  color: #7c3aed;
+}
+
+.tc-type-icon.preview {
+  color: #0284c7;
+}
+
+.tc-tool-name.is-subagent {
+  color: #6d28d9;
+}
+
+.tc-subagent-type-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #f5f3ff;
+  color: #7c3aed;
+  border: 1px solid #ddd6fe;
+  flex-shrink: 0;
+}
+
+.tc-subagent-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.tc-subagent-section {
+  background: #fafafa;
+  border: 1px solid #f4f4f5;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.tc-subagent-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #52525b;
+  margin-bottom: 6px;
+}
+
+.tc-subagent-section-title svg {
+  color: #7c3aed;
+  flex-shrink: 0;
+}
+
+.tc-subagent-prompt-box {
+  font-size: 12px;
+  color: #27272a;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.tc-subagent-running-pulse {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  font-size: 12px;
+}
+
+.tc-subagent-markdown-box {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #3f3f46;
+}
+
+.tc-subagent-markdown-box p {
+  margin: 0 0 6px;
+}
+
+.tc-subagent-markdown-box p:last-child {
+  margin-bottom: 0;
+}
+
+:deep(.tc-subagent-inline-code) {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 1px 4px;
+  background: #f4f4f5;
+  border: 1px solid #e4e4e7;
+  border-radius: 3px;
+  color: #09090b;
+}
+
+.tc-subagent-files-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tc-subagent-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+  color: #09090b;
+  font-size: 11.5px;
+  font-family: 'JetBrains Mono', monospace;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tc-subagent-file-chip:hover {
+  background: #f4f4f5;
+  border-color: #7c3aed;
+  color: #7c3aed;
+}
+
+.tc-subagent-file-chip svg {
+  color: #71717a;
+}
+
+.tc-subagent-file-chip:hover svg {
+  color: #7c3aed;
+}
+
+/* 实时预览快捷操作条 */
+.tc-preview-action-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  margin-bottom: 8px;
+}
+
+.tc-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.tc-preview-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+  flex-shrink: 0;
+}
+
+.tc-preview-url-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+  color: #0369a1;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tc-preview-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.tc-btn-open-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 4px;
+  background: #0284c7;
+  border: 1px solid #0369a1;
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tc-btn-open-preview:hover {
+  background: #0369a1;
+}
+
+.tc-btn-ext-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid #bae6fd;
+  color: #0369a1;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.tc-btn-ext-preview:hover {
+  background: #e0f2fe;
 }
 </style>

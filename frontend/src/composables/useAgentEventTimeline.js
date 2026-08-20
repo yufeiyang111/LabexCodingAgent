@@ -259,6 +259,7 @@ export function useAgentEventTimeline(options) {
       case 'PLAN_UPDATE':
         assistantMsg.plan = data.summary || data.plan || null
         assistantMsg.planJson = data.planJson || null
+        scheduleAgentRender()
         break
       case 'COMPLETION_READY':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
@@ -326,6 +327,30 @@ export function useAgentEventTimeline(options) {
       case 'RUN_MODEL_RETRY_STARTED':
         assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
         assistantMsg.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'recovering'
+        assistantMsg.isStreaming = true
+        agentLoading.value = true
+        scheduleAgentRender()
+        break
+      case 'LOOP_GUARD_STOPPED':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.taskStatus || data.state) || 'waiting_recovery'
+        assistantMsg.loopGuardStop = {
+          reasonCode: data.reasonCode || 'loop_guard',
+          recoverable: data.recoverable === true,
+          resumeAction: data.resumeAction || '',
+          message: data.summary || data.message || ''
+        }
+        assistantMsg.content = data.summary || data.message || assistantMsg.content || '循环保护已停止当前任务，可从当前进展恢复。'
+        assistantMsg.isStreaming = false
+        stopMessageTimer(assistantMsg)
+        agentLoading.value = false
+        scheduleAgentRender()
+        break
+      case 'RUN_LOOP_GUARD_RESUME':
+        assistantMsg.taskId = data.taskId || assistantMsg.taskId || null
+        assistantMsg.runState = normalizeAgentRunState(data.taskStatus || data.state) || 'queued'
+        assistantMsg.loopGuardStop = null
+        assistantMsg.error = null
         assistantMsg.isStreaming = true
         agentLoading.value = true
         scheduleAgentRender()

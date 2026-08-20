@@ -31,5 +31,104 @@ const remediation = computed(() => Array.isArray(props.blocker?.remediation) ? p
 const format = value => Number.isFinite(Number(value)) ? `${Number(value).toLocaleString('zh-CN')} tokens` : '—'
 </script>
 <style scoped>
-.context-limit-card { margin:4px 0 12px;padding:15px;border:1px solid #e18a52;border-radius:12px;background:linear-gradient(135deg,#3b2b22,#2a2524);color:#f7ede7;box-shadow:0 12px 28px #0005}.context-limit-heading{display:flex;gap:11px;align-items:flex-start}.context-limit-heading strong{display:block;font-size:15px}.context-limit-heading p{margin:5px 0 0;color:#e8c7b4;line-height:1.55}.context-limit-icon{flex:0 0 25px;height:25px;display:grid;place-items:center;border-radius:50%;background:#e47b45;color:#fff;font-weight:800}.context-limit-budget{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:13px 0 0}.context-limit-budget div{padding:9px 10px;border-radius:8px;background:#ffffff0b}.context-limit-budget dt{color:#bca99e;font-size:11px}.context-limit-budget dd{margin:4px 0 0;font-weight:700;font-variant-numeric:tabular-nums}.context-limit-remediation{margin-top:12px;color:#dcc8bd;font-size:12px}.context-limit-remediation ul{margin:6px 0 0;padding-left:19px;line-height:1.7}button{margin-top:13px;border:1px solid #f0a476;border-radius:8px;background:#d96d38;color:#fff;padding:8px 13px;cursor:pointer}button:disabled{opacity:.6;cursor:wait}@media(max-width:560px){.context-limit-budget{grid-template-columns:1fr}}
+.context-limit-card {
+  margin: 4px 0 12px;
+  padding: 15px;
+  border: 1px solid #fdba74;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.context-limit-card:hover {
+  border-color: #fb923c;
+  box-shadow: 0 4px 16px -2px rgba(249, 115, 22, 0.12), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
+}
+.context-limit-heading {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+}
+.context-limit-heading strong {
+  display: block;
+  font-size: 14px;
+  color: #9a3412;
+}
+.context-limit-heading p {
+  margin: 4px 0 0;
+  color: #475569;
+  line-height: 1.55;
+  font-size: 12.5px;
+}
+.context-limit-icon {
+  flex: 0 0 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #ea580c;
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+}
+.context-limit-budget {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+.context-limit-budget div {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #ffedd5;
+}
+.context-limit-budget dt {
+  color: #9a3412;
+  font-size: 11px;
+}
+.context-limit-budget dd {
+  margin: 3px 0 0;
+  font-weight: 700;
+  color: #c2410c;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+.context-limit-remediation {
+  margin-top: 12px;
+  color: #475569;
+  font-size: 12px;
+}
+.context-limit-remediation ul {
+  margin: 6px 0 0;
+  padding-left: 19px;
+  line-height: 1.7;
+}
+button {
+  margin-top: 13px;
+  border: 1px solid #ea580c;
+  border-radius: 6px;
+  background: #ea580c;
+  color: #fff;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+button:hover:not(:disabled) {
+  background: #c2410c;
+  border-color: #c2410c;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+@media (max-width: 560px) {
+  .context-limit-budget {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

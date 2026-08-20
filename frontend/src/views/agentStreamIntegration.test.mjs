@@ -7,6 +7,7 @@ const runtimeSource = await readFile(new URL('../composables/useAgentTaskRuntime
 const timelineSource = await readFile(new URL('../composables/useAgentEventTimeline.js', import.meta.url), 'utf8')
 const completionEvidenceSource = await readFile(new URL('../components/cloud/CompletionEvidenceCard.vue', import.meta.url), 'utf8')
 const terminalPanelSource = await readFile(new URL('../components/terminal/TerminalPanel.vue', import.meta.url), 'utf8')
+const usagePanelSource = await readFile(new URL('../components/cloud/UsagePanel.vue', import.meta.url), 'utf8')
 
 test('terminal command completion reloads the file tree without manual refresh', () => {
   assert.match(source, /@command-finished="onTerminalCommandFinished"/)
@@ -75,7 +76,7 @@ test('CloudWorkspace applies the internal-reasoning boundary again at render tim
   assert.match(source, /function getCachedMarkdown\(prefix, rawText\) \{[\s\S]*prefix === 'thinking'[\s\S]*stripInternalReasoningTags\(rawText\)/)
   assert.match(source, /function getCachedMarkdown\(prefix, rawText\) \{[\s\S]*prefix === 'message_assistant'[\s\S]*stripInternalReasoningBlocks\(rawText\)/)
   assert.match(source, /function renderThinkingMarkdown\(text\) \{[\s\S]*getCachedMarkdown\('thinking', text\)/)
-  assert.match(source, /function renderMessageMarkdown\(message\) \{[\s\S]*message\?\.role === 'assistant'[\s\S]*getCachedMarkdown\(isAssistant \? 'message_assistant' : 'message_user', message\?\.content\)/)
+  assert.match(source, /function renderMessageMarkdown\(message\) \{[\s\S]*message\.role === 'assistant'[\s\S]*getCachedMarkdown\(isAssistant \? 'message_assistant' : 'message_user', message\.content\)/)
 })
 
 
@@ -163,7 +164,7 @@ test('CloudWorkspace projects durable cache telemetry instead of treating absent
   assert.match(source, /const selectedCacheTelemetryStats = computed\(\(\) => resolveCacheTelemetryScope\([\s\S]*allTokenStats\.value,[\s\S]*selectedCacheTelemetryModel\.value/)
   assert.match(timelineSource, /case 'TOKEN_USAGE': \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, data\)/)
   assert.match(source, /onTokenUsage: usage => \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, usage\)/)
-  assert.match(source, /class="usage-cache-card"[\s\S]*cacheTelemetryView\.label[\s\S]*cacheTelemetryView\.detail/)
+  assert.match(usagePanelSource, /class="cache-telemetry-card"[\s\S]*cacheView\.label[\s\S]*cacheView\.detail/)
   assert.match(source, /activeAiTab\.value = key[\s\S]*if \(key === 'usage'\) await initUsageCharts\(\)/)
   assert.match(source, /onTokenUsageProjected: invalidateTokenStatsProjection/)
   assert.match(source, /const requestEpoch = tokenUsageProjectionEpoch[\s\S]*requestEpoch === tokenUsageProjectionEpoch/)

@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
@@ -36,6 +36,10 @@ function createDocument() {
     },
   }
 }
+
+test('uses light mode as the default application base', () => {
+  assert.equal(DEFAULT_THEME_PREFERENCES.mode, 'light')
+})
 
 test('normalizes invalid or partial stored preferences to safe defaults', () => {
   const normalized = normalizeThemePreferences({

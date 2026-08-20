@@ -119,6 +119,37 @@ defineEmits([
 </script>
 
 <style scoped>
+.ws-sidebar-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  user-select: none;
+  background: #ffffff;
+}
+
+:global(.ws-dark) .ws-sidebar-panel,
+:global([data-theme="dark"]) .ws-sidebar-panel {
+  background: #18181b;
+}
+
+.ws-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e4e4e7;
+  flex-shrink: 0;
+  min-height: 36px;
+}
+
+:global(.ws-dark) .ws-sidebar-header,
+:global([data-theme="dark"]) .ws-sidebar-header {
+  border-bottom-color: #27272a;
+}
+
 .header-title-group {
   display: flex;
   align-items: center;
@@ -145,10 +176,44 @@ defineEmits([
   color: #09090b;
 }
 
+:global(.ws-dark) .header-title-text,
+:global([data-theme="dark"]) .header-title-text {
+  color: #f4f4f5;
+}
+
 .ws-tree-container {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
+  height: 100%;
+}
+
+.ws-tree-container::-webkit-scrollbar {
+  width: 5px;
+}
+
+.ws-tree-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ws-tree-container::-webkit-scrollbar-thumb {
+  background: #d4d4d8;
+  border-radius: 4px;
+}
+
+.ws-tree-container::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
+}
+
+:global(.ws-dark) .ws-tree-container::-webkit-scrollbar-thumb,
+:global([data-theme="dark"]) .ws-tree-container::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+}
+
+:global(.ws-dark) .ws-tree-container::-webkit-scrollbar-thumb:hover,
+:global([data-theme="dark"]) .ws-tree-container::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
 }
 
 .panel-collapse-enter-active,

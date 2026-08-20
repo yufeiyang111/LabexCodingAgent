@@ -29,32 +29,35 @@
       <span class="ftn-name">{{ node.name }}</span>
     </div>
     <Teleport to="body">
-      <Transition name="ftn-menu">
-        <div v-if="contextMenu.visible" class="ftn-context-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }" @click.stop @click="contextMenu.visible = false">
-          <button class="ftn-menu-item" @click="emit('rename', contextMenu.node.path, contextMenu.node.name)">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            <span>重命名</span>
-          </button>
-          <button class="ftn-menu-item ftn-menu-danger" @click="emit('delete', contextMenu.node.path)">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            <span>删除</span>
-          </button>
-          <div v-if="contextMenu.node.type === 'directory'" class="ftn-menu-divider"></div>
-          <button v-if="contextMenu.node.type === 'directory'" class="ftn-menu-item" @click="emit('newItem', contextMenu.node.path, 'file')">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-            <span>新建文件</span>
-          </button>
-          <button v-if="contextMenu.node.type === 'directory'" class="ftn-menu-item" @click="emit('newItem', contextMenu.node.path, 'directory')">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-            <span>新建文件夹</span>
-          </button>
-        </div>
-      </Transition>
+      <template v-if="contextMenu.visible">
+        <div class="ftn-menu-backdrop" @click.stop="closeContextMenu" @contextmenu.prevent="closeContextMenu"></div>
+        <Transition name="ftn-menu" appear>
+          <div class="ftn-context-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }" @click.stop="closeContextMenu">
+            <button class="ftn-menu-item" @click="emit('rename', contextMenu.node.path, contextMenu.node.name)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              <span>重命名</span>
+            </button>
+            <button class="ftn-menu-item ftn-menu-danger" @click="emit('delete', contextMenu.node.path)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              <span>删除</span>
+            </button>
+            <div v-if="contextMenu.node.type === 'directory'" class="ftn-menu-divider"></div>
+            <button v-if="contextMenu.node.type === 'directory'" class="ftn-menu-item" @click="emit('newItem', contextMenu.node.path, 'file')">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+              <span>新建文件</span>
+            </button>
+            <button v-if="contextMenu.node.type === 'directory'" class="ftn-menu-item" @click="emit('newItem', contextMenu.node.path, 'directory')">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+              <span>新建文件夹</span>
+            </button>
+          </div>
+        </Transition>
+      </template>
     </Teleport>
   </div>
 </template>
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch } from 'vue'
 import FileIcon from '../icons/FileIcon.vue'
 const props = defineProps({ node: { type: Object, required: true }, depth: { type: Number, default: 0 }, selectedPath: { type: String, default: '' }, loadChildren: { type: Function, default: null }, showActions: { type: Boolean, default: false }, refreshKey: { type: [Number, String], default: 0 } })
 const emit = defineEmits(['select', 'newItem', 'rename', 'delete'])
@@ -137,8 +140,6 @@ function openContextMenu(e, node) {
   contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, node }
 }
 function closeContextMenu() { contextMenu.value.visible = false }
-onMounted(() => { document.addEventListener('click', closeContextMenu) })
-onBeforeUnmount(() => { document.removeEventListener('click', closeContextMenu) })
 </script>
 <style scoped>
 .ftn { user-select: none; font-size: 13px; }
@@ -172,6 +173,7 @@ onBeforeUnmount(() => { document.removeEventListener('click', closeContextMenu) 
 .ftn-list-enter-from { opacity: 0; transform: translateX(-8px); }
 .ftn-list-leave-to { opacity: 0; transform: translateX(-4px); }
 .ftn-list-move { transition: transform 0.2s ease; }
+.ftn-menu-backdrop { position: fixed; inset: 0; z-index: 9998; background: transparent; }
 .ftn-context-menu { position: fixed; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); padding: 4px; z-index: 9999; min-width: 160px; }
 .ftn-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: none; background: none; border-radius: 5px; cursor: pointer; font-size: 12px; color: #374151; font-family: inherit; text-align: left; transition: background 0.1s; }
 .ftn-menu-item:hover { background: #f3f4f6; }

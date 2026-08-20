@@ -122,12 +122,13 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi } from '@/api'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
 import UserPanel from '@/components/cloud/UserPanel.vue'
 
+const route = useRoute()
 const router = useRouter()
 const projects = ref([])
 const selectedId = ref(null)
@@ -328,7 +329,7 @@ async function confirmRename() {
 async function exportProject(proj) {
   try {
     const r = await projectApi.exportProject(proj.projectId)
-    const blob = r.data instanceof Blob ? r.data : new Blob([r.data], { type: 'application/zip' })
+    const blob = r instanceof Blob ? r : new Blob([r], { type: 'application/zip' })
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -343,7 +344,17 @@ async function exportProject(proj) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  const boundProvider = String(route.query.oauth_bound || '')
+  const oauthError = String(route.query.oauth_error || '')
+  if (boundProvider) {
+    ElMessage.success(`${boundProvider === 'github' ? 'GitHub' : 'Google'} 绑定成功`)
+  } else if (oauthError) {
+    ElMessage.error('第三方账号绑定未完成，请重试')
+  }
+  if (boundProvider || oauthError) {
+    await router.replace({ path: route.path, query: {} })
+  }
   loadProjects()
 })
 </script>

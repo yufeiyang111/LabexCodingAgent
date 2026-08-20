@@ -64,6 +64,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { splitWorkspacePath } from '@/utils/pathUtils'
 
 const props = defineProps({
   changes: {
@@ -86,34 +87,48 @@ const isCollapsed = ref(false)
 
 const fileList = computed(() => {
   if (!props.changes || props.changes.length === 0) return []
-  return props.changes.map(c => {
-    const rawPath = (c.path || c.filePath || c.filename || 'unknown').replace(/\\/g, '/')
-    const parts = rawPath.split('/')
-    const name = parts.pop() || rawPath
-    const dir = parts.join('/')
-    return {
-      path: rawPath,
-      name,
-      dir: dir ? `/${dir}` : '',
-      status: c.status || 'modified',
-      additions: c.additions || c.addedLines || 0,
-      deletions: c.deletions || c.deletedLines || 0,
-    }
-  })
+  return props.changes
+    .map(c => {
+      const rawPath = (c.relativePath || c.file || c.path || c.filePath || c.filename || c.name || '')
+      if (!rawPath) return null
+      const { name: splitName, dir, path: normPath } = splitWorkspacePath(rawPath)
+      const name = (c.name && c.name !== 'unknown' && !c.name.includes('/') && !c.name.includes('\\')) ? c.name : splitName
+      let adds = c.additions || c.addedLines || 0
+      let dels = c.deletions || c.deletedLines || 0
+      if (!adds && !dels && typeof c.patch === 'string' && c.patch) {
+        for (const line of c.patch.split('\n')) {
+          if (line.startsWith('+') && !line.startsWith('+++')) adds++
+          if (line.startsWith('-') && !line.startsWith('---')) dels++
+        }
+      }
+      return {
+        ...c,
+        path: normPath,
+        relativePath: normPath,
+        file: normPath,
+        rawPath,
+        name,
+        dir,
+        status: c.status || 'modified',
+        additions: adds,
+        deletions: dels,
+      }
+    })
+    .filter(Boolean)
 })
 
 const filesCount = computed(() => {
-  return fileList.value.length > 0 ? fileList.value.length : (props.additions > 0 || props.deletions > 0 ? 1 : 0)
+  return fileList.value.length
 })
 
 const totalAdditions = computed(() => {
-  if (props.additions > 0) return props.additions
-  return fileList.value.reduce((sum, f) => sum + (f.additions || 0), 0)
+  const sumFromFiles = fileList.value.reduce((sum, f) => sum + (f.additions || 0), 0)
+  return sumFromFiles > 0 ? sumFromFiles : (props.additions || 0)
 })
 
 const totalDeletions = computed(() => {
-  if (props.deletions > 0) return props.deletions
-  return fileList.value.reduce((sum, f) => sum + (f.deletions || 0), 0)
+  const sumFromFiles = fileList.value.reduce((sum, f) => sum + (f.deletions || 0), 0)
+  return sumFromFiles > 0 ? sumFromFiles : (props.deletions || 0)
 })
 
 function toggleCollapse() {
@@ -127,15 +142,16 @@ function toggleCollapse() {
   border: 1px solid #e4e4e7;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
   margin-top: 4px;
 }
 
 .clean-changes-summary-card:hover {
   border-color: #d4d4d8;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
 }
 
 .summary-card-header {

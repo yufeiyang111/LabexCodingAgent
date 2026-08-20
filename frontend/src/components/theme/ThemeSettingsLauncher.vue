@@ -1,6 +1,6 @@
-﻿<template>
+<template>
   <button
-    v-if="ready && route.name !== 'CloudWorkspace'"
+    v-if="ready && route.name !== 'CloudWorkspace' && route.name !== 'Login'"
     type="button"
     class="theme-settings-launcher"
     :class="{ 'theme-settings-launcher--dragging': isDragging }"
@@ -47,6 +47,9 @@ function startDrag(event) {
   dragStart = { x: event.clientX, y: event.clientY, position: { ...position.value } }
   didDrag = false
   isDragging.value = true
+  window.addEventListener('pointermove', handlePointerMove)
+  window.addEventListener('pointerup', handlePointerUp)
+  window.addEventListener('pointercancel', handlePointerUp)
 }
 
 function handlePointerMove(event) {
@@ -64,6 +67,9 @@ function handlePointerUp(event) {
   activePointerId = null
   dragStart = null
   isDragging.value = false
+  window.removeEventListener('pointermove', handlePointerMove)
+  window.removeEventListener('pointerup', handlePointerUp)
+  window.removeEventListener('pointercancel', handlePointerUp)
 }
 
 function handleResize() {
@@ -81,14 +87,13 @@ function openSettings() {
 onMounted(() => {
   position.value = loadLauncherPosition(window.localStorage, viewportBounds()) || defaultLauncherPosition(viewportBounds())
   ready.value = true
-  window.addEventListener('pointermove', handlePointerMove)
-  window.addEventListener('pointerup', handlePointerUp)
   window.addEventListener('resize', handleResize)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('pointermove', handlePointerMove)
   window.removeEventListener('pointerup', handlePointerUp)
+  window.removeEventListener('pointercancel', handlePointerUp)
   window.removeEventListener('resize', handleResize)
 })
 </script>

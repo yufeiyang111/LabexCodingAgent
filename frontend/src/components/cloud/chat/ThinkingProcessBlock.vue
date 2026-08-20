@@ -140,22 +140,25 @@ function toggleExpand() {
 
 <style scoped>
 .clean-thinking-card {
-  background: #fafafa;
+  background: #ffffff;
   border: 1px solid #e4e4e7;
-  border-radius: 7px;
-  padding: 7px 11px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
-  transition: all 0.16s ease;
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
 }
 
 .clean-thinking-card:hover {
   border-color: #d4d4d8;
-  background: #f4f4f5;
+  background: #ffffff;
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
 }
 
 .clean-thinking-card.is-streaming {
   border-color: #d4d4d8;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
 .thinking-header-bar {

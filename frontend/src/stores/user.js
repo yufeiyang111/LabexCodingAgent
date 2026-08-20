@@ -20,6 +20,12 @@ export const useUserStore = defineStore('user', () => {
     return response.data
   }
 
+  async function inviteRegister(form) {
+    const response = await authApi.inviteRegister(form)
+    setSession(response.data)
+    return response.data
+  }
+
   async function getUserInfo() {
     const response = await authApi.getUserInfo()
     userInfo.value = response.data
@@ -47,6 +53,7 @@ export const useUserStore = defineStore('user', () => {
     isLoggedIn,
     login,
     register,
+    inviteRegister,
     getUserInfo,
     logout
   }

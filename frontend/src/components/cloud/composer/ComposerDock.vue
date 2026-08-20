@@ -249,6 +249,10 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  commands: {
+    type: Array,
+    default: () => [],
+  },
 })
 
 const emit = defineEmits([
@@ -279,21 +283,46 @@ const showSlashMenu = ref(false)
 const activeCommandIdx = ref(0)
 const slashQuery = ref('')
 
-const presetCommands = [
+const defaultPresetCommands = [
+  { name: 'init', description: '引导式创建或更新 AGENTS.md / LabexAgent.md 项目规范' },
+  { name: 'review', description: '审查本次工作区生成的所有文件改动差异' },
   { name: 'goal', description: '设定长时自主目标，不达成目标不停止执行' },
   { name: 'plan', description: '生成详细的技术实施计划与任务分解' },
-  { name: 'browser', description: '调用浏览器执行自动化网络搜索与交互' },
-  { name: 'review', description: '审查本次工作区生成的所有文件改动差异' },
   { name: 'test', description: '执行项目测试套件并报告结果与修复建议' },
-  { name: 'diff', description: '查看当前未提交的所有代码变更' },
+  { name: 'lint', description: '运行代码检查工具排查语法与风格问题' },
+  { name: 'format', description: '执行代码自动格式化' },
+  { name: 'fix', description: '分析并修复指定的代码缺陷或错误' },
+  { name: 'explain', description: '解释指定代码或模块的实现原理' },
+  { name: 'refactor', description: '在保持功能不变的前提下重构代码架构' },
+  { name: 'browser', description: '调用浏览器执行自动化网络搜索与交互' },
+  { name: 'diff', description: '打开差异面板查看当前所有未提交代码变更' },
   { name: 'compact', description: '立即压缩当前上下文历史以释放 Token 窗口' },
   { name: 'clear', description: '清空当前会话并开启全新对话' },
+  { name: 'models', description: '打开模型配置面板切换当前大模型' },
+  { name: 'mcps', description: '管理已接入的 MCP 服务器与扩展能力' },
+  { name: 'skills', description: '打开技能选择器使用自定义项目技能' },
 ]
 
+const effectiveCommands = computed(() => {
+  if (Array.isArray(props.commands) && props.commands.length > 0) {
+    // 优先使用后端注册表动态提供的命令，同时保留前端特有扩展
+    const names = new Set(props.commands.map(c => c.name))
+    const merged = [...props.commands]
+    for (const preset of defaultPresetCommands) {
+      if (!names.has(preset.name)) {
+        merged.push(preset)
+      }
+    }
+    return merged
+  }
+  return defaultPresetCommands
+})
+
 const filteredCommands = computed(() => {
-  if (!slashQuery.value) return presetCommands
+  const list = effectiveCommands.value
+  if (!slashQuery.value) return list
   const q = slashQuery.value.toLowerCase().replace(/^\//, '')
-  return presetCommands.filter(c => c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q))
+  return list.filter(c => c.name.toLowerCase().includes(q) || (c.description && c.description.toLowerCase().includes(q)))
 })
 
 const computedPlaceholder = computed(() => {
@@ -310,8 +339,10 @@ const computedPlaceholder = computed(() => {
 function onInput(e) {
   const val = e.target.value
   emit('update:modelValue', val)
-  if (val.startsWith('/')) {
-    slashQuery.value = val
+  // 仅在开头为 / 且尚未输入空格参数（纯命令前缀阶段）时显示自动补全菜单
+  const slashMatch = val.match(/^\/([a-zA-Z0-9_-]*)$/)
+  if (slashMatch) {
+    slashQuery.value = slashMatch[1]
     showSlashMenu.value = true
     activeCommandIdx.value = 0
   } else {
@@ -331,6 +362,7 @@ function toggleSlashMenu() {
 function selectCommand(cmd) {
   emit('update:modelValue', '/' + cmd.name + ' ')
   showSlashMenu.value = false
+  slashQuery.value = ''
   nextTick(() => textareaRef.value?.focus())
 }
 
@@ -350,7 +382,8 @@ function onKeydown(e) {
       }
       return
     }
-    if (e.key === 'Enter' || e.key === 'Tab') {
+    if (e.key === 'Tab') {
+      // Tab 键补全指令
       if (filteredCommands.value[activeCommandIdx.value]) {
         e.preventDefault()
         selectCommand(filteredCommands.value[activeCommandIdx.value])
@@ -366,6 +399,7 @@ function onKeydown(e) {
 
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
+    showSlashMenu.value = false
     onEnterSend()
   } else if (e.key === 'Escape') {
     emit('escape')
@@ -379,6 +413,7 @@ function onEnterSend() {
 }
 
 function onSendClick() {
+  showSlashMenu.value = false
   if (!props.loading && (props.modelValue.trim() || props.pendingImages?.length)) {
     emit('send')
   }

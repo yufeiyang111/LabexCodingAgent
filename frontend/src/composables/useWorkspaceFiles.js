@@ -130,8 +130,9 @@ export function useWorkspaceFiles(options) {
     queueMicrotask(() => { suppressDirtyTracking = false })
   }
 
-  async function openFile(path) {
-    if (!projectId.value) return false
+  async function openFile(rawPath, options = {}) {
+    if (!projectId.value || !rawPath) return false
+    const path = String(rawPath).replace(/^(\.\/|\/)/, '').replace(/\\/g, '/')
     const existingIndex = openFiles.value.findIndex(file => file.path === path)
     if (existingIndex >= 0) {
       openGeneration++
@@ -142,7 +143,7 @@ export function useWorkspaceFiles(options) {
     const generation = ++openGeneration
     let file
     try {
-      const response = await api.readFile(projectId.value, path)
+      const response = await api.readFile(projectId.value, path, options)
       file = response.data || {}
     } catch {
       return false

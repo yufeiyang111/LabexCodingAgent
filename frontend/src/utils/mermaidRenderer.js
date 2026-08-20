@@ -100,3 +100,34 @@ export async function syncMermaidTheme() {
   const mermaid = await loadMermaid()
   mermaid.initialize({ theme: 'base', suppressErrorRendering: true })
 }
+
+export async function renderMermaidBlocks(root) {
+  const targetRoot = root || (typeof document !== 'undefined' ? document : null)
+  if (!targetRoot || typeof targetRoot.querySelectorAll !== 'function') return
+  const blocks = targetRoot.querySelectorAll('.mermaid-block:not([data-rendered="1"])')
+  for (const block of blocks) {
+    if (block.dataset.rendered === 'pending') continue
+    block.dataset.rendered = 'pending'
+    const code = block.dataset.code || ''
+    const chart = block.querySelector('.mermaid-chart')
+    const status = block.querySelector('.mermaid-status')
+    const result = await renderMermaidDiagram(code)
+    if (!chart) continue
+    if (result.ok) {
+      chart.innerHTML = result.svg
+      const svg = chart.querySelector('svg')
+      if (svg) {
+        svg.style.maxWidth = '100%'
+        svg.style.height = 'auto'
+        svg.dataset.scale = svg.dataset.scale || '1'
+      }
+    } else {
+      if (status) status.remove()
+      const err = document.createElement('div')
+      err.className = 'mermaid-error'
+      err.textContent = result.error
+      chart.append(err)
+    }
+    block.dataset.rendered = '1'
+  }
+}

@@ -91,6 +91,7 @@ export function useConversationState({
   replayHistoryEvent,
   onHistoryAttachments,
   onHistoryLoaded,
+  onClearMessages,
   createSessionId = () => crypto.randomUUID(),
   storage = globalThis.sessionStorage
 }) {
@@ -113,9 +114,16 @@ export function useConversationState({
     return conversation?.title || '对话'
   })
 
+  function clearCurrentMessages() {
+    if (Array.isArray(messages.value) && messages.value.length > 0) {
+      onClearMessages?.(messages.value)
+    }
+    messages.value = []
+  }
+
   function clearConversationState() {
     historyRequestVersion += 1
-    messages.value = []
+    clearCurrentMessages()
     historyTurns.value = []
     hasOlderMessages.value = false
     loadingOlderMessages.value = false
@@ -223,6 +231,10 @@ export function useConversationState({
     applyRunMessageSnapshot(assistant, turn?.runMessages || [])
     applyRunPartSnapshot(assistant, parts, { preserveReasoningTimeline: hasReasoningTimeline })
 
+    if (Array.isArray(turn?.fileChanges) && turn.fileChanges.length > 0) {
+      assistant.fileChanges = turn.fileChanges
+    }
+
     assistant.runState = normalizeAgentRunState(turn?.status) || assistant.runState
     assistant.isStreaming = historyTaskIsStreaming(assistant.runState)
     if (assistant.timing) assistant.timing.isRunning = assistant.isStreaming
@@ -251,7 +263,7 @@ export function useConversationState({
 
   async function loadConversationMessages(conversationId) {
     const requestVersion = ++historyRequestVersion
-    messages.value = []
+    clearCurrentMessages()
     historyTurns.value = []
     hasOlderMessages.value = false
     loadingOlderMessages.value = false

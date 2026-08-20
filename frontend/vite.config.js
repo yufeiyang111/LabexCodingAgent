@@ -33,8 +33,18 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         ws: true
+      },
+      '/ws': {
+        target: apiTarget,
+        changeOrigin: true,
+        secure: false,
+        ws: true
       }
     }
+  },
+  preview: {
+    host: '127.0.0.1',
+    allowedHosts: ['labexagent.123845.xyz']
   },
   css: {
     preprocessorOptions: {
@@ -43,10 +53,17 @@ export default defineConfig({
       }
     }
   },
-  build: {
+build: {
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: false,
-    chunkSizeWarningLimit: 1500
+    chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          echarts: ['echarts']
+        }
+      }
+    }
   }
 })

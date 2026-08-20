@@ -31,8 +31,8 @@ const displayName = computed(() => {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-top: 1px solid #f0f0f0;
-  background: #fafbfc;
+  border-top: 1px solid var(--theme-border);
+  background: var(--theme-surface-muted);
   flex-shrink: 0;
 }
 
@@ -46,7 +46,7 @@ const displayName = computed(() => {
 .user-name {
   font-size: 13px;
   font-weight: 500;
-  color: #374151;
+  color: var(--theme-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

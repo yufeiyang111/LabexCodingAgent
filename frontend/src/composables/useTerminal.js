@@ -2,7 +2,7 @@
  * useTerminal - xterm.js 终端 composable
  * 提供 WebSocket 连接管理、多终端会话、ANSI 色彩支持
  */
-import { ref, onUnmounted } from 'vue'
+import { ref, onUnmounted, markRaw } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -115,55 +115,143 @@ export function createTerminalInstance(options = {}) {
 
 /**
  * WebSocket 终端连接管理
+ * 连接 /ws/terminal 端点，通过 JWT query parameter 鉴权
  */
 export function useTerminalWebSocket(projectId) {
   const ws = ref(null)
   const sessionId = ref(null)
   const connected = ref(false)
   const reconnectAttempts = ref(0)
+  const MAX_RECONNECT_ATTEMPTS = 5
   let reconnectTimer = null
+  let isExplicitlyClosed = false
+  let currentHandlers = {}
+
+  function buildWsUrl() {
+    const token = localStorage.getItem('token') || ''
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.host
+    return `${protocol}//${host}/api/ws/terminal?token=${encodeURIComponent(token)}&projectId=${encodeURIComponent(projectId)}`
+  }
 
   function connect(handlers = {}) {
-    connected.value = false
+    currentHandlers = handlers
+    isExplicitlyClosed = false
     reconnectAttempts.value = 0
-    onDisabled(handlers)
+    doConnect()
   }
 
-  function onDisabled(handlers) {
-    handlers.onError?.(INTERACTIVE_TERMINAL_DISABLED_MESSAGE)
-    handlers.onDisconnect?.()
+  function doConnect() {
+    if (isExplicitlyClosed) return
+    disconnect()
+    isExplicitlyClosed = false
+    const url = buildWsUrl()
+    const socket = new WebSocket(url)
+
+    socket.onopen = () => {
+      connected.value = true
+      reconnectAttempts.value = 0
+      currentHandlers.onConnect?.()
+    }
+
+    socket.onmessage = (event) => {
+      let msg
+      try {
+        msg = JSON.parse(event.data)
+      } catch {
+        return
+      }
+      switch (msg.type) {
+        case 'created':
+          sessionId.value = msg.sessionId
+          currentHandlers.onCreated?.(msg.sessionId)
+          break
+        case 'output':
+          currentHandlers.onOutput?.(msg.data)
+          break
+        case 'exit':
+          currentHandlers.onExit?.(msg.code)
+          break
+        case 'error':
+          if (msg.code === 'TERMINAL_WEBSOCKET_DISABLED') {
+            currentHandlers.onDisabled?.(msg.message)
+          } else {
+            currentHandlers.onError?.(msg.message)
+          }
+          break
+        case 'pong':
+          break
+        default:
+          break
+      }
+    }
+
+    socket.onclose = (event) => {
+      connected.value = false
+      if (isExplicitlyClosed) {
+        return
+      }
+      if (event.code === 1008) {
+        // Policy violation — don't reconnect
+        currentHandlers.onDisabled?.(INTERACTIVE_TERMINAL_DISABLED_MESSAGE)
+        return
+      }
+      currentHandlers.onDisconnect?.()
+    }
+
+    socket.onerror = () => {
+      currentHandlers.onError?.('WebSocket connection error')
+    }
+
+    ws.value = socket
   }
 
-  function send() {
-    // Interactive WebSocket terminal input is disabled by policy.
+  function send(data) {
+    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+      ws.value.send(typeof data === 'string' ? data : JSON.stringify(data))
+    }
   }
 
-  function createTerminal() {
-    // Interactive WebSocket terminal creation is disabled by policy.
+  function createTerminalSession(cwd, cols, rows) {
+    send({ type: 'create', cwd: cwd || '', cols: cols || 120, rows: rows || 30 })
   }
 
-  function sendInput() {
-    // Raw terminal input must not be sent to the disabled endpoint.
+  function sendInput(data) {
+    send({ type: 'input', data })
   }
 
-  function resize() {
-    // Interactive WebSocket terminal resize is disabled by policy.
+  function resize(cols, rows) {
+    const size = normalizeTerminalSize(cols, rows)
+    send({ type: 'resize', cols: size.cols, rows: size.rows })
+  }
+
+  function sendPing() {
+    send({ type: 'ping' })
   }
 
   function closeTerminal() {
-    // No interactive terminal session exists to close.
+    isExplicitlyClosed = true
+    send({ type: 'close' })
   }
 
   function disconnect() {
+    isExplicitlyClosed = true
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
     if (ws.value) {
-      ws.value.close()
+      ws.value.onopen = null
+      ws.value.onmessage = null
+      ws.value.onerror = null
+      ws.value.onclose = null
+      try {
+        ws.value.close()
+      } catch {}
       ws.value = null
     }
     connected.value = false
+    sessionId.value = null
   }
 
   return {
@@ -172,9 +260,10 @@ export function useTerminalWebSocket(projectId) {
     connected,
     connect,
     send,
-    createTerminal,
+    createTerminalSession,
     sendInput,
     resize,
+    sendPing,
     closeTerminal,
     disconnect
   }
@@ -236,13 +325,16 @@ export function useTerminalManager() {
     const runManagedCommand = typeof options.runManagedCommand === 'function'
       ? options.runManagedCommand
       : null
+    const onRawInput = typeof options.onRawInput === 'function'
+      ? options.onRawInput
+      : null
 
     const termData = {
       id,
       name,
-      terminal,
-      fitAddon,
-      searchAddon,
+      terminal: markRaw(terminal),
+      fitAddon: markRaw(fitAddon),
+      searchAddon: markRaw(searchAddon),
       managedSessionId: options.managedSessionId || null,
       managedPath: options.managedPath || '',
       timeoutSeconds: options.timeoutSeconds || 60,
@@ -250,46 +342,55 @@ export function useTerminalManager() {
       element: null,
       inputBuffer: '',
       commandPending: false,
-      disposables: []
+      isPtyMode: !!onRawInput,
+      disposables: markRaw([])
     }
 
-    function writeInput(data) {
-      for (const character of data) {
-        if (character === '\r') {
-          const command = termData.inputBuffer.trim()
-          termData.inputBuffer = ''
-          terminal.write('\r\n')
-          if (!command || termData.commandPending) continue
-          if (!runManagedCommand || !termData.managedSessionId) {
-            terminal.write('[Managed terminal session is unavailable]\r\n')
+    if (onRawInput) {
+      // PTY mode: forward raw keystrokes directly, no local echo or line buffering.
+      // The PTY process handles echo, line editing, tab completion, etc.
+      termData.disposables.push(terminal.onData(onRawInput))
+      termData.disposables.push(terminal.onBinary(onRawInput))
+    } else {
+      // Managed REST mode: local line-buffer with echo, submit on Enter.
+      function writeInput(data) {
+        for (const character of data) {
+          if (character === '\r') {
+            const command = termData.inputBuffer.trim()
+            termData.inputBuffer = ''
+            terminal.write('\r\n')
+            if (!command || termData.commandPending) continue
+            if (!runManagedCommand || !termData.managedSessionId) {
+              terminal.write('[Managed terminal session is unavailable]\r\n')
+              continue
+            }
+            termData.commandPending = true
+            Promise.resolve(runManagedCommand(command, termData))
+              .catch(error => {
+                terminal.write(`\r\n[Error: ${error?.message || 'Command failed'}]\r\n`)
+              })
+              .finally(() => {
+                termData.commandPending = false
+              })
             continue
           }
-          termData.commandPending = true
-          Promise.resolve(runManagedCommand(command, termData))
-            .catch(error => {
-              terminal.write(`\r\n[Error: ${error?.message || 'Command failed'}]\r\n`)
-            })
-            .finally(() => {
-              termData.commandPending = false
-            })
-          continue
-        }
-        if (character === '\u007f') {
-          if (termData.inputBuffer.length > 0) {
-            termData.inputBuffer = termData.inputBuffer.slice(0, -1)
-            terminal.write('\b \b')
+          if (character === '\u007f') {
+            if (termData.inputBuffer.length > 0) {
+              termData.inputBuffer = termData.inputBuffer.slice(0, -1)
+              terminal.write('\b \b')
+            }
+            continue
           }
-          continue
-        }
-        if (character >= ' ') {
-          termData.inputBuffer += character
-          terminal.write(character)
+          if (character >= ' ') {
+            termData.inputBuffer += character
+            terminal.write(character)
+          }
         }
       }
-    }
 
-    termData.disposables.push(terminal.onData(writeInput))
-    termData.disposables.push(terminal.onBinary(writeInput))
+      termData.disposables.push(terminal.onData(writeInput))
+      termData.disposables.push(terminal.onBinary(writeInput))
+    }
 
     if (containerEl) {
       terminal.open(containerEl)

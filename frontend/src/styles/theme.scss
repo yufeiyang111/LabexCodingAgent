@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --theme-bg: #f7f8fb;
   --theme-surface: #ffffff;
   --theme-surface-muted: #f7f8fb;
@@ -90,7 +90,20 @@ html[data-theme] .el-dialog__header, html[data-theme] .el-dialog__footer { backg
 html[data-theme] .el-table, html[data-theme] .el-table tr, html[data-theme] .el-table th.el-table__cell, html[data-theme] .el-table td.el-table__cell { background: var(--theme-surface); color: var(--theme-text); border-color: var(--theme-border); }
 html[data-theme] .el-table th.el-table__cell { background: var(--theme-surface-muted); }
 
-html[data-theme] .cs-shell, html[data-theme] .ws-shell { background: var(--theme-bg); box-shadow: none; }
+html[data-theme] .cs-shell,
+html[data-theme] .ws-shell {
+  --bg-app: var(--theme-surface);
+  --bg-card-subtle: var(--theme-surface-muted);
+  --bg-hover: color-mix(in srgb, var(--theme-surface-muted) 84%, var(--theme-border));
+  --border-light: var(--theme-border);
+  --border-medium: color-mix(in srgb, var(--theme-border) 76%, var(--theme-text-muted));
+  --text-primary: var(--theme-text);
+  --text-secondary: var(--theme-text-secondary);
+  --text-muted: var(--theme-text-muted);
+  --radius-md: calc(var(--theme-radius) * .58);
+  background: var(--theme-bg);
+  box-shadow: none;
+}
 html[data-theme] .cs-left, html[data-theme] .cs-right, html[data-theme] .ws-center, html[data-theme] .ws-editor { background: var(--theme-surface); }
 html[data-theme] .cs-left, html[data-theme] .ws-sidebar { background: var(--theme-surface-muted); border-color: var(--theme-border); }
 html[data-theme] .cs-panel-header, html[data-theme] .ws-topbar, html[data-theme] .ws-sidebar-header, html[data-theme] .ws-editor-tabs { background: var(--theme-surface-muted); border-color: var(--theme-border); }
@@ -104,14 +117,7 @@ html[data-theme] .cs-item.active, html[data-theme] .cs-template-item.active { ba
 html[data-theme] .cs-item.active .cs-item-name, html[data-theme] .cs-template-icon, html[data-theme] .cs-template-item.active .cs-template-name { color: var(--theme-accent); }
 html[data-theme] .cs-modal { box-shadow: var(--theme-shadow); }
 
-html[data-theme] .login-page { background: var(--theme-bg); }
-html[data-theme] .login-visual { background: linear-gradient(155deg, color-mix(in srgb, var(--theme-accent) 17%, var(--theme-surface)), var(--theme-surface-muted)); }
-html[data-theme] .auth-area, html[data-theme] .auth-card { background: var(--theme-surface); color: var(--theme-text); }
-html[data-theme] .auth-card { border-color: var(--theme-border); border-radius: var(--theme-radius); box-shadow: var(--theme-shadow); }
-html[data-theme] .login-copy h1, html[data-theme] .auth-card h2, html[data-theme] .auth-card-heading, html[data-theme] .login-brand { color: var(--theme-text); }
-html[data-theme] .login-copy > p:last-child, html[data-theme] .auth-card-heading > p:last-child, html[data-theme] .login-capabilities li { color: var(--theme-text-secondary); }
-
-html[data-theme] .ws-topbar, html[data-theme] .ws-sidebar, html[data-theme] .ws-center, html[data-theme] .ws-editor, html[data-theme] .ai-panel, html[data-theme] .ws-terminal-dock { border-color: var(--theme-border); }
+html[data-theme] .ws-topbar, html[data-theme] .ws-sidebar, html[data-theme] .ws-center, html[data-theme] .ws-editor, html[data-theme] .ws-terminal-dock { border-color: var(--theme-border); }
 html[data-theme] .ws-btn-outline { background: var(--theme-surface); border-color: var(--theme-border); color: var(--theme-text-secondary); }
 html[data-theme] .ws-btn-outline:hover, html[data-theme] .ws-btn-ghost:hover { background: var(--theme-surface-muted); color: var(--theme-accent); }
 html[data-theme] .ws-tab.active { color: var(--theme-accent); border-color: var(--theme-accent); }

@@ -644,3 +644,24 @@ test('stores completion readiness as state only and does not fabricate a final r
   assert.equal(target.completionReadiness.reasonCode, 'verified_workspace_change')
   assert.deepEqual(target.completionReadiness.changedFiles, ['src/App.vue'])
 })
+test('loop-guard stop remains recoverable and stale final text cannot turn it into user cancellation', () => {
+  const target = message()
+
+  reduceHistoryEvent('LOOP_GUARD_STOPPED', {
+    taskId: 91,
+    taskStatus: 'waiting_recovery',
+    reasonCode: 'non_progress',
+    recoverable: true,
+    resumeAction: 'loop_guard_resume',
+    message: '连续 8 次没有取得进展，已触发循环保护。'
+  }, target)
+  reduceHistoryEvent('FINAL', { content: '模型声称已经完成。' }, target)
+  reduceHistoryEvent('DONE', { taskId: 91, taskStatus: 'waiting_recovery' }, target)
+
+  assert.equal(target.runState, 'waiting_recovery')
+  assert.equal(target.isStreaming, false)
+  assert.equal(target.loopGuardStop.reasonCode, 'non_progress')
+  assert.equal(target.loopGuardStop.recoverable, true)
+  assert.notEqual(target.content, '模型声称已经完成。')
+})
+

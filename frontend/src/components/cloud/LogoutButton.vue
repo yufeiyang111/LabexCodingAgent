@@ -32,9 +32,9 @@ async function handleLogout() {
 <style scoped>
 .logout-btn {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--theme-text-muted);
 }
 .logout-btn:hover {
-  color: #409eff;
+  color: var(--theme-accent);
 }
 </style>

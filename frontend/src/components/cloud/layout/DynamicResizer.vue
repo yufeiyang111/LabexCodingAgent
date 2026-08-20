@@ -8,7 +8,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 
 const props = defineProps({
   direction: {
@@ -66,6 +66,16 @@ function onPointerUp() {
   window.removeEventListener('pointerup', onPointerUp)
   emit('resize-end')
 }
+
+onBeforeUnmount(() => {
+  if (isResizing.value) {
+    window.removeEventListener('pointermove', onPointerMove)
+    window.removeEventListener('pointerup', onPointerUp)
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+    isResizing.value = false
+  }
+})
 </script>
 
 <style scoped>

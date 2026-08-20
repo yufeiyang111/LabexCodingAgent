@@ -40,6 +40,14 @@
         </button>
         <button
           class="layout-toggle-btn"
+          :class="{ active: previewVisible }"
+          @click="emit('toggle-preview')"
+          title="开关 Web 实时预览视窗"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </button>
+        <button
+          class="layout-toggle-btn"
           :class="{ active: aiPanelVisible }"
           @click="emit('toggle-ai-panel')"
           title="开关 AI 助手面板 (Ctrl+Shift+L)"
@@ -108,6 +116,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  previewVisible: {
+    type: Boolean,
+    default: false,
+  },
   aiPanelVisible: {
     type: Boolean,
     default: true,
@@ -118,6 +130,7 @@ const emit = defineEmits([
   'go-back',
   'toggle-explorer',
   'toggle-terminal',
+  'toggle-preview',
   'toggle-ai-panel',
   'open-theme-settings',
   'export-project',
@@ -177,14 +190,14 @@ const fileName = computed(() => {
 }
 
 .topbar-btn.solid-black {
-  background: var(--text-primary, #09090b);
-  border-color: var(--text-primary, #09090b);
+  background: var(--theme-accent, #09090b);
+  border-color: var(--theme-accent, #09090b);
   color: #ffffff;
   font-weight: 600;
 }
 
 .topbar-btn.solid-black:hover {
-  background: #27272a;
+  background: var(--theme-accent-strong, #27272a);
 }
 
 .topbar-btn:disabled {

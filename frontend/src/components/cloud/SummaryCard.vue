@@ -31,7 +31,7 @@
     </div>
     <Transition name="tc-slide">
       <div v-if="open" class="summary-body">
-        <div class="summary-content" v-html="renderedHtml" @click="handleContentClick"></div>
+        <div ref="contentRef" class="summary-content" v-html="renderedHtml" @click="handleContentClick"></div>
         <div v-if="fileList.length > 0" class="summary-files">
           <div class="files-title">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2">
@@ -73,7 +73,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { enhanceFileLinks, FILE_LINK_EXTS } from '@/utils/fileLinks'
 
 const props = defineProps({ content: String })
-defineEmits(['apply-suggestion', 'open-file'])
+const emit = defineEmits(['apply-suggestion', 'open-file'])
 const open = ref(true)
 
 const fileIconSvg = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>'
@@ -162,22 +162,23 @@ function baseMarkdownHtml(text) {
 
 const renderedHtml = computed(() => baseMarkdownHtml(props.content))
 
+const contentRef = ref(null)
+
 // Wrap file paths in <span class="s-file-link">...</span> after the HTML
 // is mounted. v-html doesn't run after hooks on children, so we wire this
 // up via a watch on renderedHtml + nextTick.
 watch(renderedHtml, () => {
   nextTick(() => {
-    const root = document.querySelector('.summary-card .summary-content')
-    if (!root) return
-    enhanceFileLinks(root, { iconHtml: fileIconSvg, linkClass: 's-file-link' })
+    if (contentRef.value) {
+      enhanceFileLinks(contentRef.value, { iconHtml: fileIconSvg, linkClass: 's-file-link' })
+    }
   })
-})
+}, { immediate: true })
 
 function handleContentClick(event) {
   const link = event.target?.closest?.('.s-file-link')
   if (link && link.dataset.path) {
-    // Bubble up via emit; the parent component decides how to open the file.
-    window.dispatchEvent(new CustomEvent('summary-open-file', { detail: link.dataset.path }))
+    emit('open-file', link.dataset.path)
   }
 }
 </script>
@@ -188,8 +189,14 @@ function handleContentClick(event) {
   border: 1px solid #d1fae5;
   border-radius: 12px;
   overflow: hidden;
-  background: linear-gradient(180deg, #f0fdf4 0%, #fff 100%);
-  box-shadow: 0 1px 4px rgba(16, 185, 129, 0.08);
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(16, 185, 129, 0.06);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.summary-card:hover {
+  border-color: #a7f3d0;
+  box-shadow: 0 6px 20px -2px rgba(16, 185, 129, 0.14), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
 }
 .summary-header {
   display: flex;

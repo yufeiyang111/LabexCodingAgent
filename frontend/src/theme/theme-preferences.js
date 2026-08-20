@@ -1,9 +1,9 @@
-﻿import { THEME_SETTING_OPTIONS } from './theme-options.js'
+import { THEME_SETTING_OPTIONS } from './theme-options.js'
 
 export const THEME_STORAGE_KEY = 'labex-theme-preferences.v1'
 
 export const DEFAULT_THEME_PREFERENCES = Object.freeze({
-  mode: 'system',
+  mode: 'light',
   colorPreset: 'default',
   fontFamily: 'auto',
   radius: 'auto',

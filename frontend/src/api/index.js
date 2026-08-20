@@ -1,15 +1,41 @@
 import request from '@/utils/request'
+import axios from 'axios'
 
 export const authApi = {
   login(data) {
-    return request.post('/auth/login', data)
+    return request.post('/auth/login', data, authResponseConfig())
   },
   register(data) {
-    return request.post('/auth/register', data)
+    return request.post('/auth/register', data, authResponseConfig())
+  },
+  inviteRegister(data) {
+    return request.post('/auth/invite-register', data, authResponseConfig())
+  },
+  getAuthConfig(options = {}) {
+    return request.get('/auth/config', { ...authResponseConfig(), silent: Boolean(options?.silent) })
+  },
+  getCaptcha(scene = 'login', options = {}) {
+    return request.get('/auth/captcha', { ...authResponseConfig(), params: { scene }, silent: Boolean(options?.silent) })
+  },
+  getOAuthProviders(options = {}) {
+    return request.get('/auth/oauth/providers', { ...authResponseConfig(), silent: Boolean(options?.silent) })
+  },
+  getOAuthBindings(options = {}) {
+    return request.get('/auth/oauth/bindings', { ...authResponseConfig(), silent: Boolean(options?.silent) })
+  },
+  unbindOAuth(provider, options = {}) {
+    return request.delete('/auth/oauth/' + encodeURIComponent(provider) + '/binding', { ...authResponseConfig(), silent: Boolean(options?.silent) })
+  },
+  startOAuthBinding(provider) {
+    return request.post('/auth/oauth/' + encodeURIComponent(provider) + '/bind/start', {}, authResponseConfig())
   },
   getUserInfo() {
     return request.get('/auth/userinfo')
   }
+}
+
+function authResponseConfig() {
+  return { silent: true, validateStatus: (status) => status >= 200 && status < 600 }
 }
 
 export const projectApi = {
@@ -96,6 +122,9 @@ export const projectApi = {
   agentRetryEnvironment(projectId, taskId) {
     return request.post('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId) + '/retry-environment')
   },
+  agentResumeLoopGuard(projectId, taskId) {
+    return request.post('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId) + '/resume-loop-guard')
+  },
   agentCompletionEvidence(projectId, taskId) {
     return request.get('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId) + '/completion-evidence')
   },
@@ -175,8 +204,11 @@ export const projectApi = {
       params: { path: path || '', offset, limit }
     })
   },
-  readFile(id, path) {
-    return request.get('/student/projects/' + id + '/files', { params: { path } })
+  readFile(id, path, options = {}) {
+    return request.get('/student/projects/' + id + '/files', {
+      params: { path },
+      silent: Boolean(options?.silent)
+    })
   },
   saveFile(id, path, content) {
     return request.put('/student/projects/' + id + '/files', { content }, { params: { path } })
@@ -194,7 +226,7 @@ export const projectApi = {
     return request.delete('/student/projects/' + projectId + '/files/item', { params: { path } })
   },
   exportProject(projectId) {
-    return request.get('/student/projects/' + projectId + '/export', { responseType: 'blob' })
+    return request.get('/student/projects/' + projectId + '/export', { responseType: 'blob', timeout: 0 })
   },
   renameProject(projectId, name) {
     return request.put('/student/projects/' + projectId + '/rename', { name })
@@ -257,3 +289,82 @@ export const agentExtensionApi = {
     return request.delete('/student/agent/extensions/mcp/' + serverId)
   }
 }
+
+export const MONITOR_TOKEN_KEY = 'labex-monitor-token'
+
+const monitorClient = axios.create({
+  baseURL: '/api/ops',
+  timeout: 15000
+})
+
+monitorClient.interceptors.request.use((config) => {
+  const token = localStorage.getItem(MONITOR_TOKEN_KEY)
+  if (token) {
+    config.headers['X-Monitor-Token'] = token
+  }
+  return config
+})
+
+monitorClient.interceptors.response.use(
+  (response) => {
+    const body = response.data
+    if (body?.code === 0) {
+      return body.data
+    }
+    const err = new Error(body?.message || '请求失败')
+    err.code = body?.code
+    err.status = response.status
+    return Promise.reject(err)
+  },
+  (error) => {
+    const status = error.response?.status
+    if (status === 401) {
+      localStorage.removeItem(MONITOR_TOKEN_KEY)
+    }
+    const body = error.response?.data
+    const err = new Error(body?.message || error.message || '网络异常')
+    err.code = body?.code
+    err.status = status
+    return Promise.reject(err)
+  }
+)
+
+export const monitorApi = {
+  getToken() {
+    return localStorage.getItem(MONITOR_TOKEN_KEY)
+  },
+  setToken(token) {
+    localStorage.setItem(MONITOR_TOKEN_KEY, token)
+  },
+  clearToken() {
+    localStorage.removeItem(MONITOR_TOKEN_KEY)
+  },
+  auth(accessCode) {
+    return monitorClient.post('/auth', { accessCode })
+  },
+  logout() {
+    return monitorClient.post('/logout').catch(() => null)
+  },
+  summary() {
+    return monitorClient.get('/summary')
+  },
+  traffic(range) {
+    return monitorClient.get('/traffic', { params: { range } })
+  },
+  topPaths(days = 7, limit = 10) {
+    return monitorClient.get('/top-paths', { params: { days, limit } })
+  },
+  statusDistribution(days = 7) {
+    return monitorClient.get('/status-distribution', { params: { days } })
+  },
+  system() {
+    return monitorClient.get('/system')
+  },
+  recentVisitors(limit = 20) {
+    return monitorClient.get('/recent-visitors', { params: { limit } })
+  },
+  visitors(days = 7, limit = 50) {
+    return monitorClient.get('/visitors', { params: { days, limit } })
+  }
+}
+

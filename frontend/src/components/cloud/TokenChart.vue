@@ -118,7 +118,14 @@ onBeforeUnmount(() => {
   border: 1px solid #e9d5ff;
   border-radius: 8px;
   overflow: hidden;
-  background: #faf5ff;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.token-chart:hover {
+  border-color: #d8b4fe;
+  box-shadow: 0 4px 16px -2px rgba(168, 85, 247, 0.12), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
 }
 .token-header {
   display: flex;

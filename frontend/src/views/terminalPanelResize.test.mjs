@@ -11,8 +11,14 @@ const fileTreeSource = await readFile(new URL('../components/cloud/FileTreeNode.
 
 assert.doesNotMatch(
   workspaceSource,
-  /window\.innerWidth\s*\*\s*0\.4/,
-  'drag resizing must not cap the terminal panel at 40 percent of the viewport'
+  /function startTerminalResize\([\s\S]{0,500}window\.innerWidth/,
+  'terminal drag resizing must bound height by the workspace center, not by the viewport width'
+)
+
+assert.match(
+  workspaceSource,
+  /function startTerminalResize\([\s\S]{0,500}center\.clientHeight/,
+  'terminal drag resizing must bound height by the workspace center height'
 )
 
 assert.doesNotMatch(
@@ -138,10 +144,15 @@ assert.match(
   /projectApi\.terminalRunSession/,
   'the panel must run commands through managed REST terminal sessions'
 )
-assert.doesNotMatch(
+assert.match(
   terminalPanelSource,
   /useTerminalWebSocket/,
-  'the panel must not connect to the disabled interactive WebSocket endpoint'
+  'the panel must prefer the WebSocket PTY terminal endpoint'
+)
+assert.match(
+  terminalPanelSource,
+  /async function createNewTerminal\(\) \{[\s\S]*tryCreatePtyTerminal\(hostId, container\)[\s\S]*if \(ptySuccess\) return[\s\S]*createManagedTerminal\(hostId, container\)/,
+  'the panel must fall back to REST sessions only after a WebSocket PTY failure'
 )
 
 assert.match(

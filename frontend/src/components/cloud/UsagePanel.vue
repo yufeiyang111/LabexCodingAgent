@@ -203,7 +203,11 @@ const cacheTotals = computed(() => {
 })
 
 const cacheView = computed(() => {
-  return resolveCacheTelemetryView(selectedCacheScope.value, props.tokenUsage)
+  const scope = selectedCacheScope.value
+  if (selectedModel.value && !scope) {
+    return resolveCacheTelemetryView({ cacheStatus: 'not_reported', cachedTokens: 0, cacheWriteTokens: 0, promptTokens: 0 })
+  }
+  return resolveCacheTelemetryView(scope, props.tokenUsage)
 })
 
 const hasDaysData = computed(() => {
@@ -228,92 +232,105 @@ function handleResize() {
   sessionChart?.resize()
 }
 
-function initCharts() {
+function initOrUpdatePieChart() {
+  if (!pieRef.value) return
+  if (!pieChart) pieChart = echarts.init(pieRef.value)
+  pieChart.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    series: [{
+      type: 'pie',
+      radius: ['45%', '72%'],
+      center: ['50%', '50%'],
+      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+      label: { show: true, fontSize: 11, color: '#71717a', formatter: '{b}\n{d}%' },
+      data: [
+        { value: computedPrompt.value, name: '输入 (Prompt)', itemStyle: { color: '#3b82f6' } },
+        { value: computedCompletion.value, name: '输出 (Completion)', itemStyle: { color: '#10b981' } }
+      ]
+    }]
+  })
+}
+
+function initOrUpdateTimelineChart() {
+  if (timelineRef.value && hasDaysData.value) {
+    if (!timelineChart) timelineChart = echarts.init(timelineRef.value)
+    const days = Object.keys(props.allTokenStats.byDay).sort()
+    const totals = days.map(d => props.allTokenStats.byDay[d] || 0)
+    timelineChart.setOption({
+      tooltip: { trigger: 'axis' },
+      grid: { left: 45, right: 16, top: 16, bottom: 28 },
+      xAxis: { type: 'category', data: days.map(d => d.substring(5)), axisLabel: { fontSize: 10, color: '#71717a' }, axisLine: { lineStyle: { color: '#e4e4e7' } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#71717a', formatter: v => formatTokens(v) }, splitLine: { lineStyle: { color: '#f4f4f5' } } },
+      series: [{
+        type: 'bar',
+        data: totals,
+        barWidth: '40%',
+        itemStyle: { color: '#09090b', borderRadius: [4, 4, 0, 0] }
+      }]
+    })
+  } else if (timelineChart) {
+    timelineChart.dispose()
+    timelineChart = null
+  }
+}
+
+function initOrUpdateModelChart() {
+  if (modelRef.value && hasModelData.value) {
+    if (!modelChart) modelChart = echarts.init(modelRef.value)
+    const models = Object.entries(props.allTokenStats.byModel).map(([name, val]) => ({ name, value: val }))
+    const colors = ['#09090b', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899']
+    modelChart.setOption({
+      tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+      series: [{
+        type: 'pie',
+        radius: ['35%', '65%'],
+        center: ['50%', '50%'],
+        roseType: 'area',
+        itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
+        label: { fontSize: 10, color: '#71717a' },
+        data: models.map((m, i) => ({ ...m, itemStyle: { color: colors[i % colors.length] } }))
+      }]
+    })
+  } else if (modelChart) {
+    modelChart.dispose()
+    modelChart = null
+  }
+}
+
+function initOrUpdateSessionChart() {
+  if (sessionRef.value && props.sessionHistory?.length > 0) {
+    if (!sessionChart) sessionChart = echarts.init(sessionRef.value)
+    sessionChart.setOption({
+      tooltip: { trigger: 'axis' },
+      grid: { left: 45, right: 16, top: 16, bottom: 28 },
+      xAxis: { type: 'category', data: props.sessionHistory.map((s, i) => s.title ? s.title.substring(0, 6) : `#${i + 1}`), axisLabel: { fontSize: 10, color: '#71717a' }, axisLine: { lineStyle: { color: '#e4e4e7' } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#71717a', formatter: v => formatTokens(v) }, splitLine: { lineStyle: { color: '#f4f4f5' } } },
+      series: [
+        { name: '输入', type: 'bar', stack: 'total', data: props.sessionHistory.map(s => s.promptTokens || 0), itemStyle: { color: '#3b82f6' } },
+        { name: '输出', type: 'bar', stack: 'total', data: props.sessionHistory.map(s => s.completionTokens || 0), itemStyle: { color: '#10b981' } }
+      ]
+    })
+  } else if (sessionChart) {
+    sessionChart.dispose()
+    sessionChart = null
+  }
+}
+
+function updateAllCharts() {
   nextTick(() => {
-    // 1. Pie Chart
-    if (pieRef.value) {
-      if (pieChart) pieChart.dispose()
-      pieChart = echarts.init(pieRef.value)
-      pieChart.setOption({
-        tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-        series: [{
-          type: 'pie',
-          radius: ['45%', '72%'],
-          center: ['50%', '50%'],
-          itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
-          label: { show: true, fontSize: 11, color: '#71717a', formatter: '{b}\n{d}%' },
-          data: [
-            { value: computedPrompt.value, name: '输入 (Prompt)', itemStyle: { color: '#3b82f6' } },
-            { value: computedCompletion.value, name: '输出 (Completion)', itemStyle: { color: '#10b981' } }
-          ]
-        }]
-      })
-    }
-
-    // 2. Timeline Chart
-    if (timelineRef.value && hasDaysData.value) {
-      if (timelineChart) timelineChart.dispose()
-      timelineChart = echarts.init(timelineRef.value)
-      const days = Object.keys(props.allTokenStats.byDay).sort()
-      const totals = days.map(d => props.allTokenStats.byDay[d] || 0)
-      timelineChart.setOption({
-        tooltip: { trigger: 'axis' },
-        grid: { left: 45, right: 16, top: 16, bottom: 28 },
-        xAxis: { type: 'category', data: days.map(d => d.substring(5)), axisLabel: { fontSize: 10, color: '#71717a' }, axisLine: { lineStyle: { color: '#e4e4e7' } } },
-        yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#71717a', formatter: v => formatTokens(v) }, splitLine: { lineStyle: { color: '#f4f4f5' } } },
-        series: [{
-          type: 'bar',
-          data: totals,
-          barWidth: '40%',
-          itemStyle: { color: '#09090b', borderRadius: [4, 4, 0, 0] }
-        }]
-      })
-    }
-
-    // 3. Model Chart
-    if (modelRef.value && hasModelData.value) {
-      if (modelChart) modelChart.dispose()
-      modelChart = echarts.init(modelRef.value)
-      const models = Object.entries(props.allTokenStats.byModel).map(([name, val]) => ({ name, value: val }))
-      const colors = ['#09090b', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899']
-      modelChart.setOption({
-        tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-        series: [{
-          type: 'pie',
-          radius: ['35%', '65%'],
-          center: ['50%', '50%'],
-          roseType: 'area',
-          itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
-          label: { fontSize: 10, color: '#71717a' },
-          data: models.map((m, i) => ({ ...m, itemStyle: { color: colors[i % colors.length] } }))
-        }]
-      })
-    }
-
-    // 4. Session Chart
-    if (sessionRef.value && props.sessionHistory?.length > 0) {
-      if (sessionChart) sessionChart.dispose()
-      sessionChart = echarts.init(sessionRef.value)
-      sessionChart.setOption({
-        tooltip: { trigger: 'axis' },
-        grid: { left: 45, right: 16, top: 16, bottom: 28 },
-        xAxis: { type: 'category', data: props.sessionHistory.map((s, i) => s.title ? s.title.substring(0, 6) : `#${i + 1}`), axisLabel: { fontSize: 10, color: '#71717a' }, axisLine: { lineStyle: { color: '#e4e4e7' } } },
-        yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#71717a', formatter: v => formatTokens(v) }, splitLine: { lineStyle: { color: '#f4f4f5' } } },
-        series: [
-          { name: '输入', type: 'bar', stack: 'total', data: props.sessionHistory.map(s => s.promptTokens || 0), itemStyle: { color: '#3b82f6' } },
-          { name: '输出', type: 'bar', stack: 'total', data: props.sessionHistory.map(s => s.completionTokens || 0), itemStyle: { color: '#10b981' } }
-        ]
-      })
-    }
+    initOrUpdatePieChart()
+    initOrUpdateTimelineChart()
+    initOrUpdateModelChart()
+    initOrUpdateSessionChart()
   })
 }
 
 watch([() => props.allTokenStats, () => props.tokenUsage, () => props.sessionHistory], () => {
-  initCharts()
+  updateAllCharts()
 }, { deep: true })
 
 onMounted(() => {
-  initCharts()
+  updateAllCharts()
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(() => handleResize())
     if (pieRef.value?.parentElement) resizeObserver.observe(pieRef.value.parentElement)
@@ -324,10 +341,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
   resizeObserver?.disconnect()
-  pieChart?.dispose()
-  timelineChart?.dispose()
-  modelChart?.dispose()
-  sessionChart?.dispose()
+  if (pieChart) { pieChart.dispose(); pieChart = null }
+  if (timelineChart) { timelineChart.dispose(); timelineChart = null }
+  if (modelChart) { modelChart.dispose(); modelChart = null }
+  if (sessionChart) { sessionChart.dispose(); sessionChart = null }
 })
 </script>
 

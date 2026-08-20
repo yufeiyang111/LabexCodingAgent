@@ -81,16 +81,27 @@ onBeforeUnmount(clearTimer)
   border: 1px solid #bfdbfe;
   border-radius: 8px;
   color: #1d4ed8;
-  background: #eff6ff;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
   font-size: 11px;
   line-height: 1;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.agent-timer:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 3px 10px -1px rgba(59, 130, 246, 0.15);
+  transform: translateY(-1px);
 }
 .agent-timer.running svg { animation: agent-timer-spin 1.8s linear infinite; }
 .agent-timer-label { color: #64748b; }
 .agent-timer-value { color: #1e3a8a; font-variant-numeric: tabular-nums; }
 .agent-timer-status { color: #3b82f6; }
-.agent-timer:not(.running) { border-color: #dbeafe; color: #64748b; background: #f8fafc; }
+.agent-timer:not(.running) { border-color: #e2e8f0; color: #64748b; background: #ffffff; }
 .agent-timer:not(.running) .agent-timer-value { color: #334155; }
 .agent-timer:not(.running) .agent-timer-status { color: #94a3b8; }
+.agent-timer:not(.running):hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 3px 10px -1px rgba(0, 0, 0, 0.06);
+}
 @keyframes agent-timer-spin { to { transform: rotate(360deg); } }
 </style>

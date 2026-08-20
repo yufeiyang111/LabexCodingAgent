@@ -1,61 +1,275 @@
-﻿<template>
-  <main class="auth-canvas auth-paper-grain min-h-[100dvh] overflow-hidden bg-auth-background px-5 py-6 font-auth-sans text-auth-ink sm:px-8 lg:px-12">
-    <header class="mx-auto flex w-full max-w-[1180px] items-center justify-between py-3">
-      <Logo />
-      <button class="rounded-[10px_12px_9px_11px] border border-[#BDB7A9] bg-[#F6F2E9]/80 px-3 py-1.5 text-xs tracking-[0.08em] text-[#5D675B] transition-[border-color,background-color] duration-200 hover:border-[#899485] hover:bg-[#FBF8F0] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5D675B]" type="button" @click="toggleMode">{{ mode === 'login' ? '创建工作间' : '返回登录' }}</button>
-    </header>
+<template>
+  <!-- 智能编程工作间：理解仓库、规划改动、验证结果 -->
+  <AuthLayout class="auth-canvas auth-layout lg:grid-cols-[minmax(0,1fr)_460px]">
+    <template #brand>
+      <AuthBrandPanel class="auth-narrative" />
+    </template>
 
-    <section class="auth-layout animate-auth-enter mx-auto grid min-h-[calc(100dvh-122px)] w-full max-w-[1180px] items-center gap-16 py-10 lg:grid-cols-[minmax(0,1fr)_460px] lg:gap-24" aria-labelledby="auth-heading">
-      <aside class="auth-narrative relative hidden min-h-[520px] flex-col justify-center border-l border-[#CFC8BA] pl-10 lg:flex">
-        <p class="mb-8 inline-flex w-fit rounded-[10px_13px_11px_12px] border border-[#B7B8AB] px-3 py-1.5 text-[10px] font-semibold tracking-[0.18em] text-[#5D675B]">AI 编程协作</p>
-        <h1 class="max-w-[570px] font-auth-serif text-[clamp(44px,5vw,74px)] font-normal leading-[1.02] tracking-[-0.06em] text-[#34352F]">把复杂的工程，<br />交给一位安静的 Agent。</h1>
-        <p class="mt-7 max-w-[420px] text-[15px] leading-7 text-[#76756D]">从项目上下文到代码改动，让每一步都有依据、记录与可验证的结果。</p>
-
-        <ol class="mt-14 grid max-w-[420px] gap-4 border-t border-[#CFC8BA] pt-6">
-          <li class="flex items-center gap-4"><span class="font-auth-serif text-[#987562]">01</span><span class="text-sm text-[#4C4E47]">理解仓库与上下文</span></li>
-          <li class="flex items-center gap-4"><span class="font-auth-serif text-[#987562]">02</span><span class="text-sm text-[#4C4E47]">规划改动与工具调用</span></li>
-          <li class="flex items-center gap-4"><span class="font-auth-serif text-[#987562]">03</span><span class="text-sm text-[#4C4E47]">验证结果与保留痕迹</span></li>
-        </ol>
-
-        <svg class="pointer-events-none absolute bottom-2 right-6 h-36 w-72 text-[#788273]/40" viewBox="0 0 288 144" fill="none" aria-hidden="true"><path d="M10 118c44-8 53-56 96-53 35 3 27 48 70 39 30-6 50-43 102-72" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><path d="M106 65c-7-17-1-35 14-48" stroke="currentColor" stroke-width="1" stroke-linecap="round" /><path d="M177 103c-1-15 8-29 23-36" stroke="currentColor" stroke-width="1" stroke-linecap="round" /></svg>
-      </aside>
-
-      <article class="auth-card w-full max-w-[460px] justify-self-center rounded-[26px_22px_28px_24px] border border-[#CFC8BA] bg-[#FBF8F0]/92 p-7 sm:p-10" :class="{ 'auth-card--active': isCardActive, 'auth-card--expanded': cardExpanded }" :style="cardStyle" @pointermove="handleCardPointerMove" @pointerenter="isCardActive = true" @pointerleave="handleCardPointerLeave">
-        <div class="flex items-start justify-between gap-6">
-          <div><p class="text-[10px] font-medium tracking-[0.18em] text-[#987562]">智能编程工作间 · 01</p><h2 id="auth-heading" class="mt-3 font-auth-serif text-[34px] font-normal leading-none tracking-[-0.05em] text-[#34352F]">{{ mode === 'login' ? '进入你的工作间' : '创建一处工作间' }}</h2></div>
-          <button class="shrink-0 rounded-[9px_11px_8px_10px] border border-[#BDB7A9] bg-transparent px-2.5 py-1.5 text-xs text-[#5D675B] transition-[border-color,color] duration-200 hover:border-[#788273] hover:text-[#454F43] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5D675B]" type="button" :aria-expanded="cardExpanded" @click.stop="toggleCardExpansion">{{ cardExpanded ? '收起' : '展开' }}</button>
+    <template #form>
+      <div class="auth-form-column">
+        <div class="auth-form-column__topline">
+          <span>LabexAgent / {{ mode === 'login' ? '登录' : (inviteCodeEnabled ? '邀请码注册' : '注册') }}</span>
+          <button type="button" @click="toggleMode">{{ mode === 'login' ? (inviteCodeEnabled ? '使用邀请码' : '创建工作间') : '返回登录' }}</button>
         </div>
-        <p class="mt-5 max-w-[360px] text-[15px] leading-7 text-[#76756D]">{{ mode === 'login' ? '让 Agent 帮你理解仓库、规划改动，并把验证结果留在清楚的工作流里。' : '从项目、模型配置到 Agent 会话，逐步建立属于你的开发工作流。' }}</p>
-        <Transition name="auth-note"><div v-if="cardExpanded" class="mt-6 border-l border-[#AEB6A9] pl-4 text-[13px] leading-6 text-[#68685F]">Agent 会先理解代码上下文，再按计划调用工具、生成改动并完成验证。你始终可以查看过程，决定下一步。</div></Transition>
-        <div class="mt-8"><LoginForm :mode="mode" :loading="loading" @submit="submit" @validation-error="showValidationError" /></div>
-        <p class="mt-8 text-center text-sm leading-6 text-[#76756D]"><template v-if="mode === 'login'">还没有工作间？ <button class="border-0 bg-transparent p-0 font-medium text-[#4E584D] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5D675B]" type="button" @click="toggleMode">创建一个</button></template><template v-else>已经有工作间？ <button class="border-0 bg-transparent p-0 font-medium text-[#4E584D] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5D675B]" type="button" @click="toggleMode">返回登录</button></template></p>
-        <p v-if="mode === 'register'" class="mt-5 border-t border-[#DED8CC] pt-5 text-center text-xs leading-5 text-[#8B887E]">创建即表示你同意使用说明与隐私说明。</p>
-      </article>
-    </section>
 
-    <footer class="mx-auto flex w-full max-w-[1180px] items-center justify-between border-t border-[#D9D3C7] py-4 text-xs text-[#8B887E]"><span>代码、上下文与改动，安静地流动。</span><span class="flex gap-4"><a href="#" @click.prevent>使用说明</a><a href="#" @click.prevent>隐私说明</a></span></footer>
-  </main>
+        <AuthFormContainer
+          :title="mode === 'login' ? '进入你的工作间' : (inviteCodeEnabled ? '凭邀请码创建工作间' : '创建一处工作间')"
+          :subtitle="mode === 'login' ? '让 Agent 帮你理解仓库、规划改动，并把验证结果留在清楚的工作流里。' : (inviteCodeEnabled ? '输入由管理员分发的专属邀请码，开启你的智能编程工作间。' : '从项目、模型配置到 Agent 会话，逐步建立属于你的开发工作流。')"
+        >
+          <article
+            class="auth-card auth-card--expanded"
+            :class="{ 'auth-card--active': isCardActive }"
+            :style="cardStyle"
+            @pointermove="handleCardPointerMove"
+            @pointerenter="isCardActive = true"
+            @pointerleave="handleCardPointerLeave"
+          >
+            <LoginForm
+              :mode="mode"
+              :invite-code-enabled="inviteCodeEnabled"
+              :loading="loading"
+              :captcha-required="captcha.required"
+              :captcha-image="captcha.image"
+              :captcha-loading="captcha.loading"
+              :feedback="feedback"
+              :feedback-kind="feedbackKind"
+              :oauth-providers="oauthProviders"
+              @submit="submit"
+              @validation-error="showValidationError"
+              @refresh-captcha="refreshCaptcha"
+              @oauth="loginWithOAuth"
+            />
+          </article>
+
+          <p class="auth-switch-line">
+            <template v-if="mode === 'login'">还没有工作间？ <button type="button" @click="toggleMode">{{ inviteCodeEnabled ? '凭邀请码开启' : '创建一个' }}</button></template>
+            <template v-else>已经有工作间？ <button type="button" @click="toggleMode">返回登录</button></template>
+          </p>
+          <p v-if="mode === 'register'" class="auth-legal-note">创建即表示你同意使用说明与隐私说明。</p>
+        </AuthFormContainer>
+
+        <footer class="auth-form-column__footer">代码、上下文与改动，安静地流动。</footer>
+      </div>
+    </template>
+  </AuthLayout>
 </template>
 
-<script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import Logo from '@/components/Logo.vue'
+<script setup>
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import AuthBrandPanel from '@/components/auth/AuthBrandPanel.vue'
+import AuthFormContainer from '@/components/auth/AuthFormContainer.vue'
+import AuthLayout from '@/components/auth/AuthLayout.vue'
 import LoginForm from '@/components/LoginForm.vue'
+import { authApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 
-type AuthMode = 'login' | 'register'
-interface Credentials { username: string; displayName: string; password: string }
-const router = useRouter(); const userStore = useUserStore(); const mode = ref<AuthMode>('login'); const loading = ref(false); const cardExpanded = ref(false); const isCardActive = ref(false); const pointer = ref({ x: 50, y: 50 })
-const cardStyle = computed(() => ({ '--card-shift-x': `${(pointer.value.x - 50) * .045}px`, '--card-shift-y': `${(pointer.value.y - 50) * .045}px`, '--ink-x': `${pointer.value.x}%`, '--ink-y': `${pointer.value.y}%` }))
-function toggleMode() { mode.value = mode.value === 'login' ? 'register' : 'login'; cardExpanded.value = false }
-function toggleCardExpansion() { cardExpanded.value = !cardExpanded.value }
-function handleCardPointerMove(event: PointerEvent) { const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); pointer.value = { x: ((event.clientX - rect.left) / rect.width) * 100, y: ((event.clientY - rect.top) / rect.height) * 100 } }
-function handleCardPointerLeave() { isCardActive.value = false; pointer.value = { x: 50, y: 50 } }
-function showValidationError() { ElMessage.warning('请输入用户名和密码。') }
-async function submit(credentials: Credentials) { loading.value = true; try { if (mode.value === 'register') { await userStore.register(credentials); ElMessage.success('工作间创建成功。') } else { await userStore.login(credentials); ElMessage.success('欢迎回来。') }; router.replace('/projects') } catch (error) { ElMessage.error(error instanceof Error ? error.message : '操作失败。') } finally { loading.value = false } }
+const router = useRouter()
+const route = useRoute()
+const userStore = useUserStore()
+const mode = ref('login')
+const loading = ref(false)
+const feedback = ref('')
+const feedbackKind = ref('error')
+const inviteCodeEnabled = ref(false)
+const oauthProviders = ref([])
+const captcha = reactive({ id: '', image: '', required: false, loading: false })
+const isCardActive = ref(false)
+const pointer = ref({ x: 50, y: 50 })
+let createdViewportMeta = null
+let existingViewportMeta = null
+let previousViewportContent = null
+const cardStyle = computed(() => ({
+  '--card-shift-x': `${(pointer.value.x - 50) * 0.035}px`,
+  '--card-shift-y': `${(pointer.value.y - 50) * 0.035}px`,
+  '--ink-x': `${pointer.value.x}%`,
+  '--ink-y': `${pointer.value.y}%`
+}))
+
+onMounted(async () => {
+  enableAuthViewport()
+  await loadAuthConfig()
+  await handleOAuthCallback()
+})
+
+onBeforeUnmount(() => {
+  restoreViewport()
+})
+
+function enableAuthViewport() {
+  existingViewportMeta = document.head.querySelector('meta[name="viewport"]')
+  if (existingViewportMeta) {
+    previousViewportContent = existingViewportMeta.getAttribute('content')
+    existingViewportMeta.setAttribute('content', 'width=device-width, initial-scale=1')
+    return
+  }
+  createdViewportMeta = document.createElement('meta')
+  createdViewportMeta.name = 'viewport'
+  createdViewportMeta.content = 'width=device-width, initial-scale=1'
+  document.head.append(createdViewportMeta)
+}
+
+function restoreViewport() {
+  if (createdViewportMeta) {
+    createdViewportMeta.remove()
+    createdViewportMeta = null
+  }
+  if (existingViewportMeta) {
+    if (previousViewportContent === null) existingViewportMeta.removeAttribute('content')
+    else existingViewportMeta.setAttribute('content', previousViewportContent)
+    existingViewportMeta = null
+    previousViewportContent = null
+  }
+}
+
+function toggleMode() {
+  mode.value = mode.value === 'login' ? 'register' : 'login'
+  feedback.value = ''
+  captcha.required = false
+  captcha.id = ''
+  captcha.image = ''
+}
+
+async function loadAuthConfig() {
+  try {
+    const response = await authApi.getAuthConfig({ silent: true })
+    inviteCodeEnabled.value = Boolean(response?.data?.inviteCodeEnabled)
+    const providers = response?.data?.oauthProviders
+    oauthProviders.value = Array.isArray(providers?.providers)
+      ? providers.providers
+      : Array.isArray(providers)
+      ? providers
+      : []
+  } catch {
+    inviteCodeEnabled.value = false
+    oauthProviders.value = []
+  }
+}
+
+async function handleOAuthCallback() {
+  const oauthError = String(route.query.oauth_error || '')
+  const oauthCode = String(route.query.oauth_code || '')
+  if (oauthError) {
+    feedback.value = '第三方登录未完成，请重新尝试。'
+    await clearOAuthQuery()
+    return
+  }
+  if (!oauthCode) return
+  loading.value = true
+  try {
+    await userStore.login({ oauthCode })
+    feedbackKind.value = 'success'
+    feedback.value = '欢迎回来。'
+    await router.replace('/projects')
+  } catch (error) {
+    feedbackKind.value = 'error'
+    feedback.value = error instanceof Error ? error.message : '第三方登录失败，请重试。'
+    await clearOAuthQuery()
+  } finally {
+    loading.value = false
+  }
+}
+
+async function clearOAuthQuery() {
+  const query = { ...route.query }
+  delete query.oauth_error
+  delete query.oauth_code
+  delete query.oauth_state
+  await router.replace({ query })
+}
+
+async function refreshCaptcha() {
+  captcha.loading = true
+  try {
+    const response = await authApi.getCaptcha(mode.value, { silent: true })
+    captcha.id = response?.data?.captchaId || ''
+    captcha.image = response?.data?.image || ''
+  } catch {
+    feedbackKind.value = 'error'
+    feedback.value = '验证码暂时不可用，请稍后重试。'
+  } finally {
+    captcha.loading = false
+  }
+}
+
+async function submit(credentials) {
+  loading.value = true
+  feedback.value = ''
+  const payload = { ...credentials, captchaId: captcha.id }
+  try {
+    if (mode.value === 'register') {
+      if (inviteCodeEnabled.value) {
+        await userStore.inviteRegister(payload)
+      } else {
+        await userStore.register(payload)
+      }
+      feedbackKind.value = 'success'
+      feedback.value = '工作间创建成功。'
+    } else {
+      await userStore.login(payload)
+      feedbackKind.value = 'success'
+      feedback.value = '欢迎回来。'
+    }
+    captcha.required = false
+    captcha.id = ''
+    captcha.image = ''
+    await router.replace('/projects')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '认证失败，请重试。'
+    feedbackKind.value = 'error'
+    feedback.value = message
+    if (/验证码/.test(message) || /captcha/i.test(message)) {
+      captcha.required = true
+      await refreshCaptcha()
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+function showValidationError() {
+  feedbackKind.value = 'error'
+  feedback.value = '请检查表单中的提示后再提交。'
+}
+
+function loginWithOAuth(provider) {
+  if (!['github', 'google'].includes(provider)) return
+  loading.value = true
+  window.location.href = `/api/auth/oauth/${encodeURIComponent(provider)}/authorize`
+}
+
+function handleCardPointerMove(event) {
+  const rect = event.currentTarget.getBoundingClientRect()
+  pointer.value = { x: ((event.clientX - rect.left) / rect.width) * 100, y: ((event.clientY - rect.top) / rect.height) * 100 }
+}
+
+function handleCardPointerLeave() {
+  isCardActive.value = false
+  pointer.value = { x: 50, y: 50 }
+}
 </script>
+
+<style scoped>
+.auth-canvas {
+  background: #fbf8f0;
+  color: #34352f;
+  color-scheme: light;
+}
+
+.auth-form-column { width: min(100%, 520px); }
+.auth-form-column__topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; color: #8b887e; font-size: 11px; letter-spacing: .08em; }
+.auth-form-column__topline button, .auth-switch-line button { border: 0; padding: 0; background: transparent; color: #5d675b; cursor: pointer; font: inherit; font-weight: 600; }
+.auth-form-column__topline button:hover, .auth-switch-line button:hover { text-decoration: underline; text-underline-offset: 3px; }
+.auth-card { position: relative; transform: translate3d(var(--card-shift-x, 0px), var(--card-shift-y, 0px), 0); border: 1px solid #cfc8ba; border-radius: 26px 22px 28px 24px; padding: 30px; background: rgb(251 248 240 / 92%); transition: transform 260ms ease, border-color 220ms ease, box-shadow 260ms ease; }
+.auth-card::after { position: absolute; inset: -1px; z-index: -1; border-radius: inherit; content: ''; opacity: 0; background: radial-gradient(circle at var(--ink-x, 50%) var(--ink-y, 50%), rgb(93 103 91 / 12%), transparent 43%); transition: opacity 260ms ease; pointer-events: none; }
+.auth-card--active { border-color: #aab1a3; box-shadow: 0 14px 30px rgb(71 66 52 / 7%); }
+.auth-card--active::after { opacity: 1; }
+.auth-switch-line { margin: 22px 0 0; color: #76756d; font-size: 13px; text-align: center; }
+.auth-legal-note { margin: 17px 0 0; border-top: 1px solid #ded8cc; padding-top: 14px; color: #8b887e; font-size: 11px; line-height: 1.6; text-align: center; }
+.auth-form-column__footer { margin-top: 34px; color: #8b887e; font-size: 11px; text-align: center; }
+@media (max-width: 520px) { .auth-card { padding: 22px 18px; } .auth-form-column__topline { margin-bottom: 17px; } }
+@media (prefers-reduced-motion: reduce) { .auth-card, .auth-card::after { transition: none; } }
+</style>
 
 <style>
 .auth-canvas ~ .theme-settings-launcher { display: none; }

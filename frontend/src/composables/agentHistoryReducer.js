@@ -425,6 +425,24 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
       message.runState = normalizeAgentRunState(data.state || data.taskStatus) || 'recovering'
       message.isStreaming = true
       break
+    case 'LOOP_GUARD_STOPPED':
+      message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.taskStatus || data.state) || 'waiting_recovery'
+      message.loopGuardStop = {
+        reasonCode: data.reasonCode || 'loop_guard',
+        recoverable: data.recoverable === true,
+        resumeAction: data.resumeAction || '',
+        message: data.summary || data.message || ''
+      }
+      message.content = data.summary || data.message || message.content || '循环保护已停止当前任务，可从当前进展恢复。'
+      message.isStreaming = false
+      break
+    case 'RUN_LOOP_GUARD_RESUME':
+      message.taskId = data.taskId || message.taskId || null
+      message.runState = normalizeAgentRunState(data.taskStatus || data.state) || 'queued'
+      message.loopGuardStop = null
+      message.isStreaming = true
+      break
     case 'RUN_STATE_QUEUED':
     case 'RUN_STATE_PREPARING':
     case 'RUN_STATE_RUNNING':

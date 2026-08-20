@@ -2580,6 +2580,102 @@ body.is-resizing-ai .ai-panel {
   color: inherit;
 }
 
+/* ===== High-Contrast Syntax Highlighting for Code Blocks ===== */
+.markdown-rendered pre code.hljs,
+.markdown-rendered .code-block pre code,
+.s-code-block pre code {
+  color: #f1f5f9;
+  background: transparent !important;
+}
+
+/* Keywords, Selectors, Doctags */
+.markdown-rendered pre .hljs-keyword,
+.markdown-rendered pre .hljs-selector-tag,
+.markdown-rendered pre .hljs-doctag,
+.markdown-rendered pre .hljs-meta .hljs-keyword {
+  color: #ff7b72 !important;
+  font-weight: 600;
+}
+
+/* Built-ins, Tags, HTML elements */
+.markdown-rendered pre .hljs-built_in,
+.markdown-rendered pre .hljs-name,
+.markdown-rendered pre .hljs-tag {
+  color: #7ee787 !important;
+  font-weight: 500;
+}
+
+/* Strings, Regex, Characters (high-contrast light sky blue) */
+.markdown-rendered pre .hljs-string,
+.markdown-rendered pre .hljs-regexp,
+.markdown-rendered pre .hljs-meta .hljs-string,
+.markdown-rendered pre .hljs-template-tag {
+  color: #a5d6ff !important;
+}
+
+/* Numbers, Literals, Operators, Constants */
+.markdown-rendered pre .hljs-number,
+.markdown-rendered pre .hljs-literal,
+.markdown-rendered pre .hljs-operator,
+.markdown-rendered pre .hljs-constant {
+  color: #79c0ff !important;
+}
+
+/* Functions, Methods, Classes, Titles, Headings */
+.markdown-rendered pre .hljs-title,
+.markdown-rendered pre .hljs-title.function_,
+.markdown-rendered pre .hljs-title.class_,
+.markdown-rendered pre .hljs-title.class_.inherited__,
+.markdown-rendered pre .hljs-section {
+  color: #d2a8ff !important;
+  font-weight: 600;
+}
+
+/* Attributes, Properties, Variables, Types */
+.markdown-rendered pre .hljs-attr,
+.markdown-rendered pre .hljs-attribute,
+.markdown-rendered pre .hljs-property,
+.markdown-rendered pre .hljs-variable,
+.markdown-rendered pre .hljs-template-variable,
+.markdown-rendered pre .hljs-type,
+.markdown-rendered pre .hljs-class {
+  color: #ffa657 !important;
+}
+
+/* Comments, Quotes (high-contrast readable slate-400) */
+.markdown-rendered pre .hljs-comment,
+.markdown-rendered pre .hljs-quote {
+  color: #94a3b8 !important;
+  font-style: italic;
+}
+
+/* Symbols, Bullets */
+.markdown-rendered pre .hljs-symbol,
+.markdown-rendered pre .hljs-bullet {
+  color: #f2cc60 !important;
+}
+
+/* Substituted variables, Punctuation, Parameters */
+.markdown-rendered pre .hljs-subst,
+.markdown-rendered pre .hljs-punctuation,
+.markdown-rendered pre .hljs-params {
+  color: #e2e8f0 !important;
+}
+
+/* Diff Additions & Deletions */
+.markdown-rendered pre .hljs-addition {
+  color: #7ee787 !important;
+  background-color: rgba(46, 160, 67, 0.2) !important;
+  border-radius: 2px;
+  padding: 1px 3px;
+}
+.markdown-rendered pre .hljs-deletion {
+  color: #ffa198 !important;
+  background-color: rgba(248, 81, 73, 0.2) !important;
+  border-radius: 2px;
+  padding: 1px 3px;
+}
+
 /* ===== Mermaid Block (Segmented tab toggle between Chart and Code) ===== */
 .markdown-rendered .mermaid-block {
   position: relative;
@@ -2589,6 +2685,13 @@ body.is-resizing-ai .ai-panel {
   overflow: hidden;
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.markdown-rendered .mermaid-block:hover {
+  border-color: #d4d4d8;
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
 }
 
 .markdown-rendered .mermaid-block.is-fullscreen {
@@ -2852,43 +2955,54 @@ body > div[id*="mermaid"] {
   text-align: left;
   vertical-align: top;
 }
-.markdown-rendered .msg-table thead th {
+.markdown-rendered .msg-table th {
   background: #f8fafc;
   color: #1e293b;
+  font-size: 12.5px;
   font-weight: 700;
-  font-size: 13px;
   letter-spacing: 0.02em;
-  white-space: nowrap;
   border-bottom: 2px solid #94a3b8;
+  white-space: nowrap;
 }
-.markdown-rendered .msg-table tbody td:first-child {
-  font-weight: 600;
-  color: #0f172a;
+.markdown-rendered .msg-table th:not(:last-child),
+.markdown-rendered .msg-table td:not(:last-child) {
+  border-right: 1px solid #e2e8f0;
+}
+.markdown-rendered .msg-table tr:hover td {
+  background: rgba(14, 165, 233, 0.04);
 }
 .markdown-rendered .msg-table tbody tr:last-child td {
-  border-bottom: 0;
+  border-bottom: none;
 }
-.markdown-rendered .msg-table tbody tr {
-  transition: background 0.12s;
+.markdown-rendered .msg-table-empty {
+  padding: 24px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
 }
-.markdown-rendered .msg-table tbody tr:hover td {
-  background: #f0f9ff;
+.markdown-rendered .msg-table-scroll-hint {
+  padding: 6px 16px;
+  font-size: 11px;
+  color: #94a3b8;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  text-align: right;
 }
 .markdown-rendered blockquote:not(.msg-callout) {
-  position: relative;
-  margin: 10px 0;
-  padding: 10px 14px 10px 18px;
+  margin: 12px 0;
+  padding: 10px 14px 10px 16px;
   border-left: 3px solid var(--ai-accent);
-  border-radius: 8px;
-  background: var(--ai-accent-bg);
-  color: var(--ai-text-muted);
-  font-style: italic;
-  line-height: 1.7;
+  background: var(--ai-bg-secondary);
+  border-radius: 0 8px 8px 0;
+  color: var(--ai-text-secondary);
+  font-size: 13.5px;
+  line-height: 1.6;
+  position: relative;
 }
 .markdown-rendered blockquote:not(.msg-callout)::before {
-  content: '\201C';
+  content: '“';
   position: absolute;
-  top: 4px;
+  top: -4px;
   left: 6px;
   color: var(--ai-accent);
   font-family: Georgia, 'Times New Roman', serif;
@@ -2901,13 +3015,19 @@ body > div[id*="mermaid"] {
   position: relative;
   margin: 12px 0;
   padding: 12px 14px 12px 16px;
-  border: 1px solid var(--ai-border-strong);
+  border: 1px solid #e4e4e7;
   border-left-width: 4px;
   border-radius: 9px;
-  background: var(--ai-bg-secondary);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.04);
-  color: var(--ai-text-muted);
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  color: #3f3f46;
   line-height: 1.65;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.markdown-rendered .msg-callout:hover {
+  border-color: #d4d4d8;
+  box-shadow: 0 4px 14px -2px rgba(0, 0, 0, 0.06);
+  transform: translateY(-1px);
 }
 .markdown-rendered .msg-callout-title {
   display: flex;
@@ -3534,20 +3654,108 @@ body > div[id*="mermaid"] {
 }
 .ai-image-preview-close:hover { background: rgba(255, 255, 255, 0.16); }
 .ai-image-preview-close:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
-.ai-image-preview-caption {
-  position: absolute;
-  right: 24px;
-  bottom: 22px;
-  left: 24px;
-  overflow: hidden;
-  color: rgba(255, 255, 255, 0.88);
-  font-size: 12px;
+
+.ai-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 36px 14px 20px 14px;
   text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: 100%;
+  max-width: 360px;
+  margin: auto;
+  user-select: none;
 }
 
+.ai-empty-icon-box {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f4f4f5 0%, #e4e4e7 100%);
+  border: 1px solid #e4e4e7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #09090b;
+  margin-bottom: 14px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
 
+.ai-empty-icon-box:hover {
+  transform: translateY(-2px) rotate(4deg);
+  box-shadow: 0 6px 16px -2px rgba(0, 0, 0, 0.08);
+}
+
+.ai-empty-greeting {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ai-text, #09090b);
+  letter-spacing: -0.2px;
+  margin: 0 0 6px 0;
+}
+
+.ai-empty-subtext {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ai-text-muted, #71717a);
+  margin: 0 0 16px 0;
+  max-width: 280px;
+}
+
+.ai-quick-chips-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.ai-quick-chip-card {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--ai-card-bg, #ffffff);
+  border: 1px solid var(--ai-border, #e4e4e7);
+  color: var(--ai-text, #27272a);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: left;
+  outline: none;
+}
+
+.ai-quick-chip-card:hover {
+  background: var(--ai-hover-bg, #f4f4f5);
+  border-color: var(--ai-border-hover, #d4d4d8);
+  color: var(--ai-text-strong, #09090b);
+  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1.5px);
+}
+
+.ai-quick-chip-card:active {
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.chip-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.chip-label-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ????????????????????????? */
 .ai-input-image-strip {
@@ -3570,11 +3778,19 @@ body > div[id*="mermaid"] {
 .ai-msg.user .ai-msg-content {
   width: fit-content;
   max-width: min(100%, 620px);
-  padding: 10px 12px;
-  border: 1px solid var(--ai-border);
+  padding: 10px 14px;
+  border: 1px solid #e4e4e7;
   border-radius: 14px 4px 14px 14px;
-  background: var(--ai-bg-secondary);
-  box-shadow: var(--ai-shadow-sm);
+  background: #ffffff;
+  color: #09090b;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ai-msg.user .ai-msg-content:hover {
+  border-color: #d4d4d8;
+  box-shadow: 0 6px 18px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
 }
 
 .ai-msg.user .agent-image-attachments.is-message { margin-bottom: 8px; }

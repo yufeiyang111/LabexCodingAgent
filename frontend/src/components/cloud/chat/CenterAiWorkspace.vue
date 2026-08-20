@@ -82,7 +82,7 @@
           <div v-else class="center-message-list">
             <div
               v-for="(msg, index) in messages"
-              :key="index"
+              :key="msg.taskId || msg.id || msg.timestamp || ('msg-' + index)"
               class="center-msg-item"
               :class="msg.role"
             >
@@ -138,6 +138,8 @@
                           @permission="d => emit('permission', d)"
                           @command-approval="d => emit('command-approval', d)"
                           @question="d => emit('question', d)"
+                          @open-file="p => emit('open-file', p)"
+                          @open-preview="u => emit('open-preview', u)"
                         />
                       </template>
                     </template>
@@ -167,12 +169,12 @@
                       <span class="streaming-dot"></span>
                     </div>
 
-                    <!-- 文件变更组件 -->
+                    <!-- 文件变更组件（按当前助理轮次/消息独立展示该次对话产生的变更） -->
                     <FileChangesSummaryCard
-                      v-if="index === messages.length - 1"
-                      :changes="sessionChanges || []"
-                      :additions="msg.additions || 0"
-                      :deletions="msg.deletions || 0"
+                      v-if="msg.role === 'assistant' && getMessageChanges(msg).length > 0"
+                      :changes="getMessageChanges(msg)"
+                      :additions="getMessageAdditions(msg)"
+                      :deletions="getMessageDeletions(msg)"
                       @review-all="emit('review-changes', msg)"
                       @open-file-diff="file => emit('open-file-diff', file)"
                     />
@@ -282,6 +284,7 @@
             :pending-images="pendingImages"
             :context-usage-status="contextUsageStatus"
             :active-path="activePath"
+            :commands="commandList"
             @update:model-value="val => emit('update:agentInput', val)"
             @update:agent-mode="val => emit('update:agentMode', val)"
             @mode-change="val => emit('mode-change', val)"
@@ -340,10 +343,25 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, nextTick, watch, onMounted, defineAsyncComponent } from 'vue'
 import ComposerDock from '../composer/ComposerDock.vue'
 import ThinkingProcessBlock from './ThinkingProcessBlock.vue'
 import ToolCallCard from '../ToolCallCard.vue'
+import { renderMermaidBlocks } from '@/utils/mermaidRenderer'
+import { normalizeWorkspacePath } from '@/utils/pathUtils'
+import { resolveEffectiveChanges, resolveMessageChanges, resolveMessageStats } from '@/composables/useEffectiveChanges'
+
+function getMessageChanges(msg) {
+  return resolveMessageChanges(msg)
+}
+
+function getMessageAdditions(msg) {
+  return resolveMessageStats(msg).additions
+}
+
+function getMessageDeletions(msg) {
+  return resolveMessageStats(msg).deletions
+}
 
 const CompletionEvidenceCard = defineAsyncComponent(() => import('../CompletionEvidenceCard.vue'))
 const PlanDisplay = defineAsyncComponent(() => import('../PlanDisplay.vue'))
@@ -458,6 +476,10 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  commandList: {
+    type: Array,
+    default: () => [],
+  },
   getMergedItems: {
     type: Function,
     default: () => [],
@@ -504,6 +526,8 @@ const emit = defineEmits([
   'revert-change',
   'undo-change',
   'toggle-terminal',
+  'open-file',
+  'open-preview',
 ])
 
 const currentTab = computed({
@@ -538,6 +562,8 @@ function formatTime(timestamp) {
     return ''
   }
 }
+
+const effectiveChanges = computed(() => resolveEffectiveChanges(props.sessionChanges, props.messages))
 
 const scrollPaneRef = ref(null)
 const userScrolled = ref(false)
@@ -617,6 +643,14 @@ function navigateMessage(direction) {
   }
 }
 
+let mermaidTimer = null
+function scheduleMermaidRender() {
+  if (mermaidTimer) clearTimeout(mermaidTimer)
+  mermaidTimer = setTimeout(() => {
+    renderMermaidBlocks(scrollPaneRef.value || document)
+  }, 160)
+}
+
 watch(
   () => [
     props.messages?.length || 0,
@@ -625,12 +659,27 @@ watch(
   ],
   () => {
     scrollDown(false)
+    scheduleMermaidRender()
   },
   { flush: 'post' }
 )
 
+watch(
+  () => currentTab.value,
+  val => {
+    if (val === 'chat') {
+      scheduleMermaidRender()
+    }
+  }
+)
+
+onMounted(() => {
+  scheduleMermaidRender()
+})
+
 defineExpose({
   scrollToBottom: () => scrollDown(true),
+  scheduleMermaidRender,
 })
 </script>
 
@@ -889,11 +938,19 @@ defineExpose({
 
 .user-msg-bubble {
   max-width: 80%;
-  background: #18181b;
-  color: #ffffff;
+  background: #ffffff;
+  color: #09090b;
   padding: 10px 14px;
+  border: 1px solid #e4e4e7;
   border-radius: 12px 12px 2px 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.user-msg-bubble:hover {
+  border-color: #d4d4d8;
+  box-shadow: 0 6px 18px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
 }
 
 .user-msg-text {
@@ -915,8 +972,15 @@ defineExpose({
   height: 52px;
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid #e4e4e7;
   cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.user-msg-thumb-item:hover {
+  border-color: #a1a1aa;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transform: translateY(-1px);
 }
 
 .user-msg-thumb-item img {
@@ -934,7 +998,7 @@ defineExpose({
 }
 
 .user-msg-footer .msg-time {
-  color: rgba(255, 255, 255, 0.7);
+  color: #71717a;
   font-size: 10.5px;
   font-family: 'Inter', -apple-system, sans-serif;
   font-weight: 500;
@@ -946,9 +1010,9 @@ defineExpose({
   gap: 3px;
   padding: 1.5px 6px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  color: #ffffff;
+  background: #f4f4f5;
+  border: 1px solid #e4e4e7;
+  color: #52525b;
   font-size: 10.5px;
   font-weight: 500;
   cursor: pointer;
@@ -956,7 +1020,9 @@ defineExpose({
 }
 
 .user-msg-footer .msg-copy-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: #e4e4e7;
+  color: #18181b;
+  border-color: #d4d4d8;
 }
 
 .assistant-msg-wrap {
