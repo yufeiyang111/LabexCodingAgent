@@ -163,6 +163,23 @@ class LabexSystemPromptTest {
                 .contains("actual tool and verification evidence")
                 .contains("Progress is a harness projection");
     }
+
+    @Test
+    void systemPromptIncludesOpenCodeCodingDisciplineAndReflectionCycle() {
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools");
+
+        assertThat(prompt)
+                .contains("<coding_discipline>")
+                .contains("Following existing conventions")
+                .contains("NEVER assume a library/package is available")
+                .contains("DO NOT add unsolicited comments")
+                .contains("Atomic and idiom-preserving edits")
+                .contains("Precise Code References")
+                .contains("file_path:line_number")
+                .contains("Engineering workflow & Reflection cycle")
+                .contains("Observe & Reflect (Feedback Loop & Debugging)");
+    }
+
     private static StudentProject project(String name, String workspacePath, String structureJson) {
         StudentProject project = new StudentProject();
         project.setProjectName(name);

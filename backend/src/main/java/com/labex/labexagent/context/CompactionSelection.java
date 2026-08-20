@@ -38,12 +38,24 @@ public record CompactionSelection(List<Map<String, Object>> compactedHead,
                 userStarts.add(index);
             }
         }
-        if (userStarts.size() <= 1) {
-            return unchanged(source, safeEstimator);
-        }
 
         int turnLimit = Math.max(1, maxTailTurns);
         int budget = Math.max(1, tailTokenBudget);
+
+        // Case 1: Single turn with many tool interactions -> split inside the single turn (OpenCode splitTurn)
+        if (userStarts.size() <= 1) {
+            int turnStart = userStarts.isEmpty() ? 0 : userStarts.get(0);
+            Integer splitStart = splitTurn(source, turnStart, source.size(), budget, safeEstimator);
+            if (splitStart != null && splitStart > 0) {
+                List<Map<String, Object>> head = source.subList(0, splitStart);
+                List<Map<String, Object>> tail = source.subList(splitStart, source.size());
+                return new CompactionSelection(head, tail, splitStart, 1,
+                        safeEstimator.estimateMessages(head), safeEstimator.estimateMessages(tail));
+            }
+            return unchanged(source, safeEstimator);
+        }
+
+        // Case 2: Multiple turns -> scan backwards through turns, with intra-turn split fallback
         int latestTurnPosition = userStarts.size() - 1;
         int earliestCandidatePosition = Math.max(0, userStarts.size() - turnLimit);
         int tailStart = userStarts.get(latestTurnPosition);
@@ -60,6 +72,15 @@ public record CompactionSelection(List<Map<String, Object>> compactedHead,
             tailTokens += candidateTokens;
             retained++;
         }
+
+        // If even the latest whole turn exceeded budget and contains multiple steps, try intra-turn split
+        if (tailStart == userStarts.get(latestTurnPosition) && tailTokens > budget) {
+            Integer splitStart = splitTurn(source, tailStart, source.size(), budget, safeEstimator);
+            if (splitStart != null && splitStart > tailStart) {
+                tailStart = splitStart;
+            }
+        }
+
         if (tailStart <= 0) {
             return unchanged(source, safeEstimator);
         }
@@ -67,6 +88,32 @@ public record CompactionSelection(List<Map<String, Object>> compactedHead,
         List<Map<String, Object>> tail = source.subList(tailStart, source.size());
         return new CompactionSelection(head, tail, tailStart, retained,
                 safeEstimator.estimateMessages(head), safeEstimator.estimateMessages(tail));
+    }
+
+    /**
+     * Splits a long turn from the end backwards to keep only recent messages fitting within budget.
+     * Preserves protocol safety by never splitting on a standalone 'tool' role.
+     */
+    private static Integer splitTurn(List<Map<String, Object>> source,
+                                     int turnStart,
+                                     int turnEnd,
+                                     int budget,
+                                     AgentRequestTokenEstimator estimator) {
+        if (budget <= 0 || turnEnd - turnStart <= 1) {
+            return null;
+        }
+        for (int start = turnStart + 1; start < turnEnd; start++) {
+            Map<String, Object> msg = source.get(start);
+            String role = String.valueOf(msg.getOrDefault("role", ""));
+            if ("tool".equalsIgnoreCase(role)) {
+                continue;
+            }
+            int size = estimator.estimateMessages(source.subList(start, turnEnd));
+            if (size <= budget) {
+                return start;
+            }
+        }
+        return null;
     }
 
     public boolean changed() {

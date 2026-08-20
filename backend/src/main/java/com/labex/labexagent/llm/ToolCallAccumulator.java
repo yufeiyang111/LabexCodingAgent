@@ -64,7 +64,10 @@ final class ToolCallAccumulator {
         }
 
         private ToolCall snapshot() {
-            return new ToolCall(id, index, name, arguments.toString());
+            String effectiveId = (id != null && !id.isBlank())
+                    ? id
+                    : "call_" + index + "_" + Long.toHexString(System.nanoTime());
+            return new ToolCall(effectiveId, index, name, arguments.toString());
         }
     }
 }

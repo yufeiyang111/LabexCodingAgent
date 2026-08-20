@@ -140,11 +140,14 @@ class AgentLoopEngineCompactionTerminalityTest {
                 new ContextAdmissionService(), new ContextAdmissionGate(),
                 new AgentInteractionPauser(mock(AgentTaskService.class)));
         AgentTranscriptProjectionService projection = mock(AgentTranscriptProjectionService.class);
-        when(projection.loadProviderMessages(71L)).thenReturn(List.of(
+        List<Map<String, Object>> taskMessages = List.of(
                 Map.of("role", "user", "content", "old request with enough context"),
                 Map.of("role", "assistant", "content", "old answer with enough context"),
                 Map.of("role", "user", "content", "recent request"),
-                Map.of("role", "assistant", "content", "recent answer")));
+                Map.of("role", "assistant", "content", "recent answer"));
+        when(projection.loadProviderMessages(71L)).thenReturn(taskMessages);
+        when(projection.loadDurableProjection(71L)).thenReturn(
+                new AgentTranscriptProjectionService.Projection(taskMessages, "durable_transcript"));
         engine.setTranscriptProjectionService(projection);
         AgentRunTranscriptService transcriptService = mock(AgentRunTranscriptService.class);
         when(transcriptService.nextSequence(71L)).thenReturn(5L);

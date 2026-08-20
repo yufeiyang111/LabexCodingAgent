@@ -25,7 +25,7 @@ import org.springframework.stereotype.Service;
 public class AgentConversationMemoryProjectionService {
     private static final int MAX_LINEAGE_DEPTH = 32;
     private static final int MAX_TRANSCRIPT_BATCHES = 20;
-    private static final int DEFAULT_CONTEXT_CHARS = 12_000;
+    private static final int DEFAULT_CONTEXT_CHARS = 120_000;
 
     private final AgentConversationMapper conversationMapper;
     private final AgentConversationTranscriptProjectionService transcriptProjection;

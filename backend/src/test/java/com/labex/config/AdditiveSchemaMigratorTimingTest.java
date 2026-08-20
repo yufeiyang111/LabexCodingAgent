@@ -48,7 +48,7 @@ class AdditiveSchemaMigratorTimingTest {
         new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, org.mockito.Mockito.times(12)).execute(sql.capture());
+        verify(jdbcTemplate, org.mockito.Mockito.times(16)).execute(sql.capture());
         assertTrue(sql.getAllValues().containsAll(List.of(
                 "ALTER TABLE t_agent_task ADD COLUMN submitted_at DATETIME(3) DEFAULT NULL",
                 "ALTER TABLE t_agent_task ADD COLUMN started_at DATETIME(3) DEFAULT NULL",
@@ -60,6 +60,10 @@ class AdditiveSchemaMigratorTimingTest {
                 "ALTER TABLE t_agent_task ADD INDEX idx_task_execution_lease (execution_lease_expires_at)",
                 "ALTER TABLE t_agent_conversation ADD INDEX idx_conv_project_updated (student_id, project_id, status, update_time)",
                 "ALTER TABLE t_agent_conversation ADD INDEX idx_agent_conversation_fork_task (forked_from_task_id)",
+                "ALTER TABLE t_agent_conversation ADD INDEX idx_agent_conversation_execution_lease (execution_lease_expires_at)",
+                "ALTER TABLE t_agent_run_message ADD UNIQUE INDEX uk_agent_run_message_conversation_sequence (conversation_id, conversation_sequence)",
+                "ALTER TABLE t_agent_run_message ADD INDEX idx_agent_run_message_conversation_parent (conversation_id, parent_message_id)",
+                "ALTER TABLE t_agent_run_part ADD INDEX idx_agent_run_part_message_sequence (message_id, sequence_number)",
                 "ALTER TABLE t_agent_message ADD INDEX idx_msg_conversation_history (conversation_id, student_id, project_id, message_id)",
                 "ALTER TABLE t_agent_compaction_record ADD INDEX idx_agent_compaction_conversation_scope "
                         + "(conversation_id, student_id, project_id, scope, status, compaction_epoch)")));
@@ -89,12 +93,16 @@ class AdditiveSchemaMigratorTimingTest {
                     .contains(column.toLowerCase());
             return missingProcessColumn ? missing : present;
         });
-        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, false);
+        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, false);
         when(existingIndexes.getString("INDEX_NAME")).thenReturn(
                 "idx_task_retry_due",
                 "idx_task_execution_lease",
                 "idx_conv_project_updated",
                 "idx_agent_conversation_fork_task",
+                "idx_agent_conversation_execution_lease",
+                "uk_agent_run_message_conversation_sequence",
+                "idx_agent_run_message_conversation_parent",
+                "idx_agent_run_part_message_sequence",
                 "idx_msg_conversation_history",
                 "idx_agent_compaction_conversation_scope");
         when(metadata.getIndexInfo(eq("labex"), isNull(), anyString(), eq(false), eq(false)))
@@ -154,12 +162,16 @@ class AdditiveSchemaMigratorTimingTest {
         when(present.next()).thenReturn(true);
         when(metadata.getColumns(any(), isNull(), anyString(), anyString())).thenReturn(present);
         when(metadata.getTables(any(), isNull(), anyString(), any())).thenReturn(present);
-        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, false);
+        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, false);
         when(existingIndexes.getString("INDEX_NAME")).thenReturn(
                 "idx_task_retry_due",
                 "idx_task_execution_lease",
                 "idx_conv_project_updated",
                 "idx_agent_conversation_fork_task",
+                "idx_agent_conversation_execution_lease",
+                "uk_agent_run_message_conversation_sequence",
+                "idx_agent_run_message_conversation_parent",
+                "idx_agent_run_part_message_sequence",
                 "idx_msg_conversation_history",
                 "idx_agent_compaction_conversation_scope");
         when(metadata.getIndexInfo(eq("labex"), isNull(), anyString(), eq(false), eq(false)))

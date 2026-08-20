@@ -33,7 +33,11 @@ public final class EnvironmentBlockerClassifier {
             return Optional.of(new Blocker("DEPENDENCY_RESOLUTION_FAILED",
                     "Maven/npm 依赖无法解析；先检查仓库地址、网络和本地缓存，不要继续修改项目源码。"));
         }
-        if (containsAny(output, "network is unreachable", "connection timed out", "connect timed out",
+        // 排除本地端口/Loopback 地址连接失败（如 curl http://localhost:5000 拒绝连接），避免将本地服务未就绪误判为外部网络故障
+        boolean isLocalLoopbackFailure = containsAny(output, "localhost", "127.0.0.1", "::1", "0.0.0.0")
+                && containsAny(output, "failed to connect", "connection refused", "could not connect", "connection reset");
+
+        if (!isLocalLoopbackFailure && containsAny(output, "network is unreachable", "connection timed out", "connect timed out",
                 "connection refused", "failed to connect", "connection reset", "sockettimeoutexception")) {
             return Optional.of(new Blocker("NETWORK_UNAVAILABLE",
                     "依赖仓库不可达，请先恢复网络连接后再重试。"));

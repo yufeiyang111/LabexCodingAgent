@@ -22,6 +22,7 @@ import com.labex.service.StudentProjectService;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
@@ -536,8 +537,11 @@ public class StudentProjectController {
             return;
         }
         String fileName = (project.getProjectName() != null ? project.getProjectName() : "project") + ".zip";
+        String asciiFallback = fileName.chars().allMatch(c -> c < 128) ? fileName : "project.zip";
+        String encodedFileName = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
         response.setContentType("application/zip");
-        response.setHeader("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
+        response.setHeader("Content-Disposition",
+                "attachment; filename=\"" + asciiFallback + "\"; filename*=UTF-8''" + encodedFileName);
         this.studentProjectService.exportProject(this.getStudentId(auth), projectId, (OutputStream)response.getOutputStream());
     }
 

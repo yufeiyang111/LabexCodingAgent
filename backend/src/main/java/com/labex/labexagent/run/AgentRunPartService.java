@@ -226,6 +226,12 @@ public class AgentRunPartService {
             case "LOOP_GUARD_PROGRESS" ->
                     upsertPart(taskId, messageId, "loop-guard:progress", "loop_guard_progress", "completed",
                             null, null, data, GSON.toJson(data), sequence);
+            case "LOOP_GUARD_STOPPED" ->
+                    upsertPart(taskId, messageId, "loop-guard:stop", "loop_guard_stop", "waiting",
+                            null, null, data, GSON.toJson(data), sequence);
+            case "RUN_LOOP_GUARD_RESUME" ->
+                    upsertPart(taskId, messageId, "loop-guard:stop", "loop_guard_stop", "completed",
+                            null, null, data, GSON.toJson(data), sequence);
             case "TOOL_EXPOSURE" -> {
                 String profile = text(data, "runtimeProfile");
                 String mode = text(data, "mode");
@@ -297,6 +303,32 @@ public class AgentRunPartService {
         for (AgentRunPart part : open) {
             part.setStatus("interrupted");
             String detail = reason == null ? "Agent execution was interrupted" : reason;
+            if (part.getOutputText() == null || part.getOutputText().isBlank()) {
+                part.setOutputText(detail);
+            }
+            part.setUpdateTime(LocalDateTime.now());
+            updated += partMapper.updateById(part) == 1 ? 1 : 0;
+        }
+        return updated;
+    }
+
+    /**
+     * 任务进入终态（failed/cancelled）时收尾所有仍未结束的 Part，包括等待审批 / 等待用户输入
+     * 的 Part。否则审批超时导致任务 FAILED 后，残留的 waiting_approval / waiting_user Part 会
+     * 在后续 transcript 重建时因缺少对应 tool result 而破坏协议一一对应（见
+     * AgentRunTranscriptService.rebuildAssistant 的不可恢复跳过逻辑）。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int sealOpenPartsForTerminalState(Long taskId, String reason) {
+        if (taskId == null || taskId <= 0) return 0;
+        List<AgentRunPart> open = partMapper.selectList(new LambdaQueryWrapper<AgentRunPart>()
+                .eq(AgentRunPart::getTaskId, taskId)
+                .in(AgentRunPart::getStatus,
+                        List.of("pending", "running", "streaming", "waiting_approval", "waiting_user")));
+        int updated = 0;
+        for (AgentRunPart part : open) {
+            part.setStatus("interrupted");
+            String detail = reason == null ? "Agent run reached a terminal state" : reason;
             if (part.getOutputText() == null || part.getOutputText().isBlank()) {
                 part.setOutputText(detail);
             }

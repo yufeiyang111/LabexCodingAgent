@@ -25,7 +25,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class CompactionAgent {
     private static final Logger log = LoggerFactory.getLogger(CompactionAgent.class);
-    private static final int MAX_SUMMARY_CHARS = 3_000;
+    private static final int SUMMARY_MAX_OUTPUT_TOKENS = 8_192;
+    private static final int MAX_SUMMARY_CHARS = 8_000;
     private static final int MAX_LIST_ITEMS = 10;
     private static final int MAX_ITEM_CHARS = 320;
     private static final int DEFAULT_SOURCE_CHARS = 36_000;
@@ -101,8 +102,8 @@ public class CompactionAgent {
     }
 
     private LlmProvider.LlmConfig compactionConfig(LlmProvider.LlmConfig base) {
-        int configuredMax = base.maxTokens() == null ? 1_200 : base.maxTokens();
-        int maxTokens = Math.max(128, Math.min(configuredMax, 1_800));
+        int configuredMax = base.maxTokens() == null ? SUMMARY_MAX_OUTPUT_TOKENS : base.maxTokens();
+        int maxTokens = Math.max(256, Math.min(configuredMax, SUMMARY_MAX_OUTPUT_TOKENS));
         return new LlmProvider.LlmConfig(base.apiKey(), base.baseUrl(), base.modelName(), maxTokens, 0.0,
                 base.connectTimeoutMs(), base.readTimeoutMs(), base.maxRetries(), false, null);
     }
@@ -161,38 +162,77 @@ public class CompactionAgent {
         return String.join("\n", selected);
     }
 
+    private String stripMarkdownFences(String text) {
+        if (text == null) {
+            return "";
+        }
+        String trimmed = text.trim();
+        if (trimmed.startsWith("```")) {
+            int firstNewline = trimmed.indexOf('\n');
+            if (firstNewline != -1 && trimmed.endsWith("```")) {
+                return trimmed.substring(firstNewline + 1, trimmed.length() - 3).trim();
+            }
+        }
+        return trimmed;
+    }
+
     private String parseAndRenderCheckpoint(String response, String modelName) {
-        try {
-            JsonElement parsed = JsonParser.parseString(response.trim());
-            if (!parsed.isJsonObject()) {
-                return null;
-            }
-            JsonObject object = parsed.getAsJsonObject();
-            String summary = requiredString(object, "summary", MAX_SUMMARY_CHARS);
-            if (summary == null || summary.length() < 12) {
-                return null;
-            }
-            List<String> facts = requiredStrings(object, "facts");
-            List<String> nextActions = requiredStrings(object, "nextActions");
-            List<String> risks = requiredStrings(object, "openRisks");
-            List<String> files = requiredStrings(object, "files");
-            List<String> verification = requiredStrings(object, "verification");
-            if (facts == null || nextActions == null || risks == null || files == null || verification == null) {
-                return null;
-            }
-            StringBuilder checkpoint = new StringBuilder("<conversation-checkpoint version=\"3\" source=\"model\">\n");
-            checkpoint.append("Compaction model: ").append(limitAndRedact(modelName, 180)).append("\n\n");
-            appendSection(checkpoint, "Summary", List.of(summary));
-            appendSection(checkpoint, "Durable facts", facts);
-            appendSection(checkpoint, "Next actions", nextActions);
-            appendSection(checkpoint, "Open risks", risks);
-            appendSection(checkpoint, "Files", files);
-            appendSection(checkpoint, "Verification", verification);
-            checkpoint.append("</conversation-checkpoint>");
-            return checkpoint.length() > MAX_SUMMARY_CHARS + 3_000 ? null : checkpoint.toString();
-        } catch (Exception ignored) {
+        if (response == null || response.isBlank()) {
             return null;
         }
+        String unescaped = stripMarkdownFences(response.trim());
+        try {
+            JsonElement parsed = JsonParser.parseString(unescaped);
+            if (parsed.isJsonObject()) {
+                JsonObject object = parsed.getAsJsonObject();
+                String summary = requiredString(object, "summary", MAX_SUMMARY_CHARS);
+                List<String> facts = optionalOrRequiredStrings(object, "facts");
+                List<String> nextActions = optionalOrRequiredStrings(object, "nextActions");
+                List<String> risks = optionalOrRequiredStrings(object, "openRisks");
+                List<String> files = optionalOrRequiredStrings(object, "files");
+                List<String> verification = optionalOrRequiredStrings(object, "verification");
+                if (summary != null && summary.length() >= 12 && facts != null && nextActions != null && risks != null && files != null && verification != null) {
+                    StringBuilder checkpoint = new StringBuilder("<conversation-checkpoint version=\"3\" source=\"model\">\n");
+                    checkpoint.append("Compaction model: ").append(limitAndRedact(modelName, 180)).append("\n\n");
+                    appendSection(checkpoint, "Summary", List.of(summary));
+                    appendSection(checkpoint, "Durable facts", facts);
+                    appendSection(checkpoint, "Next actions", nextActions);
+                    appendSection(checkpoint, "Open risks", risks);
+                    appendSection(checkpoint, "Files", files);
+                    appendSection(checkpoint, "Verification", verification);
+                    checkpoint.append("</conversation-checkpoint>");
+                    return checkpoint.length() > MAX_SUMMARY_CHARS + 3_000 ? null : checkpoint.toString();
+                }
+            }
+        } catch (Exception ignored) {
+            // Not standard JSON; attempt structured Markdown parsing below
+        }
+
+        // OpenCode Structured Markdown Summary parsing
+        if (isStructuredMarkdownSummary(unescaped)) {
+            String safeMarkdown = limitAndRedact(unescaped, MAX_SUMMARY_CHARS + 2_000);
+            StringBuilder checkpoint = new StringBuilder("<conversation-checkpoint version=\"3\" source=\"model\">\n");
+            checkpoint.append("Compaction model: ").append(limitAndRedact(modelName, 180)).append("\n\n");
+            checkpoint.append(safeMarkdown).append("\n");
+            checkpoint.append("</conversation-checkpoint>");
+            return checkpoint.toString();
+        }
+
+        return null;
+    }
+
+    private boolean isStructuredMarkdownSummary(String text) {
+        if (text == null || text.length() < 24) {
+            return false;
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        return lower.contains("## goal")
+                || lower.contains("## progress")
+                || lower.contains("## summary")
+                || lower.contains("## key decisions")
+                || lower.contains("## next steps")
+                || lower.contains("## critical context")
+                || (lower.contains("## ") && lower.contains("- "));
     }
 
     private String requiredString(JsonObject object, String field, int limit) {
@@ -204,7 +244,7 @@ public class CompactionAgent {
         return string.isBlank() ? null : string;
     }
 
-    private List<String> requiredStrings(JsonObject object, String field) {
+    private List<String> optionalOrRequiredStrings(JsonObject object, String field) {
         JsonElement value = object.get(field);
         if (value == null || !value.isJsonArray()) {
             return null;
@@ -238,12 +278,18 @@ public class CompactionAgent {
     }
 
     private String systemPrompt() {
-        return "You are a context compaction component. Return exactly one JSON object and no Markdown. "
-                + "You have no tools and must never claim to have executed code, changed files, or accessed external systems. "
-                + "Summarize only the supplied runtime history. Required schema: "
-                + "{\"summary\":string,\"facts\":[string],\"nextActions\":[string],\"openRisks\":[string],"
-                + "\"files\":[string],\"verification\":[string]}. "
-                + "Do not include credentials, tokens, passwords, API keys, or authorization values.";
+        return "You are a context compaction component. You have no tools and must never claim to have executed code, changed files, or accessed external systems.\n"
+                + "Summarize the supplied runtime history using either JSON format or Markdown format.\n\n"
+                + "## Goal\n- [single-sentence task summary]\n\n"
+                + "## Progress\n### Done\n- [completed work or \"(none)\"]\n### In Progress\n- [current work or \"(none)\"]\n\n"
+                + "## Key Decisions\n- [decision and why, or \"(none)\"]\n\n"
+                + "## Next Steps\n- [ordered next actions or \"(none)\"]\n\n"
+                + "## Critical Context\n- [important technical facts, errors, open questions, or \"(none)\"]\n\n"
+                + "## Relevant Files\n- [file path: why it matters, or \"(none)\"]\n\n"
+                + "Rules:\n"
+                + "- Use terse bullets, not prose paragraphs.\n"
+                + "- Preserve exact file paths, error strings, and identifiers.\n"
+                + "- Do not include credentials, tokens, passwords, API keys, or authorization values.";
     }
 
     private String limitAndRedact(String value, int maxChars) {

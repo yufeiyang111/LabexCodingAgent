@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.google.gson.Gson;
 import com.labex.entity.AgentConversation;
+import com.labex.entity.AgentFileChange;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.attachment.AgentInputAttachmentService;
@@ -12,6 +13,7 @@ import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.run.AgentRunMessageService;
 import com.labex.labexagent.run.AgentRunPartService;
 import com.labex.mapper.AgentConversationMapper;
+import com.labex.mapper.AgentFileChangeMapper;
 import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.time.LocalDateTime;
@@ -52,6 +54,7 @@ public class AgentConversationHistoryProjectionService {
     private final AgentLegacyConversationHistoryMigrationService migrationService;
     private final AgentConversationMemoryProjectionService memoryProjection;
     private final AgentInputAttachmentService attachmentService;
+    private final AgentFileChangeMapper fileChangeMapper;
     private final AgentHistoryProperties historyProperties;
     private final AgentRequestTokenEstimator tokenEstimator = new AgentRequestTokenEstimator();
 
@@ -64,7 +67,7 @@ public class AgentConversationHistoryProjectionService {
                                                      AgentLegacyConversationHistoryMigrationService migrationService,
                                                      AgentConversationMemoryProjectionService memoryProjection) {
         this(conversationMapper, taskMapper, eventMapper, runMessageService, runPartService, forkBoundaries,
-                migrationService, memoryProjection, null, new AgentHistoryProperties());
+                migrationService, memoryProjection, null, null, new AgentHistoryProperties());
     }
 
     public AgentConversationHistoryProjectionService(AgentConversationMapper conversationMapper,
@@ -77,7 +80,21 @@ public class AgentConversationHistoryProjectionService {
                                                      AgentConversationMemoryProjectionService memoryProjection,
                                                      AgentInputAttachmentService attachmentService) {
         this(conversationMapper, taskMapper, eventMapper, runMessageService, runPartService, forkBoundaries,
-                migrationService, memoryProjection, attachmentService, new AgentHistoryProperties());
+                migrationService, memoryProjection, attachmentService, null, new AgentHistoryProperties());
+    }
+
+    public AgentConversationHistoryProjectionService(AgentConversationMapper conversationMapper,
+                                                     AgentTaskMapper taskMapper,
+                                                     AgentRunEventMapper eventMapper,
+                                                     AgentRunMessageService runMessageService,
+                                                     AgentRunPartService runPartService,
+                                                     AgentConversationForkBoundaryService forkBoundaries,
+                                                     AgentLegacyConversationHistoryMigrationService migrationService,
+                                                     AgentConversationMemoryProjectionService memoryProjection,
+                                                     AgentInputAttachmentService attachmentService,
+                                                     AgentHistoryProperties historyProperties) {
+        this(conversationMapper, taskMapper, eventMapper, runMessageService, runPartService, forkBoundaries,
+                migrationService, memoryProjection, attachmentService, null, historyProperties);
     }
 
     @Autowired
@@ -90,6 +107,7 @@ public class AgentConversationHistoryProjectionService {
                                                      AgentLegacyConversationHistoryMigrationService migrationService,
                                                      AgentConversationMemoryProjectionService memoryProjection,
                                                      AgentInputAttachmentService attachmentService,
+                                                     @Autowired(required = false) AgentFileChangeMapper fileChangeMapper,
                                                      AgentHistoryProperties historyProperties) {
         this.conversationMapper = conversationMapper;
         this.taskMapper = taskMapper;
@@ -100,6 +118,7 @@ public class AgentConversationHistoryProjectionService {
         this.migrationService = migrationService;
         this.memoryProjection = memoryProjection;
         this.attachmentService = attachmentService;
+        this.fileChangeMapper = fileChangeMapper;
         this.historyProperties = historyProperties;
     }
 
@@ -149,13 +168,15 @@ public class AgentConversationHistoryProjectionService {
         int maxPartOutputChars = historyProperties == null ? 0 : historyProperties.getMaxPartOutputChars();
         Map<Long, List<Map<String, Object>>> partsByTask = taskIds.isEmpty()
                 ? Map.of() : runPartService.publicHistoryByTaskIds(taskIds, maxPartOutputChars);
+        Map<Long, List<Map<String, Object>>> fileChangesByTask = loadFileChanges(studentId, projectId, taskIds);
         List<HistoryTurn> turns = newest.stream()
                 .map(source -> historyTurn(conversationId, source,
                         eventsByTask.getOrDefault(source.task().getTaskId(), List.of()),
                         messagesByTask.getOrDefault(source.task().getTaskId(), List.of()),
                         partsByTask.getOrDefault(source.task().getTaskId(), List.of()),
                         historyAttachments(studentId, projectId,
-                                messagesByTask.getOrDefault(source.task().getTaskId(), List.of()))))
+                                messagesByTask.getOrDefault(source.task().getTaskId(), List.of())),
+                        fileChangesByTask.getOrDefault(source.task().getTaskId(), List.of())))
                 .toList();
         Long cursor = hasMore && !turns.isEmpty() ? turns.get(0).taskId() : null;
         return new HistoryPage(PROJECTION_VERSION, conversationId, turns, hasMore, cursor, migration.migrated);
@@ -334,11 +355,41 @@ public class AgentConversationHistoryProjectionService {
                 event.getState(), event.getEventType(), safe, event.getCreateTime());
     }
 
+    private Map<Long, List<Map<String, Object>>> loadFileChanges(Integer studentId, Integer projectId, List<Long> taskIds) {
+        if (fileChangeMapper == null || taskIds == null || taskIds.isEmpty()) return Map.of();
+        List<AgentFileChange> changes = fileChangeMapper.selectList(new LambdaQueryWrapper<AgentFileChange>()
+                .in(AgentFileChange::getTaskId, taskIds)
+                .eq(studentId != null, AgentFileChange::getStudentId, studentId)
+                .eq(projectId != null, AgentFileChange::getProjectId, projectId)
+                .orderByAsc(AgentFileChange::getChangeId));
+        if (changes == null || changes.isEmpty()) return Map.of();
+        Map<Long, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
+        for (AgentFileChange fc : changes) {
+            if (fc == null || fc.getTaskId() == null) continue;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("changeId", fc.getChangeId());
+            item.put("taskId", fc.getTaskId());
+            item.put("conversationId", fc.getConversationId());
+            item.put("file", fc.getRelativePath());
+            item.put("filePath", fc.getRelativePath());
+            item.put("relativePath", fc.getRelativePath());
+            item.put("path", fc.getRelativePath());
+            item.put("diff", fc.getDiff());
+            item.put("patch", fc.getDiff());
+            item.put("status", fc.getStatus() == null ? "modified" : fc.getStatus());
+            item.put("changeType", fc.getChangeType() == null ? "edit" : fc.getChangeType());
+            grouped.computeIfAbsent(fc.getTaskId(), ignored -> new ArrayList<>()).add(item);
+        }
+        grouped.replaceAll((ignored, values) -> List.copyOf(values));
+        return Map.copyOf(grouped);
+    }
+
     private HistoryTurn historyTurn(String requestedConversationId, TaskSource source,
                                     List<HistoryEvent> events,
                                     List<Map<String, Object>> runMessages,
                                     List<Map<String, Object>> parts,
-                                    List<AgentInputAttachmentService.HistoryAttachment> attachments) {
+                                    List<AgentInputAttachmentService.HistoryAttachment> attachments,
+                                    List<Map<String, Object>> fileChanges) {
         AgentTask task = source.task();
         return new HistoryTurn(task.getTaskId(), requestedConversationId, source.sourceConversationId(),
                 source.inherited(), task.getSessionId(), task.getMode(), task.getStatus(),
@@ -347,7 +398,8 @@ public class AgentConversationHistoryProjectionService {
                 task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch(),
                 task.getSubmittedAt(), task.getStartedAt(), task.getFinishedAt(),
                 task.getActiveElapsedMs() == null ? 0L : task.getActiveElapsedMs(),
-                task.getCreateTime(), task.getUpdateTime(), events, runMessages, parts, attachments);
+                task.getCreateTime(), task.getUpdateTime(), events, runMessages, parts, attachments,
+                fileChanges);
     }
 
     private List<AgentInputAttachmentService.HistoryAttachment> historyAttachments(Integer studentId, Integer projectId,
@@ -409,12 +461,14 @@ public class AgentConversationHistoryProjectionService {
                               List<HistoryEvent> events,
                               List<Map<String, Object>> runMessages,
                               List<Map<String, Object>> parts,
-                              List<AgentInputAttachmentService.HistoryAttachment> attachments) {
+                              List<AgentInputAttachmentService.HistoryAttachment> attachments,
+                              List<Map<String, Object>> fileChanges) {
         public HistoryTurn {
             events = List.copyOf(events == null ? List.of() : events);
             runMessages = List.copyOf(runMessages == null ? List.of() : runMessages);
             parts = List.copyOf(parts == null ? List.of() : parts);
             attachments = List.copyOf(attachments == null ? List.of() : attachments);
+            fileChanges = List.copyOf(fileChanges == null ? List.of() : fileChanges);
         }
     }
 

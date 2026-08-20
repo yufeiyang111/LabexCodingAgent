@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentModelConfig;
@@ -135,15 +137,25 @@ class AgentLoopEngineContextBudgetTest {
     }
 
     @Test
-    void selectsCompactionBoundariesFromTheDurableProjectionOnly() throws Exception {
+    void compactionSelectsOnlyTheCurrentTaskTranscriptInsteadOfTheConversationProviderPrefix()
+            throws Exception {
         AgentLoopEngine engine = newEngine();
         AgentTranscriptProjectionService projection = mock(AgentTranscriptProjectionService.class);
-        List<Map<String, Object>> durableMessages = List.of(
-                Map.of("role", "user", "content", "old request"),
-                Map.of("role", "assistant", "content", "old answer"),
-                Map.of("role", "user", "content", "recent request"),
-                Map.of("role", "assistant", "content", "recent answer"));
-        when(projection.loadProviderMessages(72L)).thenReturn(durableMessages);
+        List<Map<String, Object>> conversationPrefixedProviderMessages = List.of(
+                Map.of("role", "user", "content", "conversation request"),
+                Map.of("role", "assistant", "content", "conversation answer"),
+                Map.of("role", "user", "content", "task old request"),
+                Map.of("role", "assistant", "content", "task old answer"),
+                Map.of("role", "user", "content", "task recent request"),
+                Map.of("role", "assistant", "content", "task recent answer"));
+        List<Map<String, Object>> currentTaskMessages = List.of(
+                Map.of("role", "user", "content", "task old request"),
+                Map.of("role", "assistant", "content", "task old answer"),
+                Map.of("role", "user", "content", "task recent request"),
+                Map.of("role", "assistant", "content", "task recent answer"));
+        when(projection.loadProviderMessages(72L)).thenReturn(conversationPrefixedProviderMessages);
+        when(projection.loadDurableProjection(72L)).thenReturn(
+                new AgentTranscriptProjectionService.Projection(currentTaskMessages, "durable_transcript"));
         var projectionField = AgentLoopEngine.class.getDeclaredField("transcriptProjectionService");
         projectionField.setAccessible(true);
         projectionField.set(engine, projection);
@@ -152,8 +164,10 @@ class AgentLoopEngineContextBudgetTest {
         CompactionSelection selection = engine.selectDurableCompaction(72L, 1, 8_000);
 
         assertTrue(selection.changed());
-        assertEquals("old request", selection.compactedHead().get(0).get("content"));
-        assertEquals("recent request", selection.retainedTail().get(0).get("content"));
+        assertEquals("task old request", selection.compactedHead().get(0).get("content"));
+        assertEquals("task recent request", selection.retainedTail().get(0).get("content"));
+        verify(projection).loadDurableProjection(72L);
+        verify(projection, never()).loadProviderMessages(72L);
     }
 
     @Test

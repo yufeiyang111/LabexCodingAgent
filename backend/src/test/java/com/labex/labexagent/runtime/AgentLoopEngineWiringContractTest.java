@@ -27,7 +27,13 @@ class AgentLoopEngineWiringContractTest {
                 Path.of("src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"),
                 StandardCharsets.UTF_8);
 
-        assertFalse(source.contains("@Autowired(required = false)"));
+        // 核心运行时依赖必须 required；可选功能服务（run plan / workspace instruction）允许 optional
+        int optionalAutowired = source.indexOf("@Autowired(required = false)");
+        assertTrue(optionalAutowired >= 0);
+        assertTrue(source.indexOf("void setRunPlanService(AgentRunPlanService runPlanService)") > optionalAutowired);
+        assertFalse(source.indexOf("@Autowired(required = false)", optionalAutowired + 1) >= 0);
+        assertTrue(source.contains("workspaceInstructionService == null"));
+        assertTrue(source.contains("runPlanService != null"));
         assertTrue(source.contains("void setExecutionLeaseServices"));
         assertTrue(source.contains("void setRunFinalizer"));
         assertTrue(source.contains("void setArtifactService"));

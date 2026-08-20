@@ -27,6 +27,7 @@ final class CompletionEvidenceFingerprint {
                 + "\nsuccess=" + canonicalList(evidence.successfulVerifications())
                 + "\nfailed=" + canonicalList(evidence.failedVerifications())
                 + "\nenvironment=" + canonicalList(evidence.environmentVerifications())
+                + "\ntoolFailures=" + canonicalList(evidence.unresolvedToolFailures())
                 + "\nrisks=" + canonicalList(evidence.unresolvedRisks())
                 + "\ncriteria=" + canonicalCriteria(evidence.criteria())
                 + "\npreviewStatus=" + (preview == null ? "" : preview.status())

@@ -52,11 +52,17 @@ public class AgentCancellationRegistry {
                 required(studentId, "studentId"),
                 required(projectId, "projectId"),
                 taskId);
-        ActiveRun previous = activeRuns.put(activeRun.sessionId(), activeRun);
-        if (previous != null) {
-            previous.requestCancellation();
-        }
-        return activeRun;
+        return activeRuns.compute(activeRun.sessionId(), (ignored, previous) -> {
+            // SSE 重连 / 同任务恢复可能再次进入执行器注册路径；这不是用户取消，必须复用原令牌。
+            if (previous != null && previous.belongsTo(studentId, projectId)
+                    && java.util.Objects.equals(previous.taskId(), taskId)) {
+                return previous;
+            }
+            if (previous != null) {
+                previous.requestCancellation();
+            }
+            return activeRun;
+        });
     }
 
     public void complete(ActiveRun activeRun) {

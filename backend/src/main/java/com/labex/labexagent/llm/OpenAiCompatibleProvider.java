@@ -372,6 +372,9 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", sysPrompt));
         messages.addAll(msgs);
+        if (config.promptCacheKeyEnabled()) {
+            messages = PromptCachePolicy.applyToMessages(messages);
+        }
         body.put("messages", messages);
 
         body.put("max_tokens", config.maxTokens() != null ? config.maxTokens() : AgentModelConfigService.DEFAULT_MAX_TOKENS);
@@ -390,7 +393,9 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         }
 
         if (tools != null && !tools.isEmpty()) {
-            body.put("tools", tools);
+            List<Map<String, Object>> effectiveTools = config.promptCacheKeyEnabled()
+                    ? PromptCachePolicy.applyToTools(tools) : tools;
+            body.put("tools", effectiveTools);
             body.put("tool_choice", "auto");
             body.put("parallel_tool_calls", false);
         }
@@ -603,7 +608,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
     private String httpPost(String url, String body, String apiKey, LlmConfig config,
                             CancellationToken cancellationToken) throws Exception {
         CancellationToken token = cancellationToken == null ? CancellationToken.none() : cancellationToken;
-        URI uri = outboundUrlPolicy.validate(url).uri();
+        URI uri = outboundUrlPolicy.validateProviderUrl(url).uri();
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(config.effectiveConnectTimeoutMs()))
                 .followRedirects(HttpClient.Redirect.NEVER)
@@ -697,7 +702,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
     }
 
     private HttpURLConnection openConnection(String rawUrl) throws Exception {
-        URI uri = outboundUrlPolicy.validate(rawUrl).uri();
+        URI uri = outboundUrlPolicy.validateProviderUrl(rawUrl).uri();
         HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
         conn.setInstanceFollowRedirects(false);
         return conn;

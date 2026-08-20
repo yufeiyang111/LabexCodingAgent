@@ -62,16 +62,25 @@ implements AgentTool {
                     + "expected_sha256=" + expectedSha256 + "\n"
                     + "actual_sha256=" + actualSha256);
         }
-        int firstMatch = beforeContent.indexOf(oldString);
-        if (firstMatch < 0) {
+        boolean isCrlf = beforeContent.contains("\r\n");
+        String normBefore = beforeContent.replace("\r\n", "\n");
+        String normOld = oldString.replace("\r\n", "\n");
+        String normNew = newString.replace("\r\n", "\n");
+
+        MatchResult match = findMatch(normBefore, normOld);
+        if (match == null) {
+            int exactCount = countOccurrences(normBefore, normOld);
+            if (exactCount > 1) {
+                return ToolResult.failed("old_string must match exactly once");
+            }
             return ToolResult.failed("code=OLD_STRING_NOT_FOUND\n"
-                    + "message=\u672a\u627e\u5230\u8981\u66ff\u6362\u7684\u539f\u6587\uff0c\u8bf7\u91cd\u65b0\u8bfb\u53d6\u6587\u4ef6\u540e\u518d\u7f16\u8f91");
+                    + "message=未找到要替换的原文，请重新读取文件后再编辑");
         }
-        if (beforeContent.indexOf(oldString, firstMatch + oldString.length()) >= 0) {
-            return ToolResult.failed("old_string must match exactly once");
-        }
-        String afterContent = beforeContent.substring(0, firstMatch) + newString
-                + beforeContent.substring(firstMatch + oldString.length());
+
+        String normAfter = normBefore.substring(0, match.startIndex) + normNew
+                + normBefore.substring(match.startIndex + match.length);
+        String afterContent = isCrlf ? normAfter.replace("\n", "\r\n") : normAfter;
+
         if (beforeContent.equals(afterContent)) {
             return ToolResult.failed("code=NO_OP_EDIT\n"
                     + "message=new_string is identical to the matched old_string");
@@ -83,6 +92,77 @@ implements AgentTool {
         }
         PendingChange change = this.diffService.stageAndApplyDeferred(context.getStudentId(), context.getProject(),
                 context.getConversationId(), context.getTaskId(), cleaned, beforeContent, afterContent, "modify");
-        return ToolResult.ok((String)("\u5df2\u81ea\u52a8\u7f16\u8f91\u6587\u4ef6: " + path + "\uff08\u53ef\u968f\u65f6\u56de\u9000\uff09")).withDiff(change.getDiff()).withPendingChangeId(change.getId());
+        return ToolResult.ok("已自动编辑文件: " + path + "（可随时回退）").withDiff(change.getDiff()).withPendingChangeId(change.getId());
+    }
+
+    private record MatchResult(int startIndex, int length) {}
+
+    private MatchResult findMatch(String content, String find) {
+        int idx = content.indexOf(find);
+        if (idx >= 0) {
+            int second = content.indexOf(find, idx + 1);
+            if (second >= 0) {
+                return null;
+            }
+            return new MatchResult(idx, find.length());
+        }
+
+        String[] originalLines = content.split("\n", -1);
+        String[] searchLines = find.split("\n", -1);
+        if (searchLines.length > 0 && searchLines[searchLines.length - 1].isEmpty()) {
+            String[] trimmed = new String[searchLines.length - 1];
+            System.arraycopy(searchLines, 0, trimmed, 0, trimmed.length);
+            searchLines = trimmed;
+        }
+        if (searchLines.length == 0) return null;
+
+        int matchCount = 0;
+        int foundStart = -1;
+        int foundLength = -1;
+
+        for (int i = 0; i <= originalLines.length - searchLines.length; i++) {
+            boolean matches = true;
+            for (int j = 0; j < searchLines.length; j++) {
+                if (!originalLines[i + j].trim().equals(searchLines[j].trim())) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                matchCount++;
+                if (matchCount > 1) {
+                    return null;
+                }
+                int start = 0;
+                for (int k = 0; k < i; k++) {
+                    start += originalLines[k].length() + 1;
+                }
+                int end = start;
+                for (int k = 0; k < searchLines.length; k++) {
+                    end += originalLines[i + k].length();
+                    if (k < searchLines.length - 1) {
+                        end += 1;
+                    }
+                }
+                foundStart = start;
+                foundLength = end - start;
+            }
+        }
+
+        if (matchCount == 1) {
+            return new MatchResult(foundStart, foundLength);
+        }
+        return null;
+    }
+
+    private int countOccurrences(String content, String find) {
+        if (find.isEmpty()) return 0;
+        int count = 0;
+        int idx = 0;
+        while ((idx = content.indexOf(find, idx)) >= 0) {
+            count++;
+            idx += find.length();
+        }
+        return count;
     }
 }

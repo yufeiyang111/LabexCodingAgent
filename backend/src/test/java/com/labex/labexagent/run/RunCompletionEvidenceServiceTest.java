@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 import com.google.gson.Gson;
 import com.labex.entity.AgentFileChange;
 import com.labex.entity.AgentRunArtifact;
+import com.labex.entity.AgentRunPart;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService.StaleExecutionFenceException;
 import com.labex.entity.AgentVerification;
@@ -387,26 +388,35 @@ class RunCompletionEvidenceServiceTest {
     }
 
     @Test
-    void keepsGenericToolFailuresAuditableWithoutMakingThemPermanentCompletionBlockers() {
+    void durableNonZeroToolPartBlocksCompletionEvenWhenItsTransportStatusWasCompleted() {
         AgentFileChangeMapper changes = Mockito.mock(AgentFileChangeMapper.class);
         AgentVerificationMapper verifications = Mockito.mock(AgentVerificationMapper.class);
         AgentRunArtifactService artifacts = Mockito.mock(AgentRunArtifactService.class);
+        AgentRunPartService parts = Mockito.mock(AgentRunPartService.class);
         AgentFileChange change = new AgentFileChange();
-        change.setRelativePath("verify_app.py"); change.setStatus("pending");
+        change.setRelativePath("verify_app.py");
+        change.setStatus("pending");
         AgentVerification passed = new AgentVerification();
-        passed.setCommand("python3 -m pytest"); passed.setStatus("passed"); passed.setExitCode(0);
-        AgentRunArtifact failedShell = new AgentRunArtifact();
-        failedShell.setContent("tool=shell\nexit=1\nexploratory check failed");
+        passed.setCommand("python3 -m pytest");
+        passed.setStatus("passed");
+        passed.setExitCode(0);
+        AgentRunPart failedShell = new AgentRunPart();
+        failedShell.setPartId(44L);
+        failedShell.setPartType("tool");
+        failedShell.setStatus("completed");
+        failedShell.setToolName("shell");
+        failedShell.setInputJson("{\"command\":\"git status\"}");
+        failedShell.setMetadata("{\"execution\":{\"status\":\"failed\",\"exitCode\":128},\"failureClass\":\"non_zero_exit\"}");
         when(changes.selectList(any())).thenReturn(List.of(change));
         when(verifications.selectList(any())).thenReturn(List.of(passed));
         when(artifacts.list(9L, "post_edit_verification")).thenReturn(List.of());
-        when(artifacts.list(9L, "tool_failure")).thenReturn(List.of(failedShell));
+        when(parts.history(9L)).thenReturn(List.of(failedShell));
 
-        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts)
-                .evaluateAndPersist(9L, 7, 3, false, "running");
+        RunCompletionEvidence evidence = new RunCompletionEvidenceService(changes, verifications, artifacts,
+                null, null, parts).evaluateAndPersist(9L, 7, 3, false, "running");
 
-        assertTrue(evidence.satisfied());
-        assertTrue(evidence.unresolvedRisks().isEmpty());
+        assertFalse(evidence.satisfied());
+        assertEquals(List.of("shell (non_zero_exit)"), evidence.unresolvedToolFailures());
     }
 
 }

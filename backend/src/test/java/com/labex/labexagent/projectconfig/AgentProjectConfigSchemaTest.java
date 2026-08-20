@@ -286,7 +286,7 @@ class AgentProjectConfigSchemaTest {
             if ("INDEX".equalsIgnoreCase(matcher.group(1))) {
                 indexes.add("CREATE INDEX " + name + " ON " + table + " (" + columns + ")");
             } else {
-                indexes.add("ALTER TABLE " + table + " ADD CONSTRAINT " + name + " UNIQUE (" + columns + ")");
+                indexes.add("CREATE UNIQUE INDEX " + name + " ON " + table + " (" + columns + ")");
             }
         }
         return indexes;

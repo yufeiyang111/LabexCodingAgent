@@ -5,6 +5,8 @@ import com.google.gson.Gson;
 import com.labex.entity.AgentRunMessage;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
+import com.labex.labexagent.run.AgentRunTranscriptService;
+import com.labex.labexagent.runtime.AgentLoopProperties;
 import com.labex.mapper.AgentRunMessageMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.ArrayList;
@@ -16,13 +18,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
  * 从任务请求与运行级最终消息投影会话 transcript。
  *
- * <p>该投影不读取 {@code t_agent_message}，并且只推进到连续的终态任务前缀，
- * 避免把仍可能变化的运行中任务纳入压缩边界。</p>
+ * <p>对齐 OpenCode 规范：最近 tailTurns (默认 2) 轮对话保留完整的 User、Assistant、Tool Call 与
+ * Tool Result 无损协议消息；更早的轮次保留紧凑摘要。</p>
  */
 @Service
 public class AgentConversationTranscriptProjectionService {
@@ -37,11 +40,23 @@ public class AgentConversationTranscriptProjectionService {
 
     private final AgentTaskMapper taskMapper;
     private final AgentRunMessageMapper messageMapper;
+    private final AgentRunTranscriptService transcriptService;
+    private final AgentLoopProperties loopProperties;
+
+    @Autowired
+    public AgentConversationTranscriptProjectionService(AgentTaskMapper taskMapper,
+                                                        AgentRunMessageMapper messageMapper,
+                                                        @Autowired(required = false) AgentRunTranscriptService transcriptService,
+                                                        @Autowired(required = false) AgentLoopProperties loopProperties) {
+        this.taskMapper = taskMapper;
+        this.messageMapper = messageMapper;
+        this.transcriptService = transcriptService;
+        this.loopProperties = loopProperties != null ? loopProperties : new AgentLoopProperties();
+    }
 
     public AgentConversationTranscriptProjectionService(AgentTaskMapper taskMapper,
                                                         AgentRunMessageMapper messageMapper) {
-        this.taskMapper = taskMapper;
-        this.messageMapper = messageMapper;
+        this(taskMapper, messageMapper, null, null);
     }
 
     /**
@@ -87,7 +102,10 @@ public class AgentConversationTranscriptProjectionService {
         int userTurns = 0;
         int stableTasks = 0;
         boolean unstableBarrier = false;
-        for (AgentTask task : tasks) {
+        int tailTurns = loopProperties == null ? 2 : loopProperties.getTailTurns();
+        int totalTasks = tasks.size();
+        for (int taskIdx = 0; taskIdx < totalTasks; taskIdx++) {
+            AgentTask task = tasks.get(taskIdx);
             if (!isTerminal(task.getStatus())) {
                 unstableBarrier = true;
                 break;
@@ -97,17 +115,32 @@ public class AgentConversationTranscriptProjectionService {
             if ("compact".equalsIgnoreCase(task.getMode())) {
                 continue;
             }
-            String request = durableRequest(task);
-            if (request.isBlank()) {
-                continue;
-            }
-            messages.add(message("user", request));
-            userTurns++;
-            AgentRunMessage finalMessage = finalsByTask.get(task.getTaskId());
-            if (finalMessage != null) {
-                String answer = sanitizeVisible(finalMessage.getContent());
-                if (!answer.isBlank()) {
-                    messages.add(message("assistant", answer));
+
+            boolean isTailTurn = (totalTasks - taskIdx) <= tailTurns;
+            boolean isRecentTask = (totalTasks - taskIdx) <= 6; // 最近 6 个任务保留工具交互细节，更早任务折叠为核心问答
+            List<Map<String, Object>> taskTranscript = (transcriptService != null && isRecentTask)
+                    ? transcriptService.loadProjectableTranscript(task.getTaskId())
+                    : List.of();
+
+            if (taskTranscript != null && !taskTranscript.isEmpty()) {
+                List<Map<String, Object>> effectiveTranscript = isTailTurn
+                        ? taskTranscript
+                        : pruneToolOutputs(taskTranscript);
+                messages.addAll(effectiveTranscript);
+                userTurns += countUserTurns(effectiveTranscript);
+            } else {
+                String request = durableRequest(task);
+                if (request.isBlank()) {
+                    continue;
+                }
+                messages.add(message("user", request));
+                userTurns++;
+                AgentRunMessage finalMessage = finalsByTask.get(task.getTaskId());
+                if (finalMessage != null) {
+                    String answer = sanitizeVisible(finalMessage.getContent());
+                    if (!answer.isBlank()) {
+                        messages.add(message("assistant", answer));
+                    }
                 }
             }
         }
@@ -179,6 +212,16 @@ public class AgentConversationTranscriptProjectionService {
         return redacted.substring(0, CONTENT_LIMIT) + "\n...truncated...";
     }
 
+    private int countUserTurns(List<Map<String, Object>> messages) {
+        int count = 0;
+        for (Map<String, Object> message : messages == null ? List.<Map<String, Object>>of() : messages) {
+            if (message != null && "user".equalsIgnoreCase(String.valueOf(message.get("role")))) {
+                count++;
+            }
+        }
+        return Math.max(1, count);
+    }
+
     public record Snapshot(List<Map<String, Object>> messages, long sourceMaxTaskId,
                            int userTurns, boolean hasMore) {
         public Snapshot(List<Map<String, Object>> messages, long sourceMaxTaskId, int userTurns) {
@@ -190,5 +233,29 @@ public class AgentConversationTranscriptProjectionService {
             sourceMaxTaskId = Math.max(0L, sourceMaxTaskId);
             userTurns = Math.max(0, userTurns);
         }
+    }
+
+    private static final int TOOL_OUTPUT_MAX_CHARS = 2_000;
+
+    private List<Map<String, Object>> pruneToolOutputs(List<Map<String, Object>> transcript) {
+        if (transcript == null || transcript.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> pruned = new ArrayList<>(transcript.size());
+        for (Map<String, Object> msg : transcript) {
+            if (msg == null) continue;
+            String role = String.valueOf(msg.get("role"));
+            if ("tool".equalsIgnoreCase(role)) {
+                String content = String.valueOf(msg.getOrDefault("content", ""));
+                if (content.length() > TOOL_OUTPUT_MAX_CHARS) {
+                    Map<String, Object> copy = new LinkedHashMap<>(msg);
+                    copy.put("content", content.substring(0, TOOL_OUTPUT_MAX_CHARS) + "\n... [output truncated for history length]");
+                    pruned.add(copy);
+                    continue;
+                }
+            }
+            pruned.add(msg);
+        }
+        return pruned;
     }
 }

@@ -524,9 +524,27 @@ implements StudentProjectService {
                 }
             });
         }
-        catch (IOException e) {
+        catch (IOException | RuntimeException e) {
+            if (isClientDisconnect(e)) {
+                log.info("Project export aborted by client for project {}: {}", projectId, e.getMessage());
+                return;
+            }
             throw new RuntimeException("Project export failed: " + e.getMessage(), e);
         }
+    }
+
+    private boolean isClientDisconnect(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            String message = current.getMessage();
+            if (current instanceof IOException && message != null
+                    && (message.contains("Connection reset") || message.contains("Broken pipe")
+                    || message.contains("Aborted") || message.contains("closed"))) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     public void deleteOwnedProject(Integer studentId, Integer projectId) {

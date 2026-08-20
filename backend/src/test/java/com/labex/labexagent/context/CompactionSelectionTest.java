@@ -56,6 +56,32 @@ class CompactionSelectionTest {
         new AgentProviderMessageProjector().project(selection.retainedTail());
     }
 
+    @Test
+    void splitsLongSingleUserTurnWithMultipleToolStepsWhenExceedingBudget() {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "user", "content", "start long task"));
+        for (int i = 1; i <= 8; i++) {
+            messages.add(Map.of("role", "assistant", "content", "step " + i,
+                    "tool_calls", List.of(toolCall("call-" + i, "read_file"))));
+            messages.add(Map.of("role", "tool", "tool_call_id", "call-" + i, "name", "read_file",
+                    "content", "data for step " + i + " " + "x".repeat(500)));
+        }
+
+        // Total messages = 17. Budget fits roughly the last 2 steps.
+        CompactionSelection selection = CompactionSelection.select(messages, 2, 2_000, estimator);
+
+        assertTrue(selection.changed());
+        assertEquals(1, selection.retainedTurns());
+        // Head should contain earlier steps, tail should contain recent steps
+        assertTrue(selection.compactedHead().size() > 0);
+        assertTrue(selection.retainedTail().size() > 0);
+        assertEquals(messages.size(), selection.compactedHead().size() + selection.retainedTail().size());
+        // Verify tail starts with a valid role (not an orphaned 'tool')
+        String tailFirstRole = String.valueOf(selection.retainedTail().get(0).get("role"));
+        assertTrue("assistant".equals(tailFirstRole) || "user".equals(tailFirstRole));
+        new AgentProviderMessageProjector().project(selection.retainedTail());
+    }
+
     private Map<String, Object> toolCall(String id, String name) {
         return Map.of("id", id, "type", "function",
                 "function", Map.of("name", name, "arguments", "{}"));

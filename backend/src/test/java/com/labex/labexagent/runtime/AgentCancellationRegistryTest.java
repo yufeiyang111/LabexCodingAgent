@@ -37,4 +37,15 @@ class AgentCancellationRegistryTest {
                 registry.cancel("session-2", 7, 13).status());
         assertFalse(run.isCancellationRequested());
     }
+    @Test
+    void duplicateRegistrationForTheSameDurableTaskIsIdempotentAndCannotImpersonateUserCancellation() {
+        AgentCancellationRegistry registry = new AgentCancellationRegistry();
+        AgentCancellationRegistry.ActiveRun original = registry.register("session-duplicate", 7, 12, 47L);
+
+        AgentCancellationRegistry.ActiveRun duplicate = registry.register("session-duplicate", 7, 12, 47L);
+
+        assertEquals(original, duplicate);
+        assertFalse(original.isCancellationRequested());
+    }
 }
+

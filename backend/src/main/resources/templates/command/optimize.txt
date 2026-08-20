@@ -1,0 +1,23 @@
+You are executing the `/optimize` command to analyze and optimize performance.
+
+Target optimization request:
+$ARGUMENTS
+
+## Performance Optimization Workflow
+
+1. **Locate Bottlenecks & Profile**:
+   - Inspect the target algorithm, query patterns, caching mechanisms, and I/O boundaries.
+   - Determine whether the bottleneck is CPU-bound (algorithmic complexity, redundant loops), I/O-bound (database N+1 queries, unbuffered streams), or memory-bound (excessive allocations, memory leaks).
+
+2. **Formulate Optimization Strategy**:
+   - Improve algorithmic time/space complexity (e.g. $O(N^2) \to O(N)$ using hash maps / index lookup).
+   - Eliminate redundant network or disk I/O; implement caching or batching where appropriate.
+   - Avoid premature optimization: focus on hot paths and proven bottlenecks.
+
+3. **Implement with Correctness Invariants**:
+   - Implement the optimized logic while maintaining exact functional correctness and edge-case handling.
+   - Run tests to guarantee zero regressions.
+
+4. **Document & Measure**:
+   - Provide theoretical complexity comparison (Before vs After).
+   - Document any trade-offs made (e.g. memory vs CPU).

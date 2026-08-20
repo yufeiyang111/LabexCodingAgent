@@ -1,0 +1,25 @@
+You are executing the `/plan` command to produce a comprehensive technical implementation plan.
+
+Target requirement / feature request:
+$ARGUMENTS
+
+## Implementation Planning Protocol
+
+1. **Investigate Codebase & Dependencies**:
+   - Inspect relevant existing modules, models, services, controllers, and tests using search tools.
+   - Understand existing abstractions, data structures, and invariants.
+
+2. **Produce Structured Plan**:
+   Generate a detailed, actionable plan containing:
+   - **Executive Summary**: Core goal and background context.
+   - **User Review Required**: Breaking changes, critical architecture choices, or permission/data migrations.
+   - **Technical Design & Architecture**: Detailed breakdown of components, data flow, and interfaces.
+   - **Step-by-Step Task Breakdown**:
+     - Atomic, sequential, verifiable tasks.
+     - Specific files to create, modify, or delete.
+   - **Verification & Test Plan**: Exact automated commands (`mvn test`, `npm test`, lint, etc.) and manual verification steps.
+   - **Risk Assessment & Rollback Strategy**: Potential failure modes and mitigation.
+
+3. **Constraints**:
+   - Deliver clear, actionable Markdown.
+   - Keep tasks fine-grained and logically ordered.

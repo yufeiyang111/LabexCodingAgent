@@ -26,6 +26,16 @@ public final class TurnAwareContextPruner {
         this.tokenEstimator = tokenEstimator;
     }
 
+    /**
+     * 对标 OpenCode session/compaction.ts: preserveRecentBudget
+     * 动态计算尾部保护预算：min(8000, max(2000, contextWindowTokens * 0.25))
+     */
+    public static int calculateTailTokenBudget(Integer contextWindowTokens) {
+        int window = (contextWindowTokens != null && contextWindowTokens > 0) ? contextWindowTokens : 32_768;
+        int quarter = (int) Math.floor(window * 0.25);
+        return Math.min(8_000, Math.max(2_000, quarter));
+    }
+
     public boolean hasPrunableHistoricalToolResult(List<Map<String, Object>> messages, int tailTurns, int tailTokenBudget) {
         int tailStart = selectTailStart(messages, tailTurns, tailTokenBudget);
         for (int index = 0; index < tailStart; index++) {

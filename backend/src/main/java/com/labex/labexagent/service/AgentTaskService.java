@@ -11,6 +11,7 @@ import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.run.AgentRunTransitionKey;
@@ -135,7 +136,22 @@ public class AgentTaskService {
         task.setSubmittedAt(effectiveSubmittedAt);
         task.setActiveElapsedMs(0L);
         task.setCreateTime(now);
-        task.setUpdateTime(now);
+        // 取消同会话下历史遗留的非终态任务，避免悬挂的旧任务干扰活跃状态查找与恢复
+        if (conversationId != null && !conversationId.isBlank()) {
+            List<AgentTask> dangling = this.taskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
+                    .eq(AgentTask::getStudentId, studentId)
+                    .eq(AgentTask::getProjectId, project.getProjectId())
+                    .eq(AgentTask::getConversationId, conversationId)
+                    .notIn(AgentTask::getStatus, List.of("completed", "failed", "cancelled")));
+            for (AgentTask oldTask : dangling) {
+                if (oldTask != null && oldTask.getTaskId() != null) {
+                    oldTask.setStatus(AgentRunState.CANCELLED.persistedStatus());
+                    oldTask.setSummary("已由新任务取代");
+                    oldTask.setUpdateTime(now);
+                    this.taskMapper.updateById(oldTask);
+                }
+            }
+        }
         this.taskMapper.insert(task);
         if (backgroundRun) {
             if (this.backgroundWorktreeService == null) throw new IllegalStateException("background worktree service is unavailable");
@@ -321,6 +337,33 @@ public class AgentTaskService {
                         "blockerCode", blockerCode == null ? "UNKNOWN" : blockerCode));
     }
 
+    /**
+     * 循环保护只暂停当前 epoch，保留持久化 transcript / Part，等待用户明确继续而不是伪装成用户取消。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunEvent waitForLoopGuardRecovery(ExecutionFence fence, Long taskId, String currentStep,
+                                                   String summary, String reasonCode, int iteration) {
+        if (fence == null || taskId == null) return null;
+        AgentTask task = this.task(taskId);
+        if (task == null) return null;
+        AgentRunState current = this.runState(task.getStatus());
+        if (current == AgentRunState.WAITING_RECOVERY) return null;
+        if (current == null || this.isTerminalState(task.getStatus())) return null;
+        LocalDateTime now = LocalDateTime.now();
+        this.pauseTiming(taskId, now);
+        Map<String, Object> payload = new LinkedHashMap<>(this.taskUpdatePayload(
+                "waiting_recovery", currentStep, summary));
+        payload.put("reasonCode", reasonCode == null || reasonCode.isBlank() ? "loop_guard" : reasonCode);
+        payload.put("iteration", Math.max(0, iteration));
+        payload.put("recoverable", true);
+        payload.put("resumeAction", "loop_guard_resume");
+        AgentRunLifecycleService.TransitionResult transition = lifecycleService.transitionIfCurrentResult(
+                fence, taskId, current, AgentRunState.WAITING_RECOVERY, "LOOP_GUARD_STOPPED", payload,
+                currentStep, summary, AgentRunTransitionKey.forTaskUpdateOccurrence(taskId,
+                        fence.epoch(), "waiting_recovery", currentStep, summary));
+        return transition == null ? null : transition.event();
+    }
+
     /** 为外部阻塞解除创建带租约的 queued dispatch。 */
     @Transactional(rollbackFor = Exception.class)
     public AgentRunLifecycleService.DispatchClaim claimWorkspaceResume(Long taskId) {
@@ -332,6 +375,12 @@ public class AgentTaskService {
     public AgentRunLifecycleService.DispatchClaim claimEnvironmentResume(Long taskId) {
         return claimExternalResume(taskId, AgentRunState.WAITING_ENVIRONMENT, "environment-resume",
                 "RUN_ENVIRONMENT_RESUME", "The dependency environment is available again.");
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunLifecycleService.DispatchClaim claimLoopGuardResume(Long taskId) {
+        return claimExternalResume(taskId, AgentRunState.WAITING_RECOVERY, "loop-guard-resume",
+                "RUN_LOOP_GUARD_RESUME", "The user resumed the task after the loop guard stop.");
     }
 
     private AgentRunLifecycleService.DispatchClaim claimExternalResume(Long taskId, AgentRunState waitingState,
@@ -420,7 +469,7 @@ public class AgentTaskService {
         if (task == null) return false;
         AgentRunState state = this.runState(task.getStatus());
         if (state != AgentRunState.RETRYING && state != AgentRunState.WAITING_WORKSPACE
-                && state != AgentRunState.WAITING_ENVIRONMENT) {
+                && state != AgentRunState.WAITING_ENVIRONMENT && state != AgentRunState.WAITING_RECOVERY) {
             return false;
         }
         String summary = "User cancelled inactive agent task";
@@ -528,7 +577,8 @@ public class AgentTaskService {
 
     private boolean isWaitingState(String status) {
         return "waiting_approval".equalsIgnoreCase(status) || "waiting_user".equalsIgnoreCase(status)
-                || "waiting_workspace".equalsIgnoreCase(status) || "waiting_environment".equalsIgnoreCase(status);
+                || "waiting_workspace".equalsIgnoreCase(status) || "waiting_environment".equalsIgnoreCase(status)
+                || "waiting_recovery".equalsIgnoreCase(status);
     }
 
     private boolean isTerminalState(String status) {
@@ -634,7 +684,7 @@ public class AgentTaskService {
                 .eq(AgentTask::getProjectId, projectId)
                 .eq(AgentTask::getConversationId, conversationId)
                 .notIn(AgentTask::getStatus, List.of("completed", "failed", "cancelled"))
-                .orderByDesc(AgentTask::getUpdateTime)
+                .orderByDesc(AgentTask::getTaskId)
                 .last("LIMIT 1"));
     }
 
@@ -663,3 +713,4 @@ public class AgentTaskService {
         return text.length() > 36 ? text.substring(0, 36) + "..." : text;
     }
 }
+

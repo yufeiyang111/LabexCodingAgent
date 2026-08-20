@@ -30,6 +30,25 @@ class TurnAwareContextPrunerTest {
     }
 
     @Test
+    void calculateTailTokenBudgetAdaptsDynamicallyToContextWindow() {
+        // 1. 小窗口模型（如 4k tokens）: 4000 * 0.25 = 1000 -> 触发下限保底 2000
+        assertEquals(2_000, TurnAwareContextPruner.calculateTailTokenBudget(4_000));
+
+        // 2. 标准 32k 模型: 32768 * 0.25 = 8192 -> 触发上限保护 8000
+        assertEquals(8_000, TurnAwareContextPruner.calculateTailTokenBudget(32_768));
+
+        // 3. 中等 16k 模型: 16000 * 0.25 = 4000
+        assertEquals(4_000, TurnAwareContextPruner.calculateTailTokenBudget(16_000));
+
+        // 4. 超大 128k/1M 模型: 截断为上限 8000
+        assertEquals(8_000, TurnAwareContextPruner.calculateTailTokenBudget(128_000));
+
+        // 5. null/0 默认回退 32k
+        assertEquals(8_000, TurnAwareContextPruner.calculateTailTokenBudget(null));
+        assertEquals(8_000, TurnAwareContextPruner.calculateTailTokenBudget(0));
+    }
+
+    @Test
     void preservesProtocolMetadataWhenClearingHistoricalContent() {
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(message("user", "initial"));

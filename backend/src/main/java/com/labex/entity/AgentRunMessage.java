@@ -23,6 +23,10 @@ public class AgentRunMessage {
     private String messageKey;
     @TableField("sequence_number")
     private Long sequenceNumber;
+    @TableField("parent_message_id")
+    private Long parentMessageId;
+    @TableField("conversation_sequence")
+    private Long conversationSequence;
     @TableField("role")
     private String role;
     @TableField("status")
@@ -50,6 +54,10 @@ public class AgentRunMessage {
     public void setMessageKey(String value) { messageKey = value; }
     public Long getSequenceNumber() { return sequenceNumber; }
     public void setSequenceNumber(Long value) { sequenceNumber = value; }
+    public Long getParentMessageId() { return parentMessageId; }
+    public void setParentMessageId(Long value) { parentMessageId = value; }
+    public Long getConversationSequence() { return conversationSequence; }
+    public void setConversationSequence(Long value) { conversationSequence = value; }
     public String getRole() { return role; }
     public void setRole(String value) { role = value; }
     public String getStatus() { return status; }

@@ -22,8 +22,7 @@ public class ToolSelectionPolicy {
     private static final Set<String> WEB_FETCH_TOOLS = Set.of("web_fetch", "webfetch");
     private static final Set<String> MCP_ENTRY_TOOLS = Set.of("mcp_call");
     private static final Set<String> SKILL_TOOLS = Set.of("skill");
-    /** native 运行时将这些 Harness 控制概念保留为 UI/持久化投影，不放入模型 schema。 */
-    private static final Set<String> NATIVE_HARNESS_CONTROL_TOOLS = Set.of("todo_write", "plan_exit", "create_plan");
+    private static final Set<String> NATIVE_HARNESS_CONTROL_TOOLS = Set.of("create_plan");
     /** native 运行时按能力挂载的扩展工具；底层模式白名单仍是最终约束。 */
     private static final Set<String> NATIVE_ON_DEMAND_TOOLS = Set.of("lsp", "skill");
     /** 旧会话仍可回放精确文本替换；新 schema 只暴露统一的 patch 契约。 */

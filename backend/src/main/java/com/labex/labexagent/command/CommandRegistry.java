@@ -78,6 +78,18 @@ public class CommandRegistry {
         // /review - 代码审查
         String reviewTemplate = loadTemplate("review.txt");
         register(CommandInfo.builtinSubtask("review", "代码审查 [commit|branch|pr]，默认审查未提交更改", reviewTemplate));
+
+        // /goal - 长时自主目标
+        register(CommandInfo.builtin("goal", "设定长时自主目标，不达成目标不停止执行",
+            "你正在执行 /goal 长时自主目标指令。\n目标描述: $ARGUMENTS\n请自主分解并按步推进，使用必要的工具进行修改、测试与验证，直到完全达成该目标为止。"));
+
+        // /plan - 技术实施计划
+        String planTemplate = loadTemplate("plan.txt");
+        register(CommandInfo.builtin("plan", "生成详细的技术实施计划与任务分解", planTemplate));
+
+        // /browser - 网络检索与探索
+        register(CommandInfo.builtin("browser", "调用浏览器与网络探索",
+            "你正在执行 /browser 检索指令。\n检索目标: $ARGUMENTS\n请使用 WebSearch 与 Fetch 相关工具检索外部网络信息与最新文档，并给出详细的分析与结论。"));
     }
 
     /**
@@ -88,15 +100,9 @@ public class CommandRegistry {
         register(CommandInfo.clientAction("new", "新建会话", CommandInfo.ClientAction.SESSION_NEW, "clear"));
         register(CommandInfo.clientAction("compact", "压缩当前会话上下文",
             CommandInfo.ClientAction.CONVERSATION_COMPACT, "summarize"));
-        register(CommandInfo.unavailable("undo", "撤销上一条消息", "消息级撤销尚未接通 durable change-set"));
-        register(CommandInfo.unavailable("redo", "恢复已撤销的消息", "消息级恢复尚未接通 durable change-set"));
-        register(CommandInfo.unavailable("share", "分享会话", "会话分享尚未实现"));
-        register(CommandInfo.unavailable("unshare", "取消分享", "会话分享尚未实现"));
-        register(CommandInfo.unavailable("rename", "重命名会话", "会话重命名尚未接通持久化 API"));
         register(CommandInfo.clientAction("fork", "分叉会话", CommandInfo.ClientAction.CONVERSATION_FORK));
         register(CommandInfo.clientAction("copy", "复制会话记录", CommandInfo.ClientAction.CONVERSATION_COPY));
         register(CommandInfo.clientAction("export", "导出会话记录", CommandInfo.ClientAction.CONVERSATION_EXPORT));
-        register(CommandInfo.unavailable("timeline", "跳转到消息", "消息时间线选择器尚未实现"));
         register(CommandInfo.clientAction("timestamps", "切换时间戳显示",
             CommandInfo.ClientAction.TOGGLE_TIMESTAMPS, "toggle-timestamps"));
         register(CommandInfo.clientAction("thinking", "切换思考过程显示",
@@ -108,8 +114,6 @@ public class CommandRegistry {
      */
     private void registerAgentModelCommands() {
         register(CommandInfo.clientAction("models", "切换模型", CommandInfo.ClientAction.MODEL_SETTINGS));
-        register(CommandInfo.unavailable("agents", "切换 Agent", "当前版本使用工作区模式切换，不提供独立 Agent 选择器"));
-        register(CommandInfo.unavailable("variants", "切换模型变体", "模型变体选择器尚未实现"));
         register(CommandInfo.clientAction("mcps", "管理 MCP 服务器", CommandInfo.ClientAction.MCP_PANEL));
         register(CommandInfo.clientAction("connect", "连接 Provider", CommandInfo.ClientAction.MODEL_SETTINGS));
     }
@@ -122,8 +126,6 @@ public class CommandRegistry {
         register(CommandInfo.clientAction("help", "显示帮助", CommandInfo.ClientAction.COMMAND_HELP));
         register(CommandInfo.clientAction("exit", "退出工作区", CommandInfo.ClientAction.WORKSPACE_EXIT, "quit", "q"));
         register(CommandInfo.clientAction("themes", "切换主题", CommandInfo.ClientAction.THEME_SETTINGS));
-        register(CommandInfo.unavailable("docs", "打开文档", "工作区文档入口尚未实现"));
-        register(CommandInfo.unavailable("editor", "在外部编辑器中编辑", "外部编辑器桥接尚未实现"));
         register(CommandInfo.clientAction("skills", "打开技能选择器", CommandInfo.ClientAction.SKILLS_PANEL));
         register(CommandInfo.clientAction("diff", "打开差异查看器", CommandInfo.ClientAction.CHANGES_PANEL));
     }
@@ -133,16 +135,20 @@ public class CommandRegistry {
      */
     private void registerWorkflowCommands() {
         // /fix - 修复问题
-        register(CommandInfo.builtin("fix", "修复问题", "分析并修复代码问题。使用: /fix 问题描述"));
+        String fixTemplate = loadTemplate("fix.txt");
+        register(CommandInfo.builtin("fix", "诊断并修复代码问题", fixTemplate));
 
         // /explain - 解释代码
-        register(CommandInfo.builtin("explain", "解释代码", "解释指定代码的功能和原理。使用: /explain 文件路径或代码"));
+        String explainTemplate = loadTemplate("explain.txt");
+        register(CommandInfo.builtin("explain", "深度解释代码与架构原理", explainTemplate));
 
         // /refactor - 重构代码
-        register(CommandInfo.builtin("refactor", "重构代码", "重构指定代码以提高质量。使用: /refactor 目标"));
+        String refactorTemplate = loadTemplate("refactor.txt");
+        register(CommandInfo.builtin("refactor", "重构指定代码以提高质量", refactorTemplate));
 
         // /optimize - 优化性能
-        register(CommandInfo.builtin("optimize", "优化性能", "优化指定代码的性能。使用: /optimize 目标"));
+        String optimizeTemplate = loadTemplate("optimize.txt");
+        register(CommandInfo.builtin("optimize", "分析并优化性能瓶颈", optimizeTemplate));
 
         // /clean - 清理项目
         register(CommandInfo.builtin("clean", "清理项目", "清理构建产物和临时文件。"));
@@ -208,7 +214,8 @@ public class CommandRegistry {
         register(CommandInfo.builtin("test", "运行测试", "运行测试套件。使用: /test 模式或文件路径"));
 
         // /test-file - 为文件生成测试
-        register(CommandInfo.builtin("test-file", "为文件生成测试", "为指定文件生成测试用例。使用: /test-file 文件路径"));
+        String testFileTemplate = loadTemplate("test_file.txt");
+        register(CommandInfo.builtin("test-file", "为指定文件生成高质量自动化测试", testFileTemplate));
 
         // /coverage - 测试覆盖率
         register(CommandInfo.builtin("coverage", "测试覆盖率", "运行测试并生成覆盖率报告。"));
@@ -304,7 +311,7 @@ public class CommandRegistry {
         try {
             ClassPathResource resource = new ClassPathResource("templates/command/" + templateName);
             try (InputStream is = resource.getInputStream()) {
-                return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                return new String(is.readAllBytes(), StandardCharsets.UTF_8).replace("\r\n", "\n");
             }
         } catch (IOException e) {
             // 模板缺失属于预期兜底路径（命令仍会注册，只是模板为空），不刷 stacktrace

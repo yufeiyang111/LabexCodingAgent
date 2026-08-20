@@ -38,6 +38,8 @@ public class AgentTask {
     private Long lastEventSequence;
     @TableField(value="request_payload")
     private String requestPayload;
+    @TableField(value="origin_message_id")
+    private Long originMessageId;
     @TableField(value="recovery_attempts")
     private Integer recoveryAttempts;
     @TableField(value="retry_attempts")
@@ -135,6 +137,10 @@ public class AgentTask {
 
     public String getRequestPayload() {
         return this.requestPayload;
+    }
+
+    public Long getOriginMessageId() {
+        return this.originMessageId;
     }
 
     public Integer getRecoveryAttempts() {
@@ -271,6 +277,10 @@ public class AgentTask {
 
     public void setRequestPayload(String requestPayload) {
         this.requestPayload = requestPayload;
+    }
+
+    public void setOriginMessageId(Long originMessageId) {
+        this.originMessageId = originMessageId;
     }
 
     public void setRecoveryAttempts(Integer recoveryAttempts) {

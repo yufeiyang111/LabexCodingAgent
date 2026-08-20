@@ -24,8 +24,22 @@ public class LlmProviderFactory {
     }
 
     public LlmProvider getProvider(String providerId) {
+        if (providerId == null || providerId.isBlank()) {
+            return getDefaultProvider();
+        }
         LlmProvider p = providers.get(providerId);
-        if (p == null) p = providers.get("openai_compatible");
+        if (p == null) {
+            String normalized = providerId.trim().toLowerCase();
+            if (normalized.startsWith("langchain4j") || "anthropic".equals(normalized) || "claude".equals(normalized)) {
+                p = providers.get("langchain4j");
+            }
+        }
+        if (p == null) {
+            p = providers.get("openai_compatible");
+        }
+        if (p == null && !providers.isEmpty()) {
+            p = providers.values().iterator().next();
+        }
         return p;
     }
 

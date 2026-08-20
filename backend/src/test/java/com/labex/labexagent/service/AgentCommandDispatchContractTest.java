@@ -30,7 +30,7 @@ class AgentCommandDispatchContractTest {
         CommandInfo clearAlias = registry.getCommand("clear");
         CommandInfo compact = registry.getCommand("summarize");
         CommandInfo review = registry.getCommand("review");
-        CommandInfo rename = registry.getCommand("rename");
+        CommandInfo fix = registry.getCommand("fix");
 
         assertEquals(CommandDispatch.CLIENT_ACTION, newCommand.dispatch());
         assertEquals(ClientAction.SESSION_NEW, newCommand.clientAction());
@@ -40,7 +40,7 @@ class AgentCommandDispatchContractTest {
         assertEquals(ClientAction.CONVERSATION_COMPACT, compact.clientAction());
         assertEquals(CommandDispatch.AGENT_PROMPT, review.dispatch());
         assertTrue(review.resolveTemplate("src/App.vue").contains("src/App.vue"));
-        assertEquals(CommandDispatch.UNAVAILABLE, rename.dispatch());
+        assertEquals(CommandDispatch.AGENT_PROMPT, fix.dispatch());
     }
 
     @Test

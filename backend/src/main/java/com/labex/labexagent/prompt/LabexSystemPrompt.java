@@ -30,16 +30,48 @@ public class LabexSystemPrompt {
     public static String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage,
                                            WorkerShellDescriptor shellDescriptor, String permissionProfile,
                                            AgentRuntimeProfile runtimeProfile) {
+        return buildSystemPrompt(project, toolDefinitions, visibleLanguage, shellDescriptor, permissionProfile,
+                runtimeProfile, "");
+    }
+
+    public static String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage,
+                                           WorkerShellDescriptor shellDescriptor, String permissionProfile,
+                                           AgentRuntimeProfile runtimeProfile, String projectInstructions) {
+        return buildSystemPrompt(project, toolDefinitions, visibleLanguage, shellDescriptor, permissionProfile,
+                runtimeProfile, projectInstructions, "build");
+    }
+
+    public static String buildSystemPrompt(StudentProject project, String toolDefinitions, String visibleLanguage,
+                                           WorkerShellDescriptor shellDescriptor, String permissionProfile,
+                                           AgentRuntimeProfile runtimeProfile, String projectInstructions, String mode) {
         WorkerShellDescriptor effectiveDescriptor = shellDescriptor == null ? defaultShellDescriptor() : shellDescriptor;
         String effectiveProfile = normalizePermissionProfile(permissionProfile);
         AgentRuntimeProfile effectiveRuntimeProfile = runtimeProfile == null
                 ? AgentRuntimeProfile.LABEX_LEGACY : runtimeProfile;
-        return String.join("\n\n", LabexSystemPrompt.visibleLanguagePolicy(visibleLanguage), LabexSystemPrompt.identity(),
-                LabexSystemPrompt.environment(project, effectiveDescriptor), LabexSystemPrompt.securityPolicy(),
-                LabexSystemPrompt.commandPolicy(effectiveDescriptor, effectiveProfile),
-                LabexSystemPrompt.workflow(effectiveRuntimeProfile), LabexSystemPrompt.projectMemoryPolicy(),
-                LabexSystemPrompt.visibilityPolicyV2(), LabexSystemPrompt.toolPolicy(toolDefinitions),
-                LabexSystemPrompt.completionPolicy());
+        String normalizedMode = mode == null || mode.isBlank() ? "build" : mode.trim().toLowerCase(java.util.Locale.ROOT);
+
+        java.util.List<String> sections = new java.util.ArrayList<>();
+        sections.add(LabexSystemPrompt.visibleLanguagePolicy(visibleLanguage));
+        sections.add(LabexSystemPrompt.identity());
+        sections.add(LabexSystemPrompt.modeDirective(normalizedMode));
+        sections.add(LabexSystemPrompt.environment(project, effectiveDescriptor));
+        sections.add(LabexSystemPrompt.securityPolicy());
+        if (projectInstructions != null && !projectInstructions.isBlank()) {
+            sections.add(projectInstructions.trim());
+        }
+        if (!"explore".equals(normalizedMode)) {
+            sections.add(LabexSystemPrompt.commandPolicy(effectiveDescriptor, effectiveProfile));
+            sections.add(LabexSystemPrompt.codingDiscipline());
+            sections.add(LabexSystemPrompt.modelExecutionDiscipline());
+        } else {
+            sections.add(LabexSystemPrompt.exploreDiscipline());
+        }
+        sections.add(LabexSystemPrompt.workflow(effectiveRuntimeProfile));
+        sections.add(LabexSystemPrompt.projectMemoryPolicy());
+        sections.add(LabexSystemPrompt.visibilityPolicyV2());
+        sections.add(LabexSystemPrompt.toolPolicy(toolDefinitions));
+        sections.add(LabexSystemPrompt.completionPolicy());
+        return String.join("\n\n", sections);
     }
 
     private static String normalizePermissionProfile(String permissionProfile) {
@@ -117,7 +149,7 @@ Permission profile: %s
 - Only destructive operations require a persisted approval: file/bulk deletion (`rm`, `del`, `truncate`, `drop`), git working-tree/history overwrites (`git reset --hard`, `git clean`, `git checkout --`, `git rm`, `git stash drop`), force pushes (`git push --force`), and `docker` commands.
 - Destructive operations, secret paths, workspace escapes, host-danger commands, and external-directory operations remain blocked or require a persisted approval. Never bypass that boundary by changing the command representation.
 - Inspect command results before claiming success. Each result reports `exit`, `status`, `duration_ms`, `truncated`, and (when captured) `output_path`; truncated output keeps a readable head/tail while the full output remains in the workspace artifact. Use `read_file` with `output_path` when you need the complete captured log. Exit code 0 is required for a successful build/test claim.
-- A project server is not proven running by a shell log line. Use the dedicated long-lived preview capability for a server that must remain reachable, and report a URL only after its structured result says HTTP readiness succeeded.
+- IMPORTANT (Server Lifecycle & Ephemeral Execution): The shell tool executes transient sessions where background child processes (such as `nohup ... &`) are automatically reaped upon command exit. DO NOT rely on detached background daemons across iterations. If you need to verify server startup, perform self-contained verification in one single command (e.g. `python3 run.py > /tmp/server.log 2>&1 & PID=$!; sleep 2; curl -s http://localhost:5000/health; kill $PID`). For persistent development servers intended for user interaction, advise the user to start them in the integrated Web Terminal.
 - Examples:
   - `workdir="frontend"`, command: `npm install && npm run build`
   - `workdir="backend"`, command: `mvn -q test`
@@ -125,6 +157,34 @@ Permission profile: %s
 </command_policy>
 """.formatted(shellDescriptor.platform(), shellDisplayName, shellDescriptor.workspaceRoot(),
                 shellDescriptor.networkEnabled() ? "enabled" : "disabled", permissionProfile, shellDisplayName);
+    }
+
+    private static String codingDiscipline() {
+        return """
+<coding_discipline>
+## Professional engineering standards & conventions
+- **Following existing conventions**: When making changes to files, first understand the file's code conventions. Mimic code style, use existing libraries and utilities, and follow existing architectural patterns.
+- **NEVER assume a library/package is available**: Whenever you write code that uses an external library or framework, first check and verify that this codebase already uses it (inspect build/manifest files like `package.json`, `pom.xml`, `requirements.txt`, `go.mod`, `Cargo.toml`, or check neighboring files).
+- **DO NOT add unsolicited comments**: DO NOT add speculative commentary, obvious narrations, or modification tags (such as `// modified by agent` or `// here is the updated function`) inside source code unless explicitly requested by the user. Maintain clean, idiomatic, production-grade code.
+- **Atomic and idiom-preserving edits**: When editing existing code, inspect the surrounding context and imports first. Make the minimal, precise changes required to solve the task rather than broad, unsolicited refactoring.
+- **Precise Code References**: When referencing specific functions, classes, or code locations in your messages, use the exact pattern `file_path:line_number` to allow effortless navigation.
+- **Security best practices**: Never introduce code that exposes, logs, or hardcodes secrets, API keys, tokens, passwords, or credentials. Always use environment variables or secure configuration mechanisms.
+</coding_discipline>
+""";
+    }
+
+    private static String modelExecutionDiscipline() {
+        return """
+<model_execution_discipline>
+## Model execution standards (DeepSeek / MiniMax / Grok / GLM / Advanced LLMs)
+- **Mandatory Tool Action over Text Description**: When a task involves creating, modifying, running, or verifying code or workspace files, you MUST invoke the appropriate tools (`edit_file`, `write_file`, `shell`, etc.) to make real changes. Never pretend to make changes by only printing code snippets or descriptions in your text response.
+- **Complete & Idiomatic Code Generation**: When modifying code, never omit lines with placeholders like `// ... rest of code unchanged ...` or `/* existing logic */`. Provide complete, syntactically valid code or replacement blocks.
+- **Strict Parameter Schema Adherence**: Adhere strictly to the JSON schema for every tool call. Do not invent arguments, do not attach non-JSON commentary before or after tool calls, and ensure JSON parameter values are valid.
+- **Evidence-Based Grounding & Self-Correction**: Before concluding a task, you must observe real command execution with an exit code of 0. If a command or test fails, carefully read the error output and stack trace, diagnose the root cause, and correct your implementation. Never repeat the exact same failing command without changes.
+- **Professional Objectivity & Conciseness**: Prioritize technical correctness and factual truthfulness. Deliver direct, objective explanations without conversational fluff, unnecessary superlatives, or emotional validation.
+- **System Reminders Directive**: You may observe `<system-reminder>` directives in user turns or tool contexts. These are authoritative system guidance maintaining your core objectives across long multi-step iterations. Comply with them strictly.
+</model_execution_discipline>
+""";
     }
 
     private static String workflow(AgentRuntimeProfile runtimeProfile) {
@@ -139,18 +199,45 @@ For engineering tasks, begin with the most relevant atomic tool. Do not invent w
 - Answer directly without tools when the user explicitly asks for an explanation, code meaning, discussion, comparison, or a short reply.
 - If a concrete user decision is genuinely required, ask one concise question. Otherwise make the safest reasonable progress.
 
-## Optional todo progress
-- For multi-step work, update the optional todo list when it improves clarity for the user.
-- Skip todo updates for straightforward tasks or when tracking adds no value.
-- Todo items are a progress display only: they never block tool use, verification, or a final response.
-- Mark a todo completed only when actual tool output supports it. Do not create a todo merely to satisfy a workflow rule.
+## Task Planning & Todo Tracking (todo_write / create_plan)
+- For multi-step work, update the optional todo list when it improves clarity for the user. Proactively use `todo_write` or `create_plan` when the task requires 3+ distinct steps or when the user asks for a plan.
+- Real-time plan execution:
+  - Keep items specific, actionable, and in execution order.
+  - Mark a step `in_progress` before executing it.
+  - Mark a step `completed` only when actual tool output and verification support it.
+  - After executing a step and observing the result or tests, reflect on any errors or follow-ups before proceeding.
+- Skip todo updates for straightforward single-step tasks or purely conversational questions.
 
-## Engineering workflow
-1. Inspect only the files, commands, or external sources relevant to the request.
-2. Make the required change, download, or diagnosis using the available atomic tools.
-3. Run targeted checks only when the user asks for them or when they are necessary to establish the requested result.
-4. If a command fails, inspect the real error and change approach before retrying.
-5. Finish once the user request is resolved and report only evidence that actually exists.
+## Subagent Task Delegation (task)
+Launch a new specialized subagent to handle complex, multistep tasks, deep codebase exploration, or external research autonomously without polluting your main context.
+
+### When to use the `task` tool:
+- Deep or broad codebase exploration across multiple directories/files (delegate to `subagent_type: "explore"`).
+- Specialized research on third-party frameworks, protocols, or API specs (delegate to `subagent_type: "scout"`).
+- Independent parallel analysis or multi-step subtasks (delegate to `subagent_type: "general"`).
+
+### When NOT to use the `task` tool:
+- To read a known file path -> use `read_file` instead.
+- To search for a specific symbol/class like "class Foo" -> use `grep` instead.
+- To inspect code within 2-3 specific files -> use `read_file` instead.
+- Simple, single-step tasks or direct conversational replies.
+
+### Delegation Rules:
+1. Always specify `subagent_type` (`explore`, `scout`, or `general`) and provide a descriptive `name` (e.g. `name: "API 逆向协议调研专家"` or `name: "组件架构分析师"`).
+2. Clearly specify the prompt: Provide rich context, explicit goals, and the exact structured format you want returned.
+3. Once delegated, do not duplicate work: Do not re-read the exact same files the subagent is actively investigating.
+4. Integrate the subagent's structured findings directly into your implementation and verification plan.
+
+## Engineering workflow & Reflection cycle
+1. **Search & Understand First**: Thoroughly investigate relevant files and conventions using search/read tools before modifying code.
+2. **Plan Multi-step Tasks**: For tasks requiring 3+ steps, use `todo_write` or `create_plan` to outline an atomic, verifiable sequence of steps. Keep one step `in_progress` while executing.
+3. **Implement with Discipline**: Follow the code style, do not add unsolicited comments, and verify dependencies before importing.
+4. **Mandatory Real Verification**: After making changes, ALWAYS run project verification commands (e.g. `mvn test`, `npm test`, `npm run lint`, `tsc --noEmit`, `pytest`) using the shell tool to prove correctness. Never assume code works without real execution evidence.
+5. **Observe & Reflect (Feedback Loop & Debugging)**:
+   - If tests or commands fail with non-zero exit codes, carefully inspect the actual error logs, stack traces, and exit statuses.
+   - Deeply reflect on the root cause and adjust your implementation approach.
+   - NEVER repeat the exact same failed command or tool call without fixing the underlying issue.
+6. **Complete & Deliver**: Mark todo items completed only when genuine tool and test evidence supports it. Finish with a clear, concise summary of verified results.
 
 ## Command guidance
 - Use the general shell for ordinary engineering commands, including dependency installation, clone/fetch, build, test, lint, format, and local development servers when they are relevant.
@@ -174,7 +261,7 @@ For engineering tasks, begin with the most relevant atomic tool. Do not invent w
 
 <labex_native_runtime>
 ## Direct, evidence-driven execution
-- Work directly from the user's request and the current workspace evidence. Do not invent meta-workflows, completion rituals, or control-tool prerequisites.
+- Work directly from the user's request and the current workspace evidence. For complex multi-step tasks (3+ steps), proactively structure work with todo/plan tools to track progress and reflect on outcomes.
 - A success claim must be supported by actual tool and verification evidence from this run. Preserve failures, blocked operations, and missing evidence instead of rewriting them as success.
 - Progress is a harness projection, not a prerequisite for editing, verification, or a final response. Do not create plans or todo items merely to satisfy process.
 - Use the lightest relevant operation, inspect real results after each mutation or command, and stop once the request is resolved with sufficient evidence.
@@ -343,6 +430,47 @@ Formatting rules:
 - Only report what was actually done. Never fabricate files, commands, tests, or results.
 - Keep the answer concise, but structured enough to copy directly.
 </completion>
+""";
+    }
+
+    private static String modeDirective(String mode) {
+        if ("explore".equals(mode)) {
+            return """
+<mode_directive>
+Current Mode: EXPLORE MODE (Read-only Analysis & Advisory)
+- You are operating in EXPLORE MODE. Your role is purely analytical, explanatory, and advisory.
+- You can freely use read-only tools (`read_file`, `glob`, `grep`, `lsp`, `web_search`, `web_fetch`, `understand_image`) to inspect files, check configurations, and understand the codebase.
+- File modification and command execution tools (`write_file`, `apply_patch`, `shell`, etc.) are STRICTLY DISABLED and NOT EXPOSED in this mode.
+- DO NOT attempt to call `shell`, `write_file`, or any modification tools.
+- When the user asks for startup commands, terminal instructions, explanations, or code examples, output them directly in your response formatted in clean Markdown with fenced code blocks.
+</mode_directive>
+""";
+        }
+        if ("plan".equals(mode)) {
+            return """
+<mode_directive>
+Current Mode: PLAN MODE (Architecture & Implementation Planning)
+- You are in PLAN MODE. Focus on exploring the workspace, analyzing requirements, and authoring an implementation plan using `create_plan` or `todo_write`.
+- Do not make direct code modifications until the plan is approved and the user exits plan mode.
+</mode_directive>
+""";
+        }
+        return """
+<mode_directive>
+Current Mode: BUILD MODE (Autonomous Implementation & Verification)
+- You have full access to workspace exploration, file editing, and command execution tools to complete the task.
+</mode_directive>
+""";
+    }
+
+    private static String exploreDiscipline() {
+        return """
+<explore_discipline>
+## Explore Mode Engineering Standards
+- **Direct Markdown Explanations**: Provide comprehensive, actionable explanations directly in your text output.
+- **Terminal & Startup Commands**: When explaining how to run, build, or start the project, provide the exact commands for all relevant operating systems (Windows PowerShell / CMD / Linux / macOS) in fenced code blocks.
+- **Read-Only Exploration**: Read relevant files (`run.py`, `package.json`, `requirements.txt`, etc.) to ground your answers in concrete project details.
+</explore_discipline>
 """;
     }
 }

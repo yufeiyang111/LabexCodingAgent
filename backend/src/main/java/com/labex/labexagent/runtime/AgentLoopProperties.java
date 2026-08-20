@@ -17,6 +17,36 @@ public class AgentLoopProperties {
     private int maxNonProgressIterations = 8;
     /** 同一 durable 完成证据允许的最终答复自动纠正次数；0 表示直接失败。 */
     private int finalizationRecoveryLimit = 1;
+    /** 默认保留的最近完整对话轮数 (对齐 OpenCode DEFAULT_TAIL_TURNS = 2)。 */
+    private int tailTurns = 2;
+    /** 尾部保护 Token 预算下限 (对齐 OpenCode MIN_PRESERVE_RECENT_TOKENS = 2_000)。 */
+    private int minPreserveRecentTokens = 2000;
+    /** 尾部保护 Token 预算上限 (对齐 OpenCode MAX_PRESERVE_RECENT_TOKENS = 8_000)。 */
+    private int maxPreserveRecentTokens = 8000;
+
+    public int getTailTurns() {
+        return tailTurns;
+    }
+
+    public void setTailTurns(int value) {
+        tailTurns = Math.max(1, Math.min(20, value));
+    }
+
+    public int getMinPreserveRecentTokens() {
+        return minPreserveRecentTokens;
+    }
+
+    public void setMinPreserveRecentTokens(int value) {
+        minPreserveRecentTokens = Math.max(500, Math.min(50_000, value));
+    }
+
+    public int getMaxPreserveRecentTokens() {
+        return maxPreserveRecentTokens;
+    }
+
+    public void setMaxPreserveRecentTokens(int value) {
+        maxPreserveRecentTokens = Math.max(minPreserveRecentTokens, Math.min(100_000, value));
+    }
 
     public int getHardMaxIterations() {
         return hardMaxIterations;

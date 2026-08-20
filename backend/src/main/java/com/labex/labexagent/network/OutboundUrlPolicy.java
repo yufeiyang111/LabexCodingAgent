@@ -66,6 +66,47 @@ public class OutboundUrlPolicy {
         return new ValidatedDestination(uri, addresses);
     }
 
+    /**
+     * 对齐 OpenCode / Vercel AI SDK：LLM Provider 允许 HTTP、HTTPS 以及本地/私有模型端点（Ollama/vLLM/LocalAI等）。
+     */
+    public ValidatedDestination validateProviderUrl(String rawUrl) {
+        if (rawUrl == null || rawUrl.isBlank()) {
+            throw reject(RejectionReason.INVALID_URL, "URL is required");
+        }
+        try {
+            URI uri = URI.create(rawUrl.trim());
+            if (!uri.isAbsolute()) {
+                throw reject(RejectionReason.INVALID_URL, "URL must be absolute");
+            }
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+            if (!"http".equals(scheme) && !"https".equals(scheme)) {
+                throw reject(RejectionReason.UNSUPPORTED_SCHEME, "Only HTTP(S) URLs are allowed");
+            }
+            if (uri.getUserInfo() != null) {
+                throw reject(RejectionReason.USER_INFO, "URL user info is not allowed");
+            }
+            String host = normalizedHost(uri);
+            if (host.isBlank()) {
+                throw reject(RejectionReason.MISSING_HOST, "URL host is required");
+            }
+            if (isCloudMetadataHost(host)) {
+                throw reject(RejectionReason.BLOCKED_HOST, "Cloud metadata endpoint is blocked");
+            }
+            return new ValidatedDestination(uri, List.of());
+        } catch (RejectedOutboundUrlException e) {
+            throw e;
+        } catch (Exception e) {
+            throw reject(RejectionReason.INVALID_URL, "URL is invalid");
+        }
+    }
+
+    private boolean isCloudMetadataHost(String host) {
+        return "metadata".equals(host)
+                || "metadata.google.internal".equals(host)
+                || "instance-data".equals(host)
+                || "instance-data.ec2.internal".equals(host);
+    }
+
     public ValidatedDestination validateRedirect(URI current, String location) {
         if (current == null || location == null || location.isBlank()) {
             throw reject(RejectionReason.INVALID_REDIRECT, "Redirect location is invalid");

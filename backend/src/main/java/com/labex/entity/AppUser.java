@@ -22,6 +22,9 @@ public class AppUser {
     @TableField("display_name")
     private String displayName;
 
+    @TableField("email")
+    private String email;
+
     @TableField("role")
     private String role;
 

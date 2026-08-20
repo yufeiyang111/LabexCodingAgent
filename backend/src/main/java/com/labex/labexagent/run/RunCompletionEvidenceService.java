@@ -33,6 +33,8 @@ public class RunCompletionEvidenceService {
     private final AgentRunArtifactService artifactService;
     private final AgentPreviewRunMapper previewRunMapper;
     private final AgentRunExecutionLeaseService leaseService;
+    private final AgentRunPartService partService;
+    private final RunCompletionToolFailureTruthProjector toolFailureTruthProjector;
     private final RunCompletionPolicy policy = new RunCompletionPolicy();
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -40,25 +42,36 @@ public class RunCompletionEvidenceService {
                                         AgentVerificationMapper verificationMapper,
                                         AgentRunArtifactService artifactService,
                                         AgentPreviewRunMapper previewRunMapper,
-                                        AgentRunExecutionLeaseService leaseService) {
+                                        AgentRunExecutionLeaseService leaseService,
+                                        AgentRunPartService partService) {
         this.fileChangeMapper = fileChangeMapper;
         this.verificationMapper = verificationMapper;
         this.artifactService = artifactService;
         this.previewRunMapper = previewRunMapper;
         this.leaseService = leaseService;
+        this.partService = partService;
+        this.toolFailureTruthProjector = new RunCompletionToolFailureTruthProjector();
+    }
+
+    public RunCompletionEvidenceService(AgentFileChangeMapper fileChangeMapper,
+                                        AgentVerificationMapper verificationMapper,
+                                        AgentRunArtifactService artifactService,
+                                        AgentPreviewRunMapper previewRunMapper,
+                                        AgentRunExecutionLeaseService leaseService) {
+        this(fileChangeMapper, verificationMapper, artifactService, previewRunMapper, leaseService, null);
     }
 
     public RunCompletionEvidenceService(AgentFileChangeMapper fileChangeMapper,
                                         AgentVerificationMapper verificationMapper,
                                         AgentRunArtifactService artifactService,
                                         AgentRunExecutionLeaseService leaseService) {
-        this(fileChangeMapper, verificationMapper, artifactService, null, leaseService);
+        this(fileChangeMapper, verificationMapper, artifactService, null, leaseService, null);
     }
 
     public RunCompletionEvidenceService(AgentFileChangeMapper fileChangeMapper,
                                         AgentVerificationMapper verificationMapper,
                                         AgentRunArtifactService artifactService) {
-        this(fileChangeMapper, verificationMapper, artifactService, null, null);
+        this(fileChangeMapper, verificationMapper, artifactService, null, null, null);
     }
 
     public RunCompletionEvidence evaluateAndPersist(Long taskId, Integer studentId, Integer projectId,
@@ -105,6 +118,8 @@ public class RunCompletionEvidenceService {
                 .filter(item -> !passed(item) && environmentBlocked(item))
                 .map(this::verificationLabel).toList();
         List<String> unresolvedRisks = new ArrayList<>();
+        List<String> unresolvedToolFailures = partService == null ? List.of()
+                : toolFailureTruthProjector.unresolvedFailureLabels(partService.history(taskId));
         boolean hasSuccessfulVerification = !passed.isEmpty();
         for (AgentRunArtifact artifact : artifactService.list(taskId, "post_edit_verification")) {
             String content = artifact.getContent() == null ? "" : artifact.getContent();
@@ -119,8 +134,8 @@ public class RunCompletionEvidenceService {
         }
         PreviewEvidence preview = latestPreview(taskId, studentId, projectId);
         RunCompletionEvidence evidence = policy.evaluate(new RunCompletionPolicy.Input(
-                taskId, changedFiles, passed, failed, environmentVerifications, manualFileVerification, runState,
-                unresolvedRisks, preview));
+                taskId, changedFiles, passed, failed, environmentVerifications, unresolvedToolFailures,
+                manualFileVerification, runState, unresolvedRisks, preview));
         RunCompletionEvidence existing = latest(taskId);
         if (sameEvidenceVersion(existing, evidence)) {
             return existing;
@@ -147,6 +162,7 @@ public class RunCompletionEvidenceService {
                 stringList(payload.getAsJsonArray("successfulVerifications")),
                 stringList(payload.getAsJsonArray("failedVerifications")),
                 optionalStringList(payload.get("environmentVerifications")),
+                optionalStringList(payload.get("unresolvedToolFailures")),
                 stringList(payload.getAsJsonArray("unresolvedRisks")),
                 criteria(payload.getAsJsonArray("criteria")),
                 payload.has("satisfied") && payload.get("satisfied").getAsBoolean(),
@@ -227,6 +243,7 @@ public class RunCompletionEvidenceService {
                 && Objects.equals(left.successfulVerifications(), right.successfulVerifications())
                 && Objects.equals(left.failedVerifications(), right.failedVerifications())
                 && Objects.equals(left.environmentVerifications(), right.environmentVerifications())
+                && Objects.equals(left.unresolvedToolFailures(), right.unresolvedToolFailures())
                 && Objects.equals(left.preview(), right.preview())
                 && Objects.equals(left.unresolvedRisks(), right.unresolvedRisks())
                 && Objects.equals(left.criteria(), right.criteria())

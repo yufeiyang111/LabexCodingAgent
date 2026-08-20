@@ -397,6 +397,34 @@ public class StudentAgentController {
         }
     }
 
+    /** 用户确认继续后，从循环保护留下的 durable transcript / Part 续跑同一任务。 */
+    @PostMapping(value = {"/tasks/{taskId}/resume-loop-guard"})
+    public Result<Map<String, Object>> resumeLoopGuardStoppedTask(@PathVariable Integer projectId,
+                                                                    @PathVariable Long taskId,
+                                                                    Authentication auth) {
+        try {
+            Integer studentId = this.getStudentId(auth);
+            com.labex.entity.AgentTask task = this.taskService.getOwnedTask(studentId, projectId, taskId);
+            if (task == null) return Result.error("Agent task not found");
+            com.labex.labexagent.run.AgentRunLifecycleService.DispatchClaim claim =
+                    this.taskService.claimLoopGuardResume(taskId);
+            if (claim == null) {
+                return Result.error("Agent task is not waiting for loop-guard recovery or is already being resumed");
+            }
+            AgentStreamRequest request = AgentRunContinuationRequestFactory.fromTask(task,
+                    "The user explicitly resumed this task after the loop guard stop. Review the durable stop reason, "
+                            + "use the existing evidence, and take a materially different next step before continuing.");
+            try {
+                this.agentLoopEngine.resume(studentId, projectId, request, taskId, true, claim.lease());
+            } catch (RuntimeException queueFailure) {
+                return Result.error(queueFailure.getMessage());
+            }
+            return Result.success(Map.of("taskId", taskId, "status", "queued"));
+        } catch (Exception exception) {
+            return Result.error(exception.getMessage());
+        }
+    }
+
     @GetMapping(value={"/conversations/{conversationId}/context-preview"})
     public Result<Map<String, Object>> contextPreview(@PathVariable Integer projectId,
                                                        @PathVariable String conversationId,

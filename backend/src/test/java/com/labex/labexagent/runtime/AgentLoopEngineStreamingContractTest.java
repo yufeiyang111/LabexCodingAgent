@@ -68,7 +68,8 @@ class AgentLoopEngineStreamingContractTest {
 
     @Test
     void maxStepsSentinelIsDerivedReadOnlyAndNeverWrittenToTheTranscript() {
-        assertTrue(source.contains("withMaxStepsSentinel(providerMessages)"));
+        assertTrue(source.contains("withMaxStepsSentinel(providerMessages)")
+                || source.contains("withMaxStepsSentinel(invocationMessages)"));
         assertTrue(source.contains("Map.of(\"role\", \"assistant\", \"content\", MAX_STEPS_SENTINEL)"));
         assertTrue(source.contains("List.copyOf(result)"));
         assertFalse(source.contains("this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of(\"role\", \"assistant\", \"content\", MAX_STEPS_SENTINEL"));
@@ -102,8 +103,8 @@ class AgentLoopEngineStreamingContractTest {
         assertTrue(firstPauseBranch >= 0);
         int secondPauseBranch = source.indexOf(marker, firstPauseBranch + marker.length());
         assertTrue(secondPauseBranch > firstPauseBranch);
-        int nativeObserve = source.indexOf("this.sendObserve(sse, conv, i, tn, res, task.getTaskId(), toolCallId);");
-        int recoveredObserve = source.indexOf("this.sendObserve(sse, conv, i, invTool, res, task.getTaskId(), recoveredToolCallId);");
+        int nativeObserve = source.indexOf("this.sendObserve(sse, conv, ctx, i, tn, res, task.getTaskId(), toolCallId);");
+        int recoveredObserve = source.indexOf("this.sendObserve(sse, conv, ctx, i, invTool, res, task.getTaskId(), recoveredToolCallId);");
         assertTrue(nativeObserve > firstPauseBranch);
         assertTrue(recoveredObserve > secondPauseBranch);
     }

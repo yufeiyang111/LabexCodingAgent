@@ -100,7 +100,7 @@ class AgentContextOrchestratorVerificationTrustTest {
     }
 
     @Test
-    void manualReadWithShaCreatesTrustedVerificationEvidence() throws Exception {
+    void manualReadWithShaDoesNotCreateTrustedVerificationEvidence() throws Exception {
         AgentContextOrchestrator orchestrator = new AgentContextOrchestrator(
                 mock(AgentContextManager.class), mock(ProjectIndexService.class),
                 mock(AgentWorkspaceMemoryService.class), mock(LspSessionManager.class),
@@ -116,7 +116,7 @@ class AgentContextOrchestratorVerificationTrustTest {
         orchestrator.afterTool(context, "read_file", args,
                 ToolResult.ok("[read_file path=package.json sha256=abc]\n{}"));
 
-        assertThat(context.hasUnverifiedChanges()).isFalse();
-        assertThat(context.getTrustedVerificationSources()).containsExactly("read_file");
+        assertThat(context.hasUnverifiedChanges()).isTrue();
+        assertThat(context.getTrustedVerificationSources()).isEmpty();
     }
 }

@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.slf4j.Logger;
@@ -756,18 +757,37 @@ public class AgentRunTranscriptService {
         if (calls != null && !calls.isEmpty()) {
             List<Map<String, Object>> toolCalls = new ArrayList<>();
             for (AgentRunPart part : calls) {
-                if (!"completed".equalsIgnoreCase(part.getStatus())
-                        && !"pending".equalsIgnoreCase(part.getStatus())
-                        && !(allowOpenBatch && isOpenPartStatus(part.getStatus()))) {
-                    throw new IllegalStateException("Provider tool call part is not recoverable: " + part.getPartKey());
+                String status = part.getStatus() == null ? "" : part.getStatus().toLowerCase(Locale.ROOT);
+                boolean recoverable = "completed".equals(status)
+                        || "pending".equals(status)
+                        || "error".equals(status)
+                        || "environment_blocked".equals(status)
+                        || (allowOpenBatch && isOpenPartStatus(status));
+                if (!recoverable) {
+                    // 任务终态残留的不可恢复 part（如审批超时遗留的 waiting_approval /
+                    // waiting_user / interrupted / skipped）没有对应 tool result，重放会产生
+                    // orphan 或破坏协议一一对应。跳过该调用而不是抛异常阻断整个 transcript 重建，
+                    // 由上层 protocolSafeProjection 对不完整批次做协议安全截断。
+                    log.warn("Skipping unrecoverable provider tool call part taskId={} partKey={} status={}",
+                            taskId, part.getPartKey(), status);
+                    continue;
                 }
                 Map<String, Object> parsed = parseObject(part.getInputJson());
                 if (parsed.isEmpty()) {
-                    throw new IllegalStateException("Provider tool call arguments are missing: " + part.getPartKey());
+                    // completed/pending/error 等有结果状态必须有 arguments，否则会因缺少 tool_call
+                    // 而把对应 tool result 变成 orphan（协议不完整）；数据损坏时保持 fail-closed。
+                    if ("completed".equals(status) || "pending".equals(status)) {
+                        throw new IllegalStateException("Provider tool call arguments are missing: " + part.getPartKey());
+                    }
+                    log.warn("Skipping provider tool call with missing arguments taskId={} partKey={} status={}",
+                            taskId, part.getPartKey(), status);
+                    continue;
                 }
                 toolCalls.add(parsed);
             }
-            result.put("tool_calls", toolCalls);
+            if (!toolCalls.isEmpty()) {
+                result.put("tool_calls", toolCalls);
+            }
         }
         return result;
     }

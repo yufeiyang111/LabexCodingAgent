@@ -591,6 +591,7 @@ public class AgentRunLifecycleService {
         task.setUpdateTime(now);
         persistOutbox(event, safePayload, now);
         recordEventPartBestEffort(task.getTaskId(), event.getEventType(), safePayload, nextSequence);
+        sealOpenPartsOnTerminalState(task.getTaskId(), targetState, eventType);
         if (stateChanged) {
             log.debug("AGENT_RUN_TRANSITION taskId={} eventType={} previousState={} nextState={} epoch={} sequence={} idempotencyKey={}",
                     task.getTaskId(), eventType, currentState.persistedStatus(), targetState.persistedStatus(),
@@ -757,6 +758,30 @@ public class AgentRunLifecycleService {
             // 即时投影只是低延迟优化；持久化 outbox 会在广播前重试并修复 transcript。
             log.warn("Agent run transcript inline projection failed; outbox will retry taskId={}, eventType={}, sequence={}",
                     taskId, eventType, sequence, error);
+        }
+    }
+
+    /**
+     * 任务进入 failed / cancelled 终态时，把仍处于 waiting_approval / waiting_user / pending /
+     * running / streaming 的 Part 收尾为 interrupted。否则审批超时导致任务 FAILED 后残留的
+     * waiting_approval Part 会让后续 transcript 重建（AgentRunTranscriptService.rebuildAssistant）
+     * 因缺少对应 tool result 而破坏协议一一对应。best-effort：收尾失败不阻断状态迁移。
+     */
+    private void sealOpenPartsOnTerminalState(Long taskId, AgentRunState targetState, String eventType) {
+        if (partService == null
+                || (targetState != AgentRunState.FAILED && targetState != AgentRunState.CANCELLED)) {
+            return;
+        }
+        try {
+            int sealed = partService.sealOpenPartsForTerminalState(taskId, "Agent run " + targetState.persistedStatus()
+                    + " via " + eventType);
+            if (sealed > 0) {
+                log.info("Sealed {} open part(s) after terminal transition taskId={} targetState={} eventType={}",
+                        sealed, taskId, targetState.persistedStatus(), eventType);
+            }
+        } catch (RuntimeException error) {
+            log.warn("Failed to seal open parts on terminal transition taskId={}, targetState={}, eventType={}",
+                    taskId, targetState.persistedStatus(), eventType, error);
         }
     }
 

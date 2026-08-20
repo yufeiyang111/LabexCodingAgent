@@ -3,11 +3,20 @@ package com.labex.labexagent.runtime;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.labex.entity.AgentConversation;
+import com.labex.entity.AgentTask;
 import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.context.AgentCompactionService;
+import com.labex.labexagent.run.AgentConversationMessageGraphVersion;
 import com.labex.labexagent.run.AgentRunTranscriptService;
+import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
+import com.labex.labexagent.service.AgentConversationMemoryProjectionService;
+import com.labex.mapper.AgentConversationMapper;
+import com.labex.mapper.AgentTaskMapper;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +41,120 @@ class AgentTranscriptProjectionServiceTest {
 
         assertThat(service(transcript).loadProviderMessages(7L))
                 .isEqualTo(messages);
+    }
+
+    @Test
+    void providerProjectionPrependsStableSameConversationHistoryWithoutPollutingCurrentTaskTranscript() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentConversationMemoryProjectionService conversationMemory =
+                mock(AgentConversationMemoryProjectionService.class);
+        AgentTask currentTask = task(1980L, 279, 88, "conversation-48fba2f7");
+        List<Map<String, Object>> priorStableMessages = List.of(
+                Map.of("role", "user", "content", "请给出产品迭代方向"),
+                Map.of("role", "assistant", "content", "已确认：优先实现真实事实链。"));
+        List<Map<String, Object>> currentTaskMessages = List.of(
+                Map.of("role", "user", "content", "当前任务的初始化上下文"),
+                Map.of("role", "user", "content", "把刚刚确定的方向写成文档并开始实施"));
+        when(transcript.loadProjectableTranscript(1980L)).thenReturn(currentTaskMessages);
+        when(tasks.selectById(1980L)).thenReturn(currentTask);
+        when(conversationMemory.project(279, 88, "conversation-48fba2f7", 1980L))
+                .thenReturn(new AgentConversationMemoryProjectionService.Projection(
+                        priorStableMessages, 1979L, 1));
+        AgentTranscriptProjectionService service = serviceWithConversationProjection(
+                transcript, tasks, conversationMemory);
+
+        assertThat(service.loadDurableProjection(1980L).messages())
+                .containsExactlyElementsOf(currentTaskMessages);
+        assertThat(service.loadProviderMessages(1980L)).containsExactlyElementsOf(List.of(
+                priorStableMessages.get(0), priorStableMessages.get(1),
+                currentTaskMessages.get(0), currentTaskMessages.get(1)));
+        verify(conversationMemory).project(279, 88, "conversation-48fba2f7", 1980L);
+    }
+
+    @Test
+    void nativeConversationGraphVersionRoutesDirectlyToGraphProjectorWithoutLegacyHistoryPrefix() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentConversationMapper conversations = mock(AgentConversationMapper.class);
+        AgentConversationMemoryProjectionService conversationMemory =
+                mock(AgentConversationMemoryProjectionService.class);
+        AgentConversationMessageGraphProjector graphProjector =
+                mock(AgentConversationMessageGraphProjector.class);
+        AgentTask currentTask = task(1980L, 279, 88, "conversation-48fba2f7");
+        currentTask.setRuntimeProfile(AgentRuntimeProfile.LABEX_NATIVE.persistedValue());
+        AgentConversation conversation = new AgentConversation();
+        conversation.setConversationId("conversation-48fba2f7");
+        conversation.setStudentId(279);
+        conversation.setProjectId(88);
+        conversation.setStatus(1);
+        conversation.setHistoryProjectionVersion(AgentConversationMessageGraphVersion.VALUE);
+        List<Map<String, Object>> graphMessages = List.of(
+                Map.of("role", "user", "content", "真实历史请求"),
+                Map.of("role", "assistant", "content", "真实历史回复"));
+        when(tasks.selectById(1980L)).thenReturn(currentTask);
+        when(conversations.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(conversation);
+        when(graphProjector.projectForProvider(new AgentConversationMessageGraphProjector.Request(
+                279, 88, "conversation-48fba2f7"))).thenReturn(graphMessages);
+        AgentTranscriptProjectionService service = serviceWithGraphProjection(
+                transcript, tasks, conversationMemory, conversations, graphProjector);
+
+        assertThat(service.loadProviderMessages(1980L)).containsExactlyElementsOf(graphMessages);
+
+        verify(graphProjector).projectForProvider(new AgentConversationMessageGraphProjector.Request(
+                279, 88, "conversation-48fba2f7"));
+        verifyNoInteractions(transcript, conversationMemory);
+    }
+
+    @Test
+    void taskWithoutConversationIdentityKeepsOnlyItsOwnDurableTranscript() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentConversationMemoryProjectionService conversationMemory =
+                mock(AgentConversationMemoryProjectionService.class);
+        List<Map<String, Object>> currentTaskMessages = List.of(
+                Map.of("role", "user", "content", "standalone task request"));
+        when(transcript.loadProjectableTranscript(1981L)).thenReturn(currentTaskMessages);
+        when(tasks.selectById(1981L)).thenReturn(task(1981L, 279, 88, null));
+        AgentTranscriptProjectionService service = serviceWithConversationProjection(
+                transcript, tasks, conversationMemory);
+
+        assertThat(service.loadProviderMessages(1981L)).containsExactlyElementsOf(currentTaskMessages);
+        verifyNoInteractions(conversationMemory);
+    }
+
+    @Test
+    void interactionResumeProjectionRemainsCurrentTaskOnlyWhenConversationHistoryIsAvailable() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentConversationMemoryProjectionService conversationMemory =
+                mock(AgentConversationMemoryProjectionService.class);
+        List<Map<String, Object>> resumableCurrentTaskMessages = List.of(
+                Map.of("role", "user", "content", "resume the approved tool call"));
+        when(transcript.loadProjectableTranscriptForInteractionResume(1980L))
+                .thenReturn(resumableCurrentTaskMessages);
+        AgentTranscriptProjectionService service = serviceWithConversationProjection(
+                transcript, tasks, conversationMemory);
+
+        assertThat(service.loadDurableProjectionForInteractionResume(1980L).messages())
+                .containsExactlyElementsOf(resumableCurrentTaskMessages);
+        verifyNoInteractions(tasks, conversationMemory);
+    }
+
+    @Test
+    void providerProjectionFailsClosedWhenTheCurrentTaskOwnershipFactIsUnavailable() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentConversationMemoryProjectionService conversationMemory =
+                mock(AgentConversationMemoryProjectionService.class);
+        when(transcript.loadProjectableTranscript(1980L))
+                .thenReturn(List.of(Map.of("role", "user", "content", "current request")));
+        AgentTranscriptProjectionService service = serviceWithConversationProjection(
+                transcript, tasks, conversationMemory);
+
+        assertThatThrownBy(() -> service.loadProviderMessages(1980L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Durable task is unavailable for Provider conversation projection");
     }
 
     @Test
@@ -89,6 +212,30 @@ class AgentTranscriptProjectionServiceTest {
 
         assertThat(restored.messages()).isEqualTo(compacted);
         assertThat(restored.detail()).contains("compaction_epoch=2");
+    }
+
+    private AgentTask task(Long taskId, Integer studentId, Integer projectId, String conversationId) {
+        AgentTask task = new AgentTask();
+        task.setTaskId(taskId);
+        task.setStudentId(studentId);
+        task.setProjectId(projectId);
+        task.setConversationId(conversationId);
+        return task;
+    }
+
+    private AgentTranscriptProjectionService serviceWithGraphProjection(
+            AgentRunTranscriptService transcript, AgentTaskMapper tasks,
+            AgentConversationMemoryProjectionService conversationMemory,
+            AgentConversationMapper conversations, AgentConversationMessageGraphProjector graphProjector) {
+        return new AgentTranscriptProjectionService(transcript, new AgentProviderMessageProjector(),
+                mock(AgentCompactionService.class), null, tasks, conversationMemory, conversations, graphProjector);
+    }
+
+    private AgentTranscriptProjectionService serviceWithConversationProjection(
+            AgentRunTranscriptService transcript, AgentTaskMapper tasks,
+            AgentConversationMemoryProjectionService conversationMemory) {
+        return new AgentTranscriptProjectionService(transcript, new AgentProviderMessageProjector(),
+                mock(AgentCompactionService.class), null, tasks, conversationMemory);
     }
 
     private AgentTranscriptProjectionService service(AgentRunTranscriptService transcript) {

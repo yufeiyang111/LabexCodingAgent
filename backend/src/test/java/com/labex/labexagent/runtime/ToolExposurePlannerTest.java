@@ -41,7 +41,7 @@ class ToolExposurePlannerTest {
 
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "write_file", "apply_patch", "shell",
-                "question", "web_search", "web_fetch", "understand_image", "lsp", "skill", "mcp_docs_search"),
+                "todo_write", "question", "web_search", "web_fetch", "understand_image", "lsp", "skill", "mcp_docs_search"),
                 exposure.definitions().stream().map(ToolDefinition::getName).toList());
         assertTrue(exposure.scopedTools().containsKey("mcp_docs_search"));
         assertFalse(exposure.scopedTools().containsKey("mcp_shared"));

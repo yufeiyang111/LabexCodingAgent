@@ -269,6 +269,6 @@ public final class InternalReasoningBoundary {
         return "think".equals(word) || "thinking".equals(word);
     }
 
-    private record TagMatch(int index, int end, boolean closing, boolean selfClosing) {
+    public static record TagMatch(int index, int end, boolean closing, boolean selfClosing) {
     }
 }

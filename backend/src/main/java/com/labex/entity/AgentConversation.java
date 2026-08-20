@@ -39,6 +39,16 @@ public class AgentConversation {
     private String historyProjectionVersion;
     @TableField(value="history_migrated_at")
     private LocalDateTime historyMigratedAt;
+    @TableField(value="next_message_sequence")
+    private Long nextMessageSequence;
+    @TableField(value="execution_owner")
+    private String executionOwner;
+    @TableField(value="execution_epoch")
+    private Long executionEpoch;
+    @TableField(value="execution_lease_expires_at")
+    private LocalDateTime executionLeaseExpiresAt;
+    @TableField(value="execution_heartbeat_at")
+    private LocalDateTime executionHeartbeatAt;
     @TableField(value="status")
     private Integer status;
     @TableField(value="create_time")
@@ -109,6 +119,26 @@ public class AgentConversation {
 
     public LocalDateTime getHistoryMigratedAt() {
         return this.historyMigratedAt;
+    }
+
+    public Long getNextMessageSequence() {
+        return this.nextMessageSequence;
+    }
+
+    public String getExecutionOwner() {
+        return this.executionOwner;
+    }
+
+    public Long getExecutionEpoch() {
+        return this.executionEpoch;
+    }
+
+    public LocalDateTime getExecutionLeaseExpiresAt() {
+        return this.executionLeaseExpiresAt;
+    }
+
+    public LocalDateTime getExecutionHeartbeatAt() {
+        return this.executionHeartbeatAt;
     }
 
     public Integer getStatus() {
@@ -185,6 +215,26 @@ public class AgentConversation {
 
     public void setHistoryMigratedAt(LocalDateTime historyMigratedAt) {
         this.historyMigratedAt = historyMigratedAt;
+    }
+
+    public void setNextMessageSequence(Long nextMessageSequence) {
+        this.nextMessageSequence = nextMessageSequence;
+    }
+
+    public void setExecutionOwner(String executionOwner) {
+        this.executionOwner = executionOwner;
+    }
+
+    public void setExecutionEpoch(Long executionEpoch) {
+        this.executionEpoch = executionEpoch;
+    }
+
+    public void setExecutionLeaseExpiresAt(LocalDateTime executionLeaseExpiresAt) {
+        this.executionLeaseExpiresAt = executionLeaseExpiresAt;
+    }
+
+    public void setExecutionHeartbeatAt(LocalDateTime executionHeartbeatAt) {
+        this.executionHeartbeatAt = executionHeartbeatAt;
     }
 
     public void setStatus(Integer status) {

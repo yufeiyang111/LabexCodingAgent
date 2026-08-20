@@ -312,9 +312,10 @@ public class GitSnapshotService {
             long initStartedNanos = System.nanoTime();
             log.info("GIT_SNAPSHOT_INIT_START gitDir={}", gitDir);
             run(root, List.of("git", "init", "--bare", gitDir.toString()), 60);
-            // Tree snapshots never commit, so author identity is unnecessary. Keep line endings stable
-            // for the private index and configure it only once when the repository is created.
             runGit(root, gitDir, 20, List.of("config", "core.autocrlf", "false"));
+            runGit(root, gitDir, 20, List.of("config", "core.longpaths", "true"));
+            runGit(root, gitDir, 20, List.of("config", "core.symlinks", "true"));
+            runGit(root, gitDir, 20, List.of("config", "core.quotepath", "false"));
             log.info("GIT_SNAPSHOT_INIT_COMPLETE gitDir={} elapsedMs={}", gitDir, elapsedMs(initStartedNanos));
         }
         Path exclude = gitDir.resolve("info").resolve("exclude");
@@ -338,6 +339,14 @@ public class GitSnapshotService {
     private CommandResult runGit(Path root, Path gitDir, int timeoutSeconds, List<String> args, Path indexFile) throws IOException, InterruptedException {
         List<String> command = new ArrayList<>();
         command.add("git");
+        command.add("-c");
+        command.add("core.longpaths=true");
+        command.add("-c");
+        command.add("core.symlinks=true");
+        command.add("-c");
+        command.add("core.autocrlf=false");
+        command.add("-c");
+        command.add("core.quotepath=false");
         command.add("--git-dir");
         command.add(gitDir.toString());
         command.add("--work-tree");

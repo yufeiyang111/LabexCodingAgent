@@ -122,24 +122,24 @@ class OpenAiCompatibleProviderUsageTest {
     }
 
     @Test
-    void chatWithToolsRejectsPrivateModelEndpointBeforeOpeningConnection() {
+    void chatWithToolsRejectsCloudMetadataEndpointBeforeOpeningConnection() {
         OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider();
 
         Map<String, Object> response = provider.chatWithTools(
                 "system", List.of(Map.of("role", "user", "content", "hi")), List.of(),
-                new LlmProvider.LlmConfig("test-key", "http://127.0.0.1:1", "test-model", 32, 0.1));
+                new LlmProvider.LlmConfig("test-key", "http://metadata.google.internal/v1", "test-model", 32, 0.1));
 
         assertEquals("error", response.get("type"));
         assertTrue(String.valueOf(response.get("message")).toLowerCase().contains("blocked"));
     }
 
     @Test
-    void chatStreamRejectsPrivateModelEndpointBeforeOpeningConnection() {
+    void chatStreamRejectsCloudMetadataEndpointBeforeOpeningConnection() {
         OpenAiCompatibleProvider provider = new OpenAiCompatibleProvider();
         List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
 
         provider.chatStream("system", List.of(Map.of("role", "user", "content", "hi")), List.of(),
-                new LlmProvider.LlmConfig("test-key", "http://127.0.0.1:1", "test-model", 32, 0.1),
+                new LlmProvider.LlmConfig("test-key", "http://metadata.google.internal/v1", "test-model", 32, 0.1),
                 chunks::add);
 
         assertEquals(1, chunks.size());

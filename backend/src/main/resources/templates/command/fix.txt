@@ -1,0 +1,28 @@
+You are executing the `/fix` command to diagnose and repair an issue in the workspace.
+
+Target issue / problem description:
+$ARGUMENTS
+
+## Engineering Workflow for Bug Fixing
+
+1. **Investigate & Reproduce**:
+   - Locate the relevant files using `grep_search`, `glob`, or `read_file`.
+   - Inspect error logs, stack traces, and failing test output.
+   - If tests exist, run them using the shell tool (`mvn test`, `npm test`, `pytest`) to confirm the failure.
+
+2. **Root Cause Analysis**:
+   - Trace the execution flow to pinpoint the exact failure point.
+   - Distinguish between symptoms and the root cause.
+   - Formulate a precise, minimal fix plan.
+
+3. **Implement with Minimal Intrusion**:
+   - Edit the target files using `edit_file` or `write_file`.
+   - Preserve existing coding conventions and public contracts.
+   - Never add unsolicited comments or change unrelated files.
+
+4. **Verify & Prove Correctness**:
+   - Re-run the tests or build commands to prove the fix works (Exit code 0).
+   - Ensure no regressions were introduced to existing functionality.
+
+5. **Deliver Results**:
+   - Summarize the root cause, what was modified (`file:line`), and the verification evidence.

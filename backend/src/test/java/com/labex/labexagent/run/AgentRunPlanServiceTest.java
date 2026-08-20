@@ -245,6 +245,31 @@ class AgentRunPlanServiceTest {
                 eq("plan-update:71:1"));
     }
 
+    @Test
+    void completesAllPendingAndInProgressPlanItemsOnFinalization() {
+        AgentRunPlanItemMapper plans = Mockito.mock(AgentRunPlanItemMapper.class);
+        AgentTaskMapper tasks = Mockito.mock(AgentTaskMapper.class);
+        AgentRunLifecycleService lifecycle = Mockito.mock(AgentRunLifecycleService.class);
+        when(tasks.selectByTaskIdForUpdate(71L)).thenReturn(task(71L, 4L, "running"));
+        when(plans.selectByTaskIdOrderByPosition(71L)).thenReturn(List.of(
+                row(71L, 0, "Step 1", "", "completed", 4L, 1L),
+                row(71L, 1, "Step 2", "", "in_progress", 4L, 1L),
+                row(71L, 2, "Step 3", "", "pending", 4L, 1L)));
+        when(plans.insertPlanItem(any(AgentRunPlanItem.class))).thenReturn(1);
+        AgentRunEvent event = new AgentRunEvent();
+        event.setSequenceNumber(25L);
+        when(lifecycle.appendEvent(eq(71L), eq("PLAN_UPDATE"), any(), eq("plan-update:71:2")))
+                .thenReturn(event);
+
+        AgentRunPlanService.Projection projection = new AgentRunPlanService(plans, tasks, lifecycle).completeAll(
+                71L, 4L, "task_completion");
+
+        assertThat(projection.revision()).isEqualTo(2L);
+        assertThat(projection.currentIndex()).isEqualTo(-1);
+        assertThat(projection.items()).extracting(AgentRunPlanService.PlanItem::status)
+                .containsExactly("completed", "completed", "completed");
+    }
+
     private AgentTask fencedTask(long taskId, long epoch, String status, String owner,
                                  java.time.LocalDateTime leaseExpiresAt) {
         AgentTask task = task(taskId, epoch, status);

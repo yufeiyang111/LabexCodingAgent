@@ -10,6 +10,8 @@ public enum AgentRunState {
     WAITING_USER,
     WAITING_WORKSPACE,
     WAITING_ENVIRONMENT,
+    /** 循环保护停止后的可恢复等待态；不是用户取消，也不是最终失败。 */
+    WAITING_RECOVERY,
     RECOVERING,
     RETRYING,
     CANCELLING,

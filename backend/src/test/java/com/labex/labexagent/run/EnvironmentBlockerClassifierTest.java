@@ -78,6 +78,16 @@ class EnvironmentBlockerClassifierTest {
                 .hasValueSatisfying(blocker -> assertThat(blocker.code()).isEqualTo("DNS_UNAVAILABLE"));
     }
     @Test
+    void doesNotMisclassifyLocalhostConnectionRefusedAsNetworkUnavailable() {
+        var blocker = EnvironmentBlockerClassifier.classify("shell",
+                ToolResult.failed("curl: (7) Failed to connect to localhost port 5000 after 6 ms: Could not connect to server"));
+
+        assertThat(blocker).isEmpty();
+        assertThat(EnvironmentBlockerClassifier.isNetworkRetryCandidate("shell",
+                ToolResult.failed("curl: (7) Failed to connect to localhost port 5000 after 6 ms: Could not connect to server"))).isFalse();
+    }
+
+    @Test
     void doesNotBlockSuccessfulOrUnrelatedToolResults() {
         assertThat(EnvironmentBlockerClassifier.classify("run_tests", ToolResult.ok("exit=0"))).isEmpty();
         assertThat(EnvironmentBlockerClassifier.classify("web_search", ToolResult.failed("Unknown host api.example"))).isEmpty();

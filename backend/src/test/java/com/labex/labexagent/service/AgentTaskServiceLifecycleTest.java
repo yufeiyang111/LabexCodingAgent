@@ -16,6 +16,7 @@ import com.labex.entity.AgentRunInteraction;
 import com.labex.entity.AgentTask;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import com.labex.labexagent.run.AgentRunState;
 import com.labex.labexagent.run.BackgroundRunWorktreeService;
@@ -351,4 +352,37 @@ class AgentTaskServiceLifecycleTest {
         return new AgentTaskService(taskMapper, changeSetMapper, fileChangeMapper, lifecycle,
                 executionLeases, mock(BackgroundRunWorktreeService.class));
     }
+
+    @Test
+    void loopGuardStopPersistsOneRecoverableLifecycleEventInsteadOfCancellingOrFailingTheTask() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentTask running = new AgentTask();
+        running.setTaskId(72L);
+        running.setStatus("running");
+        when(taskMapper.selectById(72L)).thenReturn(running);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AgentRunEvent event = new AgentRunEvent();
+        event.setEventType("LOOP_GUARD_STOPPED");
+        event.setSequenceNumber(17L);
+        ExecutionFence fence = new ExecutionFence(72L, "instance-a", 4L);
+        when(lifecycle.transitionIfCurrentResult(eq(fence), eq(72L), eq(AgentRunState.RUNNING),
+                eq(AgentRunState.WAITING_RECOVERY), eq("LOOP_GUARD_STOPPED"), any(),
+                eq("No progress"), eq("Eight turns made no confirmed progress"), any()))
+                .thenReturn(new AgentRunLifecycleService.TransitionResult(event, true));
+        AgentTaskService service = newTaskService(taskMapper, mock(AgentChangeSetMapper.class),
+                mock(AgentFileChangeMapper.class), lifecycle);
+
+        AgentRunEvent actual = service.waitForLoopGuardRecovery(fence, 72L, "No progress",
+                "Eight turns made no confirmed progress", "non_progress", 8);
+
+        assertSame(event, actual);
+        ArgumentCaptor<java.util.Map<String, Object>> payload = ArgumentCaptor.forClass(java.util.Map.class);
+        verify(lifecycle).transitionIfCurrentResult(eq(fence), eq(72L), eq(AgentRunState.RUNNING),
+                eq(AgentRunState.WAITING_RECOVERY), eq("LOOP_GUARD_STOPPED"), payload.capture(),
+                eq("No progress"), eq("Eight turns made no confirmed progress"), any());
+        assertEquals("non_progress", payload.getValue().get("reasonCode"));
+        assertEquals(true, payload.getValue().get("recoverable"));
+        assertEquals("loop_guard_resume", payload.getValue().get("resumeAction"));
+    }
+
 }

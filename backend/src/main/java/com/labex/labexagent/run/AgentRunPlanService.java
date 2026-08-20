@@ -140,6 +140,35 @@ public class AgentRunPlanService {
     }
 
     @Transactional(rollbackFor = Exception.class)
+    public Projection completeAll(Long taskId, long expectedExecutionEpoch, String source) {
+        return completeAllInternal(null, taskId, expectedExecutionEpoch, source);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Projection completeAll(ExecutionFence fence, Long taskId, long expectedExecutionEpoch, String source) {
+        requireFence(fence);
+        return completeAllInternal(fence, taskId, expectedExecutionEpoch, source);
+    }
+
+    private Projection completeAllInternal(ExecutionFence fence, Long taskId, long expectedExecutionEpoch, String source) {
+        requireTaskId(taskId);
+        List<AgentRunPlanItem> existing = orderedRows(taskId);
+        if (existing.isEmpty()) {
+            return project(taskId, List.of(), 0L, "load");
+        }
+        boolean hasIncomplete = existing.stream()
+                .anyMatch(row -> !STATUS_COMPLETED.equals(normalizeStatus(row.getStatus())));
+        if (!hasIncomplete) {
+            return project(taskId, existing, 0L, "load");
+        }
+        AgentTask task = lockWritableTask(taskId, expectedExecutionEpoch);
+        List<PlanDraft> drafts = existing.stream()
+                .map(item -> new PlanDraft(item.getTitle(), item.getDescription(), true))
+                .toList();
+        return replaceLocked(task, expectedExecutionEpoch, nextRevision(existing), drafts, source, fence);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public Projection update(Long taskId, long expectedExecutionEpoch, int index,
                              String title, String description, String source) {
         return updateInternal(null, taskId, expectedExecutionEpoch, index, title, description, source);

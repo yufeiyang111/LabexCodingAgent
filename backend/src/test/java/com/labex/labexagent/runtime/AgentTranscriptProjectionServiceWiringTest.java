@@ -6,6 +6,9 @@ import static org.mockito.Mockito.mock;
 import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.context.AgentCompactionService;
 import com.labex.labexagent.run.AgentRunTranscriptService;
+import com.labex.labexagent.service.AgentConversationMemoryProjectionService;
+import com.labex.mapper.AgentConversationMapper;
+import com.labex.mapper.AgentTaskMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
@@ -18,6 +21,12 @@ class AgentTranscriptProjectionServiceWiringTest {
                 .withBean(AgentProviderMessageProjector.class, AgentProviderMessageProjector::new)
                 .withBean(AgentCompactionService.class, () -> mock(AgentCompactionService.class))
                 .withBean(AgentInputAttachmentService.class, () -> mock(AgentInputAttachmentService.class))
+                .withBean(AgentTaskMapper.class, () -> mock(AgentTaskMapper.class))
+                .withBean(AgentConversationMapper.class, () -> mock(AgentConversationMapper.class))
+                .withBean(AgentConversationMemoryProjectionService.class,
+                        () -> mock(AgentConversationMemoryProjectionService.class))
+                .withBean(AgentConversationMessageGraphProjector.class,
+                        () -> mock(AgentConversationMessageGraphProjector.class))
                 .withBean(AgentTranscriptProjectionService.class)
                 .run(context -> assertThat(context)
                         .hasSingleBean(AgentTranscriptProjectionService.class));

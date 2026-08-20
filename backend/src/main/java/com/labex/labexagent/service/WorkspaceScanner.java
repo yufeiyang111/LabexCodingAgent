@@ -71,6 +71,12 @@ public class WorkspaceScanner {
                 }
                 return FileVisitResult.CONTINUE;
             }
+
+            @Override
+            public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                // Gracefully ignore inaccessible files or broken symlinks (e.g. cross-platform venv/lib64)
+                return FileVisitResult.CONTINUE;
+            }
         });
         return state.result();
     }

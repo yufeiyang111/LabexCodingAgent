@@ -163,7 +163,7 @@ public class AgentModelConfigController {
         try {
             ResolvedModelListRequest resolved = resolveModelListRequest(req, auth);
             String url = resolved.modelsUrl();
-            validatePublicHttpsUrl(url);
+            validateModelUrl(url);
 
             HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
             conn.setRequestMethod("GET");
@@ -344,22 +344,20 @@ public class AgentModelConfigController {
         return normalized + "/models";
     }
 
-    private void validatePublicHttpsUrl(String rawUrl) throws Exception {
+    private void validateModelUrl(String rawUrl) throws Exception {
         URI uri = URI.create(rawUrl);
-        if (!"https".equalsIgnoreCase(uri.getScheme())) {
-            throw new IllegalArgumentException("Models URL must use HTTPS");
+        String scheme = uri.getScheme();
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+            throw new IllegalArgumentException("Models URL must use HTTP or HTTPS");
         }
         if (uri.getUserInfo() != null) {
             throw new IllegalArgumentException("Models URL must not include credentials");
-        }
-        if (uri.getPort() != -1 && uri.getPort() != 443) {
-            throw new IllegalArgumentException("Models URL must use the default HTTPS port");
         }
         String host = uri.getHost();
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("Models URL host is required");
         }
-        outboundUrlPolicy.validate(rawUrl);
+        outboundUrlPolicy.validateProviderUrl(rawUrl);
     }
 
     private void applyModelListAuth(HttpURLConnection conn, URI uri, String apiKey) {

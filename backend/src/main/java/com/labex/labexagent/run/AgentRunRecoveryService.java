@@ -358,7 +358,8 @@ public class AgentRunRecoveryService {
         }
 
         if (state == AgentRunState.WAITING_APPROVAL || state == AgentRunState.WAITING_USER
-                || state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT) {
+                || state == AgentRunState.WAITING_WORKSPACE || state == AgentRunState.WAITING_ENVIRONMENT
+                || state == AgentRunState.WAITING_RECOVERY) {
             lifecycleService.appendEventIfCurrent(
                     task.getTaskId(),
                     state,

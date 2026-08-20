@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @ConfigurationProperties(prefix = "labex-agent.runtime-profile")
 public class AgentRuntimeProfileProperties {
-    private String defaultProfile = AgentRuntimeProfile.LABEX_LEGACY.persistedValue();
+    private String defaultProfile = AgentRuntimeProfile.LABEX_NATIVE.persistedValue();
 
     public String getDefaultProfile() {
         return defaultProfile;

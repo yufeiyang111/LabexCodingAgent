@@ -135,4 +135,66 @@ class CompactionAgentTest {
         assertFalse(result.checkpoint().contains("private compaction plan"));
     }
 
+    @Test
+    void parsesOpenCodeStructuredMarkdownTemplateSuccessfully() {
+        AgentModelConfig config = modelConfig(1, "primary", 1);
+        LlmProvider provider = mock(LlmProvider.class);
+        LlmProvider.LlmConfig llmConfig = configFor(config);
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class)))
+                .thenReturn(Map.of("type", "text", "content", """
+                        ## Goal
+                        - Refactor authentication service and add token expiration.
+                        
+                        ## Progress
+                        ### Done
+                        - Verified database schema and updated AppUser entity.
+                        
+                        ## Key Decisions
+                        - Use BCrypt with salt rounds = 12.
+                        
+                        ## Next Steps
+                        - Run unit test suite.
+                        """));
+        LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(llmConfig);
+
+        CompactionAgent.Result result = new CompactionAgent(providerFactory, mock(AgentModelConfigService.class))
+                .compact(7, config, messages(), "task", null, CancellationToken.none());
+
+        assertTrue(result.success());
+        assertTrue(result.checkpoint().contains("## Goal"));
+        assertTrue(result.checkpoint().contains("Refactor authentication service"));
+        assertTrue(result.checkpoint().contains("version=\"3\""));
+    }
+
+    @Test
+    void parsesJsonWrappedInMarkdownFences() {
+        AgentModelConfig config = modelConfig(1, "primary", 1);
+        LlmProvider provider = mock(LlmProvider.class);
+        LlmProvider.LlmConfig llmConfig = configFor(config);
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class)))
+                .thenReturn(Map.of("type", "text", "content", """
+                        ```json
+                        {
+                          "summary": "Completed milestone implementation.",
+                          "facts": ["Spring Boot 3.0 configured."],
+                          "nextActions": ["Deploy build."],
+                          "openRisks": [],
+                          "files": ["backend/pom.xml"],
+                          "verification": ["Maven build clean."]
+                        }
+                        ```
+                        """));
+        LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(llmConfig);
+
+        CompactionAgent.Result result = new CompactionAgent(providerFactory, mock(AgentModelConfigService.class))
+                .compact(7, config, messages(), "task", null, CancellationToken.none());
+
+        assertTrue(result.success());
+        assertTrue(result.checkpoint().contains("Completed milestone implementation."));
+        assertTrue(result.checkpoint().contains("Spring Boot 3.0 configured."));
+    }
 }

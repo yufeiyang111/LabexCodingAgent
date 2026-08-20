@@ -17,6 +17,8 @@ public class AgentRunPart {
     private String conversationId;
     @TableField("message_id")
     private Long messageId;
+    @TableField("tail_start_message_id")
+    private Long tailStartMessageId;
     @TableField("student_id")
     private Integer studentId;
     @TableField("project_id")
@@ -52,6 +54,8 @@ public class AgentRunPart {
     public void setConversationId(String value) { conversationId = value; }
     public Long getMessageId() { return messageId; }
     public void setMessageId(Long value) { messageId = value; }
+    public Long getTailStartMessageId() { return tailStartMessageId; }
+    public void setTailStartMessageId(Long value) { tailStartMessageId = value; }
     public Integer getStudentId() { return studentId; }
     public void setStudentId(Integer value) { studentId = value; }
     public Integer getProjectId() { return projectId; }

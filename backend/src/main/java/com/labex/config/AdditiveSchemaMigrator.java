@@ -46,6 +46,7 @@ public class AdditiveSchemaMigrator {
             new ColumnDefinition("t_agent_task", "run_version", "BIGINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "last_event_sequence", "BIGINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "request_payload", "LONGTEXT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_task", "origin_message_id", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "recovery_attempts", "INT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "retry_attempts", "INT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "next_retry_at", "DATETIME(3) DEFAULT NULL"),
@@ -71,6 +72,14 @@ public class AdditiveSchemaMigrator {
             new ColumnDefinition("t_agent_conversation", "history_projection_version", "VARCHAR(32) DEFAULT NULL"),
             new ColumnDefinition("t_agent_conversation", "history_migrated_at", "DATETIME(3) DEFAULT NULL"),
             new ColumnDefinition("t_agent_conversation", "runtime_profile", "VARCHAR(32) DEFAULT NULL"),
+            new ColumnDefinition("t_agent_conversation", "next_message_sequence", "BIGINT NOT NULL DEFAULT 0"),
+            new ColumnDefinition("t_agent_conversation", "execution_owner", "VARCHAR(128) DEFAULT NULL"),
+            new ColumnDefinition("t_agent_conversation", "execution_epoch", "BIGINT NOT NULL DEFAULT 0"),
+            new ColumnDefinition("t_agent_conversation", "execution_lease_expires_at", "DATETIME(3) DEFAULT NULL"),
+            new ColumnDefinition("t_agent_conversation", "execution_heartbeat_at", "DATETIME(3) DEFAULT NULL"),
+            new ColumnDefinition("t_agent_run_message", "parent_message_id", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_run_message", "conversation_sequence", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_run_part", "tail_start_message_id", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_agent_compaction_record", "scope", "VARCHAR(24) NOT NULL DEFAULT 'task'"),
             new ColumnDefinition("t_agent_compaction_record", "source_max_task_id", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_command_audit_event", "process_host_id", "VARCHAR(64) DEFAULT NULL"),
@@ -133,6 +142,13 @@ public class AdditiveSchemaMigrator {
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_execution_lease", "execution_lease_expires_at");
             addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_conv_project_updated", "student_id, project_id, status, update_time");
             addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_agent_conversation_fork_task", "forked_from_task_id");
+            addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_agent_conversation_execution_lease", "execution_lease_expires_at");
+            addUniqueIndexIfMissing(metadata, catalog, "t_agent_run_message",
+                    "uk_agent_run_message_conversation_sequence", "conversation_id, conversation_sequence");
+            addIndexIfMissing(metadata, catalog, "t_agent_run_message",
+                    "idx_agent_run_message_conversation_parent", "conversation_id, parent_message_id");
+            addIndexIfMissing(metadata, catalog, "t_agent_run_part",
+                    "idx_agent_run_part_message_sequence", "message_id, sequence_number");
             addIndexIfMissing(metadata, catalog, "t_agent_message", "idx_msg_conversation_history", "conversation_id, student_id, project_id, message_id");
             addIndexIfMissing(metadata, catalog, "t_agent_compaction_record",
                     "idx_agent_compaction_conversation_scope",
@@ -146,6 +162,13 @@ public class AdditiveSchemaMigrator {
         try { jdbcTemplate.execute("ALTER TABLE " + table + " ADD INDEX " + index + " (" + columns + ")"); }
         catch (RuntimeException failure) { if (isDuplicateIndexError(failure)) return; throw failure; }
     }
+    private void addUniqueIndexIfMissing(DatabaseMetaData metadata, String catalog, String table, String index,
+                                         String columns) throws SQLException {
+        if (indexExists(metadata, catalog, table, index) || indexExists(metadata, null, table, index)) return;
+        try { jdbcTemplate.execute("ALTER TABLE " + table + " ADD UNIQUE INDEX " + index + " (" + columns + ")"); }
+        catch (RuntimeException failure) { if (isDuplicateIndexError(failure)) return; throw failure; }
+    }
+
     private boolean indexExists(DatabaseMetaData metadata, String catalog, String table, String index) throws SQLException {
         try (ResultSet indexes = metadata.getIndexInfo(catalog, null, table, false, false)) {
             if (indexes == null) return false;
@@ -717,3 +740,4 @@ public class AdditiveSchemaMigrator {
     private record ColumnDefinition(String tableName, String columnName, String definition) {
     }
 }
+

@@ -1,0 +1,22 @@
+You are executing the `/explain` command to provide a deep technical explanation of code, architecture, or workflows.
+
+Target code / topic to explain:
+$ARGUMENTS
+
+## Explanation Guidelines
+
+1. **Understand First**:
+   - Locate and inspect the target files, type signatures, and dependencies using `read_file` or `grep`.
+   - Trace callers and callees to understand how the component fits into the wider system.
+
+2. **Structure Your Explanation**:
+   - **Executive Summary**: 1-2 sentences describing the core purpose and responsibility.
+   - **Architecture & Component Roles**: Key classes, interfaces, or functions and what each accomplishes.
+   - **Data Flow & Execution Path**: Step-by-step trace of how data flows through the system (use Mermaid sequence or flow diagrams when helpful).
+   - **Invariants & Edge Cases**: Key assumptions, boundary conditions, concurrency guarantees, or security invariants.
+   - **Trade-offs & Technical Caveats**: Non-obvious design decisions or potential pitfalls.
+
+3. **Style**:
+   - Deliver clear, direct, and factual technical explanations.
+   - Use exact `file_path:line_number` references.
+   - Match the user's preferred visible language.

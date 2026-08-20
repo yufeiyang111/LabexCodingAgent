@@ -1,5 +1,6 @@
 package com.labex.labexagent.run;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -68,4 +69,17 @@ class RunCompletionPolicyTest {
                                              boolean manualVerified, String state) {
         return new RunCompletionPolicy.Input(9L, changed, passed, failed, manualVerified, state);
     }
+    @Test
+    void unresolvedToolExecutionFailureCannotBeProjectedAsSuccessfulCompletion() {
+        RunCompletionEvidence evidence = new RunCompletionPolicy().evaluate(new RunCompletionPolicy.Input(
+                9L, List.of(), List.of("npm run build (exit 0)"), List.of(), List.of(),
+                List.of("shell (non_zero_exit)"), false, "running", List.of(),
+                new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", "")));
+
+        assertFalse(evidence.satisfied());
+        assertEquals(List.of("shell (non_zero_exit)"), evidence.unresolvedToolFailures());
+        assertTrue(evidence.criteria().stream().anyMatch(item -> "tool_execution_failures".equals(item.code())
+                && !item.satisfied()));
+    }
 }
+

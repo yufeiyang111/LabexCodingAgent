@@ -21,6 +21,11 @@ spring:
     url: ${LABEX_AGENT_DB_URL:jdbc:mysql://localhost:3306/labex_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${LABEX_AGENT_DB_USERNAME:root}
     password: ${LABEX_AGENT_DB_PASSWORD:}
+  data:
+    redis:
+      url: ${LABEX_AGENT_AUTH_REDIS_URL:redis://localhost:6379}
+      timeout: ${LABEX_AGENT_AUTH_REDIS_TIMEOUT:2s}
+      connect-timeout: ${LABEX_AGENT_AUTH_REDIS_CONNECT_TIMEOUT:2s}
   sql:
     init:
       mode: always
@@ -50,6 +55,34 @@ jwt:
   prefix: "Bearer "
 
 labex-agent:
+  auth:
+    redis-url: ${LABEX_AGENT_AUTH_REDIS_URL:}
+    login-rate-limit: ${LABEX_AGENT_AUTH_LOGIN_RATE_LIMIT:10}
+    oauth-exchange-rate-limit: ${LABEX_AGENT_AUTH_OAUTH_EXCHANGE_RATE_LIMIT:10}
+    register-rate-limit: ${LABEX_AGENT_AUTH_REGISTER_RATE_LIMIT:5}
+    captcha-rate-limit: ${LABEX_AGENT_AUTH_CAPTCHA_RATE_LIMIT:20}
+    login-failure-threshold: ${LABEX_AGENT_AUTH_LOGIN_FAILURE_THRESHOLD:3}
+    register-captcha-threshold: ${LABEX_AGENT_AUTH_REGISTER_CAPTCHA_THRESHOLD:3}
+    failure-window-seconds: ${LABEX_AGENT_AUTH_FAILURE_WINDOW_SECONDS:300}
+    captcha-ttl-seconds: ${LABEX_AGENT_AUTH_CAPTCHA_TTL_SECONDS:120}
+    captcha-length: ${LABEX_AGENT_AUTH_CAPTCHA_LENGTH:5}
+    captcha-width: ${LABEX_AGENT_AUTH_CAPTCHA_WIDTH:128}
+    captcha-height: ${LABEX_AGENT_AUTH_CAPTCHA_HEIGHT:44}
+    captcha-noise-lines: ${LABEX_AGENT_AUTH_CAPTCHA_NOISE_LINES:7}
+    captcha-noise-dots: ${LABEX_AGENT_AUTH_CAPTCHA_NOISE_DOTS:70}
+    captcha-font-size: ${LABEX_AGENT_AUTH_CAPTCHA_FONT_SIZE:26}
+    oauth-state-ttl-seconds: ${LABEX_AGENT_AUTH_OAUTH_STATE_TTL_SECONDS:300}
+    oauth-code-ttl-seconds: ${LABEX_AGENT_AUTH_OAUTH_CODE_TTL_SECONDS:120}
+    oauth-http-timeout-seconds: ${LABEX_AGENT_AUTH_OAUTH_HTTP_TIMEOUT_SECONDS:10}
+    oauth-callback-base-url: ${LABEX_AGENT_AUTH_OAUTH_CALLBACK_BASE_URL:http://localhost:8080/api/auth/oauth}
+    oauth-frontend-callback: ${LABEX_AGENT_AUTH_OAUTH_FRONTEND_CALLBACK:http://localhost:3000/login}
+    oauth-binding-frontend-callback: ${LABEX_AGENT_AUTH_OAUTH_BINDING_FRONTEND_CALLBACK:}
+    github-client-id: ${LABEX_AGENT_AUTH_GITHUB_CLIENT_ID:}
+    github-client-secret: ${LABEX_AGENT_AUTH_GITHUB_CLIENT_SECRET:}
+    google-client-id: ${LABEX_AGENT_AUTH_GOOGLE_CLIENT_ID:}
+    google-client-secret: ${LABEX_AGENT_AUTH_GOOGLE_CLIENT_SECRET:}
+    invite-code-enabled: ${LABEX_AGENT_AUTH_INVITE_CODE_ENABLED:false}
+    invite-codes: ${LABEX_AGENT_AUTH_INVITE_CODES:LABEX-AGENT-2026}
   project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:D:/LabexAgent/workspaces}
   interaction-timeout-poll-interval-ms: ${LABEX_AGENT_INTERACTION_TIMEOUT_POLL_INTERVAL_MS:30000}
   retry-poll-interval-ms: ${LABEX_AGENT_RETRY_POLL_INTERVAL_MS:1000}
@@ -57,7 +90,7 @@ labex-agent:
     target-removal-version: ${LABEX_AGENT_LEGACY_REMOVAL_VERSION:1.1.0}
     observation-window-days: ${LABEX_AGENT_LEGACY_OBSERVATION_WINDOW_DAYS:14}
   runtime-profile:
-    default-profile: ${LABEX_AGENT_RUNTIME_PROFILE_DEFAULT:labex-legacy}
+    default-profile: ${LABEX_AGENT_RUNTIME_PROFILE_DEFAULT:labex-native}
   history:
     max-page-events-budget: ${LABEX_AGENT_HISTORY_MAX_PAGE_EVENTS_BUDGET:1000}
     max-part-output-chars: ${LABEX_AGENT_HISTORY_MAX_PART_OUTPUT_CHARS:4000}
@@ -104,6 +137,19 @@ labex-agent:
     max-port: ${LABEX_AGENT_PREVIEW_MAX_PORT:65535}
     readiness-host: ${LABEX_AGENT_PREVIEW_READINESS_HOST:127.0.0.1}
     public-host: ${LABEX_AGENT_PREVIEW_PUBLIC_HOST:localhost}
+  monitor:
+    enabled: ${LABEX_AGENT_MONITOR_ENABLED:true}
+    access-code: ${LABEX_AGENT_MONITOR_ACCESS_CODE:}
+    session-ttl-hours: ${LABEX_AGENT_MONITOR_SESSION_TTL_HOURS:24}
+    auth-rate-limit: ${LABEX_AGENT_MONITOR_AUTH_RATE_LIMIT:5}
+    auth-failure-window-seconds: ${LABEX_AGENT_MONITOR_AUTH_FAILURE_WINDOW_SECONDS:300}
+    detail-retention-days: ${LABEX_AGENT_MONITOR_DETAIL_RETENTION_DAYS:30}
+    stats-retention-days: ${LABEX_AGENT_MONITOR_STATS_RETENTION_DAYS:180}
+    excluded-prefixes: ${LABEX_AGENT_MONITOR_EXCLUDED_PREFIXES:/ws/,/preview/,/error,/ops/,/auth/captcha}
+    geo:
+      enabled: ${LABEX_AGENT_MONITOR_GEO_ENABLED:true}
+      xdb-path: ${LABEX_AGENT_MONITOR_GEO_XDB_PATH:classpath:ip2region_v4.xdb}
+      cache-size: ${LABEX_AGENT_MONITOR_GEO_CACHE_SIZE:4096}
   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
   lease-reconciliation-interval-ms: ${LABEX_AGENT_LEASE_RECONCILIATION_INTERVAL_MS:30000}
@@ -179,3 +225,4 @@ logging:
   level:
     com.labex: info
     org.springframework.security: warn
+

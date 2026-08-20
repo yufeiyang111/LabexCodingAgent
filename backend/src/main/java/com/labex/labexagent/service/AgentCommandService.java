@@ -130,7 +130,9 @@ public class AgentCommandService {
 
         String expectedPrompt = value(commandInfo.resolveTemplate(extractArguments(displayMessage)));
         String submittedPrompt = value(request.getMessage());
-        if (expectedPrompt.isBlank() || !expectedPrompt.equals(submittedPrompt)) {
+        String normalizedExpected = expectedPrompt.replace("\r\n", "\n").trim();
+        String normalizedSubmitted = submittedPrompt.replace("\r\n", "\n").trim();
+        if (normalizedExpected.isBlank() || !normalizedExpected.equals(normalizedSubmitted)) {
             throw new IllegalArgumentException("Slash Command 的 Provider prompt 与服务端模板不一致，请重新提交");
         }
         request.setDisplayMessage(displayMessage);

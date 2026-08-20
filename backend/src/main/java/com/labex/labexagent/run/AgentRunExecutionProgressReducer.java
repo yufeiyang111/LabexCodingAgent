@@ -59,15 +59,6 @@ public class AgentRunExecutionProgressReducer {
             return "intake".equals(state.stage()) ? state.withStage("explore") : state;
         }
         if (isReadTool(tool)) {
-            if (isManualVerificationRead(state, tool, arguments, output)) {
-                LinkedHashSet<String> remaining = new LinkedHashSet<>(state.unverifiedChangeTargets());
-                String target = toolTarget(arguments);
-                if (remaining.isEmpty()) {
-                    return state.withVerification("read_file", Set.of(), false);
-                }
-                remaining.remove(target);
-                return state.withVerification("read_file", remaining, !remaining.isEmpty());
-            }
             if ("intake".equals(state.stage()) || "explore".equals(state.stage())) {
                 return state.withStage("design");
             }
@@ -129,19 +120,6 @@ public class AgentRunExecutionProgressReducer {
         }
         String verificationState = text(object(metadata, "workspaceVerification"), "state");
         return new WorkspaceMutationProgress(Set.copyOf(targets), verificationState, allTargetsVerified);
-    }
-
-    private boolean isManualVerificationRead(State state, String tool, JsonObject arguments, String output) {
-        if (!state.hasUnverifiedChanges() || !"read_file".equals(tool)) {
-            return false;
-        }
-        String target = toolTarget(arguments);
-        if (!state.unverifiedChangeTargets().isEmpty()
-                && (target.isBlank() || !state.unverifiedChangeTargets().contains(target))) {
-            return false;
-        }
-        String content = output == null ? "" : output;
-        return content.contains("[read_file path=") && content.contains("sha256=");
     }
 
     private String toolTarget(JsonObject arguments) {

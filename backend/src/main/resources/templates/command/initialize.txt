@@ -1,29 +1,56 @@
-You are running the `/init` command for the LabexAgent workspace.
+Create or update `AGENTS.md` (or `LabexAgent.md`) for this repository.
 
-Goal: create or refresh a top-level `LabexAgent.md` file as model-facing project memory, similar to Claude Code `/init` output. The document should preserve durable information that future LLM sessions need in order to navigate, edit, and verify the project safely.
+The goal is a compact, high-signal instruction file that helps future agent sessions avoid mistakes, understand architecture, and ramp up quickly without human intervention. Every line should answer: "Would an agent likely miss this without help?" If not, leave it out.
 
-Preserve high-signal information:
-- Product purpose, stack, package managers, app entrypoints, routes/APIs, data/schema ownership, runtime transports, and verification commands.
-- Security invariants such as auth flow, project ownership checks, secret handling, path safety, and URL-fetching safety.
-- Generated/runtime directories to ignore, missing commands, restart requirements, and repeated gotchas.
+User-provided focus or constraints:
+$ARGUMENTS
 
-Do not preserve noise:
-- One-off terminal output, local port conflicts, temporary paths, generated build artifacts, dependency folders, caches, or personal credentials.
+## How to investigate
 
-Required `LabexAgent.md` sections:
-1. Context Contract
-2. Required Reading Order
-3. Repository Index
-4. Build And Verification Index
-5. Prompt/Context Initialization Rules
-6. Security And Data Rules
-7. Change Workflow Rules
-8. Common Gotchas
-9. Generated Project Index
+Read the highest-value sources first:
+- `README*`, root manifests (`package.json`, `pom.xml`, `requirements.txt`, `go.mod`, `Cargo.toml`), workspace config, lockfiles
+- build, test, lint, formatter, typecheck, and codegen config
+- CI workflows and task runner config (`Makefile`, `compose.yml`, GitHub actions)
+- existing instruction files (`AGENTS.md`, `LabexAgent.md`, `CLAUDE.md`, `.cursor/rules/`, `.cursorrules`)
+- repo-local configuration and environment scripts
 
-Behavior:
-- Build the document from the current project files and compact project index.
-- Use actual commands from package/build files; do not invent lint/test/format scripts.
-- Keep paths relative to the workspace root.
-- Keep the document concise and durable; prefer indexes and invariants over README-style setup prose.
-- Never include secrets or `.env` content.
+If architecture is still unclear after reading config and docs, inspect a small number of representative code files to find the real entrypoints, package boundaries, and execution flow. Prefer reading files that explain how the system is wired together over random leaf files.
+
+Prefer executable sources of truth over prose. If docs conflict with config or scripts, trust the executable source and only keep what you can verify.
+
+## What to extract
+
+Look for the highest-signal facts for an agent working in this repo:
+- exact developer commands, especially non-obvious ones (build, run dev server, single package/test command)
+- required command order when it matters, such as `compile -> migrate -> test`
+- monorepo or multi-package boundaries, ownership of major directories, and real entrypoints
+- framework or toolchain quirks: generated code, migrations, codegen, build artifacts, special env loading, dev servers
+- repo-specific style or workflow conventions that differ from defaults
+- testing quirks: fixtures, integration test prerequisites, snapshot workflows, required external services, flaky or expensive suites
+- security invariants: authentication flow, permission boundaries, secret paths, network assumptions
+
+## Questions
+
+Only ask the user questions if the repo cannot answer something important. Use the `question` tool for one short batch at most.
+
+Good questions:
+- undocumented team conventions
+- branch / PR / release expectations
+- missing setup or test prerequisites that are known but not written down
+
+Do not ask about anything the repo already makes clear.
+
+## Writing rules
+
+Include only high-signal, repo-specific guidance such as:
+- exact commands and shortcuts the agent would otherwise guess wrong
+- architecture notes that are not obvious from filenames
+- conventions that differ from language or framework defaults
+- setup requirements, environment quirks, and operational gotchas
+
+Exclude:
+- generic software advice or programming language tutorials
+- long tutorials or exhaustive file trees
+- obvious language conventions
+- speculative claims or anything you could not verify
+- secrets or raw credential files

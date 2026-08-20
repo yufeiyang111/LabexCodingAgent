@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 class AgentLoopEngineLoopPolicyTest {
     private final String engine = read("src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java");
     private final String config = read("src/main/resources/application.yml");
+    private final String taskService = read("src/main/java/com/labex/labexagent/service/AgentTaskService.java");
 
     @Test
     void replacesTheFixedThirtyTurnLimitWithConfigurableFinalFuse() {
@@ -82,6 +83,21 @@ class AgentLoopEngineLoopPolicyTest {
         assertTrue(engine.contains("finalizationRecoveryService.decide("));
         assertTrue(engine.contains("finalization_recovery_exhausted"));
         assertTrue(config.contains("finalization-recovery-limit: ${LABEX_AGENT_FINALIZATION_RECOVERY_LIMIT:1}"));
+    }
+
+
+    @Test
+    void loopGuardStopUsesTheRecoverableDurableLifecyclePathAndDoesNotEmitSyntheticFinalization() {
+        int recoveryCall = engine.indexOf("this.taskService.waitForLoopGuardRecovery(");
+        int emitterComplete = engine.indexOf("emitter.complete();", recoveryCall);
+
+        assertTrue(recoveryCall >= 0);
+        assertTrue(taskService.contains("\"LOOP_GUARD_STOPPED\""));
+        assertTrue(emitterComplete > recoveryCall);
+        String stopBlock = engine.substring(recoveryCall, emitterComplete);
+        assertTrue(stopBlock.contains("this.sendPersistedEvent("));
+        assertFalse(stopBlock.contains("failTaskAndProject("));
+        assertFalse(stopBlock.contains("streamFinal("));
     }
 
 }

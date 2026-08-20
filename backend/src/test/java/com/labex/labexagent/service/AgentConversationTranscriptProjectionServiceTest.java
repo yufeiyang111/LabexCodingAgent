@@ -111,6 +111,89 @@ class AgentConversationTranscriptProjectionServiceTest {
                 Map.of("role", "assistant", "content", "new durable answer"));
     }
 
+    @Test
+    void preservesFullVerbatimTranscriptForTailTurns() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunMessageMapper messageMapper = mock(AgentRunMessageMapper.class);
+        com.labex.labexagent.run.AgentRunTranscriptService transcriptService =
+                mock(com.labex.labexagent.run.AgentRunTranscriptService.class);
+        com.labex.labexagent.runtime.AgentLoopProperties loopProperties =
+                new com.labex.labexagent.runtime.AgentLoopProperties();
+        loopProperties.setTailTurns(2);
+
+        when(taskMapper.selectList(any())).thenReturn(List.of(
+                task(1L, "build", "completed", "old turn 1"),
+                task(2L, "build", "completed", "tail turn 1"),
+                task(3L, "build", "completed", "tail turn 2")));
+
+        when(messageMapper.selectList(any())).thenReturn(List.of(
+                finalMessage(1L, 101L, "old summary 1")));
+
+        when(transcriptService.loadProjectableTranscript(2L)).thenReturn(List.of(
+                Map.of("role", "user", "content", "tail turn 1 question"),
+                Map.of("role", "assistant", "content", "tail turn 1 answer")));
+
+        when(transcriptService.loadProjectableTranscript(3L)).thenReturn(List.of(
+                Map.of("role", "user", "content", "tail turn 2 question"),
+                Map.of("role", "assistant", "content", "tail turn 2 answer")));
+
+        AgentConversationTranscriptProjectionService service =
+                new AgentConversationTranscriptProjectionService(taskMapper, messageMapper, transcriptService, loopProperties);
+
+        AgentConversationTranscriptProjectionService.Snapshot snapshot =
+                service.snapshot(7, 3, "conversation", 0L, null);
+
+        assertThat(snapshot.sourceMaxTaskId()).isEqualTo(3L);
+        // Head task (1L) uses concise fallback; Tail tasks (2L & 3L) use full transcripts
+        assertThat(snapshot.messages()).containsExactly(
+                Map.of("role", "user", "content", "old turn 1"),
+                Map.of("role", "assistant", "content", "old summary 1"),
+                Map.of("role", "user", "content", "tail turn 1 question"),
+                Map.of("role", "assistant", "content", "tail turn 1 answer"),
+                Map.of("role", "user", "content", "tail turn 2 question"),
+                Map.of("role", "assistant", "content", "tail turn 2 answer"));
+    }
+
+    @Test
+    void preservesHeadTaskTranscriptsWithProgressiveToolOutputPruning() {
+        AgentTaskMapper taskMapper = mock(AgentTaskMapper.class);
+        AgentRunMessageMapper messageMapper = mock(AgentRunMessageMapper.class);
+        com.labex.labexagent.run.AgentRunTranscriptService transcriptService =
+                mock(com.labex.labexagent.run.AgentRunTranscriptService.class);
+        com.labex.labexagent.runtime.AgentLoopProperties loopProperties =
+                new com.labex.labexagent.runtime.AgentLoopProperties();
+        loopProperties.setTailTurns(1);
+
+        String hugeToolOutput = "x".repeat(3000);
+        when(taskMapper.selectList(any())).thenReturn(List.of(
+                task(1L, "build", "completed", "old turn 1"),
+                task(2L, "build", "completed", "tail turn 2")));
+
+        when(transcriptService.loadProjectableTranscript(1L)).thenReturn(List.of(
+                Map.of("role", "user", "content", "old question"),
+                Map.of("role", "tool", "content", hugeToolOutput)));
+
+        when(transcriptService.loadProjectableTranscript(2L)).thenReturn(List.of(
+                Map.of("role", "user", "content", "tail question"),
+                Map.of("role", "assistant", "content", "tail answer")));
+
+        AgentConversationTranscriptProjectionService service =
+                new AgentConversationTranscriptProjectionService(taskMapper, messageMapper, transcriptService, loopProperties);
+
+        AgentConversationTranscriptProjectionService.Snapshot snapshot =
+                service.snapshot(7, 3, "conversation", 0L, null);
+
+        assertThat(snapshot.sourceMaxTaskId()).isEqualTo(2L);
+        assertThat(snapshot.messages()).hasSize(4);
+        // Head tool output should be pruned to 2000 chars + suffix
+        Map<String, Object> headToolMsg = snapshot.messages().get(1);
+        assertThat(headToolMsg.get("role")).isEqualTo("tool");
+        String content = (String) headToolMsg.get("content");
+        assertThat(content).startsWith("x".repeat(2000));
+        assertThat(content).contains("output truncated for history length");
+        assertThat(content).hasSizeLessThan(2500);
+    }
+
     private AgentTask task(long taskId, String mode, String status, String message) {
         AgentTask task = new AgentTask();
         task.setTaskId(taskId);

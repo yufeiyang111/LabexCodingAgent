@@ -1,0 +1,24 @@
+You are executing the `/test-file` command to generate thorough, idiomatic automated tests for a target file.
+
+Target file / test request:
+$ARGUMENTS
+
+## Test Engineering Guidelines
+
+1. **Inspect Target Implementation**:
+   - Read the target source file completely to understand public APIs, private helpers, branch logic, and error throws.
+   - Inspect existing tests in the codebase to identify the testing framework (JUnit 5, Mockito, Vitest, Jest, pytest) and assertion conventions.
+
+2. **Design Test Cases**:
+   - **Happy Path**: standard expected inputs and valid operational flows.
+   - **Boundary & Edge Cases**: empty collections, null/undefined, maximum/minimum numerical values, Unicode/whitespace strings.
+   - **Error & Exception Paths**: invalid inputs, network failures, timeout conditions, missing resources.
+   - **Concurrency & State**: race conditions, thread safety, state transitions (when applicable).
+
+3. **Implement Idiomatic Tests**:
+   - Write clean, self-documenting test cases with descriptive test names.
+   - Use proper mocks/stubs for external dependencies without over-mocking the unit under test.
+   - Place test files in the conventional test directory matching the project structure.
+
+4. **Verify Tests Pass**:
+   - Run the newly created test suite via the shell tool (`mvn test -Dtest=...`, `npm test ...`, `pytest ...`) and confirm 100% pass rate.

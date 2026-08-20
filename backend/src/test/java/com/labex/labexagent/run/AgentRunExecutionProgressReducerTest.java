@@ -33,7 +33,7 @@ class AgentRunExecutionProgressReducerTest {
     }
 
     @Test
-    void manualReadVerifiesOnlyTheMatchingChangedTarget() {
+    void manualReadDoesNotInventVerificationSources() {
         JsonObject firstWrite = new JsonObject();
         firstWrite.addProperty("file_path", "package.json");
         JsonObject secondWrite = new JsonObject();
@@ -47,9 +47,9 @@ class AgentRunExecutionProgressReducerTest {
         state = reducer.apply(state, "read_file", readArgs, "completed",
                 "[read_file path=package.json sha256=abc]\n{}");
 
-        assertThat(state.verificationCount()).isEqualTo(1);
-        assertThat(state.trustedVerificationSources()).containsExactly("read_file");
-        assertThat(state.unverifiedChangeTargets()).containsExactly("src/Main.java");
+        assertThat(state.verificationCount()).isEqualTo(0);
+        assertThat(state.trustedVerificationSources()).isEmpty();
+        assertThat(state.unverifiedChangeTargets()).containsExactly("package.json", "src/Main.java");
         assertThat(state.hasUnverifiedChanges()).isTrue();
     }
 

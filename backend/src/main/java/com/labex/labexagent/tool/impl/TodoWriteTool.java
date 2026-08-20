@@ -71,20 +71,39 @@ public class TodoWriteTool implements AgentTool {
         List<AgentRunPlanService.PlanDraft> drafts = new ArrayList<>();
         for (String rawLine : todos.split("\\R")) {
             String line = rawLine == null ? "" : rawLine.strip();
-            if (line.isBlank()) continue;
+            if (line.isBlank() || line.startsWith("#")) continue;
             boolean completed = false;
             String title = line;
+
+            // Check for completed prefix or checkbox
+            if (line.startsWith("✅") || line.startsWith("☑") || line.startsWith("✓") || line.startsWith("✔")
+                    || line.startsWith("[已完成]") || line.startsWith("- [x]") || line.startsWith("- [X]")
+                    || line.startsWith("* [x]") || line.startsWith("* [X]") || line.startsWith("[x]") || line.startsWith("[X]")) {
+                completed = true;
+            }
+
             Matcher listItem = LIST_ITEM.matcher(line);
             if (listItem.matches()) {
-                completed = listItem.group(1) != null && !listItem.group(1).isBlank();
-                title = listItem.group(2).strip();
+                if (!completed && listItem.group(1) != null && !listItem.group(1).isBlank()) {
+                    completed = true;
+                }
+                title = listItem.group(2) == null || listItem.group(2).isBlank() ? line : listItem.group(2).strip();
             } else {
                 Matcher checkbox = BARE_CHECKBOX.matcher(line);
                 if (checkbox.matches()) {
-                    completed = !checkbox.group(1).isBlank();
-                    title = checkbox.group(2).strip();
+                    if (!completed && checkbox.group(1) != null && !checkbox.group(1).isBlank()) {
+                        completed = true;
+                    }
+                    title = checkbox.group(2) == null || checkbox.group(2).isBlank() ? line : checkbox.group(2).strip();
                 }
             }
+
+            // Strip leading bullet/checkbox/emoji tags from title
+            title = title.replaceAll("^[\\-*\t+0-9.)\\[\\]xX✅☑✓✔🔄⏳👉⬜已完成进行中当前待办:\\s]+", "").strip();
+            if (title.isBlank()) {
+                title = line.replaceAll("^[\\s#\\-*+0-9.)]+", "").strip();
+            }
+
             if (!title.isBlank()) {
                 drafts.add(new AgentRunPlanService.PlanDraft(title, "", completed));
                 if (drafts.size() > MAX_ITEMS) return drafts;

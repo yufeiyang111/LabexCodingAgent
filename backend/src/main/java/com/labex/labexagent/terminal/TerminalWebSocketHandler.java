@@ -59,14 +59,76 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession wsSession) throws Exception {
-        rejectByPolicy(wsSession);
+        Map<String, String> params = queryParameters(wsSession.getUri());
+        String rawToken = params.get("token");
+        String projectIdStr = params.get("projectId");
+
+        if (rawToken == null || rawToken.isBlank() || projectIdStr == null || projectIdStr.isBlank()) {
+            rejectConnection(wsSession, "Missing token or projectId");
+            return;
+        }
+
+        String token = rawToken.trim();
+        if (token.startsWith("Bearer ")) {
+            token = token.substring(7).trim();
+        } else {
+            String stripped = jwtUtil.removePrefix(token);
+            if (stripped != null && !stripped.isBlank()) {
+                token = stripped.trim();
+            }
+        }
+
+        if (!jwtUtil.validateToken(token)) {
+            rejectConnection(wsSession, "Invalid or expired token");
+            return;
+        }
+
+        Integer studentId = jwtUtil.getUserIdFromToken(token);
+        Integer projectId = parsePositiveInteger(projectIdStr);
+        if (studentId == null || projectId == null) {
+            rejectConnection(wsSession, "Invalid credentials");
+            return;
+        }
+
+        TerminalWorkspaceResolver.TerminalWorkspace workspace;
+        try {
+            workspace = workspaceResolver.resolveWorkspace(studentId, projectId);
+        } catch (IllegalArgumentException e) {
+            rejectConnection(wsSession, "Project not found or access denied");
+            return;
+        }
+
+        String sessionId = java.util.UUID.randomUUID().toString();
+        TerminalConnection connection = new TerminalConnection(sessionId, workspace);
+        connections.put(wsSession, connection);
+        log.info("Terminal WebSocket connected: student={}, project={}, session={}", studentId, projectId, sessionId);
     }
 
     @Override
     protected void handleTextMessage(WebSocketSession wsSession, TextMessage message) throws Exception {
-        // This guard intentionally precedes parsing, authorization, workspace resolution,
-        // terminal creation, and input forwarding so raw input cannot reach a worker.
-        rejectByPolicy(wsSession);
+        TerminalConnection connection = connections.get(wsSession);
+        if (connection == null) {
+            rejectConnection(wsSession, "Not authenticated");
+            return;
+        }
+
+        JsonObject msg;
+        try {
+            msg = gson.fromJson(message.getPayload(), JsonObject.class);
+        } catch (Exception e) {
+            sendError(wsSession, "Invalid JSON");
+            return;
+        }
+
+        String type = msg.has("type") ? msg.get("type").getAsString() : "";
+        switch (type) {
+            case "create" -> handleCreate(wsSession, connection, msg);
+            case "input" -> handleInput(connection.sessionId(), msg);
+            case "resize" -> handleResize(connection.sessionId(), msg);
+            case "ping" -> handlePong(wsSession);
+            case "close" -> handleClose(connection.sessionId());
+            default -> sendError(wsSession, "Unknown message type: " + type);
+        }
     }
 
     /**

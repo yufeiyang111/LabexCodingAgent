@@ -40,6 +40,7 @@ public final class AgentRunStateMachine {
                 AgentRunState.WAITING_APPROVAL,
                 AgentRunState.WAITING_USER,
                 AgentRunState.WAITING_ENVIRONMENT,
+                AgentRunState.WAITING_RECOVERY,
                 AgentRunState.RETRYING,
                 AgentRunState.RECOVERING,
                 AgentRunState.CANCELLING,
@@ -58,6 +59,8 @@ public final class AgentRunStateMachine {
         transitions.put(AgentRunState.WAITING_WORKSPACE, EnumSet.of(
                 AgentRunState.QUEUED, AgentRunState.CANCELLING, AgentRunState.FAILED));
         transitions.put(AgentRunState.WAITING_ENVIRONMENT, EnumSet.of(
+                AgentRunState.QUEUED, AgentRunState.CANCELLING, AgentRunState.FAILED));
+        transitions.put(AgentRunState.WAITING_RECOVERY, EnumSet.of(
                 AgentRunState.QUEUED, AgentRunState.CANCELLING, AgentRunState.FAILED));
         transitions.put(AgentRunState.RECOVERING, EnumSet.of(
                 AgentRunState.PREPARING,

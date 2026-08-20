@@ -300,16 +300,16 @@ class AgentModelConfigControllerTest {
                 .andExpect(jsonPath("$.data.success").value(false));
 
         verify(configService).resolveApiKey(config);
-        verify(outboundUrlPolicy).validate(modelsUrl);
+        verify(outboundUrlPolicy).validateProviderUrl(modelsUrl);
     }
 
     @Test
     void modelListUsesSharedOutboundPolicyBeforeOpeningConnection() throws Exception {
         String modelsUrl = "https://models.example.test/models";
-        when(outboundUrlPolicy.validate(modelsUrl)).thenThrow(
+        when(outboundUrlPolicy.validateProviderUrl(modelsUrl)).thenThrow(
                 new OutboundUrlPolicy.RejectedOutboundUrlException(
-                        OutboundUrlPolicy.RejectionReason.BLOCKED_ADDRESS,
-                        "URL resolves to a blocked address"));
+                        OutboundUrlPolicy.RejectionReason.BLOCKED_HOST,
+                        "Cloud metadata endpoint is blocked"));
 
         mockMvc.perform(post("/student/model-configs/model-list")
                         .contentType("application/json")
@@ -318,7 +318,7 @@ class AgentModelConfigControllerTest {
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.success").value(false));
 
-        verify(outboundUrlPolicy).validate(modelsUrl);
+        verify(outboundUrlPolicy).validateProviderUrl(modelsUrl);
     }
 
     private AgentModelConfig configWithTokenLimits(int maxTokens, Integer contextWindowTokens) {

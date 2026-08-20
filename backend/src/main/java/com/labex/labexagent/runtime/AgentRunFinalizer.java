@@ -65,6 +65,9 @@ public class AgentRunFinalizer {
         for (String verification : evidence.environmentVerifications()) {
             blockers.add("environment-blocked verification: " + verification);
         }
+        for (String failure : evidence.unresolvedToolFailures()) {
+            blockers.add("unresolved tool execution failure: " + failure);
+        }
         for (String risk : evidence.unresolvedRisks()) {
             blockers.add("recorded risk: " + risk);
         }

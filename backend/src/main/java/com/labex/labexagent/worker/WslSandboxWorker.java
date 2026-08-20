@@ -87,40 +87,7 @@ public class WslSandboxWorker extends LocalDevelopmentWorker {
         return workerProcess(processBuilder.start(), () -> { });
     }
 
-    @Override
-    public InteractiveTerminal openTerminal(WorkerRunSpec run, TerminalSpec terminal) throws IOException {
-        prepare(run);
-        requireWorkspacePath(run, terminal.workingDirectory());
-        ProcessExecutionRequest request = new ProcessExecutionRequest(
-                List.of("/bin/bash", "-i"), terminal.workingDirectory(),
-                java.time.Duration.ofDays(1), 100_000);
-        TerminalSession session = new TerminalSession(
-                terminal.sessionId(),
-                run.workspaceRoot().toString(),
-                terminal.cols(),
-                terminal.rows(),
-                buildWslCommand(run, request),
-                run.policy().safeEnvironment(run.workspaceRoot(), System.getenv()));
-        session.setOutputCallback(terminal.outputListener()::accept);
-        session.setCloseCallback(terminal.closeListener()::accept);
-        session.start();
-        return new InteractiveTerminal() {
-            @Override
-            public void writeInput(String data) {
-                session.writeInput(data);
-            }
 
-            @Override
-            public void resize(int cols, int rows) {
-                session.resize(cols, rows);
-            }
-
-            @Override
-            public void terminate() {
-                session.destroy();
-            }
-        };
-    }
 
     @Override
     public boolean usesLinuxShell() {

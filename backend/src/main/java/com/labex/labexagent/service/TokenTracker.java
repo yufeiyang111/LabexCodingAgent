@@ -238,7 +238,6 @@ public class TokenTracker {
         int reportedPrompt = 0;
         int reportedCached = 0;
         int reportedCalls = 0;
-        boolean anyHit = false;
         boolean anyWriteOnly = false;
         boolean anyMiss = false;
         boolean allDisabled = !usages.isEmpty();
@@ -249,16 +248,15 @@ public class TokenTracker {
             reportedCalls++;
             reportedPrompt += value(usage.getPromptTokens());
             reportedCached += value(usage.getCachedTokens());
-            anyHit |= status == CacheTelemetryStatus.HIT;
             anyWriteOnly |= status == CacheTelemetryStatus.WRITE_ONLY;
             anyMiss |= status == CacheTelemetryStatus.MISS;
         }
-        CacheTelemetryStatus status = anyHit ? CacheTelemetryStatus.HIT
+        CacheTelemetryStatus status = (reportedCached > 0) ? CacheTelemetryStatus.HIT
                 : anyWriteOnly ? CacheTelemetryStatus.WRITE_ONLY
                 : anyMiss ? CacheTelemetryStatus.MISS
                 : allDisabled ? CacheTelemetryStatus.DISABLED
                 : CacheTelemetryStatus.NOT_REPORTED;
-        Double hitRate = reportedPrompt <= 0
+        Double hitRate = (reportedPrompt <= 0 || reportedCached <= 0)
                 ? null
                 : Math.round(reportedCached * 10000.0 / reportedPrompt) / 100.0;
         return new CacheAggregate(status, reportedCalls, hitRate);

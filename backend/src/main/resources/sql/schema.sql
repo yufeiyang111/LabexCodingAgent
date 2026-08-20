@@ -3,11 +3,27 @@ CREATE TABLE IF NOT EXISTS t_user (
     username VARCHAR(64) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     display_name VARCHAR(100) DEFAULT NULL,
+    email VARCHAR(254) DEFAULT NULL,
     role VARCHAR(32) DEFAULT 'USER',
     status TINYINT DEFAULT 1,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_user_username (username)
+    UNIQUE KEY uk_user_username (username),
+    UNIQUE KEY uk_user_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_user_oauth_binding (
+    binding_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    subject VARCHAR(191) NOT NULL,
+    provider_email VARCHAR(254) DEFAULT NULL,
+    display_name VARCHAR(100) DEFAULT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_oauth_provider_subject (provider, subject),
+    UNIQUE KEY uk_user_oauth_user_provider (user_id, provider),
+    INDEX idx_user_oauth_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_student_project (
@@ -73,6 +89,11 @@ CREATE TABLE IF NOT EXISTS t_agent_conversation (
     compacted_at DATETIME DEFAULT NULL,
     history_projection_version VARCHAR(32) DEFAULT NULL,
     history_migrated_at DATETIME(3) DEFAULT NULL,
+    next_message_sequence BIGINT NOT NULL DEFAULT 0,
+    execution_owner VARCHAR(128) DEFAULT NULL,
+    execution_epoch BIGINT NOT NULL DEFAULT 0,
+    execution_lease_expires_at DATETIME(3) DEFAULT NULL,
+    execution_heartbeat_at DATETIME(3) DEFAULT NULL,
     status INT DEFAULT 1,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -80,6 +101,7 @@ CREATE TABLE IF NOT EXISTS t_agent_conversation (
     INDEX idx_conv_project (project_id),
     INDEX idx_agent_conversation_parent (parent_conversation_id),
     INDEX idx_agent_conversation_fork_task (forked_from_task_id),
+    INDEX idx_agent_conversation_execution_lease (execution_lease_expires_at),
     INDEX idx_conv_project_updated (student_id, project_id, status, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -99,6 +121,7 @@ CREATE TABLE IF NOT EXISTS t_agent_task (
     run_version BIGINT NOT NULL DEFAULT 0,
     last_event_sequence BIGINT NOT NULL DEFAULT 0,
     request_payload LONGTEXT DEFAULT NULL,
+    origin_message_id BIGINT DEFAULT NULL,
     recovery_attempts INT NOT NULL DEFAULT 0,
     retry_attempts INT NOT NULL DEFAULT 0,
     next_retry_at DATETIME(3) DEFAULT NULL,
@@ -177,6 +200,8 @@ CREATE TABLE IF NOT EXISTS t_agent_run_message (
     project_id INT NOT NULL,
     message_key VARCHAR(160) NOT NULL,
     sequence_number BIGINT DEFAULT NULL,
+    parent_message_id BIGINT DEFAULT NULL,
+    conversation_sequence BIGINT DEFAULT NULL,
     role VARCHAR(32) NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'streaming',
     content LONGTEXT DEFAULT NULL,
@@ -184,8 +209,10 @@ CREATE TABLE IF NOT EXISTS t_agent_run_message (
     create_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
     update_time DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     UNIQUE KEY uk_agent_run_message_task_key (task_id, message_key),
+    UNIQUE KEY uk_agent_run_message_conversation_sequence (conversation_id, conversation_sequence),
     INDEX idx_agent_run_message_task_sequence (task_id, run_message_id),
-    INDEX idx_agent_run_message_conversation (conversation_id, run_message_id)
+    INDEX idx_agent_run_message_conversation (conversation_id, run_message_id),
+    INDEX idx_agent_run_message_conversation_parent (conversation_id, parent_message_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_agent_run_part (
@@ -193,6 +220,7 @@ CREATE TABLE IF NOT EXISTS t_agent_run_part (
     task_id BIGINT NOT NULL,
     conversation_id VARCHAR(64) DEFAULT NULL,
     message_id BIGINT DEFAULT NULL,
+    tail_start_message_id BIGINT DEFAULT NULL,
     student_id INT NOT NULL,
     project_id INT NOT NULL,
     part_key VARCHAR(160) NOT NULL,
@@ -209,7 +237,8 @@ CREATE TABLE IF NOT EXISTS t_agent_run_part (
     UNIQUE KEY uk_agent_run_part_task_key (task_id, part_key),
     INDEX idx_agent_run_part_task_sequence (task_id, part_id),
     INDEX idx_agent_run_part_conversation (conversation_id, part_id),
-    INDEX idx_agent_run_part_tool_call (task_id, tool_call_id)
+    INDEX idx_agent_run_part_tool_call (task_id, tool_call_id),
+    INDEX idx_agent_run_part_message_sequence (message_id, sequence_number)
  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_agent_input_attachment (
@@ -747,3 +776,36 @@ CREATE TABLE IF NOT EXISTS t_agent_project_secret_binding (
     INDEX idx_agent_project_secret_binding_owner (student_id, project_id, field_id),
     INDEX idx_agent_project_secret_binding_expiry (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_access_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_time DATETIME NOT NULL,
+    path VARCHAR(255) NOT NULL,
+    method VARCHAR(16) NOT NULL,
+    status INT NOT NULL,
+    duration_ms INT NOT NULL,
+    ip VARCHAR(64) DEFAULT NULL,
+    user_id INT DEFAULT NULL,
+    user_agent VARCHAR(512) DEFAULT NULL,
+    INDEX idx_access_log_time (request_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_access_stats (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    stat_hour DATETIME NOT NULL,
+    path VARCHAR(255) NOT NULL,
+    pv INT NOT NULL DEFAULT 0,
+    uv INT NOT NULL DEFAULT 0,
+    error_count INT NOT NULL DEFAULT 0,
+    avg_duration_ms DECIMAL(10, 2) NOT NULL DEFAULT 0,
+    UNIQUE KEY uk_access_stats_hour_path (stat_hour, path),
+    INDEX idx_access_stats_time (stat_hour)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS t_access_agg_marker (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    hour_start DATETIME NOT NULL,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_access_agg_marker_hour (hour_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+

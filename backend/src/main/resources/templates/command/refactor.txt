@@ -1,0 +1,26 @@
+You are executing the `/refactor` command to safely improve code quality and architecture.
+
+Target refactoring request:
+$ARGUMENTS
+
+## Safe Refactoring Discipline
+
+1. **Map Existing Behavior & Tests**:
+   - Inspect existing implementation and test coverage before making changes.
+   - Run the current test suite to ensure a clean baseline.
+
+2. **Identify Refactoring Goals**:
+   - Eliminate code duplication (DRY), simplify overly complex branches, flatten deep nesting.
+   - Extract well-scoped abstractions, helper methods, or services without breaking boundaries.
+   - Improve readability, type safety, and maintainability.
+
+3. **Preserve Public Contracts**:
+   - DO NOT break public API contracts, method signatures, or expected behaviors unless explicitly asked.
+   - Keep behavior 100% identical for existing callers.
+
+4. **Iterative Verification**:
+   - Make atomic, incremental edits.
+   - Run the test suite after each modification to guarantee zero regressions.
+
+5. **Deliver Report**:
+   - Detail what was refactored, the structural improvements achieved, and test verification proof.
