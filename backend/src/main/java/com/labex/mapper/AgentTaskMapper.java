@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.labex.entity.AgentTask;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -30,4 +31,8 @@ public interface AgentTaskMapper extends BaseMapper<AgentTask> {
             + "ORDER BY task_id ASC LIMIT #{batchSize}")
     List<AgentTask> selectExpiredLeaseCandidates(@Param("now") LocalDateTime now,
                                                  @Param("batchSize") int batchSize);
+
+    /** 只读：按状态统计任务数量（运维指标低频采样用）。 */
+    @Select("SELECT status AS status_value, COUNT(*) AS count_value FROM t_agent_task GROUP BY status")
+    List<Map<String, Object>> selectStatusCounts();
 }

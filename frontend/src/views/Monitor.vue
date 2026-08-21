@@ -75,6 +75,18 @@
           </div>
         </section>
 
+        <section class="m-metric-row">
+          <MetricOverviewPanel :overview="metricOverview" :loading="metricLoading" :error="metricError" />
+          <MetricTrendChart
+            :data="metricSeries"
+            :loading="metricSeriesLoading"
+            :error="metricSeriesError"
+            :range="metricRange"
+            :ranges="metricRanges"
+            @range-change="onMetricRangeChange"
+          />
+        </section>
+
         <section class="m-grid">
           <div class="m-panel m-panel-wide">
             <div class="m-panel-title">访问量趋势（{{ rangeLabel }}）</div>
@@ -172,11 +184,14 @@ import echarts from '@/utils/echarts'
 import { monitorApi } from '@/api'
 import { useMonitorHealth } from '@/composables/ops/useMonitorHealth'
 import { useMonitorRuntime } from '@/composables/ops/useMonitorRuntime'
+import { useMonitorMetrics } from '@/composables/ops/useMonitorMetrics'
 import HealthOverviewPanel from '@/components/ops/health/HealthOverviewPanel.vue'
 import DependencyHealthTable from '@/components/ops/health/DependencyHealthTable.vue'
 import RuntimeTaskTable from '@/components/ops/runtime/RuntimeTaskTable.vue'
 import RuntimeTaskDetailPanel from '@/components/ops/runtime/RuntimeTaskDetailPanel.vue'
 import RuntimeEventTimeline from '@/components/ops/runtime/RuntimeEventTimeline.vue'
+import MetricOverviewPanel from '@/components/ops/metric/MetricOverviewPanel.vue'
+import MetricTrendChart from '@/components/ops/metric/MetricTrendChart.vue'
 
 const {
   loading: healthLoading,
@@ -208,6 +223,19 @@ const {
   resetFilters: resetRuntimeFilters,
   selectTask: selectRuntimeTask
 } = useMonitorRuntime()
+
+const {
+  overview: metricOverview,
+  loading: metricLoading,
+  error: metricError,
+  range: metricRange,
+  series: metricSeries,
+  seriesLoading: metricSeriesLoading,
+  seriesError: metricSeriesError,
+  loadOverview: loadMetricOverview,
+  loadSeries: loadMetricSeries,
+  ranges: metricRanges
+} = useMonitorMetrics()
 
 const ranges = [
   { key: '24h', label: '24小时' },
@@ -316,7 +344,21 @@ async function enterDashboard() {
 function nextFrame() { return new Promise(resolve => requestAnimationFrame(resolve)) }
 
 async function loadAll() {
-  await Promise.allSettled([loadSummary(), loadTraffic(), loadTop(), loadStatus(), loadSystem(), loadVisitors(), loadVisitorRows(), loadHealthSafe(), loadRuntimeSafe()])
+  await Promise.allSettled([loadSummary(), loadTraffic(), loadTop(), loadStatus(), loadSystem(), loadVisitors(), loadVisitorRows(), loadHealthSafe(), loadRuntimeSafe(), loadMetricsSafe()])
+}
+
+async function loadMetricsSafe() {
+  try {
+    await Promise.all([loadMetricOverview(), loadMetricSeries()])
+  } catch (e) {
+    if (e?.status === 401) handleLoadError(e)
+  }
+}
+
+function onMetricRangeChange(nextRange) {
+  loadMetricSeries(nextRange).catch((e) => {
+    if (e?.status === 401) handleLoadError(e)
+  })
 }
 
 async function loadHealthSafe() {
@@ -549,6 +591,8 @@ onBeforeUnmount(() => {
 .m-runtime-row { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; align-items: start; }
 .m-runtime-right { display: flex; flex-direction: column; gap: 16px; }
 @media (max-width: 960px) { .m-runtime-row { grid-template-columns: 1fr; } }
+.m-metric-row { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; align-items: start; }
+@media (max-width: 960px) { .m-metric-row { grid-template-columns: 1fr; } }
 .m-cards { display: grid; grid-template-columns: repeat(8, 1fr); gap: 12px; }
 @media (max-width: 1280px) { .m-cards { grid-template-columns: repeat(4, 1fr); } }
 @media (max-width: 720px) { .m-cards { grid-template-columns: repeat(2, 1fr); } }

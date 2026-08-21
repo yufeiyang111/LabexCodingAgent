@@ -380,6 +380,12 @@ export const monitorApi = {
   },
   runtimeTimeline(taskId, params = {}) {
     return monitorClient.get('/runtime/tasks/' + taskId + '/timeline', { params })
+  },
+  metricsOverview() {
+    return monitorClient.get('/metrics/overview')
+  },
+  metricsTimeseries(range) {
+    return monitorClient.get('/metrics/timeseries', { params: { range } })
   }
 }
 

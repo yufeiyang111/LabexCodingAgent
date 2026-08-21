@@ -161,6 +161,9 @@ labex-agent:
       event-timeline-max-limit: ${LABEX_AGENT_MONITOR_RUNTIME_EVENT_TIMELINE_MAX_LIMIT:500}
       event-payload-max-chars: ${LABEX_AGENT_MONITOR_RUNTIME_EVENT_PAYLOAD_MAX_CHARS:2000}
       summary-max-chars: ${LABEX_AGENT_MONITOR_RUNTIME_SUMMARY_MAX_CHARS:200}
+    metric:
+      sample-interval-ms: ${LABEX_AGENT_MONITOR_METRIC_SAMPLE_INTERVAL_MS:300000}
+      retention-days: ${LABEX_AGENT_MONITOR_METRIC_RETENTION_DAYS:30}
   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
   lease-reconciliation-interval-ms: ${LABEX_AGENT_LEASE_RECONCILIATION_INTERVAL_MS:30000}

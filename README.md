@@ -143,7 +143,7 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 
 **模型配置**：主 Agent 使用用户在前端「模型配置」中创建的 OpenAI-Compatible 模型（API Key / Base URL / 模型名 / 推理程度），凭证加密存储。RAG 图片理解等辅助能力可选配 `MINIMAX_API_KEY`、`TAVILY_API_KEY`。
 
-**站点监控（可选）**：`/ops` 页面查看 PV/UV、热门路径、状态码分布、访问明细与系统资源曲线，以及 MySQL / Redis / Provider / Worker / MCP / Workspace 的依赖健康状态（`/ops/health`，单个依赖超时或异常被隔离，不会拖垮整体）和 Agent 运行任务查询（`/ops/runtime`：任务列表分页、状态/用户/Provider/超时租约过滤、任务详情、事件时间线，全部只读投影自权威状态）。入口用独立访问校验码，配置 `LABEX_AGENT_MONITOR_ACCESS_CODE` 后启用；IP 归属地使用离线 `ip2region_v4.xdb` 库本地查询，不外发访客 IP。
+**站点监控（可选）**：`/ops` 页面查看 PV/UV、热门路径、状态码分布、访问明细与系统资源曲线，以及 MySQL / Redis / Provider / Worker / MCP / Workspace 的依赖健康状态（`/ops/health`，单个依赖超时或异常被隔离，不会拖垮整体）、Agent 运行任务查询（`/ops/runtime`：任务列表分页、状态/用户/Provider/超时租约过滤、任务详情、事件时间线，全部只读投影自权威状态）和指标趋势（`/ops/metrics`：系统/任务/token 低频采样、1h~30d 历史趋势、按保留天数自动清理）。入口用独立访问校验码，配置 `LABEX_AGENT_MONITOR_ACCESS_CODE` 后启用；IP 归属地使用离线 `ip2region_v4.xdb` 库本地查询，不外发访客 IP。
 
 完整环境变量表见 `.env.example` 与 `backend/src/main/resources/application.yml`。
 

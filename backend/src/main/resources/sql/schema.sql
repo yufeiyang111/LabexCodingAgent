@@ -809,3 +809,28 @@ CREATE TABLE IF NOT EXISTS t_access_agg_marker (
     UNIQUE KEY uk_access_agg_marker_hour (hour_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS t_ops_metric_sample (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    sample_time DATETIME(3) NOT NULL,
+    cpu_percent DOUBLE DEFAULT NULL,
+    memory_percent DOUBLE DEFAULT NULL,
+    memory_used_bytes BIGINT DEFAULT NULL,
+    disk_percent DOUBLE DEFAULT NULL,
+    disk_used_bytes BIGINT DEFAULT NULL,
+    heap_used_bytes BIGINT DEFAULT NULL,
+    heap_max_bytes BIGINT DEFAULT NULL,
+    system_load_average DOUBLE DEFAULT NULL,
+    task_total INT NOT NULL DEFAULT 0,
+    task_running INT NOT NULL DEFAULT 0,
+    task_waiting INT NOT NULL DEFAULT 0,
+    task_completed INT NOT NULL DEFAULT 0,
+    task_failed INT NOT NULL DEFAULT 0,
+    task_cancelled INT NOT NULL DEFAULT 0,
+    token_prompt_total BIGINT NOT NULL DEFAULT 0,
+    token_completion_total BIGINT NOT NULL DEFAULT 0,
+    token_total BIGINT NOT NULL DEFAULT 0,
+    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_ops_metric_sample_time (sample_time),
+    INDEX idx_ops_metric_sample_time (sample_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
