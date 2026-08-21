@@ -29,6 +29,11 @@ public class AgentModelConfigService extends ServiceImpl<AgentModelConfigMapper,
                 .orderByDesc(AgentModelConfig::getUpdateTime));
     }
 
+    /** 只读统计：全局启用的模型配置数量（健康检查等运维只读场景使用）。 */
+    public long countEnabled() {
+        return this.lambdaQuery().eq(AgentModelConfig::getStatus, 1).count();
+    }
+
     public AgentModelConfig getDefault(Integer studentId) {
         return this.lambdaQuery()
                 .eq(AgentModelConfig::getStudentId, studentId)

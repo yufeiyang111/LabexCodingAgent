@@ -56,6 +56,14 @@ public class AgentMcpServerService extends ServiceImpl<AgentMcpServerMapper, Age
                 .last("LIMIT 10"));
     }
 
+    /** 只读统计：全局启用状态的 MCP Server 配置数量（健康检查等运维只读场景使用）。 */
+    public long countEnabled() {
+        return this.lambdaQuery()
+                .eq(AgentMcpServer::getStatus, 1)
+                .eq(AgentMcpServer::getIsEnabled, 1)
+                .count();
+    }
+
     public AgentMcpServer getOwned(Integer studentId, Integer serverId) {
         return this.lambdaQuery()
                 .eq(AgentMcpServer::getStudentId, studentId)

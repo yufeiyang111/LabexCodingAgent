@@ -39,6 +39,11 @@
           </div>
         </section>
 
+        <section class="m-health-row">
+          <HealthOverviewPanel :loading="healthLoading" :summary="healthSummary" :error="healthError" @refresh="loadHealthSafe" />
+          <DependencyHealthTable :loading="healthLoading" :dependencies="healthDependencies" :error="healthError" />
+        </section>
+
         <section class="m-grid">
           <div class="m-panel m-panel-wide">
             <div class="m-panel-title">访问量趋势（{{ rangeLabel }}）</div>
@@ -132,8 +137,21 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import * as echarts from 'echarts'
+import echarts from '@/utils/echarts'
 import { monitorApi } from '@/api'
+import { useMonitorHealth } from '@/composables/ops/useMonitorHealth'
+import HealthOverviewPanel from '@/components/ops/health/HealthOverviewPanel.vue'
+import DependencyHealthTable from '@/components/ops/health/DependencyHealthTable.vue'
+
+const {
+  loading: healthLoading,
+  error: healthError,
+  summary: healthSummary,
+  dependencies: healthDependencies,
+  load: loadHealth,
+  startPolling: startHealthPolling,
+  stopPolling: stopHealthPolling
+} = useMonitorHealth()
 
 const ranges = [
   { key: '24h', label: '24小时' },
@@ -242,7 +260,15 @@ async function enterDashboard() {
 function nextFrame() { return new Promise(resolve => requestAnimationFrame(resolve)) }
 
 async function loadAll() {
-  await Promise.allSettled([loadSummary(), loadTraffic(), loadTop(), loadStatus(), loadSystem(), loadVisitors(), loadVisitorRows()])
+  await Promise.allSettled([loadSummary(), loadTraffic(), loadTop(), loadStatus(), loadSystem(), loadVisitors(), loadVisitorRows(), loadHealthSafe()])
+}
+
+async function loadHealthSafe() {
+  try {
+    await loadHealth()
+  } catch (e) {
+    if (e?.status === 401) handleLoadError(e)
+  }
 }
 
 async function loadSummary() {
@@ -303,6 +329,7 @@ function startPolling() {
   summaryTimer = setInterval(loadSummary, 10000)
   trafficTimer = setInterval(loadTraffic, 60000)
   visitorTimer = setInterval(loadVisitorRows, 60000)
+  startHealthPolling()
   window.addEventListener('resize', resizeCharts)
 }
 
@@ -312,6 +339,7 @@ function stopPolling() {
   if (trafficTimer) clearInterval(trafficTimer)
   if (visitorTimer) clearInterval(visitorTimer)
   sysTimer = summaryTimer = trafficTimer = visitorTimer = null
+  stopHealthPolling()
   window.removeEventListener('resize', resizeCharts)
 }
 
@@ -429,6 +457,8 @@ onBeforeUnmount(() => {
 .m-ghost-btn:hover { background: #f9fafb; }
 
 .m-body { flex: 1; width: 100%; max-width: 1360px; margin: 0 auto; padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 16px; box-sizing: border-box; }
+.m-health-row { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; align-items: start; }
+@media (max-width: 960px) { .m-health-row { grid-template-columns: 1fr; } }
 .m-cards { display: grid; grid-template-columns: repeat(8, 1fr); gap: 12px; }
 @media (max-width: 1280px) { .m-cards { grid-template-columns: repeat(4, 1fr); } }
 @media (max-width: 720px) { .m-cards { grid-template-columns: repeat(2, 1fr); } }

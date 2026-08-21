@@ -150,6 +150,10 @@ labex-agent:
       enabled: ${LABEX_AGENT_MONITOR_GEO_ENABLED:true}
       xdb-path: ${LABEX_AGENT_MONITOR_GEO_XDB_PATH:classpath:ip2region_v4.xdb}
       cache-size: ${LABEX_AGENT_MONITOR_GEO_CACHE_SIZE:4096}
+    health:
+      timeout-ms: ${LABEX_AGENT_MONITOR_HEALTH_TIMEOUT_MS:3000}
+      executor-pool-size: ${LABEX_AGENT_MONITOR_HEALTH_EXECUTOR_POOL_SIZE:4}
+      probe-timeout-ms: ${LABEX_AGENT_MONITOR_HEALTH_PROBE_TIMEOUT_MS:5000}
   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
   lease-reconciliation-interval-ms: ${LABEX_AGENT_LEASE_RECONCILIATION_INTERVAL_MS:30000}
@@ -162,6 +166,7 @@ labex-agent:
       image: ${LABEX_AGENT_WORKER_DOCKER_IMAGE:labex-agent-sandbox:smoke}
       max-concurrent-containers: ${LABEX_AGENT_DOCKER_MAX_CONCURRENT_CONTAINERS:8}
       wsl-workspace-mapping: ${LABEX_AGENT_DOCKER_WSL_WORKSPACE_MAPPING:false}
+      host-workspace-base-path: ${LABEX_AGENT_DOCKER_HOST_WORKSPACE_BASE_PATH:}
     resources:
       cpu-millis: ${LABEX_AGENT_WORKER_CPU_MILLIS:1000}
       memory-megabytes: ${LABEX_AGENT_WORKER_MEMORY_MB:1024}

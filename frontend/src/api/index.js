@@ -365,6 +365,12 @@ export const monitorApi = {
   },
   visitors(days = 7, limit = 50) {
     return monitorClient.get('/visitors', { params: { days, limit } })
+  },
+  healthSummary() {
+    return monitorClient.get('/health/summary')
+  },
+  healthDependencies() {
+    return monitorClient.get('/health/dependencies')
   }
 }
 
