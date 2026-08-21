@@ -22,16 +22,22 @@
           <span>运维监控</span>
         </div>
         <div class="m-topbar-actions">
-          <div class="m-range-group">
+          <div class="m-range-group" v-if="tab === 'overview'">
             <button v-for="r in ranges" :key="r.key" class="m-range-btn" :class="{ active: range === r.key }" @click="setRange(r.key)">{{ r.label }}</button>
           </div>
-          <button class="m-ghost-btn" @click="loadAll">刷新</button>
+          <button class="m-ghost-btn" @click="onRefresh">刷新</button>
           <button class="m-ghost-btn" @click="doLogout">退出</button>
         </div>
       </header>
 
+      <nav class="m-tabs">
+        <button v-for="t in tabs" :key="t.key" class="m-tab" :class="{ active: tab === t.key }" @click="setTab(t.key)">{{ t.label }}</button>
+      </nav>
+
       <main class="m-body">
-        <section class="m-cards">
+
+        <div v-show="tab === 'overview'">
+          <section class="m-cards">
           <div v-for="card in statCards" :key="card.label" class="m-card" :style="{ '--accent': card.accent }">
             <div class="m-card-label">{{ card.label }}</div>
             <div class="m-card-value">{{ card.value }}</div>
@@ -42,37 +48,6 @@
         <section class="m-health-row">
           <HealthOverviewPanel :loading="healthLoading" :summary="healthSummary" :error="healthError" @refresh="loadHealthSafe" />
           <DependencyHealthTable :loading="healthLoading" :dependencies="healthDependencies" :error="healthError" />
-        </section>
-
-        <section class="m-runtime-row">
-          <div class="m-runtime-left">
-            <RuntimeTaskTable
-              :tasks="runtimeTasks"
-              :loading="runtimeLoading"
-              :error="runtimeError"
-              :page="runtimePage"
-              :total="runtimeTotal"
-              :has-more="runtimeHasMore"
-              :status-options="runtimeStatusOptions"
-              @apply-filter="onRuntimeFilter"
-              @reset-filter="onRuntimeReset"
-              @change-page="onRuntimePage"
-              @select="onRuntimeSelect"
-            />
-          </div>
-          <div class="m-runtime-right">
-            <RuntimeTaskDetailPanel
-              :detail="runtimeDetail"
-              :loading="runtimeDetailLoading"
-              :error="runtimeDetailError"
-              @close="onRuntimeDetailClose"
-            />
-            <RuntimeEventTimeline
-              :events="runtimeEvents"
-              :loading="runtimeEventsLoading"
-              :error="runtimeEventsError"
-            />
-          </div>
         </section>
 
         <section class="m-metric-row">
@@ -173,25 +148,163 @@
             <div class="m-sys-item"><span class="m-sys-key">服务器时间</span>{{ formatTime(summary?.serverTime) }}</div>
           </div>
         </section>
+        </div>
+
+        <div v-show="tab === 'alerts'">
+          <section class="m-alert-row">
+            <AlertTable
+              :alerts="alertsData.alerts.value"
+              :loading="alertsData.loading.value"
+              :error="alertsData.error.value"
+              :page="alertsData.page.value"
+              :total="alertsData.total.value"
+              :page-size="alertsData.pageSize.value"
+              :status="alertsData.status.value"
+              :acting-id="alertsData.actingId.value"
+              @refresh="onAlertsRefresh"
+              @filter="onAlertsFilter"
+              @page-change="onAlertsPage"
+              @acknowledge="onAcknowledgeAlert"
+              @silence="onSilenceAlert"
+              @resolve="onResolveAlert"
+              @create-incident="onCreateIncidentFromAlert"
+            />
+          </section>
+          <section class="m-alert-rule-row">
+            <AlertRulePanel
+              :rules="alertsData.rules.value"
+              :loading="alertsData.rulesLoading.value"
+              :error="alertsData.rulesError.value"
+              @save="onSaveRule"
+              @toggle="onToggleRule"
+              @delete="onDeleteRule"
+            />
+          </section>
+        </div>
+
+        <div v-show="tab === 'incidents'">
+          <section>
+            <IncidentPanel
+              :incidents="incidentsData.incidents.value"
+              :loading="incidentsData.loading.value"
+              :error="incidentsData.error.value"
+              :page="incidentsData.page.value"
+              :total="incidentsData.total.value"
+              :page-size="incidentsData.pageSize.value"
+              :status="incidentsData.status.value"
+              :detail="incidentsData.detail.value"
+              :timeline="incidentsData.timeline.value"
+              :timeline-loading="incidentsData.timelineLoading.value"
+              :acting-id="incidentsData.actingId.value"
+              @refresh="onIncidentsRefresh"
+              @filter="onIncidentsFilter"
+              @page-change="onIncidentsPage"
+              @open="onIncidentOpen"
+              @close-detail="incidentsData.close()"
+              @transition="onIncidentTransition"
+              @create="onIncidentCreate"
+            />
+          </section>
+        </div>
+
+        <div v-show="tab === 'events'">
+          <section>
+            <EventTable
+              :events="eventsData.events.value"
+              :loading="eventsData.loading.value"
+              :error="eventsData.error.value"
+              :page="eventsData.page.value"
+              :total="eventsData.total.value"
+              :page-size="eventsData.pageSize.value"
+              :filters="eventsData.filters.value"
+              @refresh="onEventsRefresh"
+              @filter="onEventsRefresh"
+              @page-change="onEventsPage"
+            />
+          </section>
+        </div>
+
+        <div v-show="tab === 'audit'">
+          <section>
+            <AuditTable
+              :records="auditData.records.value"
+              :loading="auditData.loading.value"
+              :error="auditData.error.value"
+              :page="auditData.page.value"
+              :total="auditData.total.value"
+              :page-size="auditData.pageSize.value"
+              :filters="auditData.filters.value"
+              @refresh="onAuditRefresh"
+              @filter="onAuditRefresh"
+              @page-change="onAuditPage"
+            />
+          </section>
+        </div>
+
+        <div v-show="tab === 'runtime'">
+          <section class="m-runtime-actions">
+            <RuntimeActionsBar @401="handleLoadError" />
+          </section>
+          <section class="m-runtime-row">
+            <div class="m-runtime-left">
+              <RuntimeTaskTable
+                :tasks="runtimeTasks"
+                :loading="runtimeLoading"
+                :error="runtimeError"
+                :page="runtimePage"
+                :total="runtimeTotal"
+                :has-more="runtimeHasMore"
+                :status-options="runtimeStatusOptions"
+                @apply-filter="onRuntimeFilter"
+                @reset-filter="onRuntimeReset"
+                @change-page="onRuntimePage"
+                @select="onRuntimeSelect"
+              />
+            </div>
+            <div class="m-runtime-right">
+              <RuntimeTaskDetailPanel
+                :detail="runtimeDetail"
+                :loading="runtimeDetailLoading"
+                :error="runtimeDetailError"
+                @close="onRuntimeDetailClose"
+              />
+              <RuntimeEventTimeline
+                :events="runtimeEvents"
+                :loading="runtimeEventsLoading"
+                :error="runtimeEventsError"
+              />
+            </div>
+          </section>
+        </div>
       </main>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import echarts from '@/utils/echarts'
 import { monitorApi } from '@/api'
 import { useMonitorHealth } from '@/composables/ops/useMonitorHealth'
 import { useMonitorRuntime } from '@/composables/ops/useMonitorRuntime'
 import { useMonitorMetrics } from '@/composables/ops/useMonitorMetrics'
+import { useMonitorAlerts } from '@/composables/ops/useMonitorAlerts'
+import { useMonitorIncidents } from '@/composables/ops/useMonitorIncidents'
+import { useMonitorAudit } from '@/composables/ops/useMonitorAudit'
+import { useMonitorEvents } from '@/composables/ops/useMonitorEvents'
 import HealthOverviewPanel from '@/components/ops/health/HealthOverviewPanel.vue'
 import DependencyHealthTable from '@/components/ops/health/DependencyHealthTable.vue'
 import RuntimeTaskTable from '@/components/ops/runtime/RuntimeTaskTable.vue'
 import RuntimeTaskDetailPanel from '@/components/ops/runtime/RuntimeTaskDetailPanel.vue'
 import RuntimeEventTimeline from '@/components/ops/runtime/RuntimeEventTimeline.vue'
+import RuntimeActionsBar from '@/components/ops/runtime/RuntimeActionsBar.vue'
 import MetricOverviewPanel from '@/components/ops/metric/MetricOverviewPanel.vue'
 import MetricTrendChart from '@/components/ops/metric/MetricTrendChart.vue'
+import AlertTable from '@/components/ops/alert/AlertTable.vue'
+import AlertRulePanel from '@/components/ops/alert/AlertRulePanel.vue'
+import IncidentPanel from '@/components/ops/incident/IncidentPanel.vue'
+import EventTable from '@/components/ops/event/EventTable.vue'
+import AuditTable from '@/components/ops/audit/AuditTable.vue'
 
 const {
   loading: healthLoading,
@@ -236,6 +349,167 @@ const {
   loadSeries: loadMetricSeries,
   ranges: metricRanges
 } = useMonitorMetrics()
+
+const alertsData = useMonitorAlerts()
+const incidentsData = useMonitorIncidents()
+const auditData = useMonitorAudit()
+const eventsData = useMonitorEvents()
+
+const tabs = [
+  { key: 'overview', label: '总览' },
+  { key: 'alerts', label: '告警' },
+  { key: 'incidents', label: '故障' },
+  { key: 'runtime', label: '运行态' },
+  { key: 'events', label: '事件' },
+  { key: 'audit', label: '审计' }
+]
+const tab = ref('overview')
+
+function setTab(key) {
+  tab.value = key
+}
+
+watch(tab, (key) => {
+  if (key === 'alerts') {
+    alertsData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+    alertsData.loadRules().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+  } else if (key === 'incidents') {
+    incidentsData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+  } else if (key === 'events') {
+    eventsData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+  } else if (key === 'audit') {
+    auditData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+  } else if (key === 'runtime') {
+    loadRuntimeSafe()
+  }
+})
+
+function onRefresh() {
+  if (tab.value === 'overview') {
+    void loadAll()
+  } else if (tab.value === 'alerts') {
+    onAlertsRefresh()
+  } else if (tab.value === 'incidents') {
+    onIncidentsRefresh()
+  } else if (tab.value === 'events') {
+    onEventsRefresh()
+  } else if (tab.value === 'audit') {
+    onAuditRefresh()
+  } else if (tab.value === 'runtime') {
+    loadRuntimeSafe()
+  }
+}
+
+function onAlertsRefresh() {
+  alertsData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onAlertsFilter(statusValue) {
+  alertsData.load({ status: statusValue }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onAlertsPage(nextPage) {
+  alertsData.load({ page: nextPage }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+async function onAcknowledgeAlert(alert) {
+  const ok = await alertsData.acknowledge(alert.alertId)
+  if (!ok && alertsData.error.value) alertsData.error.value = alertsData.error.value
+}
+
+async function onSilenceAlert(alert) {
+  const minutes = window.prompt('静默时长（分钟，默认 60）：', '60')
+  if (minutes === null) return
+  const value = parseInt(minutes, 10)
+  if (!value || value < 1) { alertsData.error.value = '静默时长必须为正整数'; return }
+  await alertsData.silence(alert.alertId, value)
+}
+
+async function onResolveAlert(alert) {
+  const ok = await alertsData.resolve(alert.alertId, 'resolved by operator')
+  if (!ok) alertsData.error.value = alertsData.error.value
+}
+
+async function onCreateIncidentFromAlert(alert) {
+  try {
+    await incidentsData.create({ title: alert.ruleName || ('告警 #' + alert.alertId), severity: alert.severity, sourceAlertId: alert.alertId, summary: alert.message })
+    setTab('incidents')
+  } catch (e) {
+    if (e?.status === 401) handleLoadError(e)
+  }
+}
+
+async function onSaveRule(ruleId, body) {
+  try {
+    await alertsData.saveRule(ruleId, body)
+  } catch (e) {
+    if (e?.status === 401) handleLoadError(e)
+    throw e
+  }
+}
+
+async function onToggleRule(rule) {
+  try {
+    await alertsData.saveRule(rule.ruleId, {
+      name: rule.name, metricKey: rule.metricKey, operator: rule.operator,
+      threshold: rule.threshold, durationMinutes: rule.durationMinutes,
+      cooldownMinutes: rule.cooldownMinutes, severity: rule.severity,
+      description: rule.description, enabled: !rule.enabled
+    })
+  } catch (e) {
+    if (e?.status === 401) handleLoadError(e)
+  }
+}
+
+async function onDeleteRule(rule) {
+  try {
+    await alertsData.deleteRule(rule.ruleId)
+  } catch (e) {
+    if (e?.status === 401) handleLoadError(e)
+  }
+}
+
+function onIncidentsRefresh() {
+  incidentsData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onIncidentsFilter(statusValue) {
+  incidentsData.load({ status: statusValue }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onIncidentsPage(nextPage) {
+  incidentsData.load({ page: nextPage }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onIncidentOpen(incidentId) {
+  incidentsData.open(incidentId).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onIncidentTransition(incident, target) {
+  incidentsData.transition(incident.incidentId, target).catch((e) => {
+    if (e?.status === 401) handleLoadError(e)
+  })
+}
+
+function onIncidentCreate(body) {
+  return incidentsData.create(body)
+}
+
+function onEventsRefresh() {
+  eventsData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onEventsPage(nextPage) {
+  eventsData.load({ page: nextPage }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onAuditRefresh() {
+  auditData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onAuditPage(nextPage) {
+  auditData.load({ page: nextPage }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
 
 const ranges = [
   { key: '24h', label: '24小时' },
@@ -579,6 +853,12 @@ onBeforeUnmount(() => {
 .m-topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 24px; background: #fff; border-bottom: 1px solid #eef0f3; position: sticky; top: 0; z-index: 10; }
 .m-topbar-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: #111827; }
 .m-topbar-actions { display: flex; align-items: center; gap: 10px; }
+.m-tabs { display: flex; gap: 4px; padding: 8px 24px 0; background: #fff; border-bottom: 1px solid #eef0f3; position: sticky; top: 53px; z-index: 9; }
+.m-tab { border: 0; background: transparent; padding: 8px 16px; font-size: 13px; font-family: inherit; color: #6b7280; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.m-tab:hover { color: #374151; }
+.m-tab.active { color: #4f46e5; font-weight: 600; border-bottom-color: #4f46e5; }
+.m-alert-row, .m-alert-rule-row, .m-runtime-actions { display: block; }
+.m-runtime-actions { margin-bottom: 16px; }
 .m-range-group { display: flex; background: #f1f5f9; border-radius: 8px; padding: 3px; }
 .m-range-btn { border: 0; background: transparent; padding: 6px 14px; border-radius: 6px; font-size: 12px; font-family: inherit; color: #475569; cursor: pointer; }
 .m-range-btn.active { background: #fff; color: #4f46e5; font-weight: 600; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08); }

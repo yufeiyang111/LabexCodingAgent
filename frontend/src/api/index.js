@@ -381,11 +381,86 @@ export const monitorApi = {
   runtimeTimeline(taskId, params = {}) {
     return monitorClient.get('/runtime/tasks/' + taskId + '/timeline', { params })
   },
-  metricsOverview() {
-    return monitorClient.get('/metrics/overview')
+    metricsOverview() {
+      return monitorClient.get('/metrics/overview')
+    },
+    metricsTimeseries(range) {
+      return monitorClient.get('/metrics/timeseries', { params: { range } })
+    },
+    alerts(params) {
+      return monitorClient.get('/alerts', { params })
+    },
+    alert(alertId) {
+      return monitorClient.get('/alerts/' + alertId)
+    },
+    acknowledgeAlert(alertId) {
+      return monitorClient.post('/alerts/' + alertId + '/acknowledge')
+    },
+    silenceAlert(alertId, durationMinutes) {
+      return monitorClient.post('/alerts/' + alertId + '/silence', { durationMinutes })
+    },
+    resolveAlert(alertId, reason) {
+      return monitorClient.post('/alerts/' + alertId + '/resolve', { reason })
+    },
+    alertRules(params) {
+      return monitorClient.get('/alerts/rules', { params })
+    },
+    createAlertRule(body) {
+      return monitorClient.post('/alerts/rules', body)
+    },
+    updateAlertRule(ruleId, body) {
+      return monitorClient.put('/alerts/rules/' + ruleId, body)
+    },
+    deleteAlertRule(ruleId) {
+      return monitorClient.delete('/alerts/rules/' + ruleId)
+    },
+    incidents(params) {
+      return monitorClient.get('/incidents', { params })
+    },
+    incident(incidentId) {
+      return monitorClient.get('/incidents/' + incidentId)
+    },
+    incidentTimeline(incidentId) {
+      return monitorClient.get('/incidents/' + incidentId + '/timeline')
+    },
+    createIncident(body) {
+      return monitorClient.post('/incidents', body)
+    },
+    incidentTransition(incidentId, target) {
+      return monitorClient.post('/incidents/' + incidentId + '/' + target)
+    },
+    events(params) {
+      return monitorClient.get('/events', { params })
+    },
+    auditLogs(params) {
+      return monitorClient.get('/audit', { params })
+    },
+    operations(params) {
+      return monitorClient.get('/operations', { params })
+    },
+    cancelTask(taskId, body = {}) {
+      return monitorClient.post('/operations/tasks/' + taskId + '/cancel', body)
+    },
+    retryTask(taskId, body = {}) {
+      return monitorClient.post('/operations/tasks/' + taskId + '/retry', body)
+    },
+    recoverLeases(body = {}) {
+      return monitorClient.post('/operations/leases/recover', body)
+    },
+    pauseWorker(workerId, body = {}) {
+      return monitorClient.post('/operations/workers/' + workerId + '/pause', body)
+    },
+    resumeWorker(workerId, body = {}) {
+      return monitorClient.post('/operations/workers/' + workerId + '/resume', body)
+    }
+  }
+
+
+export const tutorialApi = {
+  list() {
+    return request.get('/tutorials')
   },
-  metricsTimeseries(range) {
-    return monitorClient.get('/metrics/timeseries', { params: { range } })
+  get(slug) {
+    return request.get('/tutorials/' + encodeURIComponent(slug))
   }
 }
-

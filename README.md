@@ -136,14 +136,21 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 | `LABEX_AGENT_DB_USERNAME` / `LABEX_AGENT_DB_PASSWORD` | `root` / 无 | 数据库账号 |
 | `LABEX_AGENT_JWT_SECRET` | 占位 | JWT 签名密钥，生产必须为 ≥64 字节的高熵串 |
 | `LABEX_AGENT_SECRET_STORE_MASTER_KEY` | 占位 | AES-GCM 主密钥（加密模型 API Key 与 MCP 凭证） |
-| `LABEX_AGENT_AUTH_REDIS_URL` | `redis://localhost:6379` | 认证限流 / 验证码 / OAuth 状态存储（Redis 必用） |
+| `LABEX_AGENT_AUTH_REDIS_URL` | `redis://localhost:6379` | 认证限流 / 验证码 / OAuth 状态存储（Redis 必用） || `LABEX_AGENT_CONVERSATION_CACHE_ENABLED` | `true` | 会话列表、最近历史第一页、上下文状态 Redis 热缓存开关；关闭时回退 MySQL |
+| `LABEX_AGENT_CONVERSATION_CACHE_LIST_TTL` | `120s` | 会话列表缓存 TTL |
+| `LABEX_AGENT_CONVERSATION_CACHE_HISTORY_TTL` | `60s` | 最近历史第一页缓存 TTL |
+| `LABEX_AGENT_CONVERSATION_CACHE_CONTEXT_STATUS_TTL` | `30s` | 上下文状态缓存 TTL |
+| `LABEX_AGENT_CONVERSATION_CACHE_DOUBLE_DELETE_DELAY_MS` | `500` | 数据库提交后的延迟二次删缓存时间 |
+| `LABEX_AGENT_CONVERSATION_CACHE_KEY_PREFIX` | `labex:conversation` | 会话热缓存键前缀，与认证 Redis key 隔离 |
 | `LABEX_AGENT_PROJECT_BASE_PATH` | `D:/LabexAgent/workspaces` | 用户工作区根路径 |
 
 **认证模块**：注册 / 登录 / 图形验证码（按风险阈值按需生成）/ GitHub、Google OAuth（可选，未配置时登录页隐藏按钮）/ 邀请注册。第三方登录不会自动建号，需先在账号设置中绑定。
 
 **模型配置**：主 Agent 使用用户在前端「模型配置」中创建的 OpenAI-Compatible 模型（API Key / Base URL / 模型名 / 推理程度），凭证加密存储。RAG 图片理解等辅助能力可选配 `MINIMAX_API_KEY`、`TAVILY_API_KEY`。
 
-**站点监控（可选）**：`/ops` 页面查看 PV/UV、热门路径、状态码分布、访问明细与系统资源曲线，以及 MySQL / Redis / Provider / Worker / MCP / Workspace 的依赖健康状态（`/ops/health`，单个依赖超时或异常被隔离，不会拖垮整体）、Agent 运行任务查询（`/ops/runtime`：任务列表分页、状态/用户/Provider/超时租约过滤、任务详情、事件时间线，全部只读投影自权威状态）和指标趋势（`/ops/metrics`：系统/任务/token 低频采样、1h~30d 历史趋势、按保留天数自动清理）。入口用独立访问校验码，配置 `LABEX_AGENT_MONITOR_ACCESS_CODE` 后启用；IP 归属地使用离线 `ip2region_v4.xdb` 库本地查询，不外发访客 IP。
+**使用教程**：登录后从主页面主题按钮左侧的书本图标进入 `/tutorials`。教程目录和正文来自 `t_tutorial_document`，首启会幂等写入默认教程；后续可由运维管理端在同一表上进行编辑、发布和下线。`GET /tutorials` 只返回已发布目录，`GET /tutorials/{slug}` 返回已发布正文。
+
+**站点监控（可选）**：`/ops` 页面查看 PV/UV、热门路径、状态码分布、访问明细与系统资源曲线，以及 MySQL / Redis / Provider / Worker / MCP / Workspace 的依赖健康状态（`/ops/health`，单个依赖超时或异常被隔离，不会拖垮整体）、Agent 运行任务查询（`/ops/runtime`：任务列表分页、状态/用户/Provider/超时租约过滤、任务详情、事件时间线，全部只读投影自权威状态）、指标趋势（`/ops/metrics`：系统/任务/token 低频采样、1h~30d 历史趋势、按保留天数自动清理）、告警中心（`/ops/alerts`：规则 CRUD、基于持久化采样的低频评估、FIRING/ACKNOWLEDGED/SILENCED/RESOLVED 状态机、去重与冷却、可选 Webhook 通知及失败重试、确认/静默/恢复）、故障（`/ops/incidents`：OPEN/ACKNOWLEDGED/MITIGATING/RESOLVED/CLOSED 状态机、处理时间线）、事件流（`/ops/events`：启动、告警、故障、受控操作统一落库）与审计日志（`/ops/audit`：敏感键值自动脱敏、按保留天数清理）。入口用独立访问校验码，配置 `LABEX_AGENT_MONITOR_ACCESS_CODE` 后启用；**默认只读**，配置 `LABEX_AGENT_MONITOR_OPERATOR_CODE` 后用操作码登录可获得 `OPS_OPERATOR` 角色以执行告警/故障处理与受控操作（`/ops/operations`：取消任务、重试任务、释放过期租约、Worker 暂停/恢复，全部要求幂等键并写审计；任务取消/重试/租约恢复都委托既有生命周期服务，不直接改 `AgentTask`）。IP 归属地使用离线 `ip2region_v4.xdb` 库本地查询，不外发访客 IP。
 
 完整环境变量表见 `.env.example` 与 `backend/src/main/resources/application.yml`。
 
