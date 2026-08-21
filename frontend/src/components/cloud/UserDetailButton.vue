@@ -225,7 +225,11 @@ async function unbind(provider: string, label: string) {
   gap: 8px;
   margin-bottom: 10px;
   font-size: 13px;
+  opacity: 0;
+  animation: ud-fade-up 0.3s ease forwards;
 }
+.ud-row:nth-child(1) { animation-delay: 0ms; }
+.ud-row:nth-child(2) { animation-delay: 60ms; }
 .ud-label {
   color: #6b7280;
   min-width: 40px;
@@ -242,6 +246,9 @@ async function unbind(provider: string, label: string) {
 .oauth-section h4 {
   margin: 0 0 10px;
   font-size: 13px;
+  opacity: 0;
+  animation: ud-fade-up 0.3s ease forwards;
+  animation-delay: 80ms;
 }
 .oauth-loading,
 .oauth-bound,
@@ -261,6 +268,19 @@ async function unbind(provider: string, label: string) {
   border: 1px solid #ebeef5;
   border-radius: 8px;
   padding: 10px 12px;
+  background: #ffffff;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.25s ease;
+  opacity: 0;
+  animation: ud-fade-up 0.3s ease forwards;
+}
+.oauth-item:nth-child(1) { animation-delay: 120ms; }
+.oauth-item:nth-child(2) { animation-delay: 220ms; }
+.oauth-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  border-color: #d1d5db;
 }
 .oauth-item-left {
   display: flex;
@@ -274,5 +294,15 @@ async function unbind(provider: string, label: string) {
   width: 24px;
   height: 24px;
   flex-shrink: 0;
+}
+@keyframes ud-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 </style>

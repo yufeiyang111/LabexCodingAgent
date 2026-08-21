@@ -361,11 +361,11 @@ onMounted(async () => {
 
 <style scoped>
 .cs-shell { display: flex; min-height: 100dvh; height: 100dvh; background: #fff; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-.cs-left { width: 300px; border-right: 1px solid #f0f0f0; display: flex; flex-direction: column; background: #fafbfc; flex-shrink: 0; }
+.cs-left { width: 300px; border-right: 1px solid #f0f0f0; display: flex; flex-direction: column; background: #ffffff; flex-shrink: 0; }
 .cs-right { flex: 1; display: flex; flex-direction: column; background: #fff; min-width: 0; }
 .cs-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #f0f0f0; }
 .cs-panel-header h2 { font-size: 14px; font-weight: 600; color: #111827; margin: 0; }
-.cs-right-header { background: #fafbfc; }
+.cs-right-header { background: #ffffff; }
 .cs-right-title { display: flex; align-items: center; gap: 10px; }
 .cs-right-title h3 { font-size: 14px; font-weight: 600; color: #111827; margin: 0; }
 .cs-right-meta { font-size: 12px; color: #9ca3af; }
