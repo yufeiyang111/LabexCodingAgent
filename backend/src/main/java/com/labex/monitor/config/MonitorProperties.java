@@ -11,6 +11,8 @@ public class MonitorProperties {
     private boolean enabled = true;
     /** 访问监控页的校验码；为空表示未启用监控入口。 */
     private String accessCode = "";
+    /** 可选的操作者校验码：用该码登录签发 OPS_OPERATOR 角色，否则只签发只读 OPS_VIEWER。 */
+    private String operatorCode = "";
     private int sessionTtlHours = 24;
     private int authRateLimit = 5;
     private int authFailureWindowSeconds = 300;

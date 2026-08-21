@@ -13,7 +13,8 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 @Configuration
 @EnableConfigurationProperties({MonitorProperties.class, IpLocationProperties.class,
-        MonitorHealthProperties.class, MonitorRuntimeProperties.class, OpsMetricProperties.class})
+        MonitorHealthProperties.class, MonitorRuntimeProperties.class, OpsMetricProperties.class,
+        OpsAlertProperties.class, OpsAuditProperties.class})
 public class MonitorConfiguration implements WebMvcConfigurer {
 
     private final AccessLogInterceptor accessLogInterceptor;

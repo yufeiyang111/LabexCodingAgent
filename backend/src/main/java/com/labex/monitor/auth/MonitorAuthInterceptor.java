@@ -41,6 +41,7 @@ public class MonitorAuthInterceptor implements HandlerInterceptor {
             writeError(response, HttpStatus.UNAUTHORIZED.value(), "访问凭证缺失或已失效，请重新输入校验码");
             return false;
         }
+        request.setAttribute(MonitorRoleService.REQUEST_ATTRIBUTE_ROLE, accessService.sessionRole(token));
         return true;
     }
 

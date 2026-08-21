@@ -140,6 +140,7 @@ labex-agent:
   monitor:
     enabled: ${LABEX_AGENT_MONITOR_ENABLED:true}
     access-code: ${LABEX_AGENT_MONITOR_ACCESS_CODE:}
+    operator-code: ${LABEX_AGENT_MONITOR_OPERATOR_CODE:}
     session-ttl-hours: ${LABEX_AGENT_MONITOR_SESSION_TTL_HOURS:24}
     auth-rate-limit: ${LABEX_AGENT_MONITOR_AUTH_RATE_LIMIT:5}
     auth-failure-window-seconds: ${LABEX_AGENT_MONITOR_AUTH_FAILURE_WINDOW_SECONDS:300}
@@ -161,9 +162,21 @@ labex-agent:
       event-timeline-max-limit: ${LABEX_AGENT_MONITOR_RUNTIME_EVENT_TIMELINE_MAX_LIMIT:500}
       event-payload-max-chars: ${LABEX_AGENT_MONITOR_RUNTIME_EVENT_PAYLOAD_MAX_CHARS:2000}
       summary-max-chars: ${LABEX_AGENT_MONITOR_RUNTIME_SUMMARY_MAX_CHARS:200}
-    metric:
-      sample-interval-ms: ${LABEX_AGENT_MONITOR_METRIC_SAMPLE_INTERVAL_MS:300000}
-      retention-days: ${LABEX_AGENT_MONITOR_METRIC_RETENTION_DAYS:30}
+      metric:
+        sample-interval-ms: ${LABEX_AGENT_MONITOR_METRIC_SAMPLE_INTERVAL_MS:300000}
+        retention-days: ${LABEX_AGENT_MONITOR_METRIC_RETENTION_DAYS:30}
+      alert:
+        evaluation-interval-ms: ${LABEX_AGENT_MONITOR_ALERT_EVALUATION_INTERVAL_MS:60000}
+        notification-max-attempts: ${LABEX_AGENT_MONITOR_ALERT_NOTIFICATION_MAX_ATTEMPTS:3}
+        notification-retry-delay-minutes: ${LABEX_AGENT_MONITOR_ALERT_NOTIFICATION_RETRY_DELAY_MINUTES:5}
+        notification-retry-interval-ms: ${LABEX_AGENT_MONITOR_ALERT_NOTIFICATION_RETRY_INTERVAL_MS:300000}
+        webhook-url: ${LABEX_AGENT_MONITOR_ALERT_WEBHOOK_URL:}
+        task-retry-max-attempts: ${LABEX_AGENT_MONITOR_ALERT_TASK_RETRY_MAX_ATTEMPTS:1}
+        evaluation-batch-size: ${LABEX_AGENT_MONITOR_ALERT_EVALUATION_BATCH_SIZE:200}
+      audit:
+        retention-days: ${LABEX_AGENT_MONITOR_AUDIT_RETENTION_DAYS:180}
+        cleanup-cron: ${LABEX_AGENT_MONITOR_AUDIT_CLEANUP_CRON:0 45 3 * * *}
+        cleanup-batch-size: ${LABEX_AGENT_MONITOR_AUDIT_CLEANUP_BATCH_SIZE:5000}
   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
   lease-reconciliation-interval-ms: ${LABEX_AGENT_LEASE_RECONCILIATION_INTERVAL_MS:30000}
@@ -183,6 +196,13 @@ labex-agent:
       max-pids: ${LABEX_AGENT_WORKER_MAX_PIDS:256}
   cors:
     allowed-origins: ${LABEX_AGENT_CORS_ALLOWED_ORIGINS:}
+  conversation-cache:
+    enabled: ${LABEX_AGENT_CONVERSATION_CACHE_ENABLED:true}
+    list-ttl: ${LABEX_AGENT_CONVERSATION_CACHE_LIST_TTL:120s}
+    history-ttl: ${LABEX_AGENT_CONVERSATION_CACHE_HISTORY_TTL:60s}
+    context-status-ttl: ${LABEX_AGENT_CONVERSATION_CACHE_CONTEXT_STATUS_TTL:30s}
+    double-delete-delay-ms: ${LABEX_AGENT_CONVERSATION_CACHE_DOUBLE_DELETE_DELAY_MS:500}
+    key-prefix: ${LABEX_AGENT_CONVERSATION_CACHE_KEY_PREFIX:labex:conversation}
   secret-store:
     master-key: ${LABEX_AGENT_SECRET_STORE_MASTER_KEY:}
   websocket:

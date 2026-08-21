@@ -26,6 +26,8 @@ public class AdditiveSchemaMigrator {
             new ColumnDefinition("t_agent_model_config", "context_window_tokens", "INT"),
             new ColumnDefinition("t_agent_model_config", "prompt_cache_key_enabled", "TINYINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_model_config", "reasoning_effort", "VARCHAR(16) NOT NULL DEFAULT 'medium'"),
+            new ColumnDefinition("t_agent_model_config", "request_options_json", "LONGTEXT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_run_config_snapshot", "request_evidence_json", "LONGTEXT DEFAULT NULL"),
             new ColumnDefinition("t_agent_model_config", "image_input_enabled", "TINYINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_model_config", "compaction_auto", "TINYINT NOT NULL DEFAULT 1"),
             new ColumnDefinition("t_agent_model_config", "compaction_prune", "TINYINT NOT NULL DEFAULT 0"),
@@ -121,6 +123,14 @@ public class AdditiveSchemaMigrator {
             createProjectConfigAuditEventTableIfMissing(metadata, catalog);
             createProjectSecretBindingTableIfMissing(metadata, catalog);
             createOpsMetricSampleTableIfMissing(metadata, catalog);
+            createOpsAlertRuleTableIfMissing(metadata, catalog);
+            createOpsAlertTableIfMissing(metadata, catalog);
+            createOpsAlertNotificationTableIfMissing(metadata, catalog);
+            createOpsEventTableIfMissing(metadata, catalog);
+            createOpsIncidentTableIfMissing(metadata, catalog);
+            createOpsOperationTableIfMissing(metadata, catalog);
+            createOpsAuditLogTableIfMissing(metadata, catalog);
+            createTutorialDocumentTableIfMissing(metadata, catalog);
             createAuditAppendOnlyTriggersIfMissing(metadata, catalog);
             Set<String> createdColumns = new HashSet<>();
             for (ColumnDefinition column : REQUIRED_COLUMNS) {
@@ -563,6 +573,284 @@ public class AdditiveSchemaMigrator {
             if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
                     "t_ops_metric_sample", "sample_time")) {
                 log.info("Ops metric sample table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private void createOpsAlertRuleTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (columnExists(metadata, catalog, "t_ops_alert_rule", "rule_id")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_ops_alert_rule (
+                    rule_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(128) NOT NULL,
+                    metric_key VARCHAR(64) NOT NULL,
+                    operator VARCHAR(8) NOT NULL DEFAULT 'GT',
+                    threshold DOUBLE NOT NULL,
+                    duration_minutes INT NOT NULL DEFAULT 5,
+                    cooldown_minutes INT NOT NULL DEFAULT 30,
+                    severity VARCHAR(16) NOT NULL DEFAULT 'warning',
+                    enabled TINYINT NOT NULL DEFAULT 1,
+                    description VARCHAR(512) DEFAULT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_ops_alert_rule_name (name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
+                    "t_ops_alert_rule", "rule_id")) {
+                log.info("Ops alert rule table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private void createOpsAlertTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (columnExists(metadata, catalog, "t_ops_alert", "alert_id")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_ops_alert (
+                    alert_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    rule_id BIGINT NOT NULL,
+                    fingerprint VARCHAR(64) NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'FIRING',
+                    severity VARCHAR(16) NOT NULL,
+                    metric_key VARCHAR(64) NOT NULL,
+                    current_value DOUBLE DEFAULT NULL,
+                    threshold DOUBLE DEFAULT NULL,
+                    message VARCHAR(1024) DEFAULT NULL,
+                    first_firing_at DATETIME(3) DEFAULT NULL,
+                    last_firing_at DATETIME(3) DEFAULT NULL,
+                    acknowledged_at DATETIME(3) DEFAULT NULL,
+                    resolved_at DATETIME(3) DEFAULT NULL,
+                    silenced_at DATETIME(3) DEFAULT NULL,
+                    silenced_until DATETIME(3) DEFAULT NULL,
+                    acknowledged_by VARCHAR(160) DEFAULT NULL,
+                    resolved_by VARCHAR(160) DEFAULT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_ops_alert_fingerprint_status (rule_id, fingerprint, status),
+                    INDEX idx_ops_alert_status (status, last_firing_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
+                    "t_ops_alert", "alert_id")) {
+                log.info("Ops alert table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private void createOpsAlertNotificationTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (columnExists(metadata, catalog, "t_ops_alert_notification", "id")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_ops_alert_notification (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    alert_id BIGINT NOT NULL,
+                    rule_id BIGINT NOT NULL,
+                    channel VARCHAR(32) NOT NULL DEFAULT 'webhook',
+                    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                    attempt INT NOT NULL DEFAULT 0,
+                    payload VARCHAR(2048) DEFAULT NULL,
+                    error_message VARCHAR(512) DEFAULT NULL,
+                    next_retry_at DATETIME(3) DEFAULT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_ops_alert_notif_retry (status, next_retry_at),
+                    INDEX idx_ops_alert_notif_alert (alert_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
+                    "t_ops_alert_notification", "id")) {
+                log.info("Ops alert notification table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private void createOpsEventTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (columnExists(metadata, catalog, "t_ops_event", "event_id")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_ops_event (
+                    event_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    event_type VARCHAR(64) NOT NULL,
+                    severity VARCHAR(16) NOT NULL DEFAULT 'info',
+                    source VARCHAR(64) DEFAULT NULL,
+                    target_type VARCHAR(32) DEFAULT NULL,
+                    target_id VARCHAR(64) DEFAULT NULL,
+                    message VARCHAR(1024) DEFAULT NULL,
+                    detail TEXT DEFAULT NULL,
+                    operator VARCHAR(160) DEFAULT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_ops_event_type_time (event_type, create_time),
+                    INDEX idx_ops_event_target (target_type, target_id, create_time)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
+                    "t_ops_event", "event_id")) {
+                log.info("Ops event table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private void createOpsIncidentTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (columnExists(metadata, catalog, "t_ops_incident", "incident_id")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_ops_incident (
+                    incident_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    title VARCHAR(256) NOT NULL,
+                    severity VARCHAR(16) NOT NULL DEFAULT 'warning',
+                    status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
+                    source_alert_id BIGINT DEFAULT NULL,
+                    summary VARCHAR(2048) DEFAULT NULL,
+                    opened_at DATETIME(3) DEFAULT NULL,
+                    acknowledged_at DATETIME(3) DEFAULT NULL,
+                    resolved_at DATETIME(3) DEFAULT NULL,
+                    closed_at DATETIME(3) DEFAULT NULL,
+                    acknowledged_by VARCHAR(160) DEFAULT NULL,
+                    resolved_by VARCHAR(160) DEFAULT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_ops_incident_status (status, opened_at),
+                    INDEX idx_ops_incident_alert (source_alert_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
+                    "t_ops_incident", "incident_id")) {
+                log.info("Ops incident table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private void createOpsOperationTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (columnExists(metadata, catalog, "t_ops_operation", "operation_id")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_ops_operation (
+                    operation_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    action_type VARCHAR(32) NOT NULL,
+                    target_type VARCHAR(32) NOT NULL,
+                    target_id VARCHAR(64) NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'REQUESTED',
+                    requested_by VARCHAR(160) DEFAULT NULL,
+                    source_ip VARCHAR(64) DEFAULT NULL,
+                    idempotency_key VARCHAR(128) NOT NULL,
+                    result VARCHAR(2048) DEFAULT NULL,
+                    failure_reason VARCHAR(1024) DEFAULT NULL,
+                    requested_at DATETIME(3) DEFAULT NULL,
+                    completed_at DATETIME(3) DEFAULT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_ops_operation_idem (idempotency_key)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
+                    "t_ops_operation", "operation_id")) {
+                log.info("Ops operation table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private void createOpsAuditLogTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (columnExists(metadata, catalog, "t_ops_audit_log", "audit_id")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_ops_audit_log (
+                    audit_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    operator_id VARCHAR(160) DEFAULT NULL,
+                    operator_role VARCHAR(32) DEFAULT NULL,
+                    source_ip VARCHAR(64) DEFAULT NULL,
+                    action_type VARCHAR(64) NOT NULL,
+                    target_type VARCHAR(32) DEFAULT NULL,
+                    target_id VARCHAR(64) DEFAULT NULL,
+                    reason VARCHAR(1024) DEFAULT NULL,
+                    before_state VARCHAR(2048) DEFAULT NULL,
+                    after_state VARCHAR(2048) DEFAULT NULL,
+                    result VARCHAR(16) NOT NULL DEFAULT 'SUCCESS',
+                    failure_reason VARCHAR(1024) DEFAULT NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_ops_audit_action_time (action_type, create_time),
+                    INDEX idx_ops_audit_target (target_type, target_id),
+                    INDEX idx_ops_audit_operator (operator_id, create_time)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
+                    "t_ops_audit_log", "audit_id")) {
+                log.info("Ops audit log table was created concurrently; continuing additive schema migration");
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private void createTutorialDocumentTableIfMissing(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (columnExists(metadata, catalog, "t_tutorial_document", "document_id")) {
+            return;
+        }
+        String createSql = """
+                CREATE TABLE t_tutorial_document (
+                    document_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    slug VARCHAR(160) NOT NULL,
+                    title VARCHAR(200) NOT NULL,
+                    summary VARCHAR(500) DEFAULT NULL,
+                    category VARCHAR(80) NOT NULL DEFAULT '快速开始',
+                    content_markdown LONGTEXT NOT NULL,
+                    sort_order INT NOT NULL DEFAULT 0,
+                    status TINYINT NOT NULL DEFAULT 0,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    published_at DATETIME DEFAULT NULL,
+                    UNIQUE KEY uk_tutorial_document_slug (slug),
+                    INDEX idx_tutorial_document_status_order (status, sort_order, document_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """;
+        try {
+            jdbcTemplate.execute(createSql);
+        } catch (RuntimeException failure) {
+            if (isTableAlreadyExists(failure) && columnExists(metadata, catalog,
+                    "t_tutorial_document", "document_id")) {
+                log.info("Tutorial document table was created concurrently; continuing additive schema migration");
                 return;
             }
             throw failure;

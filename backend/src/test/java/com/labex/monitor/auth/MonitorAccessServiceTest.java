@@ -31,7 +31,7 @@ class MonitorAccessServiceTest {
 
     @Test
     void acceptsCorrectAccessCodeAndResetsRateLimit() {
-        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore);
+        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore, new MonitorRoleService());
         when(redisStore.increment(anyString(), any(Duration.class))).thenReturn(1L);
 
         boolean ok = service.verifyAccessCode("s3cret", "1.2.3.4");
@@ -42,7 +42,7 @@ class MonitorAccessServiceTest {
 
     @Test
     void rejectsWrongAccessCodeWithoutReset() {
-        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore);
+        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore, new MonitorRoleService());
         when(redisStore.increment(anyString(), any(Duration.class))).thenReturn(1L);
 
         assertThat(service.verifyAccessCode("wrong", "1.2.3.4")).isFalse();
@@ -51,7 +51,7 @@ class MonitorAccessServiceTest {
 
     @Test
     void disabledWhenAccessCodeBlank() {
-        MonitorAccessService service = new MonitorAccessService(properties(""), redisStore);
+        MonitorAccessService service = new MonitorAccessService(properties(""), redisStore, new MonitorRoleService());
 
         assertThat(service.isEnabled()).isFalse();
         assertThat(service.verifyAccessCode("anything", "1.2.3.4")).isFalse();
@@ -60,7 +60,7 @@ class MonitorAccessServiceTest {
 
     @Test
     void throwsRateLimitedWhenAttemptsExceedLimit() {
-        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore);
+        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore, new MonitorRoleService());
         when(redisStore.increment(anyString(), any(Duration.class))).thenReturn(6L);
 
         assertThatThrownBy(() -> service.verifyAccessCode("s3cret", "1.2.3.4"))
@@ -70,7 +70,7 @@ class MonitorAccessServiceTest {
 
     @Test
     void sessionTokenRoundTrip() {
-        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore);
+        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore, new MonitorRoleService());
         when(redisStore.get(anyString())).thenReturn("present");
 
         String token = service.issueSession();
@@ -86,7 +86,7 @@ class MonitorAccessServiceTest {
 
     @Test
     void revokeSessionDeletesToken() {
-        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore);
+        MonitorAccessService service = new MonitorAccessService(properties("s3cret"), redisStore, new MonitorRoleService());
 
         service.revokeSession("token-abc");
         verify(redisStore).delete("labex:monitor:session:token-abc");

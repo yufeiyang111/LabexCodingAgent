@@ -64,9 +64,11 @@ public class MonitorController {
         if (!accessService.verifyAccessCode(input, ipResolver.resolve(request))) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED.value()).body(Result.error(-1, "校验码错误"));
         }
-        String token = accessService.issueSession();
+        String role = accessService.roleForCode(input);
+        String token = accessService.issueSession(role);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("token", token);
+        data.put("role", role);
         data.put("expiresAt", Instant.now().plus(Duration.ofHours(properties.getSessionTtlHours())).toString());
         return ResponseEntity.ok(Result.success(data));
     }
