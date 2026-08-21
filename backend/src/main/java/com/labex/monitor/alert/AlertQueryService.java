@@ -25,24 +25,37 @@ public class AlertQueryService {
     }
 
     public List<AlertDto> query(int page, int pageSize, String status, String severity) {
-        if (status != null && !status.isBlank() && !VALID_STATUSES.contains(status.toUpperCase())) {
+        String s = normalize(status);
+        if (status != null && !status.isBlank() && !VALID_STATUSES.contains(s)) {
             throw new IllegalArgumentException("不支持的告警状态: " + status);
         }
         int safePage = Math.max(1, page);
         int safeSize = Math.min(Math.max(1, pageSize), MAX_PAGE_SIZE);
-        LambdaQueryWrapper<OpsAlert> wrapper = new LambdaQueryWrapper<OpsAlert>()
-                .eq(status != null && !status.isBlank(), OpsAlert::getStatus, status.toUpperCase())
-                .eq(severity != null && !severity.isBlank(), OpsAlert::getSeverity, severity)
-                .orderByDesc(OpsAlert::getLastFiringAt);
+        LambdaQueryWrapper<OpsAlert> wrapper = new LambdaQueryWrapper<OpsAlert>().orderByDesc(OpsAlert::getLastFiringAt);
+        if (s != null) {
+            wrapper.eq(OpsAlert::getStatus, s);
+        }
+        if (severity != null && !severity.isBlank()) {
+            wrapper.eq(OpsAlert::getSeverity, severity);
+        }
         Page<OpsAlert> pageResult = alertMapper.selectPage(new Page<>(safePage, safeSize), wrapper);
         return pageResult.getRecords().stream().map(this::toDto).toList();
     }
 
     public long count(String status, String severity) {
-        LambdaQueryWrapper<OpsAlert> wrapper = new LambdaQueryWrapper<OpsAlert>()
-                .eq(status != null && !status.isBlank(), OpsAlert::getStatus, status.toUpperCase())
-                .eq(severity != null && !severity.isBlank(), OpsAlert::getSeverity, severity);
+        String s = normalize(status);
+        LambdaQueryWrapper<OpsAlert> wrapper = new LambdaQueryWrapper<>();
+        if (s != null) {
+            wrapper.eq(OpsAlert::getStatus, s);
+        }
+        if (severity != null && !severity.isBlank()) {
+            wrapper.eq(OpsAlert::getSeverity, severity);
+        }
         return alertMapper.selectCount(wrapper);
+    }
+
+    private static String normalize(String status) {
+        return status == null || status.isBlank() ? null : status.trim().toUpperCase();
     }
 
     public AlertDto detail(Long alertId) {

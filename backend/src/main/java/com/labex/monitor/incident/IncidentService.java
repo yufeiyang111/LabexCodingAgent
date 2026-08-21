@@ -62,21 +62,34 @@ public class IncidentService {
     }
 
     public List<IncidentDto> query(int page, int pageSize, String status, String severity) {
+        String s = normalize(status);
         int safePage = Math.max(1, page);
         int safeSize = Math.min(Math.max(1, pageSize), MAX_PAGE_SIZE);
-        LambdaQueryWrapper<OpsIncident> wrapper = new LambdaQueryWrapper<OpsIncident>()
-                .eq(status != null && !status.isBlank(), OpsIncident::getStatus, status.toUpperCase())
-                .eq(severity != null && !severity.isBlank(), OpsIncident::getSeverity, severity)
-                .orderByDesc(OpsIncident::getOpenedAt);
+        LambdaQueryWrapper<OpsIncident> wrapper = new LambdaQueryWrapper<OpsIncident>().orderByDesc(OpsIncident::getOpenedAt);
+        if (s != null) {
+            wrapper.eq(OpsIncident::getStatus, s);
+        }
+        if (severity != null && !severity.isBlank()) {
+            wrapper.eq(OpsIncident::getSeverity, severity);
+        }
         Page<OpsIncident> pageResult = incidentMapper.selectPage(new Page<>(safePage, safeSize), wrapper);
         return pageResult.getRecords().stream().map(this::toDto).toList();
     }
 
     public long count(String status, String severity) {
-        LambdaQueryWrapper<OpsIncident> wrapper = new LambdaQueryWrapper<OpsIncident>()
-                .eq(status != null && !status.isBlank(), OpsIncident::getStatus, status.toUpperCase())
-                .eq(severity != null && !severity.isBlank(), OpsIncident::getSeverity, severity);
+        String s = normalize(status);
+        LambdaQueryWrapper<OpsIncident> wrapper = new LambdaQueryWrapper<>();
+        if (s != null) {
+            wrapper.eq(OpsIncident::getStatus, s);
+        }
+        if (severity != null && !severity.isBlank()) {
+            wrapper.eq(OpsIncident::getSeverity, severity);
+        }
         return incidentMapper.selectCount(wrapper);
+    }
+
+    private static String normalize(String status) {
+        return status == null || status.isBlank() ? null : status.trim().toUpperCase();
     }
 
     public OpsIncident detail(Long incidentId) {
