@@ -59,8 +59,8 @@
             </select>
           </label>
           <label class="arp-field arp-field-wide"><span>描述</span><input v-model="form.description" name="rule-description" maxlength="512" /></label>
-          <label class="arp-field arp-field-wide"><span>启用</span>
-            <input v-model="form.enabled" type="checkbox" class="arp-check" />
+          <label class="arp-field arp-field-wide arp-field-inline"><span>启用</span>
+            <input v-model="form.enabled" type="checkbox" name="rule-enabled" class="arp-check" />
           </label>
         </div>
         <p v-if="formError" class="arp-error">{{ formError }}</p>
@@ -165,7 +165,8 @@ function fmt(value) {
 .arp-field span { font-size: 11px; color: #6b7280; }
 .arp-field input, .arp-field select { padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 12px; font-family: inherit; }
 .arp-field-wide { grid-column: 1 / -1; }
-.arp-check { width: auto; }
+.arp-field-inline { flex-direction: row; align-items: center; gap: 8px; }
+.arp-check { width: auto; margin: 0; }
 .arp-error { color: #dc2626; font-size: 12px; margin: 10px 0 0; }
 .arp-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 </style>
