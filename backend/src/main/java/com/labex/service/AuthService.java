@@ -149,5 +149,39 @@ public class AuthService extends ServiceImpl<AppUserMapper, AppUser> {
             throw new AuthException(AuthErrorCode.VALIDATION_FAILED, "密码长度需为 6-72 位");
         }
     }
+
+    /** 更新或设置邮箱；传 null 清除邮箱。 */
+    public void updateEmail(Integer userId, String email) {
+        String normalized = normalizeEmail(email);
+        AppUser user = getById(userId);
+        if (user == null) {
+            throw new AuthException(AuthErrorCode.VALIDATION_FAILED, "用户不存在");
+        }
+        if (normalized != null) {
+            AppUser byEmail = findByEmail(normalized);
+            if (byEmail != null && !byEmail.getUserId().equals(userId)) {
+                throw new AuthException(AuthErrorCode.VALIDATION_FAILED, "邮箱已被其他账号使用");
+            }
+        }
+        user.setEmail(normalized);
+        user.setUpdateTime(LocalDateTime.now());
+        updateById(user);
+    }
+
+    /** 修改用户名；格式 3-32 位小写字母/数字/下划线/点/短横线，全局唯一。 */
+    public void updateUsername(Integer userId, String username) {
+        String normalized = normalizeUsername(username);
+        AppUser user = getById(userId);
+        if (user == null) {
+            throw new AuthException(AuthErrorCode.VALIDATION_FAILED, "用户不存在");
+        }
+        AppUser byUsername = findByUsername(normalized);
+        if (byUsername != null && !byUsername.getUserId().equals(userId)) {
+            throw new AuthException(AuthErrorCode.VALIDATION_FAILED, "用户名已被其他账号使用");
+        }
+        user.setUsername(normalized);
+        user.setUpdateTime(LocalDateTime.now());
+        updateById(user);
+    }
 }
 

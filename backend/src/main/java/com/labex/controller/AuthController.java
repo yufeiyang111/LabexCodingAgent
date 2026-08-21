@@ -23,6 +23,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -245,6 +246,53 @@ public class AuthController {
                 throw new AuthException(AuthErrorCode.INVALID_CREDENTIALS, "登录已失效，请重新登录");
             }
             return Result.success(authService.currentUser(Integer.parseInt(auth.getName())));
+        } catch (Exception failure) {
+            return errorResult(failure, response);
+        }
+    }
+
+    @PutMapping("/email")
+    public Result<Map<String, Object>> updateEmail(@RequestBody Map<String, String> body,
+                                                   Authentication auth,
+                                                   HttpServletResponse response) {
+        noStore(response);
+        try {
+            if (auth == null || !StringUtils.hasText(auth.getName())) {
+                throw new AuthException(AuthErrorCode.INVALID_CREDENTIALS, "请先登录本地账号");
+            }
+            authService.updateEmail(Integer.parseInt(auth.getName()), body.get("email"));
+            return Result.success(null);
+        } catch (Exception failure) {
+            return errorResult(failure, response);
+        }
+    }
+
+    @DeleteMapping("/email")
+    public Result<Map<String, Object>> clearEmail(Authentication auth,
+                                                  HttpServletResponse response) {
+        noStore(response);
+        try {
+            if (auth == null || !StringUtils.hasText(auth.getName())) {
+                throw new AuthException(AuthErrorCode.INVALID_CREDENTIALS, "请先登录本地账号");
+            }
+            authService.updateEmail(Integer.parseInt(auth.getName()), null);
+            return Result.success(null);
+        } catch (Exception failure) {
+            return errorResult(failure, response);
+        }
+    }
+
+    @PutMapping("/username")
+    public Result<Map<String, Object>> updateUsername(@RequestBody Map<String, String> body,
+                                                      Authentication auth,
+                                                      HttpServletResponse response) {
+        noStore(response);
+        try {
+            if (auth == null || !StringUtils.hasText(auth.getName())) {
+                throw new AuthException(AuthErrorCode.INVALID_CREDENTIALS, "请先登录本地账号");
+            }
+            authService.updateUsername(Integer.parseInt(auth.getName()), body.get("username"));
+            return Result.success(null);
         } catch (Exception failure) {
             return errorResult(failure, response);
         }

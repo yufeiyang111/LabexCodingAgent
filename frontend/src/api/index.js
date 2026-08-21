@@ -31,6 +31,15 @@ export const authApi = {
   },
   getUserInfo() {
     return request.get('/auth/userinfo')
+  },
+  updateEmail(email, options = {}) {
+    return request.put('/auth/email', { email }, { ...authResponseConfig(), silent: Boolean(options?.silent) })
+  },
+  clearEmail(options = {}) {
+    return request.delete('/auth/email', { ...authResponseConfig(), silent: Boolean(options?.silent) })
+  },
+  updateUsername(username, options = {}) {
+    return request.put('/auth/username', { username }, { ...authResponseConfig(), silent: Boolean(options?.silent) })
   }
 }
 
