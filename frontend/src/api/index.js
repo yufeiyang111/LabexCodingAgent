@@ -371,6 +371,15 @@ export const monitorApi = {
   },
   healthDependencies() {
     return monitorClient.get('/health/dependencies')
+  },
+  runtimeTasks(params) {
+    return monitorClient.get('/runtime/tasks', { params })
+  },
+  runtimeTask(taskId) {
+    return monitorClient.get('/runtime/tasks/' + taskId)
+  },
+  runtimeTimeline(taskId, params = {}) {
+    return monitorClient.get('/runtime/tasks/' + taskId + '/timeline', { params })
   }
 }
 

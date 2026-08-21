@@ -154,6 +154,13 @@ labex-agent:
       timeout-ms: ${LABEX_AGENT_MONITOR_HEALTH_TIMEOUT_MS:3000}
       executor-pool-size: ${LABEX_AGENT_MONITOR_HEALTH_EXECUTOR_POOL_SIZE:4}
       probe-timeout-ms: ${LABEX_AGENT_MONITOR_HEALTH_PROBE_TIMEOUT_MS:5000}
+    runtime:
+      default-page-size: ${LABEX_AGENT_MONITOR_RUNTIME_DEFAULT_PAGE_SIZE:20}
+      max-page-size: ${LABEX_AGENT_MONITOR_RUNTIME_MAX_PAGE_SIZE:200}
+      event-timeline-limit: ${LABEX_AGENT_MONITOR_RUNTIME_EVENT_TIMELINE_LIMIT:50}
+      event-timeline-max-limit: ${LABEX_AGENT_MONITOR_RUNTIME_EVENT_TIMELINE_MAX_LIMIT:500}
+      event-payload-max-chars: ${LABEX_AGENT_MONITOR_RUNTIME_EVENT_PAYLOAD_MAX_CHARS:2000}
+      summary-max-chars: ${LABEX_AGENT_MONITOR_RUNTIME_SUMMARY_MAX_CHARS:200}
   execution-lease-duration-ms: ${LABEX_AGENT_EXECUTION_LEASE_DURATION_MS:30000}
   execution-heartbeat-interval-ms: ${LABEX_AGENT_EXECUTION_HEARTBEAT_INTERVAL_MS:10000}
   lease-reconciliation-interval-ms: ${LABEX_AGENT_LEASE_RECONCILIATION_INTERVAL_MS:30000}

@@ -14,4 +14,8 @@ public interface AgentRunEventMapper extends BaseMapper<AgentRunEvent> {
 
     @Select("SELECT DISTINCT task_id FROM t_agent_run_event WHERE event_type = #{eventType} ORDER BY task_id")
     List<Long> selectDistinctTaskIdsByEventType(@Param("eventType") String eventType);
+
+    /** 只读查询任务最新一条事件（运维运行态展示用）。 */
+    @Select("SELECT * FROM t_agent_run_event WHERE task_id = #{taskId} ORDER BY sequence_number DESC LIMIT 1")
+    AgentRunEvent selectLatestByTaskId(@Param("taskId") Long taskId);
 }

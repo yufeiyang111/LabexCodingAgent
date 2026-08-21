@@ -4,13 +4,15 @@ import com.labex.monitor.access.AccessLogInterceptor;
 import com.labex.monitor.auth.MonitorAuthInterceptor;
 import com.labex.monitor.geo.IpLocationProperties;
 import com.labex.monitor.health.MonitorHealthProperties;
+import com.labex.monitor.runtime.MonitorRuntimeProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 @Configuration
-@EnableConfigurationProperties({MonitorProperties.class, IpLocationProperties.class, MonitorHealthProperties.class})
+@EnableConfigurationProperties({MonitorProperties.class, IpLocationProperties.class,
+        MonitorHealthProperties.class, MonitorRuntimeProperties.class})
 public class MonitorConfiguration implements WebMvcConfigurer {
 
     private final AccessLogInterceptor accessLogInterceptor;

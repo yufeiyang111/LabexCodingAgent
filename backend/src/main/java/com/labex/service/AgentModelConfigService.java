@@ -34,6 +34,20 @@ public class AgentModelConfigService extends ServiceImpl<AgentModelConfigMapper,
         return this.lambdaQuery().eq(AgentModelConfig::getStatus, 1).count();
     }
 
+    /** 只读查询：按 provider 匹配的启用模型配置 id 列表（运维运行态按 Provider 过滤使用）。 */
+    public List<Integer> listConfigIdsByProvider(String provider) {
+        if (provider == null || provider.isBlank()) {
+            return List.of();
+        }
+        return this.lambdaQuery()
+                .eq(AgentModelConfig::getProvider, provider.trim())
+                .eq(AgentModelConfig::getStatus, 1)
+                .list()
+                .stream()
+                .map(AgentModelConfig::getConfigId)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
     public AgentModelConfig getDefault(Integer studentId) {
         return this.lambdaQuery()
                 .eq(AgentModelConfig::getStudentId, studentId)

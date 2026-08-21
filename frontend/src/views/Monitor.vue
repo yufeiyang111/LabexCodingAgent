@@ -44,6 +44,37 @@
           <DependencyHealthTable :loading="healthLoading" :dependencies="healthDependencies" :error="healthError" />
         </section>
 
+        <section class="m-runtime-row">
+          <div class="m-runtime-left">
+            <RuntimeTaskTable
+              :tasks="runtimeTasks"
+              :loading="runtimeLoading"
+              :error="runtimeError"
+              :page="runtimePage"
+              :total="runtimeTotal"
+              :has-more="runtimeHasMore"
+              :status-options="runtimeStatusOptions"
+              @apply-filter="onRuntimeFilter"
+              @reset-filter="onRuntimeReset"
+              @change-page="onRuntimePage"
+              @select="onRuntimeSelect"
+            />
+          </div>
+          <div class="m-runtime-right">
+            <RuntimeTaskDetailPanel
+              :detail="runtimeDetail"
+              :loading="runtimeDetailLoading"
+              :error="runtimeDetailError"
+              @close="onRuntimeDetailClose"
+            />
+            <RuntimeEventTimeline
+              :events="runtimeEvents"
+              :loading="runtimeEventsLoading"
+              :error="runtimeEventsError"
+            />
+          </div>
+        </section>
+
         <section class="m-grid">
           <div class="m-panel m-panel-wide">
             <div class="m-panel-title">访问量趋势（{{ rangeLabel }}）</div>
@@ -140,8 +171,12 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import echarts from '@/utils/echarts'
 import { monitorApi } from '@/api'
 import { useMonitorHealth } from '@/composables/ops/useMonitorHealth'
+import { useMonitorRuntime } from '@/composables/ops/useMonitorRuntime'
 import HealthOverviewPanel from '@/components/ops/health/HealthOverviewPanel.vue'
 import DependencyHealthTable from '@/components/ops/health/DependencyHealthTable.vue'
+import RuntimeTaskTable from '@/components/ops/runtime/RuntimeTaskTable.vue'
+import RuntimeTaskDetailPanel from '@/components/ops/runtime/RuntimeTaskDetailPanel.vue'
+import RuntimeEventTimeline from '@/components/ops/runtime/RuntimeEventTimeline.vue'
 
 const {
   loading: healthLoading,
@@ -152,6 +187,27 @@ const {
   startPolling: startHealthPolling,
   stopPolling: stopHealthPolling
 } = useMonitorHealth()
+
+const {
+  tasks: runtimeTasks,
+  loading: runtimeLoading,
+  error: runtimeError,
+  page: runtimePage,
+  total: runtimeTotal,
+  hasMore: runtimeHasMore,
+  statusOptions: runtimeStatusOptions,
+  detail: runtimeDetail,
+  detailLoading: runtimeDetailLoading,
+  detailError: runtimeDetailError,
+  events: runtimeEvents,
+  eventsLoading: runtimeEventsLoading,
+  eventsError: runtimeEventsError,
+  loadTasks: loadRuntimeTasks,
+  applyFilters: applyRuntimeFilters,
+  changePage: changeRuntimePage,
+  resetFilters: resetRuntimeFilters,
+  selectTask: selectRuntimeTask
+} = useMonitorRuntime()
 
 const ranges = [
   { key: '24h', label: '24小时' },
@@ -260,7 +316,7 @@ async function enterDashboard() {
 function nextFrame() { return new Promise(resolve => requestAnimationFrame(resolve)) }
 
 async function loadAll() {
-  await Promise.allSettled([loadSummary(), loadTraffic(), loadTop(), loadStatus(), loadSystem(), loadVisitors(), loadVisitorRows(), loadHealthSafe()])
+  await Promise.allSettled([loadSummary(), loadTraffic(), loadTop(), loadStatus(), loadSystem(), loadVisitors(), loadVisitorRows(), loadHealthSafe(), loadRuntimeSafe()])
 }
 
 async function loadHealthSafe() {
@@ -269,6 +325,37 @@ async function loadHealthSafe() {
   } catch (e) {
     if (e?.status === 401) handleLoadError(e)
   }
+}
+
+async function loadRuntimeSafe() {
+  try {
+    await loadRuntimeTasks()
+  } catch (e) {
+    if (e?.status === 401) handleLoadError(e)
+  }
+}
+
+function onRuntimeFilter(filter) {
+  applyRuntimeFilters(filter).catch(() => {})
+}
+
+function onRuntimeReset() {
+  resetRuntimeFilters().catch(() => {})
+}
+
+function onRuntimePage(nextPage) {
+  changeRuntimePage(nextPage).catch(() => {})
+}
+
+function onRuntimeSelect(taskId) {
+  selectRuntimeTask(taskId).catch((e) => {
+    if (e?.status === 401) handleLoadError(e)
+  })
+}
+
+function onRuntimeDetailClose() {
+  runtimeDetail.value = null
+  runtimeEvents.value = []
 }
 
 async function loadSummary() {
@@ -459,6 +546,9 @@ onBeforeUnmount(() => {
 .m-body { flex: 1; width: 100%; max-width: 1360px; margin: 0 auto; padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 16px; box-sizing: border-box; }
 .m-health-row { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; align-items: start; }
 @media (max-width: 960px) { .m-health-row { grid-template-columns: 1fr; } }
+.m-runtime-row { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; align-items: start; }
+.m-runtime-right { display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 960px) { .m-runtime-row { grid-template-columns: 1fr; } }
 .m-cards { display: grid; grid-template-columns: repeat(8, 1fr); gap: 12px; }
 @media (max-width: 1280px) { .m-cards { grid-template-columns: repeat(4, 1fr); } }
 @media (max-width: 720px) { .m-cards { grid-template-columns: repeat(2, 1fr); } }
