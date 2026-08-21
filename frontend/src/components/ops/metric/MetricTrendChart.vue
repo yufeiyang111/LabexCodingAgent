@@ -13,12 +13,12 @@
 
     <div v-else-if="data.length === 0" class="mtc-empty">该时间范围内暂无采样数据</div>
 
-    <div v-else ref="chartEl" class="mtc-chart"></div>
+    <div v-show="data.length > 0" ref="chartEl" class="mtc-chart"></div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import echarts from '@/utils/echarts'
 
 const props = defineProps({
@@ -34,10 +34,18 @@ defineEmits(['range-change'])
 const chartEl = ref(null)
 let chart = null
 
+function ensureChart() {
+  if (!chart && chartEl.value && props.data.length > 0) {
+    chart = echarts.init(chartEl.value)
+  }
+  return chart
+}
+
 function render() {
-  if (!chart) return
+  const instance = ensureChart()
+  if (!instance) return
   const points = props.data || []
-  chart.setOption({
+  instance.setOption({
     tooltip: { trigger: 'axis', axisPointer: { type: 'line' } },
     legend: { data: ['CPU', '内存', '磁盘', '任务'], top: 0, textStyle: { fontSize: 11 } },
     grid: { left: 46, right: 46, top: 34, bottom: 24 },
@@ -66,7 +74,6 @@ function resize() {
 }
 
 onMounted(() => {
-  chart = echarts.init(chartEl.value)
   render()
   window.addEventListener('resize', resize)
 })
@@ -77,7 +84,12 @@ onBeforeUnmount(() => {
   chart = null
 })
 
-watch(() => props.data, () => render())
+watch(() => props.data, () => {
+  nextTick(() => {
+    render()
+    chart?.resize()
+  })
+})
 </script>
 
 <style scoped>

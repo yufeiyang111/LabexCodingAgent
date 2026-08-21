@@ -6,14 +6,14 @@
     </div>
 
     <div class="rtt-filters">
-      <select v-model="local.status" class="rtt-input" @change="emitFilters">
+      <select v-model="local.status" name="rt-status" class="rtt-input" @change="emitFilters">
         <option value="">全部状态</option>
         <option v-for="s in statusOptions" :key="s" :value="s">{{ statusLabel(s) }}</option>
       </select>
-      <input v-model="local.studentId" class="rtt-input rtt-narrow" type="number" min="1" placeholder="用户ID" @change="emitFilters" />
-      <input v-model="local.provider" class="rtt-input" placeholder="Provider" @change="emitFilters" />
+      <input v-model="local.studentId" name="rt-user-id" class="rtt-input rtt-narrow" type="number" min="1" placeholder="用户ID" @change="emitFilters" />
+      <input v-model="local.provider" name="rt-provider" class="rtt-input" placeholder="Provider" @change="emitFilters" />
       <label class="rtt-check">
-        <input v-model="local.overdueOnly" type="checkbox" @change="emitFilters" />
+        <input v-model="local.overdueOnly" name="rt-overdue-only" type="checkbox" @change="emitFilters" />
         仅超时租约
       </label>
       <button type="button" class="rtt-btn" :disabled="loading" @click="emitFilters">查询</button>

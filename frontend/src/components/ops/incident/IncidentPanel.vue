@@ -5,7 +5,7 @@
       <button class="ipa-add" @click="createVisible = true">新建故障</button>
     </div>
     <div class="ipa-toolbar">
-      <select v-model="localStatus" class="ipa-select" @change="onFilter">
+      <select v-model="localStatus" name="incident-status" class="ipa-select" @change="onFilter">
         <option value="">全部状态</option>
         <option v-for="(meta, key) in INCIDENT_STATUSES" :key="key" :value="key">{{ meta.label }}</option>
       </select>
@@ -85,14 +85,14 @@
       <div class="ipa-dialog-card">
         <div class="ipa-dialog-title">新建故障</div>
         <div class="ipa-form">
-          <label class="ipa-field"><span>标题</span><input v-model="createForm.title" maxlength="256" /></label>
+          <label class="ipa-field"><span>标题</span><input v-model="createForm.title" name="incident-title" maxlength="256" /></label>
           <label class="ipa-field"><span>严重度</span>
-            <select v-model="createForm.severity">
+            <select v-model="createForm.severity" name="incident-severity">
               <option v-for="s in SEVERITY_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
             </select>
           </label>
-          <label class="ipa-field"><span>关联告警 ID（可选）</span><input v-model.number="createForm.sourceAlertId" type="number" min="1" /></label>
-          <label class="ipa-field ipa-field-wide"><span>摘要</span><input v-model="createForm.summary" maxlength="2048" /></label>
+          <label class="ipa-field"><span>关联告警 ID（可选）</span><input v-model.number="createForm.sourceAlertId" name="incident-source-alert" type="number" min="1" /></label>
+          <label class="ipa-field ipa-field-wide"><span>摘要</span><input v-model="createForm.summary" name="incident-summary" maxlength="2048" /></label>
         </div>
         <p v-if="createError" class="ipa-error">{{ createError }}</p>
         <div class="ipa-dialog-actions">

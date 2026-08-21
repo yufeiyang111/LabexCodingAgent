@@ -2,7 +2,7 @@
   <div class="rab">
     <div class="rab-row">
       <span class="rab-title">受控操作</span>
-      <input v-model="taskId" class="rab-input" type="text" placeholder="任务 ID" />
+      <input v-model="taskId" name="task-id" class="rab-input" type="text" placeholder="任务 ID" />
       <OpsConfirmButton label="取消任务" danger confirm-text="确认取消?" :disabled="!taskId || acting" @confirm="onCancel" />
       <OpsConfirmButton label="重试任务" :disabled="!taskId || acting" @confirm="onRetry" />
       <OpsConfirmButton label="释放过期租约" :disabled="acting" @confirm="onRecover" />

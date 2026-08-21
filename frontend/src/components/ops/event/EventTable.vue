@@ -1,11 +1,11 @@
 <template>
   <div class="evp">
     <div class="evp-toolbar">
-      <select v-model="filters.eventType" class="evp-select" @change="onFilter">
+      <select v-model="filters.eventType" name="event-type" class="evp-select" @change="onFilter">
         <option value="">全部类型</option>
         <option v-for="t in EVENT_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
       </select>
-      <select v-model="filters.severity" class="evp-select" @change="onFilter">
+      <select v-model="filters.severity" name="event-severity" class="evp-select" @change="onFilter">
         <option value="">全部严重度</option>
         <option value="info">信息</option>
         <option value="warning">警告</option>

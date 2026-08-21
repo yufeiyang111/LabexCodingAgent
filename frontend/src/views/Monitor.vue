@@ -7,7 +7,7 @@
         </div>
         <h1>运维监控</h1>
         <p class="m-gate-hint">输入访问校验码查看站点流量与运行数据</p>
-        <input v-model="accessCode" type="password" class="m-gate-input" placeholder="访问校验码" autofocus autocomplete="off" />
+        <input v-model="accessCode" type="password" name="ops-access-code" id="ops-access-code" class="m-gate-input" placeholder="访问校验码" autofocus autocomplete="off" />
         <button type="submit" class="m-gate-btn" :disabled="authing">
           {{ authing ? '验证中…' : '进入监控' }}
         </button>

@@ -1,7 +1,7 @@
 <template>
   <div class="op-page">
     <div class="op-toolbar">
-      <select v-model="localStatus" class="op-select" @change="onFilter">
+      <select v-model="localStatus" name="alert-status" class="op-select" @change="onFilter">
         <option value="">全部状态</option>
         <option v-for="(meta, key) in ALERT_STATUSES" :key="key" :value="key">{{ meta.label }}</option>
       </select>

@@ -39,26 +39,26 @@
       <div class="arp-dialog-card">
         <div class="arp-dialog-title">{{ editing ? '编辑规则' : '新增规则' }}</div>
         <div class="arp-form">
-          <label class="arp-field"><span>名称</span><input v-model="form.name" maxlength="128" /></label>
+          <label class="arp-field"><span>名称</span><input v-model="form.name" name="rule-name" maxlength="128" /></label>
           <label class="arp-field"><span>指标</span>
-            <select v-model="form.metricKey">
+            <select v-model="form.metricKey" name="rule-metric-key">
               <option v-for="m in ALERT_METRIC_KEYS" :key="m.value" :value="m.value">{{ m.label }}</option>
             </select>
           </label>
           <label class="arp-field"><span>比较符</span>
-            <select v-model="form.operator">
+            <select v-model="form.operator" name="rule-operator">
               <option v-for="o in ALERT_OPERATORS" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </label>
-          <label class="arp-field"><span>阈值</span><input v-model.number="form.threshold" type="number" step="0.1" /></label>
-          <label class="arp-field"><span>评估窗口(分)</span><input v-model.number="form.durationMinutes" type="number" min="1" max="1440" /></label>
-          <label class="arp-field"><span>冷却(分)</span><input v-model.number="form.cooldownMinutes" type="number" min="0" max="10080" /></label>
+          <label class="arp-field"><span>阈值</span><input v-model.number="form.threshold" name="rule-threshold" type="number" step="0.1" /></label>
+          <label class="arp-field"><span>评估窗口(分)</span><input v-model.number="form.durationMinutes" name="rule-duration" type="number" min="1" max="1440" /></label>
+          <label class="arp-field"><span>冷却(分)</span><input v-model.number="form.cooldownMinutes" name="rule-cooldown" type="number" min="0" max="10080" /></label>
           <label class="arp-field"><span>严重度</span>
-            <select v-model="form.severity">
+            <select v-model="form.severity" name="rule-severity">
               <option v-for="s in SEVERITY_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
             </select>
           </label>
-          <label class="arp-field arp-field-wide"><span>描述</span><input v-model="form.description" maxlength="512" /></label>
+          <label class="arp-field arp-field-wide"><span>描述</span><input v-model="form.description" name="rule-description" maxlength="512" /></label>
           <label class="arp-field arp-field-wide"><span>启用</span>
             <input v-model="form.enabled" type="checkbox" class="arp-check" />
           </label>

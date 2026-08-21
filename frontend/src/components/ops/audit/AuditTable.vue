@@ -1,9 +1,9 @@
 <template>
   <div class="adt">
     <div class="adt-toolbar">
-      <input v-model="filters.operatorId" class="adt-input" placeholder="操作者" @change="onFilter" />
-      <input v-model="filters.actionType" class="adt-input" placeholder="动作类型" @change="onFilter" />
-      <select v-model="filters.result" class="adt-select" @change="onFilter">
+      <input v-model="filters.operatorId" name="audit-operator" class="adt-input" placeholder="操作者" @change="onFilter" />
+      <input v-model="filters.actionType" name="audit-action" class="adt-input" placeholder="动作类型" @change="onFilter" />
+      <select v-model="filters.result" name="audit-result" class="adt-select" @change="onFilter">
         <option value="">全部结果</option>
         <option value="SUCCESS">成功</option>
         <option value="FAILED">失败</option>

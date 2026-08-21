@@ -5,7 +5,7 @@
       <button type="button" class="rtd-close" @click="$emit('close')">✕</button>
     </div>
 
-    <div v-if="detailError" class="rtd-error">{{ detailError }}</div>
+    <div v-if="error" class="rtd-error">{{ error }}</div>
 
     <div v-else-if="loading && !detail" class="rtd-empty">正在加载详情…</div>
 
