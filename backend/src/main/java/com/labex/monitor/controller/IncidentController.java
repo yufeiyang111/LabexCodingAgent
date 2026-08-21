@@ -66,14 +66,14 @@ public class IncidentController {
     @PostMapping
     public ResponseEntity<Result<OpsIncident>> create(@RequestBody Map<String, Object> body,
                                                       HttpServletRequest request) {
-        authorizationService.requireOperator(request);
+        String role = authorizationService.requireOperator(request, operatorCode(body));
         String title = body == null ? null : (String) body.get("title");
         String severity = body == null || body.get("severity") == null ? "warning" : (String) body.get("severity");
         Long sourceAlertId = body == null || body.get("sourceAlertId") == null ? null
                 : ((Number) body.get("sourceAlertId")).longValue();
         String summary = body == null ? null : (String) body.get("summary");
         try {
-            OpsIncident incident = incidentService.create(title, severity, sourceAlertId, summary, operatorId(request));
+            OpsIncident incident = incidentService.create(title, severity, sourceAlertId, summary, role);
             return ResponseEntity.ok(Result.success(incident));
         } catch (IllegalArgumentException failure) {
             return ResponseEntity.badRequest().body(Result.error(-1, failure.getMessage()));
@@ -81,29 +81,38 @@ public class IncidentController {
     }
 
     @PostMapping("/{incidentId}/acknowledge")
-    public ResponseEntity<Result<Void>> acknowledge(@PathVariable Long incidentId, HttpServletRequest request) {
-        return transition(incidentId, "ACKNOWLEDGED", request);
+    public ResponseEntity<Result<Void>> acknowledge(@PathVariable Long incidentId,
+                                                    @RequestBody(required = false) Map<String, Object> body,
+                                                    HttpServletRequest request) {
+        return transition(incidentId, "ACKNOWLEDGED", body, request);
     }
 
     @PostMapping("/{incidentId}/mitigate")
-    public ResponseEntity<Result<Void>> mitigate(@PathVariable Long incidentId, HttpServletRequest request) {
-        return transition(incidentId, "MITIGATING", request);
+    public ResponseEntity<Result<Void>> mitigate(@PathVariable Long incidentId,
+                                                 @RequestBody(required = false) Map<String, Object> body,
+                                                 HttpServletRequest request) {
+        return transition(incidentId, "MITIGATING", body, request);
     }
 
     @PostMapping("/{incidentId}/resolve")
-    public ResponseEntity<Result<Void>> resolve(@PathVariable Long incidentId, HttpServletRequest request) {
-        return transition(incidentId, "RESOLVED", request);
+    public ResponseEntity<Result<Void>> resolve(@PathVariable Long incidentId,
+                                                @RequestBody(required = false) Map<String, Object> body,
+                                                HttpServletRequest request) {
+        return transition(incidentId, "RESOLVED", body, request);
     }
 
     @PostMapping("/{incidentId}/close")
-    public ResponseEntity<Result<Void>> close(@PathVariable Long incidentId, HttpServletRequest request) {
-        return transition(incidentId, "CLOSED", request);
+    public ResponseEntity<Result<Void>> close(@PathVariable Long incidentId,
+                                              @RequestBody(required = false) Map<String, Object> body,
+                                              HttpServletRequest request) {
+        return transition(incidentId, "CLOSED", body, request);
     }
 
-    private ResponseEntity<Result<Void>> transition(Long incidentId, String targetStatus, HttpServletRequest request) {
-        authorizationService.requireOperator(request);
+    private ResponseEntity<Result<Void>> transition(Long incidentId, String targetStatus,
+                                                    Map<String, Object> body, HttpServletRequest request) {
+        String role = authorizationService.requireOperator(request, operatorCode(body));
         try {
-            if (!incidentService.transition(incidentId, targetStatus, operatorId(request), null)) {
+            if (!incidentService.transition(incidentId, targetStatus, role, null)) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND.value()).body(Result.error(404, "Incident not found"));
             }
             return ResponseEntity.ok(Result.success());
@@ -112,7 +121,7 @@ public class IncidentController {
         }
     }
 
-    private String operatorId(HttpServletRequest request) {
-        return roleService.normalize(authorizationService.currentRole(request));
+    private String operatorCode(Map<String, Object> body) {
+        return body == null ? null : (String) body.get("operatorCode");
     }
 }

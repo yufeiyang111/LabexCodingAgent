@@ -1,7 +1,9 @@
 import { ref } from 'vue'
 import { monitorApi } from '@/api'
+import { useMonitorOperator } from '@/composables/ops/useMonitorOperator'
 
 export function useMonitorAlerts() {
+  const { withOperator } = useMonitorOperator()
   const alerts = ref([])
   const total = ref(0)
   const page = ref(1)
@@ -64,7 +66,7 @@ export function useMonitorAlerts() {
   async function act(action, alertId, payload) {
     actingId.value = alertId
     try {
-      await action(alertId, payload)
+      await withOperator((body) => action(alertId, payload, body))
       await load()
       return true
     } catch (e) {

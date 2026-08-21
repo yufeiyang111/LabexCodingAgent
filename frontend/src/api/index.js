@@ -291,6 +291,7 @@ export const agentExtensionApi = {
 }
 
 export const MONITOR_TOKEN_KEY = 'labex-monitor-token'
+export const MONITOR_OPERATOR_KEY = 'labex-monitor-operator-code'
 
 const monitorClient = axios.create({
   baseURL: '/api/ops',
@@ -338,6 +339,15 @@ export const monitorApi = {
   },
   clearToken() {
     localStorage.removeItem(MONITOR_TOKEN_KEY)
+  },
+  getOperatorCode() {
+    return sessionStorage.getItem(MONITOR_OPERATOR_KEY) || ''
+  },
+  setOperatorCode(code) {
+    sessionStorage.setItem(MONITOR_OPERATOR_KEY, code)
+  },
+  clearOperatorCode() {
+    sessionStorage.removeItem(MONITOR_OPERATOR_KEY)
   },
   auth(accessCode) {
     return monitorClient.post('/auth', { accessCode })
@@ -393,14 +403,14 @@ export const monitorApi = {
     alert(alertId) {
       return monitorClient.get('/alerts/' + alertId)
     },
-    acknowledgeAlert(alertId) {
-      return monitorClient.post('/alerts/' + alertId + '/acknowledge')
+    acknowledgeAlert(alertId, body = {}) {
+      return monitorClient.post('/alerts/' + alertId + '/acknowledge', body)
     },
-    silenceAlert(alertId, durationMinutes) {
-      return monitorClient.post('/alerts/' + alertId + '/silence', { durationMinutes })
+    silenceAlert(alertId, durationMinutes, body = {}) {
+      return monitorClient.post('/alerts/' + alertId + '/silence', { durationMinutes, ...body })
     },
-    resolveAlert(alertId, reason) {
-      return monitorClient.post('/alerts/' + alertId + '/resolve', { reason })
+    resolveAlert(alertId, reason, body = {}) {
+      return monitorClient.post('/alerts/' + alertId + '/resolve', { reason, ...body })
     },
     alertRules(params) {
       return monitorClient.get('/alerts/rules', { params })
@@ -426,8 +436,8 @@ export const monitorApi = {
     createIncident(body) {
       return monitorClient.post('/incidents', body)
     },
-    incidentTransition(incidentId, target) {
-      return monitorClient.post('/incidents/' + incidentId + '/' + target)
+    incidentTransition(incidentId, target, body = {}) {
+      return monitorClient.post('/incidents/' + incidentId + '/' + target, body)
     },
     events(params) {
       return monitorClient.get('/events', { params })

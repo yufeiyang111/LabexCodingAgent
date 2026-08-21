@@ -41,7 +41,7 @@ class MonitorAlertControllerTest {
         MonitorAuthInterceptor interceptor =
                 new MonitorAuthInterceptor(accessService, properties, new ObjectMapper());
         mockMvc = MockMvcBuilders.standaloneSetup(new MonitorAlertController(queryService, stateService,
-                        new OperationAuthorizationService(roleService), roleService))
+                        new OperationAuthorizationService(roleService, accessService), roleService))
                 .addInterceptors(interceptor)
                 .build();
         when(accessService.isEnabled()).thenReturn(true);

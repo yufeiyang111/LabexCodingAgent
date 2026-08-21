@@ -44,6 +44,15 @@ public class MonitorAccessService {
     }
 
     /** 校验访问码；连续失败触发 Redis 限流，成功后重置计数。 */
+    /** 校验操作码（操作者校验码）；供会话登录与按请求提权复用。 */
+    public boolean verifyOperatorCode(String input) {
+        String operatorCode = properties.getOperatorCode();
+        if (operatorCode == null || operatorCode.isBlank()) {
+            return false;
+        }
+        return constantTimeEquals(operatorCode, input);
+    }
+
     public boolean verifyAccessCode(String input, String clientIp) {
         if (!isEnabled()) {
             return false;

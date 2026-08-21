@@ -57,7 +57,7 @@ class MonitorOperationControllerTest {
                 auditService, eventService);
         ClientIpResolver ipResolver = new ClientIpResolver();
         mockMvc = MockMvcBuilders.standaloneSetup(new MonitorOperationController(orchestrator, idempotencyService,
-                        new OperationAuthorizationService(roleService), new OperationQueryService(operationMapper),
+                        new OperationAuthorizationService(roleService, accessService), new OperationQueryService(operationMapper),
                         new CancelTaskOperation(taskService),
                         new RetryTaskOperation(lifecycleService, taskService, new OpsAlertProperties()),
                         new RecoverLeaseOperation(recoveryService), new WorkerOperation(), ipResolver))
@@ -80,6 +80,29 @@ class MonitorOperationControllerTest {
     @Test
     void viewerIsForbiddenForOperations() throws Exception {
         mockMvc.perform(post("/ops/operations/tasks/42/cancel").header("X-Monitor-Token", "viewer"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void viewerWithValidOperatorCodeIsPromoted() throws Exception {
+        when(accessService.verifyOperatorCode("good-code")).thenReturn(true);
+        when(taskService.requestCancellation(42L, "Cancelled by ops operator", "Ops cancellation")).thenReturn(true);
+        when(taskService.finalizeCancellation(42L, "Cancelled by ops operator", "Ops cancellation")).thenReturn(true);
+
+        mockMvc.perform(post("/ops/operations/tasks/42/cancel").header("X-Monitor-Token", "viewer")
+                        .contentType("application/json")
+                        .content("{\"idempotencyKey\": \"cancel-42\", \"operatorCode\": \"good-code\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SUCCEEDED"));
+    }
+
+    @Test
+    void viewerWithInvalidOperatorCodeStillForbidden() throws Exception {
+        when(accessService.verifyOperatorCode("bad-code")).thenReturn(false);
+
+        mockMvc.perform(post("/ops/operations/tasks/42/cancel").header("X-Monitor-Token", "viewer")
+                        .contentType("application/json")
+                        .content("{\"idempotencyKey\": \"cancel-42\", \"operatorCode\": \"bad-code\"}"))
                 .andExpect(status().isForbidden());
     }
 

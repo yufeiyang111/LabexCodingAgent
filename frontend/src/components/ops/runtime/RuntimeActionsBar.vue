@@ -14,9 +14,12 @@
 <script setup>
 import { ref } from 'vue'
 import { monitorApi } from '@/api'
+import { useMonitorOperator } from '@/composables/ops/useMonitorOperator'
 import OpsConfirmButton from '@/components/ops/ui/OpsConfirmButton.vue'
 
 const emit = defineEmits(['401'])
+
+const { withOperator } = useMonitorOperator()
 
 const taskId = ref('')
 const acting = ref(false)
@@ -31,7 +34,7 @@ async function run(fn) {
   acting.value = true
   failed.value = false
   try {
-    const op = await fn()
+    const op = await withOperator(fn)
     message.value = op?.status === 'SUCCEEDED' ? (op.result || '操作成功') : (op.failureReason || '操作失败')
     failed.value = op?.status !== 'SUCCEEDED'
   } catch (e) {
@@ -47,15 +50,15 @@ async function run(fn) {
 }
 
 function onCancel() {
-  run(() => monitorApi.cancelTask(taskId.value.trim(), { idempotencyKey: idemKey('cancel') }))
+  run((body) => monitorApi.cancelTask(taskId.value.trim(), { idempotencyKey: idemKey('cancel'), ...body }))
 }
 
 function onRetry() {
-  run(() => monitorApi.retryTask(taskId.value.trim(), { idempotencyKey: idemKey('retry') }))
+  run((body) => monitorApi.retryTask(taskId.value.trim(), { idempotencyKey: idemKey('retry'), ...body }))
 }
 
 function onRecover() {
-  run(() => monitorApi.recoverLeases({ idempotencyKey: 'recover-leases-' + Date.now().toString(36) }))
+  run((body) => monitorApi.recoverLeases({ idempotencyKey: 'recover-leases-' + Date.now().toString(36), ...body }))
 }
 </script>
 

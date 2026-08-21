@@ -61,9 +61,11 @@ public class MonitorAlertController {
     }
 
     @PostMapping("/{alertId}/acknowledge")
-    public ResponseEntity<Result<Void>> acknowledge(@PathVariable Long alertId, HttpServletRequest request) {
-        authorizationService.requireOperator(request);
-        if (!stateService.acknowledge(alertId, operatorId(request))) {
+    public ResponseEntity<Result<Void>> acknowledge(@PathVariable Long alertId,
+                                                    @RequestBody(required = false) Map<String, Object> body,
+                                                    HttpServletRequest request) {
+        String role = authorizationService.requireOperator(request, operatorCode(body));
+        if (!stateService.acknowledge(alertId, role)) {
             return ResponseEntity.ok(Result.error(404, "Alert not found or already resolved"));
         }
         return ResponseEntity.ok(Result.success());
@@ -73,11 +75,11 @@ public class MonitorAlertController {
     public ResponseEntity<Result<Void>> silence(@PathVariable Long alertId,
                                                 @RequestBody(required = false) Map<String, Object> body,
                                                 HttpServletRequest request) {
-        authorizationService.requireOperator(request);
+        String role = authorizationService.requireOperator(request, operatorCode(body));
         int durationMinutes = body == null || body.get("durationMinutes") == null ? 60
                 : ((Number) body.get("durationMinutes")).intValue();
         try {
-            if (!stateService.silence(alertId, durationMinutes, operatorId(request))) {
+            if (!stateService.silence(alertId, durationMinutes, role)) {
                 return ResponseEntity.ok(Result.error(404, "Alert not found or already resolved"));
             }
             return ResponseEntity.ok(Result.success());
@@ -90,15 +92,15 @@ public class MonitorAlertController {
     public ResponseEntity<Result<Void>> resolve(@PathVariable Long alertId,
                                                 @RequestBody(required = false) Map<String, Object> body,
                                                 HttpServletRequest request) {
-        authorizationService.requireOperator(request);
+        String role = authorizationService.requireOperator(request, operatorCode(body));
         String reason = body == null ? null : (String) body.get("reason");
-        if (!stateService.resolve(alertId, operatorId(request), reason)) {
+        if (!stateService.resolve(alertId, role, reason)) {
             return ResponseEntity.ok(Result.error(404, "Alert not found"));
         }
         return ResponseEntity.ok(Result.success());
     }
 
-    private String operatorId(HttpServletRequest request) {
-        return roleService.normalize(authorizationService.currentRole(request));
+    private String operatorCode(Map<String, Object> body) {
+        return body == null ? null : (String) body.get("operatorCode");
     }
 }

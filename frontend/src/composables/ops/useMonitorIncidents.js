@@ -1,7 +1,9 @@
 import { ref } from 'vue'
 import { monitorApi } from '@/api'
+import { useMonitorOperator } from '@/composables/ops/useMonitorOperator'
 
 export function useMonitorIncidents() {
+  const { withOperator } = useMonitorOperator()
   const incidents = ref([])
   const total = ref(0)
   const page = ref(1)
@@ -61,14 +63,14 @@ export function useMonitorIncidents() {
   }
 
   async function create(body) {
-    await monitorApi.createIncident(body)
+    await withOperator((opBody) => monitorApi.createIncident({ ...body, ...opBody }))
     await load()
   }
 
   async function transition(incidentId, target) {
     actingId.value = incidentId
     try {
-      await monitorApi.incidentTransition(incidentId, target)
+      await withOperator((opBody) => monitorApi.incidentTransition(incidentId, target, opBody))
       await load()
       if (detail.value && detail.value.incidentId === incidentId) {
         await open(incidentId)

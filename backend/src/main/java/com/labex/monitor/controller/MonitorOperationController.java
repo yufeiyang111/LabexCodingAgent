@@ -113,15 +113,15 @@ public class MonitorOperationController {
     private ResponseEntity<Result<OpsOperation>> execute(String actionType, String targetType, String targetId,
                                                          OperationRequest body, com.labex.monitor.operation.OperationExecutor executor,
                                                          HttpServletRequest request) {
-        authorizationService.requireOperator(request);
+        String operatorCode = body == null ? null : body.getOperatorCode();
+        String role = authorizationService.requireOperator(request, operatorCode);
         String idempotencyKey = body == null ? null : body.getIdempotencyKey();
         if (!idempotencyService.isValidKey(idempotencyKey)) {
             return ResponseEntity.badRequest().body(Result.error(-1, "缺少幂等键"));
         }
         String reason = body == null ? null : body.getReason();
         OpsOperation operation = orchestrator.execute(actionType, targetType, targetId, idempotencyKey,
-                authorizationService.currentRole(request), authorizationService.currentRole(request),
-                ipResolver.resolve(request), reason, executor);
+                role, role, ipResolver.resolve(request), reason, executor);
         return ResponseEntity.ok(Result.success(operation));
     }
 }

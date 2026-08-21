@@ -717,6 +717,7 @@ function handleLoadError(e) {
   if (e.status === 401) {
     sessionToken.value = null
     monitorApi.clearToken()
+    monitorApi.clearOperatorCode()
     stopPolling()
   }
 }
@@ -811,6 +812,7 @@ function renderStatus() {
 async function doLogout() {
   await monitorApi.logout()
   monitorApi.clearToken()
+  monitorApi.clearOperatorCode()
   sessionToken.value = null
   stopPolling()
   disposeCharts()
