@@ -14,6 +14,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
@@ -83,6 +84,18 @@ public class GlobalExceptionHandler {
     public Result<Void> handleNotFound(NoResourceFoundException e, HttpServletResponse response) {
         response.setStatus(404);
         return Result.error(-1, "接口不存在：" + e.getResourcePath());
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public Result<Void> handleResponseStatus(ResponseStatusException e, HttpServletResponse response) {
+        int status = e.getStatusCode().value();
+        response.setStatus(status);
+        if (status >= 500) {
+            log.error("Unhandled exception in request handling", e);
+            return Result.error(-1, "服务器内部错误，请稍后重试（" + e.getClass().getSimpleName() + "）");
+        }
+        String message = e.getReason() == null ? e.getMessage() : e.getReason();
+        return Result.error(-1, message);
     }
 
     @ExceptionHandler(Exception.class)
