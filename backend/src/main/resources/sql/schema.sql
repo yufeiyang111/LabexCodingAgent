@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS t_agent_task (
     last_event_sequence BIGINT NOT NULL DEFAULT 0,
     request_payload LONGTEXT DEFAULT NULL,
     origin_message_id BIGINT DEFAULT NULL,
+    parent_task_id BIGINT DEFAULT NULL,
     recovery_attempts INT NOT NULL DEFAULT 0,
     retry_attempts INT NOT NULL DEFAULT 0,
     next_retry_at DATETIME(3) DEFAULT NULL,
@@ -388,6 +389,8 @@ CREATE TABLE IF NOT EXISTS t_agent_token_usage (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     conversation_id VARCHAR(64) NOT NULL,
     session_id VARCHAR(128) DEFAULT NULL,
+    task_id BIGINT DEFAULT NULL,
+    execution_epoch BIGINT DEFAULT NULL,
     student_id INT NOT NULL,
     project_id INT NOT NULL,
     provider VARCHAR(64) DEFAULT NULL,
@@ -406,7 +409,8 @@ CREATE TABLE IF NOT EXISTS t_agent_token_usage (
     INDEX idx_token_conv (conversation_id),
     INDEX idx_token_student (student_id),
     INDEX idx_token_project (project_id),
-    INDEX idx_token_session (session_id)
+    INDEX idx_token_session (session_id),
+    INDEX idx_token_task_epoch (task_id, execution_epoch)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_agent_skill (
@@ -483,6 +487,7 @@ CREATE TABLE IF NOT EXISTS t_agent_subagent (
     task_id BIGINT NOT NULL,
     parent_subagent_id BIGINT DEFAULT NULL,
     identity VARCHAR(128) NOT NULL,
+    agent_type VARCHAR(16) NOT NULL DEFAULT 'general',
     instructions LONGTEXT NOT NULL,
     model_config_id INT DEFAULT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'queued',
@@ -492,10 +497,14 @@ CREATE TABLE IF NOT EXISTS t_agent_subagent (
     tools_json LONGTEXT DEFAULT NULL,
     background TINYINT NOT NULL DEFAULT 0,
     summary TEXT DEFAULT NULL,
+    parent_tool_call_id VARCHAR(160) DEFAULT NULL,
+    child_task_id BIGINT DEFAULT NULL,
+    spawn_depth INT NOT NULL DEFAULT 0,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_agent_subagent_task_status (task_id, status),
-    INDEX idx_agent_subagent_parent (parent_subagent_id)
+    INDEX idx_agent_subagent_parent (parent_subagent_id),
+    INDEX idx_agent_subagent_child_task (child_task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_agent_run_artifact (
@@ -886,9 +895,11 @@ CREATE TABLE IF NOT EXISTS t_ops_alert (
     silenced_until DATETIME(3) DEFAULT NULL,
     acknowledged_by VARCHAR(160) DEFAULT NULL,
     resolved_by VARCHAR(160) DEFAULT NULL,
+    -- 活跃去重的权威在 AlertDeduplicationService（应用层）；同一指纹允许多条历史
+    -- RESOLVED 记录，因此这里只建普通索引，不能是含 status 的唯一键。
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_ops_alert_fingerprint_status (rule_id, fingerprint, status),
+    INDEX idx_ops_alert_rule_fingerprint_status (rule_id, fingerprint, status),
     INDEX idx_ops_alert_status (status, last_firing_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

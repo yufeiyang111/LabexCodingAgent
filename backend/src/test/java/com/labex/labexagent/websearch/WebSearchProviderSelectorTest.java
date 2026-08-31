@@ -20,12 +20,32 @@ class WebSearchProviderSelectorTest {
                 new WebSearchResponse(WebSearchProviderId.PUBLIC_FALLBACK, "fallback"));
         WebSearchProviderSelector selector = new WebSearchProviderSelector(properties, List.of(exa, fallback));
 
-        assertFalse(selector.isAvailable());
+        assertTrue(selector.isAvailable());
         properties.setProvider("public_fallback");
         assertTrue(selector.isAvailable());
         assertEquals(0, exa.calls);
         assertEquals(0, fallback.calls);
     }
+
+    @Test
+    void autoPrefersTavilyWhenAvailable() throws Exception {
+        WebSearchProperties properties = properties("auto");
+        StubProvider tavily = new StubProvider(WebSearchProviderId.TAVILY, true,
+                new WebSearchResponse(WebSearchProviderId.TAVILY, "tavily result"));
+        StubProvider exa = new StubProvider(WebSearchProviderId.EXA, true,
+                new WebSearchResponse(WebSearchProviderId.EXA, "exa result"));
+        StubProvider fallback = new StubProvider(WebSearchProviderId.PUBLIC_FALLBACK, true,
+                new WebSearchResponse(WebSearchProviderId.PUBLIC_FALLBACK, "fallback result"));
+
+        WebSearchResponse response = new WebSearchProviderSelector(properties, List.of(tavily, exa, fallback))
+                .search(request(), null);
+
+        assertEquals(WebSearchProviderId.TAVILY, response.provider());
+        assertEquals(1, tavily.calls);
+        assertEquals(0, exa.calls);
+        assertEquals(0, fallback.calls);
+    }
+
     @Test
     void autoFallsBackToPublicSearchOnlyAfterRecoverableExaFailure() throws Exception {
         WebSearchProperties properties = properties("auto");
@@ -39,10 +59,10 @@ class WebSearchProviderSelectorTest {
         WebSearchResponse response = new WebSearchProviderSelector(properties, List.of(exa, parallel, fallback))
                 .search(request(), null);
 
-        assertEquals(WebSearchProviderId.PUBLIC_FALLBACK, response.provider());
+        assertEquals(WebSearchProviderId.PARALLEL, response.provider());
         assertEquals(1, exa.calls);
-        assertEquals(0, parallel.calls);
-        assertEquals(1, fallback.calls);
+        assertEquals(1, parallel.calls);
+        assertEquals(0, fallback.calls);
     }
 
     @Test

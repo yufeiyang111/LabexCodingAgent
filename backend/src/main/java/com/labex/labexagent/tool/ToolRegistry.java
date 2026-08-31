@@ -34,21 +34,22 @@ public class ToolRegistry {
 
     /** 每个模式允许使用的工具白名单（参考 OpenCode 的 Permission.Ruleset） */
     private static final Map<String, Set<String>> MODE_ALLOWED_TOOLS = Map.of(
-        // plan 模式：只读 + plan_exit 切换
+        // plan 模式：只读（模式切换由用户在 UI 自主控制）
         "plan", Set.of(
             "read_file", "read_tool_output", "glob", "grep", "list_files",
             "project_overview", "repo_map", "lsp", "retrieve_context",
             "web_fetch", "web_search", "understand_image",
-            "create_plan", "todo_write", "plan_exit", "question", "skill", "mcp_call", "task", "context_note"
+            "create_plan", "todo_write", "question", "skill", "mcp_call", "task", "context_note"
         ),
-        // explore 模式：只读
+        // explore 模式：只读（todo_write 对只读分析开放：子代理/主代理均可规划自己的步骤）
         "explore", Set.of(
             "read_file", "read_tool_output", "glob", "grep", "list_files",
             "project_overview", "repo_map", "lsp", "retrieve_context",
             "web_fetch", "web_search", "understand_image",
-            "question", "context_note"
+            "question", "task", "context_note", "todo_write"
         )
         // build 模式：不限制（默认，不在此 Map 中）
+        // 子代理无独立门禁：runLoop 已把子代理映射为主代理模式（explore/build）。
     );
 
     /** 禁用的工具（不注入系统提示词，不注册到 LLM） */
@@ -215,7 +216,7 @@ public class ToolRegistry {
 
     private static void normalizeLegacyTaskArguments(JsonObject arguments) {
         moveFirst(arguments, "prompt", "task", "question");
-        arguments.remove("task_id");
+        moveFirst(arguments, "task_id", "taskId", "session_id", "sessionId");
         if (!arguments.has("description") && arguments.has("prompt")
                 && arguments.get("prompt").isJsonPrimitive()
                 && arguments.get("prompt").getAsJsonPrimitive().isString()) {

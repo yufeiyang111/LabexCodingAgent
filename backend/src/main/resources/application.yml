@@ -110,6 +110,16 @@ labex-agent:
     max-automatic-strategy-switches: ${LABEX_AGENT_MAX_AUTOMATIC_STRATEGY_SWITCHES:1}
     max-non-progress-iterations: ${LABEX_AGENT_MAX_NON_PROGRESS_ITERATIONS:8}
     finalization-recovery-limit: ${LABEX_AGENT_FINALIZATION_RECOVERY_LIMIT:1}
+  subagent:
+    max-turns: ${LABEX_AGENT_SUBAGENT_MAX_TURNS:16}
+    default-token-budget: ${LABEX_AGENT_SUBAGENT_TOKEN_BUDGET:65536}
+    max-parallel: ${LABEX_AGENT_SUBAGENT_MAX_PARALLEL:4}
+    task-timeout-ms: ${LABEX_AGENT_SUBAGENT_TASK_TIMEOUT_MS:900000}
+    max-spawn-depth: ${LABEX_AGENT_SUBAGENT_MAX_SPAWN_DEPTH:3}
+    run-pool-size: ${LABEX_AGENT_SUBAGENT_RUN_POOL_SIZE:12}
+    digest-max-chars: ${LABEX_AGENT_SUBAGENT_DIGEST_MAX_CHARS:16000}
+    tool-result-max-chars: ${LABEX_AGENT_SUBAGENT_TOOL_RESULT_MAX_CHARS:8000}
+    prior-context-max-chars: ${LABEX_AGENT_SUBAGENT_PRIOR_CONTEXT_MAX_CHARS:4000}
   recovery:
     auto-repair-enabled: ${LABEX_AGENT_AUTO_REPAIR_ENABLED:true}
     max-automatic-repairs: ${LABEX_AGENT_MAX_AUTOMATIC_REPAIRS:3}
@@ -229,8 +239,24 @@ labex-agent:
     cleanup-interval-ms: ${LABEX_AGENT_ATTACHMENT_CLEANUP_INTERVAL_MS:900000}
     cleanup-batch-size: ${LABEX_AGENT_ATTACHMENT_CLEANUP_BATCH_SIZE:100}
     estimated-image-tokens: ${LABEX_AGENT_ATTACHMENT_ESTIMATED_IMAGE_TOKENS:8192}
+  file-ops:
+    export-storage-dir: ${LABEX_AGENT_EXPORT_STORAGE_DIR:${LABEX_AGENT_UPLOAD_PATH:D:/LabexAgent/uploads}/exports}
+    export-cleanup-interval-ms: ${LABEX_AGENT_EXPORT_CLEANUP_INTERVAL_MS:60000}
+  agent-cleanup:
+    enabled: ${LABEX_AGENT_CLEANUP_ENABLED:true}
+    interval-ms: ${LABEX_AGENT_CLEANUP_INTERVAL_MS:1800000}
+    run-log-retention-days: ${LABEX_AGENT_CLEANUP_RUN_LOG_RETENTION_DAYS:7}
+    artifact-retention-days: ${LABEX_AGENT_CLEANUP_ARTIFACT_RETENTION_DAYS:7}
+    preview-log-retention-days: ${LABEX_AGENT_CLEANUP_PREVIEW_LOG_RETENTION_DAYS:3}
+    tmp-max-age-hours: ${LABEX_AGENT_CLEANUP_TMP_MAX_AGE_HOURS:6}
+    min-age-minutes: ${LABEX_AGENT_CLEANUP_MIN_AGE_MINUTES:30}
+    max-projects-per-tick: ${LABEX_AGENT_CLEANUP_MAX_PROJECTS_PER_TICK:200}
+    max-delete-entries-per-tick: ${LABEX_AGENT_CLEANUP_MAX_DELETE_ENTRIES_PER_TICK:2000}
+    max-delete-bytes-per-tick: ${LABEX_AGENT_CLEANUP_MAX_DELETE_BYTES_PER_TICK:134217728}
   web-search:
     provider: ${LABEX_AGENT_WEB_SEARCH_PROVIDER:auto}
+    tavily-enabled: ${LABEX_AGENT_WEB_SEARCH_TAVILY_ENABLED:true}
+    tavily-api-key: ${TAVILY_API_KEY:}
     exa-enabled: ${LABEX_AGENT_WEB_SEARCH_EXA_ENABLED:true}
     parallel-enabled: ${LABEX_AGENT_WEB_SEARCH_PARALLEL_ENABLED:false}
     public-fallback-enabled: ${LABEX_AGENT_WEB_SEARCH_PUBLIC_FALLBACK_ENABLED:true}

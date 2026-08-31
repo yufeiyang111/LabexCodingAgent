@@ -30,7 +30,6 @@ public class ToolSelectionPolicy {
     /** native 只在 build 模式增加完整的文件 patch 能力，避免读模式获得 mutation。 */
     private static final Map<String, Set<String>> NATIVE_MODE_ADDITIONAL_TOOLS = Map.of(
             "build", Set.of("apply_patch"));
-
     /**
      * 默认 profile 故意不包含计划创建、验证、预览、RAG、项目摘要和配置提案等控制面工具。
      * 它们由 Harness 投影、统一 shell 或后续按需 capability profile 承担。
@@ -38,13 +37,16 @@ public class ToolSelectionPolicy {
     private static final Map<String, Set<String>> MODEL_VISIBLE_STATIC_TOOLS = Map.of(
             "build", Set.of(
                     "read_file", "read_tool_output", "glob", "grep", "edit_file", "write_file", "shell",
-                    "todo_write", "question", "web_search", "web_fetch", "understand_image"),
+                    "todo_write", "question", "task", "web_search", "web_fetch", "understand_image"),
             "plan", Set.of(
-                    "read_file", "read_tool_output", "glob", "grep", "todo_write", "plan_exit", "question",
-                    "web_search", "web_fetch", "understand_image"),
+                    "read_file", "read_tool_output", "glob", "grep", "todo_write", "question",
+                    "task", "web_search", "web_fetch", "understand_image"),
             "explore", Set.of(
-                    "read_file", "read_tool_output", "glob", "grep", "question", "web_search", "web_fetch",
-                    "understand_image"));
+                    "read_file", "read_tool_output", "glob", "grep", "question", "task", "web_search", "web_fetch",
+                    "understand_image", "todo_write"));
+            // todo_write 对 explore 开放：只读分析同样可以规划自己的步骤（子代理指令依赖它）。
+            // 子代理不再有独立 profile：runLoop 已把子代理映射为主代理模式（explore/build），
+            // 工具门禁与主代理同一条路径（见 AgentLoopEngine.SubagentProgressMirroringPublisher 上方注释）。
 
     public List<ToolDefinition> select(ToolRegistry registry, String mode, Capabilities capabilities) {
         return select(registry, mode, capabilities, AgentRuntimeProfile.LABEX_LEGACY);
