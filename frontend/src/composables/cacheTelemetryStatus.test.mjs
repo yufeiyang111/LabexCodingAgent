@@ -14,6 +14,17 @@ test('keeps disabled and not-reported telemetry distinct from a real miss', () =
   assert.equal(resolveCacheTelemetryView({ cacheStatus: 'miss', cacheHitRate: 0 }).showHitRate, true)
 })
 
+test('falls back to live cache telemetry when historical summary is empty', () => {
+  const view = resolveCacheTelemetryView(
+    { cacheStatus: 'not_reported', cacheTelemetryCallCount: 0, totalPromptTokens: 0 },
+    { cacheStatus: 'hit', cacheTelemetryReported: true, cachedTokens: 40, promptTokens: 100, cacheHitRate: 40 }
+  )
+
+  assert.equal(view.status, 'hit')
+  assert.equal(view.hitRate, 40)
+  assert.equal(view.sessionScoped, true)
+})
+
 test('applies durable token usage events without inventing a zero hit rate', () => {
   const usage = createTokenUsageState()
 
@@ -31,6 +42,42 @@ test('applies durable token usage events without inventing a zero hit rate', () 
   assert.equal(usage.cacheStatus, 'not_reported')
   assert.equal(usage.cacheHitRate, null)
   assert.equal(resolveCacheTelemetryView(null, usage).showHitRate, false)
+})
+
+test('retains task and execution epoch identity on projected usage', () => {
+  const usage = createTokenUsageState()
+
+  applyTokenUsageEvent(usage, {
+    taskId: 71,
+    executionEpoch: 4,
+    promptTokens: 10,
+    completionTokens: 2,
+    totalTokens: 12,
+    cacheStatus: 'not_reported'
+  })
+
+  assert.equal(usage.taskId, 71)
+  assert.equal(usage.executionEpoch, 4)
+})
+
+test('ignores duplicate durable usage events by event or task epoch identity', () => {
+  const usage = createTokenUsageState()
+  const event = {
+    taskId: 71,
+    executionEpoch: 4,
+    iteration: 2,
+    promptTokens: 10,
+    completionTokens: 2,
+    totalTokens: 12,
+    cacheStatus: 'not_reported'
+  }
+
+  applyTokenUsageEvent(usage, event, 'event-9')
+  applyTokenUsageEvent(usage, event, 'event-9')
+  applyTokenUsageEvent(usage, event)
+
+  assert.equal(usage.callCount, 1)
+  assert.equal(usage.totalTokens, 12)
 })
 
 test('aggregates provider-reported cache reads and writes across durable events', () => {

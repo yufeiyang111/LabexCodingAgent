@@ -124,7 +124,7 @@ onBeforeUnmount(() => {
 }
 .token-chart:hover {
   border-color: #d8b4fe;
-  box-shadow: 0 4px 16px -2px rgba(168, 85, 247, 0.12), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 4px 16px -2px rgba(15, 23, 42, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.05);
   transform: translateY(-1px);
 }
 .token-header {

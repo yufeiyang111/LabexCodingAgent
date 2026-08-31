@@ -13,6 +13,82 @@ function nextOrder(message) {
   return message._nextOrder
 }
 
+function subagentIdFromResult(result) {
+  if (typeof result !== 'string') return ''
+  return result.match(/<task\b[^>]*\bid=["']([^"']+)["']/i)?.[1] || ''
+}
+
+function subagentToolCall(message, data = {}) {
+  message.toolCalls = message.toolCalls || []
+  const subagentId = data.subagentId == null ? '' : String(data.subagentId)
+  let call = subagentId
+    ? message.toolCalls.find(item => item?.subagentId != null && String(item.subagentId) === subagentId)
+    : null
+  if (!call && data.toolCallId) {
+    call = message.toolCalls.find(item => item?.toolCallId === data.toolCallId)
+  }
+  if (!call) {
+    call = message.toolCalls.find(item => item?.name === 'task' && item.status === 'running' && !item.subagentId)
+  }
+  if (!call && subagentId) {
+    call = {
+      name: 'task', args: {}, summary: data.identity || 'subagent', result: null,
+      status: 'running', toolCallId: data.toolCallId || '', startedAt: Date.now(),
+      execution: { phase: 'subagent', elapsedMs: 0 }, _order: nextOrder(message)
+    }
+    message.toolCalls.push(call)
+  }
+  if (!call) return null
+  if (subagentId) call.subagentId = subagentId
+  if (data.toolCallId) call.toolCallId = call.toolCallId || data.toolCallId
+  call.subagentTrace = call.subagentTrace || []
+  return call
+}
+
+export function applySubagentProgress(message, data = {}) {
+  const call = subagentToolCall(message, data)
+  if (!call) return null
+  // 通过 toolCallId 命中的卡片回填 subagentId，让“打开子代理会话”按钮在运行中即可出现。
+  if (call.subagentId == null && data.subagentId != null) call.subagentId = data.subagentId
+  const sequence = data.eventSequence ?? data.sequence ?? call.subagentTrace.length + 1
+  if (!call.subagentTrace.some(item => String(item.sequence) === String(sequence))) {
+    call.subagentTrace.push({
+      sequence,
+      type: data.eventType || 'PROGRESS',
+      payload: data.payload || '',
+      createdAt: data.createdAt || Date.now()
+    })
+  }
+  const type = String(data.eventType || '').toUpperCase()
+  if (type === 'ERROR') {
+    call.status = 'error'
+    call.subagentError = data.payload || '子代理执行失败'
+  } else if (type === 'DELTA') {
+    call.subagentLiveOutput = `${call.subagentLiveOutput || ''}${data.payload || ''}`
+  } else if (type === 'TOOL_CALL') {
+    call.subagentCurrentTool = data.payload || ''
+  } else if (type === 'TOOL_RESULT') {
+    call.subagentCurrentTool = ''
+  }
+  return call
+}
+
+export function applySubagentSummary(message, data = {}) {
+  const call = subagentToolCall(message, data)
+  if (!call) return null
+  call.subagentSummary = data.summary || call.subagentSummary || ''
+  call.subagentStatus = data.status || (data.success === false ? 'failed' : 'completed')
+  if (data.success === false) {
+    call.status = 'error'
+    call.subagentError = data.summary || '子代理执行失败'
+  } else if (call.status !== 'error') {
+    call.status = 'completed'
+  }
+  call.subagentTokensUsed = data.tokensUsed ?? call.subagentTokensUsed ?? null
+  call.subagentTokenBudget = data.tokenBudget ?? call.subagentTokenBudget ?? null
+  return call
+}
+
 function thinkingMessageId(data = {}) {
   const value = data.messageId
   return typeof value === 'string' && value.trim() ? value : null
@@ -284,6 +360,12 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
         }
       }
       break
+    case 'SUBAGENT_PROGRESS':
+      applySubagentProgress(message, data)
+      break
+    case 'SUBAGENT_SUMMARY':
+      applySubagentSummary(message, data)
+      break
     case 'TOOL_CALL_STATE':
       upsertDurableToolCallState(message, data)
       break
@@ -319,12 +401,16 @@ export function reduceHistoryEvent(type, data, message, callbacks = {}) {
         : null) || message.toolCalls?.at(-1)
       if (toolCall) {
         toolCall.result = data.result || data.content
+        const observedSubagentId = subagentIdFromResult(toolCall.result)
+        if (observedSubagentId) toolCall.subagentId = observedSubagentId
         const preservesWaitingInteraction = data.success === false
           && (toolCall.questionRequest || toolCall.permissionRequest || toolCall.networkRequest)
         const resultProjection = projectToolResultStatus(data.success, toolCall.result)
+        const projectedStatus = resultProjection.status === 'running' && toolCall.subagentStatus === 'completed'
+          ? 'completed' : resultProjection.status
         toolCall.status = preservesWaitingInteraction
           ? (toolCall.permissionRequest || toolCall.networkRequest ? 'waiting_approval' : 'waiting_user')
-          : resultProjection.status
+          : projectedStatus
         toolCall.verificationStatus = resultProjection.verificationStatus
         toolCall.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
           truncated: data.modelProjectionTruncated === true }

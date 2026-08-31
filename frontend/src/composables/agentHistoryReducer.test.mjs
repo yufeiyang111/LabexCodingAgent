@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { reduceHistoryEvent } from './agentHistoryReducer.js'
+import { projectToolResultStatus } from './agentToolCallState.js'
 
 function message() { return { content: '', thinking: '', _thinkingDisplay: '', thinkingBlocks: [], toolCalls: [], _nextOrder: 0 } }
 
@@ -17,6 +18,41 @@ test('reduces thinking, tool calls, observations, and permission waits', () => {
   assert.equal(target.toolCalls[0].result, 'done')
   assert.equal(target.toolCalls[0].permissionRequest.requestId, 'r1')
   assert.equal(pendingChanges, 1)
+})
+
+test('keeps a background subagent running until its durable summary arrives', () => {
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'task', toolCallId: 'task-call', arguments: { description: 'research' } }, target)
+  reduceHistoryEvent('OBSERVE', {
+    toolCallId: 'task-call', success: true,
+    result: '<task id="17" state="running"><summary>research</summary></task>'
+  }, target)
+  assert.equal(target.toolCalls[0].status, 'running')
+
+  reduceHistoryEvent('SUBAGENT_PROGRESS', {
+    subagentId: 17, toolCallId: 'task-call', eventSequence: 1,
+    eventType: 'TOOL_CALL', payload: 'grep({"pattern":"AgentLoopEngine"})'
+  }, target)
+  reduceHistoryEvent('SUBAGENT_SUMMARY', {
+    subagentId: 17, toolCallId: 'task-call', success: true,
+    status: 'completed', summary: 'found the loop owner'
+  }, target)
+
+  assert.equal(target.toolCalls[0].status, 'completed')
+  assert.equal(target.toolCalls[0].subagentTrace[0].type, 'TOOL_CALL')
+  assert.equal(target.toolCalls[0].subagentSummary, 'found the loop owner')
+})
+
+test('projects subagent failures as errors even when an error summary is non-empty', () => {
+  assert.equal(projectToolResultStatus(true, '<task state="error"><task_error>token budget exceeded</task_error></task>').status, 'error')
+  const target = message()
+  reduceHistoryEvent('TOOL_CALL', { tool: 'task', toolCallId: 'task-call', arguments: {} }, target)
+  reduceHistoryEvent('SUBAGENT_SUMMARY', {
+    subagentId: 18, toolCallId: 'task-call', success: false,
+    status: 'failed', summary: 'subagent token budget exceeded'
+  }, target)
+  assert.equal(target.toolCalls[0].status, 'error')
+  assert.equal(target.toolCalls[0].subagentError, 'subagent token budget exceeded')
 })
 
 

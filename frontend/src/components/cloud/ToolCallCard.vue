@@ -39,6 +39,17 @@
       </div>
 
       <div class="tc-header-right">
+        <!-- 运行中/已完成均可一键打开子代理独立会话（拖出详情查看完整工作轨迹） -->
+        <button
+          v-if="isTaskTool && call.subagentId"
+          type="button"
+          class="tc-subagent-header-open"
+          @click.stop="emit('open-subagent', { subagentId: call.subagentId, name: subagentData?.name })"
+          title="打开子代理独立会话，查看实时工作详情"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          <span>会话详情</span>
+        </button>
         <!-- 右侧状态标签 (图一风格: 边框胶囊，含耗时与结果) -->
         <div class="tc-status-pill-badge" :class="call.status">
           <svg v-if="call.status === 'completed'" class="badge-icon-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.8"><polyline points="20 6 9 17 4 12"/></svg>
@@ -63,10 +74,48 @@
             <div class="tc-subagent-prompt-box">{{ subagentData.prompt || subagentData.description }}</div>
           </div>
 
-          <!-- 正在运行中动画 -->
+          <!-- 正在运行中动画 + 实时当前工具 -->
           <div v-if="call.status === 'running'" class="tc-subagent-running-pulse">
             <svg class="badge-icon-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-            <span>子代理正在独立调研代码库与依赖，请稍候...</span>
+            <span>{{ call.subagentCurrentTool || '子代理正在独立调研代码库与依赖，请稍候...' }}</span>
+          </div>
+
+          <!-- 打开子代理独立会话标签页 -->
+          <button
+            v-if="call.subagentId"
+            type="button"
+            class="tc-subagent-open-btn"
+            @click.stop="emit('open-subagent', { subagentId: call.subagentId, name: subagentData?.name })"
+            title="在新标签页打开该子代理的独立会话"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            <span>打开子代理会话</span>
+          </button>
+
+          <div v-if="subagentTrace.length > 0" class="tc-subagent-trace">
+            <div class="tc-subagent-section-title">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              <span>工作过程</span>
+              <span v-if="subagentData && subagentData.subagentType" class="tc-subagent-trace-meta">{{ subagentData.subagentType }}</span>
+            </div>
+            <div class="tc-subagent-trace-list">
+              <div v-for="entry in visibleSubagentTrace" :key="String(entry.sequence)" class="tc-subagent-trace-entry">
+                <span class="tc-subagent-trace-kind">{{ subagentEventLabel(entry.type) }}</span>
+                <code>{{ entry.payload }}</code>
+              </div>
+            </div>
+            <div v-if="subagentTrace.length > visibleSubagentTrace.length" class="tc-subagent-trace-more">
+              仅显示最近 {{ visibleSubagentTrace.length }} 条，完整轨迹在子代理会话中
+            </div>
+            <div v-if="call.subagentLiveOutput" class="tc-subagent-live-output">{{ subagentLiveOutputPreview }}</div>
+          </div>
+
+          <div v-if="call.subagentError" class="tc-subagent-error">
+            <span class="tc-subagent-error-label">执行失败</span>
+            <div class="tc-subagent-markdown-box" v-html="renderSubagentReport(subagentErrorPreview)"></div>
+            <span v-if="call.subagentError.length > subagentErrorPreview.length" class="tc-subagent-truncated-hint">
+              内容已截断，完整报告在子代理会话中
+            </span>
           </div>
 
           <!-- 结构化结论 -->
@@ -77,7 +126,10 @@
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <span>调研发现 (Findings)</span>
               </div>
-              <div class="tc-subagent-markdown-box" v-html="renderSubagentMarkdown(subagentData.findings)"></div>
+              <div class="tc-subagent-markdown-box" v-html="renderSubagentReport(findingsPreview)"></div>
+              <span v-if="subagentData.findings.length > findingsPreview.length" class="tc-subagent-truncated-hint">
+                内容已截断，完整报告在子代理会话中
+              </span>
             </div>
 
             <!-- 关联文件 (支持一键打开) -->
@@ -107,7 +159,7 @@
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
                 <span>后续建议 (Suggested Next Steps)</span>
               </div>
-              <div class="tc-subagent-markdown-box" v-html="renderSubagentMarkdown(subagentData.nextSteps)"></div>
+              <div class="tc-subagent-markdown-box" v-html="renderSubagentReport(nextStepsPreview)"></div>
             </div>
           </div>
         </div>
@@ -311,6 +363,7 @@ import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import hljs from 'highlight.js/lib/common'
 import DiffViewer from './DiffViewer.vue'
+import { renderMessageMarkdown } from '@/utils/agentMarkdownRenderer'
 
 const props = defineProps({
   call: {
@@ -319,7 +372,40 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['permission', 'command-approval', 'question', 'open-file', 'open-preview'])
+const subagentTrace = computed(() => Array.isArray(props.call.subagentTrace) ? props.call.subagentTrace : [])
+// 抽屉里只保留最近 10 条轨迹，完整轨迹在子代理会话标签中查看。
+const visibleSubagentTrace = computed(() => subagentTrace.value.slice(-10))
+const SUBAGENT_PREVIEW_LIMIT = 500
+
+function truncatePreview(text, limit = SUBAGENT_PREVIEW_LIMIT) {
+  const raw = String(text || '')
+  return raw.length <= limit ? raw : raw.slice(0, limit) + '…'
+}
+
+const subagentErrorPreview = computed(() => truncatePreview(props.call.subagentError, 600))
+const findingsPreview = computed(() => truncatePreview(subagentData.value?.findings, SUBAGENT_PREVIEW_LIMIT))
+const nextStepsPreview = computed(() => truncatePreview(subagentData.value?.nextSteps, 300))
+const subagentLiveOutputPreview = computed(() => truncatePreview(props.call.subagentLiveOutput, 300))
+
+// 结构化 Markdown 渲染（与主会话同一份渲染管线：表格/代码高亮/callout 全支持），
+// 不再展示 markdown 源文本。
+function renderSubagentReport(text) {
+  if (!text) return ''
+  return renderMessageMarkdown({ role: 'assistant', content: String(text), isStreaming: false })
+}
+
+function subagentEventLabel(type) {
+  switch (String(type || '').toUpperCase()) {
+    case 'TOOL_CALL': return '工具调用'
+    case 'TOOL_RESULT': return '工具结果'
+    case 'DELTA': return '可见结论'
+    case 'ERROR': return '失败'
+    case 'START': return '开始'
+    default: return '进度'
+  }
+}
+
+const emit = defineEmits(['permission', 'command-approval', 'question', 'open-file', 'open-preview', 'open-subagent'])
 
 const expanded = ref(false)
 const answerDraft = ref('')
@@ -364,6 +450,7 @@ const subagentData = computed(() => {
   const relevantFiles = []
   let nextSteps = ''
   const rawResult = props.call.result || ''
+  const persistedSummary = props.call.subagentSummary || ''
 
   if (rawResult && typeof rawResult === 'string') {
     const summaryMatch = rawResult.match(/<summary>([\s\S]*?)<\/summary>/i)
@@ -375,6 +462,7 @@ const subagentData = computed(() => {
     let body = rawResult
     const taskResultMatch = rawResult.match(/<task_result>([\s\S]*?)<\/task_result>/i)
     if (taskResultMatch) body = taskResultMatch[1].trim()
+    else if (persistedSummary) body = persistedSummary
 
     const findingsMatch = body.match(/##\s*(?:Findings|调研发现)([\s\S]*?)(?=##|$)/i)
     if (findingsMatch) findings = findingsMatch[1].trim()
@@ -394,6 +482,7 @@ const subagentData = computed(() => {
     const nextStepsMatch = body.match(/##\s*(?:Suggested Next Steps|后续建议)([\s\S]*?)(?=##|$)/i)
     if (nextStepsMatch) nextSteps = nextStepsMatch[1].trim()
 
+    if (!findings && persistedSummary) findings = persistedSummary
     if (!findings && !relevantFiles.length && !nextSteps) {
       findings = body
     }
@@ -414,8 +503,8 @@ const subagentData = computed(() => {
     name: name || description || '代码调研子代理',
     subagentType,
     prompt,
-    description,
-    findings: '',
+    description: props.call.subagentSummary || description,
+    findings: props.call.subagentSummary || '',
     relevantFiles: [],
     nextSteps: '',
     isBackground: Boolean(args.background)
@@ -439,18 +528,6 @@ function emitOpenFile(path) {
 
 function emitOpenPreview(url) {
   if (url) emit('open-preview', url)
-}
-
-function renderSubagentMarkdown(text) {
-  if (!text) return ''
-  const escaped = String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/`([^`]+)`/g, '<code class="tc-subagent-inline-code">$1</code>')
-    .replace(/\n\n+/g, '</p><p>')
-    .replace(/\n/g, '<br/>')
-  return '<p>' + escaped + '</p>'
 }
 
 const editStats = computed(() => {
@@ -1342,6 +1419,58 @@ function setQuestionAnswer(option) {
   font-size: 12px;
 }
 
+.tc-subagent-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  margin-top: 2px;
+  border-radius: 999px;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all .18s cubic-bezier(.25,.1,.25,1);
+}
+
+.tc-subagent-open-btn:hover {
+  background: #e0e7ff;
+  border-color: #a5b4fc;
+}
+
+/* 头部常显的会话详情入口（运行中即可点击查看实时工作详情） */
+.tc-subagent-header-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  margin-right: 8px;
+  border-radius: 999px;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all .18s cubic-bezier(.25,.1,.25,1);
+}
+
+.tc-subagent-header-open:hover {
+  background: #e0e7ff;
+  border-color: #a5b4fc;
+}
+
+.tc-subagent-trace-more,
+.tc-subagent-truncated-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
 .tc-subagent-markdown-box {
   font-size: 12px;
   line-height: 1.55;
@@ -1482,5 +1611,76 @@ function setQuestionAnswer(option) {
 
 .tc-btn-ext-preview:hover {
   background: #e0f2fe;
+}
+
+.tc-subagent-trace {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.tc-subagent-trace-meta {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.tc-subagent-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 7px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.tc-subagent-trace-entry {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.tc-subagent-trace-kind {
+  color: #475569;
+  font-weight: 600;
+}
+
+.tc-subagent-trace-entry code {
+  min-width: 0;
+  color: #334155;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tc-subagent-live-output {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid #e2e8f0;
+  color: #334155;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.tc-subagent-error {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff1f2;
+  color: #991b1b;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.tc-subagent-error-label {
+  font-weight: 700;
 }
 </style>

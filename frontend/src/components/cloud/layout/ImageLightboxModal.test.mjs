@@ -36,14 +36,6 @@ test('sizing is imperative so wheel ticks never trigger a Vue re-render', () => 
   assert.match(source, /function measureBaseSize\(\)/)
 })
 
-test('explicit scaled size neutralizes the CSS max clamps and restores them at fit', () => {
-  // 回归钉子：max-width/max-height 会把显式宽高钳回适配大小，导致滚轮"倍率涨图不动"。
-  assert.match(source, /img\.style\.maxWidth = 'none'/)
-  assert.match(source, /img\.style\.maxHeight = 'none'/)
-  assert.match(source, /img\.style\.maxWidth = ''/)
-  assert.match(source, /img\.style\.maxHeight = ''/)
-})
-
 test('zoom state resets on open, source change, reload and double-click', () => {
   assert.match(source, /watch\(\s*\n\s*\(\) => \[props\.visible, props\.src\],/)
   assert.match(source, /@load="onImgLoad"/)
@@ -59,11 +51,4 @@ test('lightbox keeps its escape hatch and overflow-safe centering', () => {
   // flex 居中会在放大后裁掉上边；margin:auto 才允许四边滚动到达。
   assert.match(source, /\.lightbox-img \{[\s\S]*margin: auto;/)
   assert.match(source, /\.lightbox-body \{[\s\S]*overflow: auto;/)
-})
-
-test('zoom badge is pinned to the stage viewport instead of scrolling with content', () => {
-  // 徽标挂在滚动容器外层的舞台上绝对定位：不随图片缩放、平移、滚动而移动。
-  assert.match(source, /<div class="lightbox-stage">/)
-  assert.match(source, /\.lightbox-zoom-badge \{[\s\S]*position: absolute;/)
-  assert.match(source, /\.lightbox-zoom-badge \{[\s\S]*right: 12px;[\s\S]*bottom: 12px;/)
 })

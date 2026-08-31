@@ -47,8 +47,12 @@ test('ContextUsageDialog exposes stable categories and a safely rendered actual-
 
 test('CloudWorkspace loads and renders context usage components', async () => {
   const source = await readFile(new URL('../../views/CloudWorkspace.vue', import.meta.url), 'utf8')
+  const dock = await readFile(new URL('./composer/ComposerDock.vue', import.meta.url), 'utf8')
   const timeline = await readFile(new URL('../../composables/useAgentEventTimeline.js', import.meta.url), 'utf8')
-  assert.match(source, /ContextUsageIndicator/)
+  // 指示器唯一渲染点是 ComposerDock（静态引入）；工作区只负责状态下发与打开对话框的事件接线。
+  assert.match(dock, /ContextUsageIndicator/)
+  assert.match(source, /:context-usage-status="contextUsageStatus"/)
+  assert.match(source, /@open-context-dialog="openContextUsageDialog"/)
   assert.match(source, /ContextUsageDialog/)
   assert.match(source, /openContextUsageDialog/)
   assert.match(source, /loadContextUsageStatus/)

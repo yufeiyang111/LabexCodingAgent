@@ -143,6 +143,21 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 | `LABEX_AGENT_CONVERSATION_CACHE_DOUBLE_DELETE_DELAY_MS` | `500` | 数据库提交后的延迟二次删缓存时间 |
 | `LABEX_AGENT_CONVERSATION_CACHE_KEY_PREFIX` | `labex:conversation` | 会话热缓存键前缀，与认证 Redis key 隔离 |
 | `LABEX_AGENT_PROJECT_BASE_PATH` | `D:/LabexAgent/workspaces` | 用户工作区根路径 |
+| `LABEX_AGENT_SUBAGENT_MAX_TURNS` | `16` | 子代理工具循环最大轮数 |
+| `LABEX_AGENT_SUBAGENT_TOKEN_BUDGET` | `65536` | 单个子代理默认生成 token 预算 |
+| `LABEX_AGENT_SUBAGENT_MAX_PARALLEL` | `4` | 同一父任务并行子代理上限 |
+| `LABEX_AGENT_SUBAGENT_TASK_TIMEOUT_MS` | `900000` | 单个前台子代理工具调用 watchdog（15 分钟） |
+| `LABEX_AGENT_SUBAGENT_MAX_SPAWN_DEPTH` | `3` | 子代理嵌套深度上限（主 Agent=0 层，最多再派 3 层） |
+| `LABEX_AGENT_SUBAGENT_RUN_POOL_SIZE` | `12` | 子代理运行专用线程池大小（独立于主 Agent 执行池，防前台等待死锁） |
+
+**子代理会话**：`task` 工具派发的子代理是拥有独立 `AgentConversation + AgentTask` 的真实会话，与主 Agent 复用同一套 durable 运行时（transcript / Part / 状态机 / 压缩 / SSE 订阅），不再使用内存循环。类型分工对齐 OpenCode：`explore`/`scout` 只读白名单，`general` 可写并走既有审批 + diff 审查流；所有子代理开放 `todo_write` 规划自身任务；嵌套由 `spawn_depth ≤ 3` 硬上限约束。父任务卡片可一键在新标签页打开子代理会话，支持多轮追问、断线恢复与刷新回放；子代理会话不混入普通会话列表，且服务端拒绝任何把子会话升级为主 Agent 写模式的请求。
+
+
+**工作区文件操作护栏**：资源管理器的上传 / 复制 / 移动 / 下载 / 目录搜索 / 图片预览受 `LABEX_AGENT_FILE_OPS_*` 系列环境变量约束（单文件与整批大小、递归深度与文件数、每用户每分钟频控、全局并发槽），完整清单见 `.env.example`。频控复用认证域 Redis 计数，Redis 不可用时退化为进程内窗口计数；图片预览仅放行 PNG/JPEG/GIF/WEBP/BMP/ICO（magic byte 校验，SVG 拒绝），响应带 `nosniff` 与 CSP sandbox；复制/移动/上传遇同名冲突时由用户逐个裁决跳过或覆盖，可勾选对剩余冲突整批生效。
+
+**项目异步导出**：导出走异步任务——点击后创建任务立即返回，后台打包到 `LABEX_AGENT_EXPORT_STORAGE_DIR`（默认 `${LABEX_AGENT_UPLOAD_PATH}/exports`），前端轮询进度条，完成后从磁盘下载成品，长任务不再占用 HTTP 连接、不会触发网关超时。默认排除 node_modules/dist/target 等依赖与构建产物目录（可在对话框勾选"包含全部文件"）；`.labex/` 等平台保留目录任何模式都不导出。成品 zip 按 `LABEX_AGENT_FILE_OPS_EXPORT_JOB_TTL_MINUTES` 定时清理，服务重启后的孤儿文件按 mtime 兜底清除。
+
+**Agent 临时产物清理**：后台单一调度者按保留期清理 workspace 内可再生的诊断文件——`.labex/agent-logs/` 运行日志（默认 7 天）、`.labex-agent/artifacts/task-N/` 工具输出与 `.labex-agent/artifacts/preview/` 预览日志（默认 7 / 3 天）、`.labex-agent/{worker-tmp,terminal-tmp,runtime}/` 执行临时目录（默认 6 小时）。只处理终态（completed/failed/cancelled）任务的产物：归属会话存在 `waiting_*` 等非终态 task 或活跃 preview 时一律跳过，checkpoint、git snapshot/worktree、workspace memory、会话历史与 token 明细等恢复类数据永不触碰；删除失败（Windows 文件锁）留待下一轮重试。单轮项目数 / 条目数 / 字节数有硬预算，完整清单见 `.env.example` 的 `LABEX_AGENT_CLEANUP_*`。
 
 **认证模块**：注册 / 登录 / 图形验证码（按风险阈值按需生成）/ GitHub、Google OAuth（可选，未配置时登录页隐藏按钮）/ 邀请注册。第三方登录不会自动建号，需先在账号设置中绑定。
 

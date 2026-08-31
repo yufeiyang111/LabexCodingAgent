@@ -18,7 +18,7 @@
         <div v-if="loading" class="ftn-loading"><span class="ftn-spinner"></span><span>加载中...</span></div>
         <template v-else>
           <TransitionGroup name="ftn-list" tag="div">
-            <FileTreeNode v-for="child in children" :key="child.path" :node="child" :depth="depth + 1" :selected-path="selectedPath" :load-children="loadChildren" :show-actions="showActions" :refresh-key="refreshKey" @select="(p) => emit('select', p)" @newItem="(p, t) => emit('newItem', p, t)" @rename="(p, n) => emit('rename', p, n)" @delete="(p) => emit('delete', p)"/>
+            <FileTreeNode v-for="child in children" :key="child.path" :node="child" :depth="depth + 1" :selected-path="selectedPath" :load-children="loadChildren" :show-actions="showActions" :refresh-key="refreshKey" :has-clipboard="hasClipboard" @select="(p) => emit('select', p)" @newItem="(p, t) => emit('newItem', p, t)" @rename="(p, n) => emit('rename', p, n)" @delete="(p) => emit('delete', p)" @menu-action="(payload) => emit('menu-action', payload)"/>
           </TransitionGroup>
           <button v-if="nextOffset !== null" class="ftn-load-more" type="button" @click.stop="loadMore">加载更多</button>
         </template>
@@ -28,39 +28,37 @@
       <span class="ftn-file-icon"><FileIcon :name="node.name" :size="14" :selected="node.path === selectedPath" /></span>
       <span class="ftn-name">{{ node.name }}</span>
     </div>
-    <Teleport to="body">
-      <template v-if="contextMenu.visible">
-        <div class="ftn-menu-backdrop" @click.stop="closeContextMenu" @contextmenu.prevent="closeContextMenu"></div>
-        <Transition name="ftn-menu" appear>
-          <div class="ftn-context-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }" @click.stop="closeContextMenu">
-            <button class="ftn-menu-item" @click="emit('rename', contextMenu.node.path, contextMenu.node.name)">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              <span>重命名</span>
-            </button>
-            <button class="ftn-menu-item ftn-menu-danger" @click="emit('delete', contextMenu.node.path)">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              <span>删除</span>
-            </button>
-            <div v-if="contextMenu.node.type === 'directory'" class="ftn-menu-divider"></div>
-            <button v-if="contextMenu.node.type === 'directory'" class="ftn-menu-item" @click="emit('newItem', contextMenu.node.path, 'file')">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-              <span>新建文件</span>
-            </button>
-            <button v-if="contextMenu.node.type === 'directory'" class="ftn-menu-item" @click="emit('newItem', contextMenu.node.path, 'directory')">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-              <span>新建文件夹</span>
-            </button>
-          </div>
-        </Transition>
-      </template>
-    </Teleport>
+    <FileContextMenu
+      :visible="contextMenu.visible"
+      :x="contextMenu.x"
+      :y="contextMenu.y"
+      :node="contextMenu.node"
+      :has-clipboard="hasClipboard"
+      @action="onMenuAction"
+      @close="closeContextMenu"
+    />
   </div>
 </template>
 <script setup>
 import { ref, computed, watch } from 'vue'
 import FileIcon from '../icons/FileIcon.vue'
-const props = defineProps({ node: { type: Object, required: true }, depth: { type: Number, default: 0 }, selectedPath: { type: String, default: '' }, loadChildren: { type: Function, default: null }, showActions: { type: Boolean, default: false }, refreshKey: { type: [Number, String], default: 0 } })
-const emit = defineEmits(['select', 'newItem', 'rename', 'delete'])
+import FileContextMenu from '../cloud/FileContextMenu.vue'
+
+/**
+ * 树节点只负责渲染、懒加载与右键入口；菜单项与动作定义集中在 FileContextMenu，
+ * 增删改走既有事件（newItem/rename/delete），其余动作统一经 menu-action 上抛，
+ * 由 CloudWorkspace 集中分发到对应 composable。
+ */
+const props = defineProps({
+  node: { type: Object, required: true },
+  depth: { type: Number, default: 0 },
+  selectedPath: { type: String, default: '' },
+  loadChildren: { type: Function, default: null },
+  showActions: { type: Boolean, default: false },
+  refreshKey: { type: [Number, String], default: 0 },
+  hasClipboard: { type: Boolean, default: false }
+})
+const emit = defineEmits(['select', 'newItem', 'rename', 'delete', 'menu-action'])
 const expanded = ref(false)
 const children = ref([])
 const loading = ref(false)
@@ -140,6 +138,16 @@ function openContextMenu(e, node) {
   contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, node }
 }
 function closeContextMenu() { contextMenu.value.visible = false }
+
+/** 新建/重命名/删除仍走既有模态框链路；其余动作原样上抛。 */
+function onMenuAction({ action, node }) {
+  if (!node) return
+  if (action === 'new-file') return emit('newItem', node.path, 'file')
+  if (action === 'new-folder') return emit('newItem', node.path, 'directory')
+  if (action === 'rename') return emit('rename', node.path, node.name)
+  if (action === 'delete') return emit('delete', node.path)
+  emit('menu-action', { action, node })
+}
 </script>
 <style scoped>
 .ftn { user-select: none; font-size: 13px; }
@@ -173,16 +181,6 @@ function closeContextMenu() { contextMenu.value.visible = false }
 .ftn-list-enter-from { opacity: 0; transform: translateX(-8px); }
 .ftn-list-leave-to { opacity: 0; transform: translateX(-4px); }
 .ftn-list-move { transition: transform 0.2s ease; }
-.ftn-menu-backdrop { position: fixed; inset: 0; z-index: 9998; background: transparent; }
-.ftn-context-menu { position: fixed; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); padding: 4px; z-index: 9999; min-width: 160px; }
-.ftn-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: none; background: none; border-radius: 5px; cursor: pointer; font-size: 12px; color: #374151; font-family: inherit; text-align: left; transition: background 0.1s; }
-.ftn-menu-item:hover { background: #f3f4f6; }
-.ftn-menu-danger { color: #ef4444; }
-.ftn-menu-danger:hover { background: #fef2f2; }
-.ftn-menu-divider { height: 1px; background: #f0f0f0; margin: 3px 6px; }
-.ftn-menu-enter-active { transition: all 0.12s ease; }
-.ftn-menu-leave-active { transition: all 0.08s ease; }
-.ftn-menu-enter-from, .ftn-menu-leave-to { opacity: 0; transform: scale(0.95); }
 
 :global([data-theme="dark"]) .ftn-row { color: #a9b1d6; }
 :global([data-theme="dark"]) .ftn-name { color: #c0caf5; }
@@ -199,10 +197,4 @@ function closeContextMenu() { contextMenu.value.visible = false }
 :global([data-theme="dark"]) .ftn-load-more { background: #1f2033; border-color: #383a50; color: #7aa2f7; }
 :global([data-theme="dark"]) .ftn-load-more:hover { background: #282a3a; }
 :global([data-theme="dark"]) .ftn-action-btn:hover { background: #383a50; color: #c0caf5; }
-:global([data-theme="dark"]) .ftn-context-menu { background: #1f2033; border-color: #383a50; box-shadow: 0 4px 16px rgba(0,0,0,0.35); }
-:global([data-theme="dark"]) .ftn-menu-item { color: #a9b1d6; }
-:global([data-theme="dark"]) .ftn-menu-item:hover { background: #282a3a; }
-:global([data-theme="dark"]) .ftn-menu-danger { color: #f7768e; }
-:global([data-theme="dark"]) .ftn-menu-danger:hover { background: #4a2430; }
-:global([data-theme="dark"]) .ftn-menu-divider { background: #383a50; }
 </style>

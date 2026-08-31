@@ -1,4 +1,5 @@
 ﻿export const LAUNCHER_POSITION_STORAGE_KEY = 'labex-theme-launcher-position.v1'
+export const TUTORIALS_LAUNCHER_POSITION_STORAGE_KEY = 'labex-tutorials-launcher-position.v1'
 
 const EDGE_PADDING = 12
 const LAUNCHER_SIZE = 48
@@ -31,9 +32,15 @@ export function defaultLauncherPosition(bounds) {
   return clampLauncherPosition({ x: safeBounds.width - LAUNCHER_SIZE - EDGE_PADDING, y: defaultY }, safeBounds)
 }
 
-export function loadLauncherPosition(storage, bounds) {
+export function defaultTutorialsLauncherPosition(bounds) {
+  const safeBounds = { width: safeDimension(bounds?.width), height: safeDimension(bounds?.height) }
+  const defaultY = Math.round(safeBounds.height * 0.52)
+  return clampLauncherPosition({ x: safeBounds.width - LAUNCHER_SIZE - EDGE_PADDING, y: defaultY }, safeBounds)
+}
+
+export function loadLauncherPosition(storage, bounds, key = LAUNCHER_POSITION_STORAGE_KEY) {
   try {
-    const raw = storage?.getItem?.(LAUNCHER_POSITION_STORAGE_KEY)
+    const raw = storage?.getItem?.(key)
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (!Number.isFinite(parsed?.x) || !Number.isFinite(parsed?.y)) return null
@@ -43,10 +50,10 @@ export function loadLauncherPosition(storage, bounds) {
   }
 }
 
-export function saveLauncherPosition(position, storage, bounds) {
+export function saveLauncherPosition(position, storage, bounds, key = LAUNCHER_POSITION_STORAGE_KEY) {
   const normalized = clampLauncherPosition(position, bounds)
   try {
-    storage?.setItem?.(LAUNCHER_POSITION_STORAGE_KEY, JSON.stringify(normalized))
+    storage?.setItem?.(key, JSON.stringify(normalized))
   } catch {
     // The launcher remains movable even when browser storage is unavailable.
   }

@@ -89,7 +89,7 @@ onBeforeUnmount(clearTimer)
 }
 .agent-timer:hover {
   border-color: #93c5fd;
-  box-shadow: 0 3px 10px -1px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 3px 10px -1px rgba(15, 23, 42, 0.08);
   transform: translateY(-1px);
 }
 .agent-timer.running svg { animation: agent-timer-spin 1.8s linear infinite; }

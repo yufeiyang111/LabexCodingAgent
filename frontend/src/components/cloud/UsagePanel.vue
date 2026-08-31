@@ -24,6 +24,24 @@
       </div>
     </div>
 
+    <div class="cache-telemetry-card prefix-telemetry-card" :data-prefix-state="prefixView.state">
+      <div class="cache-heading">
+        <div class="cache-title-wrap">
+          <span class="cache-title">请求前缀稳定性</span>
+          <span class="cache-badge">{{ prefixView.label }}</span>
+          <span v-if="prefixView.showRate" class="cache-rate-tag prefix-rate-tag">
+            稳定率 {{ prefixView.stabilityRate.toFixed(1) }}%
+          </span>
+        </div>
+      </div>
+      <p class="cache-desc">{{ prefixView.detail }}</p>
+      <div class="cache-chips-row">
+        <span class="cache-chip">可比较调用: <strong>{{ prefixView.reportedCalls }}</strong></span>
+        <span class="cache-chip">稳定: <strong>{{ prefixView.stableCalls }}</strong></span>
+        <span class="cache-chip">重置: <strong>{{ prefixView.resetCalls }}</strong></span>
+      </div>
+    </div>
+
     <!-- Prompt 缓存统计遥测卡片 -->
     <div class="cache-telemetry-card" :data-cache-status="cacheView.status">
       <div class="cache-heading">
@@ -118,6 +136,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import UsageHeatmap from './UsageHeatmap.vue'
 import { resolveCacheTelemetryScope, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
+import { resolvePrefixStabilityView } from '@/composables/prefixStabilityStatus'
 
 const props = defineProps({
   tokenUsage: {
@@ -208,6 +227,14 @@ const cacheView = computed(() => {
     return resolveCacheTelemetryView({ cacheStatus: 'not_reported', cachedTokens: 0, cacheWriteTokens: 0, promptTokens: 0 })
   }
   return resolveCacheTelemetryView(scope, props.tokenUsage)
+})
+
+const prefixView = computed(() => {
+  const scope = selectedCacheScope.value
+  if (selectedModel.value && !scope) {
+    return resolvePrefixStabilityView({ prefixState: 'not_reported' }, null)
+  }
+  return resolvePrefixStabilityView(scope, selectedModel.value ? null : props.tokenUsage)
 })
 
 const hasDaysData = computed(() => {
@@ -604,5 +631,11 @@ onBeforeUnmount(() => {
 .session-io {
   font-size: 10.5px;
   color: #a1a1aa;
+}
+
+.prefix-rate-tag {
+  color: #047857;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
 }
 </style>

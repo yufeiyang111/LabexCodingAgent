@@ -44,13 +44,19 @@ export function useContextManagement(options) {
   } = options
 
   function timelineMessage() {
-    const existing = [...messages.value].reverse().find(message => message.role === 'assistant')
-    if (existing) return existing
+    const list = messages.value || []
+    const last = list[list.length - 1]
+    if (last && last.role === 'assistant' && !last.content
+        && (!last.toolCalls || last.toolCalls.length === 0)
+        && (!last.thinkingBlocks || last.thinkingBlocks.length === 0)
+        && (!last.contextManagementEvents || last.contextManagementEvents.length === 0)) {
+      return last
+    }
     const message = {
       role: 'assistant', content: '', thinking: '', _thinkingDisplay: '', thinkingBlocks: [],
       toolCalls: [], contextManagementEvents: [], isStreaming: false, _nextOrder: 0, timestamp: Date.now()
     }
-    messages.value.push(message)
+    list.push(message)
     return message
   }
 

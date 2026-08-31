@@ -399,6 +399,14 @@ function splitTerminal() {
   createNewTerminal()
 }
 
+/** 资源管理器右键"在集成终端中打开"入口：先切换 cwd 再新建终端。 */
+async function openTerminalAtPath(cwdPath) {
+  if (typeof cwdPath === 'string' && cwdPath.trim()) {
+    currentCwd.value = cwdPath.trim().replace(/\\/g, '/').replace(/^\/+/, '')
+  }
+  await createNewTerminal()
+}
+
 async function closeTerminal(id) {
   const termData = getTerminal(id)
 
@@ -524,6 +532,7 @@ watch(() => props.isDark, isDark => {
 // 暴露方法给父组件
 defineExpose({
   createNewTerminal,
+  openTerminalAtPath,
   closeTerminal,
   clearTerminal,
   writeToTerminal: (id, data) => {

@@ -125,6 +125,12 @@ export const projectApi = {
   agentTask(projectId, taskId) {
     return request.get('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId))
   },
+  agentSubagents(projectId, taskId) {
+    return request.get('/student/projects/' + projectId + '/agent/tasks/' + encodeURIComponent(taskId) + '/subagents')
+  },
+  agentSubagent(projectId, subagentId, params = {}) {
+    return request.get('/student/projects/' + projectId + '/agent/subagents/' + encodeURIComponent(subagentId), { params })
+  },
   agentActiveTask(projectId, conversationId) {
     return request.get('/student/projects/' + projectId + '/agent/conversations/' + encodeURIComponent(conversationId) + '/active-task')
   },
@@ -231,11 +237,91 @@ export const projectApi = {
   createItem(projectId, parentPath, name, type) {
     return request.post('/student/projects/' + projectId + '/files/item', { parentPath, name, type })
   },
-  deleteItem(projectId, path) {
-    return request.delete('/student/projects/' + projectId + '/files/item', { params: { path } })
+  deleteItem(projectId, path, config = {}) {
+    return request.delete('/student/projects/' + projectId + '/files/item', { params: { path }, ...config })
+  },
+  copyItem(projectId, sourcePath, targetParentPath, decisions) {
+    return request.post('/student/projects/' + projectId + '/files/copy', {
+      sourcePath,
+      targetParentPath,
+      decisions: decisions || null
+    })
+  },
+  moveItem(projectId, sourcePath, targetParentPath, decisions) {
+    return request.put('/student/projects/' + projectId + '/files/item/move', {
+      sourcePath,
+      targetParentPath,
+      decisions: decisions || null
+    })
+  },
+  uploadFiles(projectId, targetDir, files, options = {}) {
+    const formData = new FormData()
+    files.forEach(file => formData.append('files', file))
+    if (targetDir) formData.append('targetDir', targetDir)
+    if (options.relativePaths && options.relativePaths.length) {
+      formData.append('relativePathsJson', JSON.stringify(options.relativePaths))
+    }
+    if (options.decisions && Object.keys(options.decisions).length) {
+      formData.append('decisionsJson', JSON.stringify(options.decisions))
+    }
+    return request.post('/student/projects/' + projectId + '/files/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0
+    })
+  },
+  searchFiles(projectId, keyword, options = {}) {
+    const params = { q: keyword }
+    if (options.dir) params.dir = options.dir
+    if (options.regex) params.regex = true
+    if (options.caseSensitive) params.caseSensitive = true
+    if (options.include) params.include = options.include
+    return request.get('/student/projects/' + projectId + '/files/search', {
+      params,
+      silent: Boolean(options.silent)
+    })
+  },
+  fileImage(projectId, path) {
+    return request.get('/student/projects/' + projectId + '/files/image', {
+      params: { path },
+      responseType: 'blob'
+    })
+  },
+  downloadFile(projectId, path) {
+    return request.get('/student/projects/' + projectId + '/files/download', {
+      params: { path },
+      responseType: 'blob',
+      timeout: 0
+    })
+  },
+  fileHistory(projectId, path, page = 1, pageSize = 50) {
+    return request.get('/student/projects/' + projectId + '/agent/files/history', {
+      params: { path, page, pageSize }
+    })
+  },
+  fileHistoryDiff(projectId, changeId) {
+    return request.get('/student/projects/' + projectId + '/agent/files/history/' + encodeURIComponent(changeId) + '/diff')
   },
   exportProject(projectId) {
     return request.get('/student/projects/' + projectId + '/export', { responseType: 'blob', timeout: 0 })
+  },
+  createExportJob(projectId, includeAll) {
+    return request.post('/student/projects/' + projectId + '/export/jobs', { includeAll: Boolean(includeAll) })
+  },
+  getExportJob(projectId, jobId) {
+    return request.get('/student/projects/' + projectId + '/export/jobs/' + encodeURIComponent(jobId), {
+      silent: true
+    })
+  },
+  cancelExportJob(projectId, jobId) {
+    return request.delete('/student/projects/' + projectId + '/export/jobs/' + encodeURIComponent(jobId), {
+      silent: true
+    })
+  },
+  downloadExportJob(projectId, jobId) {
+    return request.get('/student/projects/' + projectId + '/export/jobs/' + encodeURIComponent(jobId) + '/download', {
+      responseType: 'blob',
+      timeout: 0
+    })
   },
   renameProject(projectId, name) {
     return request.put('/student/projects/' + projectId + '/rename', { name })

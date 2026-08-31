@@ -67,6 +67,13 @@
         </button>
       </slot>
 
+      <button class="topbar-btn" @click="emit('open-tutorials')" title="使用教程">
+        <span class="icon">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        </span>
+        <span>教程</span>
+      </button>
+
       <button class="topbar-btn" @click="emit('export-project')" title="导出项目压缩包">
         <span class="icon">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -133,6 +140,7 @@ const emit = defineEmits([
   'toggle-preview',
   'toggle-ai-panel',
   'open-theme-settings',
+  'open-tutorials',
   'export-project',
   'save-file',
 ])

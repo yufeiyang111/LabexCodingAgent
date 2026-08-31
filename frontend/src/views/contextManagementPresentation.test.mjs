@@ -3,8 +3,10 @@ import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 
 const workspaceSource = await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 'utf8')
+const markdownRendererSource = await readFile(new URL('../utils/agentMarkdownRenderer.js', import.meta.url), 'utf8')
 const source = [
   workspaceSource,
+  markdownRendererSource,
   await readFile(new URL('../styles/cloud-workspace.scoped.scss', import.meta.url), 'utf8'),
   await readFile(new URL('../styles/cloud-workspace.scss', import.meta.url), 'utf8')
 ].join('\n')

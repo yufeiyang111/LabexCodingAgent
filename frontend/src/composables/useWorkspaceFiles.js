@@ -313,7 +313,7 @@ export function useWorkspaceFiles(options) {
       await confirmAction(`确定要删除 "${itemName}" 吗？删除后无法恢复。`, '删除确认', {
         confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning'
       })
-      await api.deleteItem(projectId.value, path)
+      await api.deleteItem(projectId.value, path, { silent: true })
       const activeWasDeleted = activePath.value === path || activePath.value.startsWith(path + '/')
       openFiles.value = openFiles.value.filter(file => file.path !== path && !file.path.startsWith(path + '/'))
       if (activeWasDeleted) {

@@ -13,7 +13,18 @@
 
 <script setup>
 import { computed } from 'vue'
-import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
+import { loader, VueMonacoEditor } from '@guolao/vue-monaco-editor'
+import * as monaco from 'monaco-editor'
+
+loader.config({ monaco })
+
+if (typeof window !== 'undefined' && !window.MonacoEnvironment) {
+  window.MonacoEnvironment = {
+    getWorker(_, label) {
+      return null
+    }
+  }
+}
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -45,7 +56,7 @@ function handleMount(editor) {
 <style scoped>
 .monaco-wrapper {
   width: 100%;
-  border: 0;
+  position: relative;
   overflow: hidden;
 }
 </style>

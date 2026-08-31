@@ -16,6 +16,11 @@ export function projectToolResultStatus(success, result) {
   const verificationStatus = postEditVerificationStatus(result)
   if (success === false || verificationStatus === 'FAIL') return { status: 'error', verificationStatus }
   if (verificationStatus === 'UNAVAILABLE') return { status: 'warning', verificationStatus }
+  const taskState = typeof result === 'string'
+    ? result.match(/<task\b[^>]*\bstate=["'](running|error|completed)["']/i)?.[1]?.toLowerCase()
+    : ''
+  if (taskState === 'running') return { status: 'running', verificationStatus }
+  if (taskState === 'error') return { status: 'error', verificationStatus }
   return { status: 'completed', verificationStatus }
 }
 

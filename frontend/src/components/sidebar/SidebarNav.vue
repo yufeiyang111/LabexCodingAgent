@@ -22,6 +22,17 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       <span>会话</span>
     </button>
+    <button
+      type="button"
+      class="sn-btn"
+      :class="{ active: view === 'search' }"
+      :aria-selected="view === 'search'"
+      role="tab"
+      @click="$emit('change', 'search')"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg>
+      <span>搜索</span>
+    </button>
   </nav>
 </template>
 

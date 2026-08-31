@@ -71,7 +71,7 @@
             <button type="button" @click="selectProject(selectedProject)">重试</button>
           </div>
           <TransitionGroup name="ftn-list" tag="div">
-            <FileTreeNode v-for="child in fileTree" :key="child.path" :node="child" :selected-path="selectedPath" :load-children="loadTreeChildren" @select="onFileSelect"/>
+            <FileTreeNode v-for="child in fileTree" :key="child.path" :node="child" :selected-path="selectedPath" :load-children="loadTreeChildren" :context-menu-enabled="false" @select="onFileSelect"/>
           </TransitionGroup>
           <button v-if="treeNextOffset !== null" class="cs-tree-load-more" type="button" @click="loadMoreTree">加载更多文件</button>
           <div v-if="!treeLoading && !treeError && fileTree.length === 0" class="cs-empty" style="padding:24px">
@@ -117,16 +117,27 @@
         </div>
       </Transition>
     </Teleport>
+    <ExportProgressDialog
+      :visible="projectExport.phase.value !== 'idle'"
+      :phase="projectExport.phase.value"
+      :progress-percent="projectExport.progressPercent.value"
+      :packed-bytes="projectExport.packedBytes.value"
+      v-model:include-all="exportIncludeAll"
+      @start="projectExport.confirmStart"
+      @cancel="projectExport.cancel"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi } from '@/api'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
 import UserPanel from '@/components/cloud/UserPanel.vue'
+import ExportProgressDialog from '@/components/cloud/ExportProgressDialog.vue'
+import { useProjectExport } from '@/composables/useProjectExport'
 
 const route = useRoute()
 const router = useRouter()
@@ -147,6 +158,13 @@ const selectedTemplate = ref(null)
 const showRename = ref(false)
 const renameValue = ref('')
 const renamingProject = ref(null)
+
+// 项目异步导出（列表页入口）：确认 → 后台打包 → 轮询进度 → 自动保存
+const projectExport = useProjectExport({ projectId: ref(null), projectName: ref(''), api: projectApi, notify: ElMessage })
+const exportIncludeAll = computed({
+  get: () => projectExport.includeAll.value,
+  set: value => { projectExport.includeAll.value = value }
+})
 
 const templates = [
   { key: 'vue', name: 'Vue', icon: 'V' },
@@ -326,22 +344,10 @@ async function confirmRename() {
   }
 }
 
-async function exportProject(proj) {
-  try {
-    const r = await projectApi.exportProject(proj.projectId)
-    const blob = r instanceof Blob ? r : new Blob([r], { type: 'application/zip' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = (proj.projectName || 'project') + '.zip'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    window.URL.revokeObjectURL(url)
-    ElMessage.success('导出成功')
-  } catch (e) {
-    ElMessage.error('导出失败: ' + (e?.response?.data?.message || e?.message || '未知错误'))
-  }
+/** 项目列表页导出入口：复用异步导出编排（确认 → 后台打包 → 轮询进度 → 自动保存）。 */
+function exportProject(proj) {
+  if (!proj?.projectId) return
+  projectExport.begin({ projectId: proj.projectId, projectName: proj.projectName || '' })
 }
 
 onMounted(async () => {

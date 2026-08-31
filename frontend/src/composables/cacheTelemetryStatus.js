@@ -1,3 +1,5 @@
+import { applyPrefixTelemetryEvent, createPrefixStabilityState } from './prefixStabilityStatus.js'
+
 const CACHE_STATUSES = new Set(['disabled', 'not_reported', 'miss', 'write_only', 'hit'])
 const REPORTED_CACHE_STATUSES = new Set(['miss', 'write_only', 'hit'])
 
@@ -22,6 +24,11 @@ const STATUS_META = {
     label: '已命中',
     detail: '本次或当前会话已经读取了缓存 token。'
   }
+}
+
+function usageIdentity(data) {
+  if (data.taskId == null || data.executionEpoch == null || data.iteration == null) return null
+  return `task:${data.taskId}:epoch:${data.executionEpoch}:iteration:${data.iteration}`
 }
 
 function finiteNumber(value, fallback = 0) {
@@ -50,12 +57,25 @@ export function createTokenUsageState() {
     cacheTelemetryCallCount: 0,
     cacheReportedPromptTokens: 0,
     cacheHitRate: null,
-    estimated: false
+    estimated: false,
+    taskId: null,
+    executionEpoch: null,
+    seenUsageEventKeys: [],
+    ...createPrefixStabilityState()
   }
 }
 
-export function applyTokenUsageEvent(target, data = {}) {
+export function applyTokenUsageEvent(target, data = {}, eventKey = null) {
   if (!target) return target
+  const identities = [eventKey, data.usageEventKey, usageIdentity(data)].filter(Boolean)
+  if (identities.length > 0) {
+    target.seenUsageEventKeys ??= []
+    if (identities.some(identity => target.seenUsageEventKeys.includes(identity))) return target
+    target.seenUsageEventKeys.push(...identities)
+    if (target.seenUsageEventKeys.length > 256) target.seenUsageEventKeys.splice(0, target.seenUsageEventKeys.length - 256)
+  }
+  if (data.taskId != null) target.taskId = data.taskId
+  if (data.executionEpoch != null) target.executionEpoch = data.executionEpoch
   const promptTokens = finiteNumber(data.promptTokens)
   const cachedTokens = finiteNumber(data.cachedTokens)
   const cacheWriteTokens = finiteNumber(data.cacheWriteTokens)
@@ -97,6 +117,7 @@ export function applyTokenUsageEvent(target, data = {}) {
     target.cacheHitRate = null
   }
   target.estimated = data.estimated === true
+  applyPrefixTelemetryEvent(target, data)
   return target
 }
 
@@ -108,7 +129,8 @@ export function resolveCacheTelemetryScope(stats = null, model = '') {
 }
 
 export function resolveCacheTelemetryView(stats = null, live = null) {
-  const source = stats?.cacheStatus ? stats : (live || {})
+  const useStats = hasCacheStats(stats)
+  const source = useStats ? stats : (live || {})
   const cached = finiteNumber(source.cachedTokens ?? source.totalCachedTokens)
   const write = finiteNumber(source.cacheWriteTokens ?? source.totalCacheWriteTokens)
   const prompt = finiteNumber(source.promptTokens ?? source.totalPromptTokens)
@@ -137,6 +159,16 @@ export function resolveCacheTelemetryView(stats = null, live = null) {
       cacheWriteTokens: write,
       nonCachedInputTokens: Math.max(0, prompt - cached)
     },
-    sessionScoped: true
+    sessionScoped: !useStats
   }
+}
+
+function hasCacheStats(value) {
+  if (value == null) return false
+  const status = normalizeStatus(value.cacheStatus)
+  if (status === 'disabled' || REPORTED_CACHE_STATUSES.has(status)) return true
+  const calls = finiteNumber(value.cacheTelemetryCallCount)
+  const prompt = finiteNumber(value.promptTokens ?? value.totalPromptTokens)
+  const total = finiteNumber(value.totalTokens)
+  return calls > 0 || prompt > 0 || total > 0
 }

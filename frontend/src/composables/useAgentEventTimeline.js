@@ -7,6 +7,7 @@ import { isRecoverableAgentRunState, normalizeAgentRunState } from './agentRunSt
 import { projectVisibleAgentError } from './agentErrorProjection.js'
 import { modelStepStatusForEvent, upsertModelStepState } from './agentRunPartState.js'
 import { mergeFinalizationBlockedEvidence } from './completionEvidenceProjection.js'
+import { applySubagentProgress, applySubagentSummary } from './agentHistoryReducer.js'
 
 function toolResultStatus(success, result) {
   if (success === false) return 'error'
@@ -125,6 +126,14 @@ export function useAgentEventTimeline(options) {
         upsertDurableToolCallState(assistantMsg, data)
         scheduleAgentRender()
         break
+      case 'SUBAGENT_PROGRESS':
+        applySubagentProgress(assistantMsg, data)
+        scheduleAgentRender()
+        break
+      case 'SUBAGENT_SUMMARY':
+        applySubagentSummary(assistantMsg, data)
+        scheduleAgentRender()
+        break
       case 'MODEL_STEP_STARTED':
       case 'MODEL_STEP_COMPLETED':
       case 'MODEL_STEP_FAILED':
@@ -160,12 +169,18 @@ export function useAgentEventTimeline(options) {
             ? assistantMsg.toolCalls.find(call => call.toolCallId === data.toolCallId)
             : null) || assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1]
           observed.result = data.result || data.content
+          if (typeof observed.result === 'string') {
+            const subagentId = observed.result.match(/<task\b[^>]*\bid=["']([^"']+)["']/i)?.[1]
+            if (subagentId) observed.subagentId = subagentId
+          }
           const preservesWaitingInteraction = data.success === false
             && (observed.questionRequest || observed.permissionRequest || observed.networkRequest)
           const resultProjection = projectToolResultStatus(data.success, observed.result)
+          const projectedStatus = resultProjection.status === 'running' && observed.subagentStatus === 'completed'
+            ? 'completed' : resultProjection.status
           observed.status = preservesWaitingInteraction
             ? (observed.permissionRequest || observed.networkRequest ? 'waiting_approval' : 'waiting_user')
-            : resultProjection.status
+            : projectedStatus
           observed.verificationStatus = resultProjection.verificationStatus
           observed.projection = { resultChars: data.resultChars || 0, modelProjectionChars: data.modelProjectionChars || 0,
             truncated: data.modelProjectionTruncated === true }
@@ -178,6 +193,7 @@ export function useAgentEventTimeline(options) {
           })
           if (data.diff) {
             observed.hasDiff = true
+            observed.diff = data.diff
             trackFileChange(data, observed)
           }
           if (data.pendingChangeId) changesRefreshKey.value++
@@ -458,7 +474,9 @@ export function useAgentEventTimeline(options) {
         scheduleAgentRender()
         break
       case 'TOKEN_USAGE': {
-        applyTokenUsageEvent(tokenUsage.value, data)
+        const previousUsageCallCount = tokenUsage.value.callCount
+        applyTokenUsageEvent(tokenUsage.value, data, event.eventId ?? null)
+        if (tokenUsage.value.callCount === previousUsageCallCount) break
         onTokenUsageProjected?.(data)
         const existingSession = sessionHistory.value.find(session => session.conversationId === currentAgentSession.value?.conversationId)
         if (existingSession) {

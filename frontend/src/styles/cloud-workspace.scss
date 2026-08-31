@@ -852,6 +852,39 @@ body.is-resizing-ai .ai-panel {
   transition: none !important;
 }
 
+/* ===== Sidebar drag: disable width transition so the panel follows the pointer 1:1 ===== */
+body.is-resizing-sidebar {
+  user-select: none !important;
+  cursor: col-resize !important;
+}
+body.is-resizing-sidebar .ws-sidebar {
+  transition: none !important;
+}
+
+/* ===== Workspace page: pure white background & flush panels (light theme only) ===== */
+/* 主题层 html[data-theme] .ws-shell { background: var(--theme-bg) } 始终生效，
+   必须用 !important 强制纯白与贴合，否则被主题变量覆盖回 #f7f8fb。 */
+html[data-theme='light']:has(body.ws-page-active),
+html[data-theme='light'] body.ws-page-active {
+  background: #ffffff !important;
+}
+body.ws-page-active .ws-shell {
+  background: #ffffff !important;
+}
+body.ws-page-active .ws-body > * {
+  margin: 0 !important;
+}
+body.ws-page-active .ws-body > .ws-sidebar,
+body.ws-page-active .ws-body > .ws-center,
+body.ws-page-active .ws-body > .ai-panel {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+html[data-theme='light'] body.ws-page-active .ws-body > .ws-sidebar,
+html[data-theme='light'] body.ws-page-active .ws-body > .ws-center {
+  background: #ffffff !important;
+}
+
 /* ===== Chat: Quick Action Chips ===== */
 .ai-chips {
   display: flex;

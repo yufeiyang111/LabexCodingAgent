@@ -6,6 +6,8 @@
 .ws-topbar-right { display: flex; align-items: center; gap: 8px; }
 .ws-unsaved { font-size: 11px; color: #f59e0b; background: #fef3c7; padding: 2px 8px; border-radius: 4px; }
 .ws-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+/* 面板贴合与纯白背景由全局样式按 body.ws-page-active 强制（见 cloud-workspace.scss），
+   此处不再重复声明，避免双处维护。 */
 .ws-center { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: #fff; position: relative; }
 
 /* ===== Left Activity Rail (图一复刻) ===== */

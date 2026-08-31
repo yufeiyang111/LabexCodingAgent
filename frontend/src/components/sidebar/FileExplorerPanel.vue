@@ -21,7 +21,7 @@
     </div>
 
     <Transition name="panel-collapse">
-      <div v-show="!isTreeCollapsed" class="ws-tree-container" v-loading="treeLoading" @scroll="$emit('scroll')">
+      <div v-show="!isTreeCollapsed" class="ws-tree-container" tabindex="0" v-loading="treeLoading" @scroll="$emit('scroll')" @keydown="onTreeKeydown">
         <div class="ws-tree">
           <div v-if="treeError" class="ws-tree-error" role="alert">
             <span>{{ treeError }}</span>
@@ -35,10 +35,12 @@
             :load-children="loadChildren"
             :show-actions="true"
             :refresh-key="refreshKey"
+            :has-clipboard="hasClipboard"
             @select="p => $emit('select', p)"
             @new-item="(p, t) => $emit('new-item', p, t)"
             @rename="(p, n) => $emit('rename', p, n)"
             @delete="p => $emit('delete', p)"
+            @menu-action="payload => $emit('menu-action', payload)"
           />
           <button v-if="treeNextOffset !== null" class="ws-tree-load-more" type="button" @click="$emit('load-more')">加载更多文件</button>
           <div v-if="!treeLoading && !treeError && fileTree.length === 0" class="ws-tree-empty">暂无文件</div>
@@ -80,8 +82,9 @@
 <script setup>
 import { ref } from 'vue'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
+import { fileNameOf } from '@/constants/workspaceFiles'
 
-defineProps({
+const props = defineProps({
   fileTree: { type: Array, default: () => [] },
   treeError: { type: String, default: '' },
   treeLoading: { type: Boolean, default: false },
@@ -91,7 +94,8 @@ defineProps({
   refreshKey: { type: [Number, String], default: 0 },
   showNewModal: { type: Boolean, default: false },
   newModalType: { type: String, default: 'file' },
-  showRenameModal: { type: Boolean, default: false }
+  showRenameModal: { type: Boolean, default: false },
+  hasClipboard: { type: Boolean, default: false }
 })
 
 const isTreeCollapsed = ref(false)
@@ -101,11 +105,14 @@ function toggleTreeCollapse() {
 
 const newItemName = defineModel('newItemName', { type: String, default: '' })
 const renameItemValue = defineModel('renameValue', { type: String, default: '' })
-defineEmits([
+
+/** F2 重命名 / Del 删除：仅当焦点在树容器内且当前有选中文件时生效。 */
+const emit = defineEmits([
   'select',
   'new-item',
   'rename',
   'delete',
+  'menu-action',
   'refresh',
   'load-more',
   'scroll',
@@ -116,6 +123,20 @@ defineEmits([
   'confirm-new',
   'confirm-rename'
 ])
+
+function onTreeKeydown(event) {
+  const target = event.target
+  if (target instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(target.tagName)) return
+  const active = props.activePath
+  if (!active) return
+  if (event.key === 'F2') {
+    event.preventDefault()
+    emit('rename', active, fileNameOf(active))
+  } else if (event.key === 'Delete') {
+    event.preventDefault()
+    emit('delete', active)
+  }
+}
 </script>
 
 <style scoped>

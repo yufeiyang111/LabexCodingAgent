@@ -78,20 +78,28 @@ export function resolveEffectiveChanges(sessionChangesList = [], messagesList = 
           const raw = args?.path || args?.file_path || args?.filename || args?.file || ''
           const file = normalizeWorkspacePath(raw)
           if (!file) continue
-          const rawResult = typeof tc.result === 'string' ? tc.result : (typeof tc.detail === 'string' ? tc.detail : (typeof tc.output === 'string' ? tc.output : ''))
-          let patch = rawResult || args?.patch || args?.diff || ''
+          // 1. Look for genuine diff/patch on the tool call or arguments
+          let patch = tc?.diff || tc?.patch || args?.patch || args?.diff || ''
+
+          // 2. Synthesize diff from tool args if available and no patch exists
+          const content = args?.content ?? args?.contents
+          if (!patch && toolName === 'write_file' && typeof content === 'string') {
+            const lines = content.split('\n')
+            patch = `@@ -0,0 +1,${lines.length} @@\n` + lines.map(l => `+${l}`).join('\n')
+          } else if (!patch && toolName === 'edit_file' && typeof args?.old_string === 'string' && typeof args?.new_string === 'string') {
+            const oldLines = args.old_string.split('\n').map(l => `-${l}`)
+            const newLines = args.new_string.split('\n').map(l => `+${l}`)
+            patch = `@@ -1,${oldLines.length} +1,${newLines.length} @@\n` + [...oldLines, ...newLines].join('\n')
+          }
+
+          // 3. Fallback: only if tc.result looks like an actual unified diff (starts with @@ or diff or ---)
+          if (!patch && typeof tc.result === 'string' && (tc.result.startsWith('@@') || tc.result.startsWith('diff --git') || tc.result.startsWith('--- '))) {
+            patch = tc.result
+          }
+
           let additions = 0
           let deletions = 0
-
-          const content = args?.content ?? args?.contents
-          if (toolName === 'write_file' && typeof content === 'string') {
-            const lines = content.split('\n')
-            additions = lines.length
-            deletions = 0
-            if (!patch) {
-              patch = `@@ -0,0 +1,${lines.length} @@\n` + lines.map(l => `+${l}`).join('\n')
-            }
-          } else if (patch) {
+          if (patch) {
             const stats = diffStatistics(patch)
             additions = stats.additions
             deletions = stats.deletions

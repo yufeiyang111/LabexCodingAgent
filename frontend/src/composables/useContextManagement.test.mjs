@@ -19,7 +19,8 @@ function harness(result = { success: true, taskId: 81, status: 'queued' }) {
     subscribeToTaskEvents: (task, message) => subscriptions.push({ task, message }),
     reduceContextManagementEvent: (type, data, message) => {
       events.push({ type, data })
-      message.contextManagementEvents ||= []
+      message.contextManagementEvents = message.contextManagementEvents || []
+      message.contextManagementEvents.push({ ...data, type })
     },
     notify: {
       success: message => notices.push(['success', message]),
@@ -53,6 +54,24 @@ test('manual compaction fails closed when enqueue response has no task id', asyn
   assert.equal(await target.state.compactConversation({ conversationId: 'conversation-a' }), false)
   assert.equal(target.subscriptions.length, 0)
   assert.deepEqual(target.events.map(event => event.type), ['COMPACTION_FAILED'])
+})
+
+test('manual compaction creates a new assistant message when existing assistant message has content', async () => {
+  const target = harness()
+  const previousAssistantMessage = {
+    role: 'assistant',
+    content: 'Completed previous task.',
+    toolCalls: [{ name: 'read_file' }],
+    contextManagementEvents: []
+  }
+  target.messages.value = [previousAssistantMessage]
+
+  assert.equal(await target.state.compactConversation({ conversationId: 'conversation-a' }), true)
+  assert.equal(target.messages.value.length, 2)
+  assert.equal(target.messages.value[0], previousAssistantMessage)
+  assert.equal(target.messages.value[0].contextManagementEvents.length, 0)
+  assert.equal(target.messages.value[1].role, 'assistant')
+  assert.equal(target.messages.value[1].contextManagementEvents.length, 1)
 })
 
 test('context strategy labels remain explicit', () => {

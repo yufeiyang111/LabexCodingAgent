@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const source = await readFile(new URL('./CloudWorkspace.vue', import.meta.url), 'utf8')
+const markdownRendererSource = await readFile(new URL('../utils/agentMarkdownRenderer.js', import.meta.url), 'utf8')
+const timelineMessageSource = await readFile(new URL('../composables/agentMessageTimeline.js', import.meta.url), 'utf8')
 const runtimeSource = await readFile(new URL('../composables/useAgentTaskRuntime.js', import.meta.url), 'utf8')
 const timelineSource = await readFile(new URL('../composables/useAgentEventTimeline.js', import.meta.url), 'utf8')
 const completionEvidenceSource = await readFile(new URL('../components/cloud/CompletionEvidenceCard.vue', import.meta.url), 'utf8')
@@ -51,9 +53,9 @@ test('CloudWorkspace starts secondary initial requests without blocking the file
 })
 
 test('CloudWorkspace lazy-loads heavy editor, terminal, and chart components', () => {
-  assert.match(source, /defineAsyncComponent\(\(\) => import\('@\/components\/MonacoEditor\.vue'\)\)/)
-  assert.match(source, /defineAsyncComponent\(\(\) => import\('@\/components\/terminal\/TerminalPanel\.vue'\)\)/)
-  assert.match(source, /defineAsyncComponent\(\(\) => import\('@\/components\/cloud\/TokenChart\.vue'\)\)/)
+  assert.match(source, /defineAsyncComponent\(.*import\('@\/components\/MonacoEditor\.vue'\)/)
+  assert.match(source, /defineAsyncComponent\(.*import\('@\/components\/terminal\/TerminalPanel\.vue'\)/)
+  assert.match(source, /defineAsyncComponent\(.*import\('@\/components\/cloud\/TokenChart\.vue'\)/)
 })
 
 test('CloudWorkspace renders provider failures instead of leaving a loading skeleton', () => {
@@ -73,10 +75,14 @@ test('CloudWorkspace renders live thinking and answer deltas immediately', () =>
 test('CloudWorkspace applies the internal-reasoning boundary again at render time', () => {
   assert.match(source, /v-html="renderThinkingMarkdown\(item\.data\.content\)"/)
   assert.match(source, /v-html="renderMessageMarkdown\(msg\)"/)
-  assert.match(source, /function getCachedMarkdown\(prefix, rawText\) \{[\s\S]*prefix === 'thinking'[\s\S]*stripInternalReasoningTags\(rawText\)/)
-  assert.match(source, /function getCachedMarkdown\(prefix, rawText\) \{[\s\S]*prefix === 'message_assistant'[\s\S]*stripInternalReasoningBlocks\(rawText\)/)
-  assert.match(source, /function renderThinkingMarkdown\(text\) \{[\s\S]*getCachedMarkdown\('thinking', text\)/)
-  assert.match(source, /function renderMessageMarkdown\(message\) \{[\s\S]*message\.role === 'assistant'[\s\S]*getCachedMarkdown\(isAssistant \? 'message_assistant' : 'message_user', message\.content\)/)
+  // 渲染管线已抽取至 utils/agentMarkdownRenderer.js（主视图与子代理标签共用同一份）。
+  assert.match(markdownRendererSource, /function getCachedMarkdown\(prefix, rawText\) \{[\s\S]*prefix === 'thinking'[\s\S]*stripInternalReasoningTags\(rawText\)/)
+  assert.match(markdownRendererSource, /function getCachedMarkdown\(prefix, rawText\) \{[\s\S]*prefix === 'message_assistant'[\s\S]*stripInternalReasoningBlocks\(rawText\)/)
+  assert.match(markdownRendererSource, /export function renderThinkingMarkdown\(text\) \{[\s\S]*getCachedMarkdown\('thinking', text\)/)
+  assert.match(markdownRendererSource, /export function renderMessageMarkdown\(message\) \{[\s\S]*message\.role === 'assistant'[\s\S]*getCachedMarkdown\(isAssistant \? 'message_assistant' : 'message_user', message\.content\)/)
+  // 合并时间线解析器同样共享（agentMessageTimeline）。
+  assert.match(timelineMessageSource, /export function createMergedItemsResolver\(showThinkingProcessRef\)/)
+  assert.match(source, /createMergedItemsResolver\(showThinkingProcess\)/)
 })
 
 
@@ -162,7 +168,7 @@ test('CloudWorkspace preserves durable task recovery when the initial direct str
 test('CloudWorkspace projects durable cache telemetry instead of treating absent data as a miss', () => {
   assert.match(source, /import \{ applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView \} from '@\/composables\/cacheTelemetryStatus'/)
   assert.match(source, /const selectedCacheTelemetryStats = computed\(\(\) => resolveCacheTelemetryScope\([\s\S]*allTokenStats\.value,[\s\S]*selectedCacheTelemetryModel\.value/)
-  assert.match(timelineSource, /case 'TOKEN_USAGE': \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, data\)/)
+  assert.match(timelineSource, /case 'TOKEN_USAGE': \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, data, event\.eventId/)
   assert.match(source, /onTokenUsage: usage => \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, usage\)/)
   assert.match(usagePanelSource, /class="cache-telemetry-card"[\s\S]*cacheView\.label[\s\S]*cacheView\.detail/)
   assert.match(source, /activeAiTab\.value = key[\s\S]*if \(key === 'usage'\) await initUsageCharts\(\)/)
@@ -188,4 +194,10 @@ test('CloudWorkspace renders a durable finalization blocker instead of silently 
 
 test('CloudWorkspace labels a visible native final with unsatisfied evidence without calling it a rejected reply', () => {
   assert.match(completionEvidenceSource, /finalResponseVisible[\s\S]*服务器验证未满足（已展示模型答复）/)
+})
+
+test('image messages never send displayMessage so the slash-command contract stays intact', () => {
+  // AgentCommandService 只接受以 / 开头的 displayMessage；普通消息必须保持 null。
+  assert.match(source, /displayMessage 仅允许 slash command 使用/)
+  assert.doesNotMatch(source, /\[附图：/)
 })

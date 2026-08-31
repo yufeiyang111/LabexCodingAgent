@@ -16,6 +16,7 @@
       @toggle-preview="webPreviewVisible = !webPreviewVisible"
       @toggle-ai-panel="toggleAiPanelLayout"
       @open-theme-settings="themeStore.openSettings()"
+      @open-tutorials="openTutorials"
       @export-project="exportProject"
       @save-file="saveFile"
     >
@@ -79,10 +80,12 @@
           v-model:new-item-name="newItemName"
           :show-rename-modal="showRenameModal"
           v-model:rename-value="renameItemValue"
+          :has-clipboard="hasFileClipboard"
           @select="handleSelectTreeFile"
           @new-item="handleNewItem"
           @rename="handleRename"
           @delete="handleDelete"
+          @menu-action="handleTreeMenuAction"
           @refresh="loadRoot"
           @load-more="loadMoreRoot"
           @scroll="handleTreeScroll"
@@ -103,6 +106,12 @@
           @compact="compactConversation"
           @delete="deleteConversation"
           @create="createNewSession"
+        />
+        <SearchPanel
+          v-show="sidebarView === 'search'"
+          :project-id="projectId"
+          :dir="workspaceSearchDir"
+          @open="handleOpenSearchHit"
         />
       </aside>
 
@@ -126,7 +135,7 @@
           </div>
         </div>
 
-        <!-- 标签页条 (始终在顶部，展示所有打开的文件标签 + LabexAgent 标签，全部支持拖拽自由排序) -->
+        <!-- 标签页条 (始终在顶部，展示所有打开的文件标签 + LabexAgent 标签 + 子代理会话标签，全部支持拖拽自由排序) -->
         <div v-if="allEditorTabs.length > 0" class="ws-editor-tabs">
           <div
             v-for="(t, tIdx) in allEditorTabs"
@@ -134,14 +143,16 @@
             class="ws-tab"
             :class="{
               'ws-tab-agent': t.type === 'agent',
-              active: t.type === 'agent' ? isAgentTabActive : (!isAgentTabActive && t.fileIndex === activeTabIndex)
+              active: t.type === 'agent' ? isAgentTabActive
+                : t.type === 'subagent' ? activeSubagentTabId === t.id
+                : (!isAgentTabActive && activeSubagentTabId === null && t.fileIndex === activeTabIndex)
             }"
             draggable="true"
             @dragstart="onWorkspaceTabDragStart($event, tIdx)"
             @dragover.prevent
             @drop.prevent="onWorkspaceTabDrop($event, tIdx)"
-            @click="t.type === 'agent' ? onSelectAgentTab() : onSelectFileTab(t.fileIndex)"
-            @mouseup="e => { if (e.button === 1) { e.preventDefault(); t.type === 'agent' ? closeAgentTab() : closeFile(t.fileIndex) } }"
+            @click="t.type === 'agent' ? onSelectAgentTab() : t.type === 'subagent' ? onSelectSubagentTab(t.id) : onSelectFileTab(t.fileIndex)"
+            @mouseup="e => { if (e.button === 1) { e.preventDefault(); t.type === 'agent' ? closeAgentTab() : t.type === 'subagent' ? closeSubagentTab(t.id) : closeFile(t.fileIndex) } }"
           >
             <template v-if="t.type === 'agent'">
               <span class="agent-tab-sparkle">
@@ -149,6 +160,15 @@
               </span>
               <span class="ws-tab-name">LabexAgent</span>
               <button class="ws-tab-close" @click.stop="closeAgentTab" title="还原至侧边栏">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </template>
+            <template v-else-if="t.type === 'subagent'">
+              <span class="agent-tab-sparkle" style="opacity:.85">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+              </span>
+              <span class="ws-tab-name">{{ t.name }}</span>
+              <button class="ws-tab-close" @click.stop="closeSubagentTab(t.id)" title="关闭子代理会话">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </template>
@@ -167,8 +187,7 @@
         <main class="ws-editor">
           <!-- 当处于 LabexAgent 标签时显示放大的 AI 视图 -->
           <CenterAiWorkspace
-            v-if="isAgentInCenter && isAgentTabActive"
-            v-model:active-tab="activeAiTab"
+            v-if="isAgentInCenter && isAgentTabActive"            v-model:active-tab="activeAiTab"
             :project-id="projectId"
             :changes-refresh-key="changesRefreshKey"
             :session-changes="effectiveChanges"
@@ -208,7 +227,7 @@
             @clear-selected-code="selectedCode = ''"
             @preview-image="openImagePreview"
             @remove-image="removePendingImage"
-            @image-files="handleDroppedImageFiles"
+            @image-files="addAgentImageFiles"
             @open-context-dialog="openContextUsageDialog"
             @change-model="handleSelectModelByName"
             @change-thinking="handleChangeThinkingLevel"
@@ -228,6 +247,18 @@
             @toggle-terminal="toggleTerminalPanel"
             @open-file="handleOpenFile"
             @open-preview="handleOpenPreview"
+            @open-subagent="openSubagentTab"
+          />
+
+          <!-- 子代理独立会话标签：自持运行时，与主会话完全隔离 -->
+          <SubagentSessionTab
+            v-else-if="activeSubagentTab"
+            :key="activeSubagentTab.id"
+            :project-id="projectId"
+            :subagent-id="activeSubagentTab.subagentId"
+            :name="activeSubagentTab.name"
+            :is-dark="aiDarkTheme"
+            @open-file="handleOpenFile"
           />
 
           <!-- 当处于文件编辑标签时显示 Monaco 编辑器或中心 Diff 变更对比视图 (如图所示) -->
@@ -251,6 +282,7 @@
               :theme="editorTheme"
               :read-only="activeFileReadOnly"
               height="100%"
+              @mount="onEditorMount"
             />
           </div>
 
@@ -407,7 +439,7 @@
                   </div>
                   <div class="ai-msg-body">
                     <!-- Merged Thinking + Tool Calls -->
-                    <template v-if="(showThinkingProcess && msg.thinkingBlocks && msg.thinkingBlocks.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0)">
+                    <template v-if="(showThinkingProcess && msg.thinkingBlocks && msg.thinkingBlocks.length > 0) || (msg.toolCalls && msg.toolCalls.length > 0) || (msg.contextManagementEvents && msg.contextManagementEvents.length > 0)">
                       <template v-for="item in getMergedItems(msg)" :key="item._order">
                         <div
                           v-if="item.type === 'context'"
@@ -457,6 +489,7 @@
                           @question="handleQuestionReply"
                           @open-file="handleOpenFile"
                           @open-preview="handleOpenPreview"
+                          @open-subagent="openSubagentTab"
                         />
                       </template>
                     </template>
@@ -626,7 +659,7 @@
                 @clear-selected-code="selectedCode = ''"
                 @preview-image="openImagePreview"
                 @remove-image="removePendingImage"
-                @image-files="handleDroppedImageFiles"
+                @image-files="addAgentImageFiles"
                 @open-context-dialog="openContextUsageDialog"
                 @change-model="handleSelectModelByName"
                 @change-thinking="handleChangeThinkingLevel"
@@ -853,6 +886,35 @@
 
     <ModelConfigDialog :state="modelConfigDialogState" :actions="modelConfigDialogActions" />
 
+    <!-- 工作区文件增强操作：上传入口 / 冲突裁决 / 文件时间线 -->
+    <input
+      :ref="setUploadInputRef"
+      type="file"
+      multiple
+      style="display: none"
+      @change="fileUploads.onInputChange"
+    />
+    <FileConflictDialog
+      :visible="fileConflictState.visible"
+      :conflicts="fileConflictState.conflicts"
+      :kind="fileConflictState.kind"
+      @complete="resolveFileConflicts"
+    />
+    <FileHistoryPanel
+      :visible="historyPanelVisible"
+      :project-id="projectId"
+      :path="historyPanelPath"
+      @close="historyPanelVisible = false"
+    />
+    <ExportProgressDialog
+      :visible="projectExport.phase.value !== 'idle'"
+      :phase="projectExport.phase.value"
+      :progress-percent="projectExport.progressPercent.value"
+      :packed-bytes="projectExport.packedBytes.value"
+      v-model:include-all="exportIncludeAll"
+      @start="projectExport.confirmStart"
+      @cancel="projectExport.cancel"
+    />
 
   </div>
 </template>
@@ -863,10 +925,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, modelConfigApi, agentExtensionApi } from '@/api'
 import { DEFAULT_MAX_TOKENS, modelConfigPresets } from '@/constants/modelPresets'
-import { DEFAULT_AGENT_IMAGE_INPUT_POLICY, imageAcceptValue } from '@/constants/agentImageInput'
+import { useAgentImageAttachments } from '@/composables/useAgentImageAttachments'
 import WorkspaceTopBar from '@/components/cloud/layout/WorkspaceTopBar.vue'
 import DynamicResizer from '@/components/cloud/layout/DynamicResizer.vue'
-import ImageLightboxModal from '@/components/cloud/layout/ImageLightboxModal.vue'
 import ComposerDock from '@/components/cloud/composer/ComposerDock.vue'
 import ModeSlider from '@/components/cloud/composer/ModeSlider.vue'
 import ModelSelectorPopover from '@/components/cloud/composer/ModelSelectorPopover.vue'
@@ -877,8 +938,6 @@ import AgentImageAttachments from '@/components/cloud/AgentImageAttachments.vue'
 import ContextLimitBlockerCard from '@/components/cloud/ContextLimitBlockerCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import * as echarts from 'echarts'
-import { marked } from 'marked'
-import hljs from 'highlight.js/lib/common'
 import { useAgentStream } from '@/composables/useAgentStream'
 import { useAgentTaskRuntime } from '@/composables/useAgentTaskRuntime'
 import { useAgentEventTimeline } from '@/composables/useAgentEventTimeline'
@@ -888,9 +947,16 @@ import { loadWorkspaceResources } from '@/composables/workspaceInitialization'
 import { useConversationState } from '@/composables/useConversationState'
 import { normalizeCommandCatalog, resolveSlashCommand } from '@/composables/slashCommandRuntime'
 import { createConversationSelectionGuard } from '@/composables/conversationSelectionGuard'
+import { createMergedItemsResolver, startThinkingReveal, flushThinkingDisplay } from '@/composables/agentMessageTimeline'
+import { renderThinkingMarkdown, renderMessageMarkdown } from '@/utils/agentMarkdownRenderer'
 import { useAgentInteraction } from '@/composables/useAgentInteraction'
 import { useAgentExtensions } from '@/composables/useAgentExtensions'
 import { useWorkspaceFiles } from '@/composables/useWorkspaceFiles'
+import { useFileConflictResolver } from '@/composables/useFileConflictResolver'
+import { useFileClipboard } from '@/composables/useFileClipboard'
+import { useFileUploads } from '@/composables/useFileUploads'
+import { useFilePreviewActions } from '@/composables/useFilePreviewActions'
+import { useProjectExport } from '@/composables/useProjectExport'
 import { createWorkspaceMutationProjection } from '@/composables/workspaceMutationProjection'
 import { useChangeSetState } from '@/composables/useChangeSetState'
 import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
@@ -901,6 +967,7 @@ import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
 import { applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
 import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
 import { enhanceFileLinks } from '@/utils/fileLinks'
+import { loadEcharts } from '@/utils/echarts'
 import { normalizeWorkspacePath, languageForPath } from '@/utils/pathUtils'
 import { resolveEffectiveChanges, resolveMessageChanges, resolveMessageStats } from '@/composables/useEffectiveChanges'
 import 'highlight.js/styles/github-dark.css'
@@ -922,15 +989,15 @@ const router = useRouter()
 const themeStore = useThemeStore()
 const conversationSelectionGuard = createConversationSelectionGuard()
 const { stream: streamAgent, replay: replayAgent, subscribe: subscribeAgent, disconnect: disconnectAgentStream, disconnectSubscription, stop: stopAgent } = useAgentStream()
-const MonacoEditor = defineAsyncComponent(() => import('@/components/MonacoEditor.vue'))
-const TerminalPanel = defineAsyncComponent(() => import('@/components/terminal/TerminalPanel.vue'))
+import AsyncLoadingState from '@/components/cloud/layout/AsyncLoadingState.vue'
+const MonacoEditor = defineAsyncComponent({ loader: () => import('@/components/MonacoEditor.vue'), loadingComponent: AsyncLoadingState })
+const TerminalPanel = defineAsyncComponent({ loader: () => import('@/components/terminal/TerminalPanel.vue'), loadingComponent: AsyncLoadingState })
 const TokenChart = defineAsyncComponent(() => import('@/components/cloud/TokenChart.vue'))
 const UsageHeatmap = defineAsyncComponent(() => import('@/components/cloud/UsageHeatmap.vue'))
 const AgentTimer = defineAsyncComponent(() => import('@/components/cloud/AgentTimer.vue'))
-const ContextUsageIndicator = defineAsyncComponent(() => import('@/components/cloud/ContextUsageIndicator.vue'))
 const ContextUsageDialog = defineAsyncComponent(() => import('@/components/cloud/ContextUsageDialog.vue'))
 const ModelConfigDialog = defineAsyncComponent(() => import('@/components/cloud/ModelConfigDialog.vue'))
-const CenterAiWorkspace = defineAsyncComponent(() => import('@/components/cloud/chat/CenterAiWorkspace.vue'))
+const CenterAiWorkspace = defineAsyncComponent({ loader: () => import('@/components/cloud/chat/CenterAiWorkspace.vue'), loadingComponent: AsyncLoadingState })
 const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/ChangesPanel.vue'))
 const UsagePanel = defineAsyncComponent(() => import('@/components/cloud/UsagePanel.vue'))
 const CenterDiffViewer = defineAsyncComponent(() => import('@/components/cloud/CenterDiffViewer.vue'))
@@ -940,6 +1007,11 @@ const FileChangesSummaryCard = defineAsyncComponent(() => import('@/components/c
 const ToolCallCard = defineAsyncComponent(() => import('@/components/cloud/ToolCallCard.vue'))
 const FileExplorerPanel = defineAsyncComponent(() => import('@/components/sidebar/FileExplorerPanel.vue'))
 const ConversationPanel = defineAsyncComponent(() => import('@/components/sidebar/ConversationPanel.vue'))
+const SearchPanel = defineAsyncComponent(() => import('@/components/sidebar/SearchPanel.vue'))
+const FileConflictDialog = defineAsyncComponent(() => import('@/components/cloud/FileConflictDialog.vue'))
+const FileHistoryPanel = defineAsyncComponent(() => import('@/components/sidebar/FileHistoryPanel.vue'))
+const ExportProgressDialog = defineAsyncComponent(() => import('@/components/cloud/ExportProgressDialog.vue'))
+const ImageLightboxModal = defineAsyncComponent(() => import('@/components/cloud/layout/ImageLightboxModal.vue'))
 const WebPreviewPanel = defineAsyncComponent(() => import('@/components/cloud/preview/WebPreviewPanel.vue'))
 
 // Web 实时预览状态
@@ -1011,6 +1083,124 @@ const {
   nextTick
 })
 
+// ─── 工作区文件增强操作：剪贴板 / 上传 / 冲突裁决 / 预览下载 / 时间线 ───
+
+const fileConflictResolver = useFileConflictResolver()
+const fileConflictState = fileConflictResolver.state
+const resolveFileConflicts = decisions => fileConflictResolver.complete(decisions)
+
+const fileClipboard = useFileClipboard({
+  projectId,
+  api: projectApi,
+  notify: ElMessage,
+  onDone: () => loadRoot()
+})
+const hasFileClipboard = computed(() => fileClipboard.hasClipboard.value)
+
+const fileUploads = useFileUploads({
+  projectId,
+  api: projectApi,
+  notify: ElMessage,
+  onDone: () => loadRoot()
+})
+function setUploadInputRef(el) {
+  fileUploads.inputRef.value = el || null
+}
+
+const filePreviewActions = useFilePreviewActions({
+  projectId,
+  projectName,
+  api: projectApi,
+  notify: ElMessage,
+  openLightbox: (url, title) => {
+    imageLightboxSrc.value = url
+    imageLightboxTitle.value = title || '图片预览'
+    showImageLightbox.value = true
+  },
+  appendToAgentInput: text => {
+    agentInput.value += text
+    nextTick(() => aiInputRef.value?.focus())
+  }
+})
+
+const workspaceSearchDir = ref('')
+const historyPanelVisible = ref(false)
+const historyPanelPath = ref('')
+const editorInstance = ref(null)
+
+// 项目异步导出：确认 → 后台打包 → 轮询进度 → 自动保存
+const projectExport = useProjectExport({ projectId, projectName, api: projectApi, notify: ElMessage })
+const exportIncludeAll = computed({
+  get: () => projectExport.includeAll.value,
+  set: value => { projectExport.includeAll.value = value }
+})
+
+function onEditorMount(editor) {
+  editorInstance.value = editor || null
+}
+
+/** 搜索结果跳转：先打开文件，再定位到命中行。 */
+async function handleOpenSearchHit({ path, line }) {
+  if (!path) return
+  await openFile(path)
+  const targetLine = Number(line) || 1
+  nextTick(() => {
+    const editor = editorInstance.value
+    if (!editor || typeof editor.revealLineInCenter !== 'function') return
+    editor.revealLineInCenter(targetLine)
+    editor.setPosition({ lineNumber: targetLine, column: 1 })
+    editor.focus()
+  })
+}
+
+/** 右键菜单统一分发：树内已处理的动作不会到达这里。 */
+async function handleTreeMenuAction({ action, node }) {
+  if (!node?.path) return
+  switch (action) {
+    case 'copy-path':
+      return filePreviewActions.copyPath(node.path)
+    case 'copy-relative-path':
+      try {
+        await navigator.clipboard.writeText(node.path)
+        ElMessage.success('相对路径已复制')
+      } catch (error) {
+        ElMessage.error(error?.message || '复制失败')
+      }
+      return
+    case 'open-terminal':
+      if (!terminalPanelVisible.value) await toggleTerminalPanel()
+      await nextTick()
+      terminalPanelRef.value?.openTerminalAtPath?.(node.path)
+      return
+    case 'find-in-folder':
+      workspaceSearchDir.value = node.path
+      sidebarView.value = 'search'
+      return
+    case 'upload-here':
+      fileUploads.pickFiles(node.path)
+      return
+    case 'paste':
+      await fileClipboard.pasteInto(node.path, fileConflictResolver.resolveConflicts)
+      return
+    case 'copy':
+      return fileClipboard.copy(node.path)
+    case 'cut':
+      return fileClipboard.cut(node.path)
+    case 'preview-image':
+      return filePreviewActions.previewImage(node.path)
+    case 'download':
+      return filePreviewActions.download(node.path)
+    case 'add-to-chat':
+      return filePreviewActions.addToChat(node.path)
+    case 'file-history':
+      historyPanelPath.value = node.path
+      historyPanelVisible.value = true
+      return
+    default:
+      ElMessage.warning(`未知的文件操作: ${action}`)
+  }
+}
+
 // AI Assistant state
 const messages = ref([])
 const conversationRenderEpoch = ref(0)
@@ -1019,11 +1209,7 @@ const agentLoading = ref(false)
 const agentMode = ref('build')
 const msgContainer = ref(null)
 const aiInputRef = ref(null)
-const imageInputRef = ref(null)
-const pendingImageAttachments = ref([])
 const imagePreviewAttachment = ref(null)
-const imageDragActive = ref(false)
-const imageInputPolicy = ref(DEFAULT_AGENT_IMAGE_INPUT_POLICY)
 const showScrollBtn = ref(false)
 const selectedCode = ref('')
 
@@ -1095,16 +1281,19 @@ const thinkingLevel = ref('High')
 
 async function handleSelectTreeFile(path) {
   isAgentTabActive.value = false
+  activeSubagentTabId.value = null
   await openFile(path)
 }
 
 function onSelectFileTab(idx) {
   isAgentTabActive.value = false
+  activeSubagentTabId.value = null
   switchTab(idx)
 }
 
 function onSelectAgentTab() {
   isAgentTabActive.value = true
+  activeSubagentTabId.value = null
 }
 
 function closeAgentTab() {
@@ -1136,17 +1325,23 @@ async function handleOpenFileDiff(file) {
   }
   isAgentTabActive.value = false
 
-  let patch = file?.patch || file?.diff || ''
+  const isLikelyDiff = (p) => typeof p === 'string' && p.trim().length > 0 && (
+    p.startsWith('@@') || p.startsWith('diff --git') || p.startsWith('--- ') ||
+    p.includes('\n@@ ') || p.includes('\n+++ ')
+  )
+
+  let patch = isLikelyDiff(file?.patch) ? file.patch : (isLikelyDiff(file?.diff) ? file.diff : '')
   let afterContent = file?.afterContent || ''
 
-  // 1. 如果没有 patch，从 effectiveChanges 中检索（已包含 sessionChanges, fileChanges, toolCalls）
+  // 1. 如果没有合法 patch，从 effectiveChanges 中检索（已包含 sessionChanges, fileChanges, toolCalls）
   if (!patch) {
     const change = effectiveChanges.value.find(c => {
       const cNorm = normalizeWorkspacePath(c.file || c.relativePath || '')
       return cNorm === path || c.file === path || c.relativePath === path || c.file === rawPath || c.relativePath === rawPath
     })
     if (change) {
-      patch = change.patch || change.diff || ''
+      if (isLikelyDiff(change.patch)) patch = change.patch
+      else if (isLikelyDiff(change.diff)) patch = change.diff
       if (!afterContent && change.afterContent) afterContent = change.afterContent
     }
   }
@@ -1375,6 +1570,59 @@ function toggleAiPanelLayout() {
 }
 
 const agentTabPosition = ref(0)
+// 子代理会话标签：独立运行时实例由 SubagentSessionTab 组件自持，主会话状态零侵入。
+const subagentTabs = ref([])
+const activeSubagentTabId = ref(null)
+const activeSubagentTab = computed(() =>
+  subagentTabs.value.find(tab => tab.id === activeSubagentTabId.value) || null)
+
+function onSelectSubagentTab(tabId) {
+  isAgentTabActive.value = false
+  activeSubagentTabId.value = tabId
+}
+
+function closeSubagentTab(tabId) {
+  const idx = subagentTabs.value.findIndex(tab => tab.id === tabId)
+  if (idx === -1) return
+  subagentTabs.value.splice(idx, 1)
+  if (activeSubagentTabId.value === tabId) {
+    activeSubagentTabId.value = null
+    if (openFiles.value.length > 0) switchTab(Math.min(activeTabIndex.value, openFiles.value.length - 1))
+  }
+}
+
+/** 父任务卡片入口：解析详情拿 childTaskId 后打开/激活对应标签。 */
+async function openSubagentTab(payload) {
+  const subagentId = payload?.subagentId
+  if (!subagentId && !payload?.childTaskId) return
+  const existing = subagentTabs.value.find(tab => String(tab.subagentId) === String(subagentId))
+  if (existing) {
+    isAgentTabActive.value = false
+    activeSubagentTabId.value = existing.id
+    return
+  }
+  let name = payload?.name || ''
+  try {
+    if (!payload?.childTaskId || !name) {
+      const r = await projectApi.agentSubagent(projectId.value, subagentId)
+      if (r.code === 0 && r.data) {
+        name = name || r.data.identity || ('子代理 #' + subagentId)
+      }
+    }
+  } catch { /* 名字缺失不阻塞打开 */ }
+  const tab = {
+    id: 'sgt-' + subagentId,
+    type: 'subagent',
+    subagentId,
+    childTaskId: payload?.childTaskId || null,
+    name: name || ('子代理 #' + subagentId)
+  }
+  subagentTabs.value.push(tab)
+  isAgentTabActive.value = false
+  activeSubagentTabId.value = tab.id
+  ElMessage.success(`子代理「${tab.name}」已在新标签页打开`)
+}
+
 const allEditorTabs = computed(() => {
   const tabs = openFiles.value.map((f, idx) => ({
     id: f.path,
@@ -1392,6 +1640,8 @@ const allEditorTabs = computed(() => {
       name: 'LabexAgent'
     })
   }
+  // 子代理标签固定追加在末尾，避免参与文件拖拽排序的索引换算。
+  for (const tab of subagentTabs.value) tabs.push(tab)
   return tabs
 })
 
@@ -1462,16 +1712,6 @@ function handleChangeThinkingLevel(lvl) {
   ElMessage.success(`思考程度已设置为: ${lvl}`)
 }
 
-async function handleDroppedImageFiles(files) {
-  if (!currentModelSupportsImages.value) {
-    ElMessage.warning('当前模型不支持图片输入')
-    return
-  }
-  for (const file of files) {
-    await appendPendingImageFile(file)
-  }
-}
-
 function insertToEditor(text) {
   if (!text) return
   fileContent.value = (fileContent.value ? fileContent.value + '\n' : '') + text
@@ -1491,6 +1731,8 @@ const showScrollTopBtn = ref(false)
 const commandList = ref([])
 const showMessageTimestamps = ref(true)
 const showThinkingProcess = ref(true)
+// 合并时间线解析器与思考流原语复用共享实现（主视图/子代理标签同一份）。
+const mergedItemsResolver = createMergedItemsResolver(showThinkingProcess)
 // Model config dialog state
 const mcEditing = ref(false)
 const mcTemplateSelecting = ref(false)
@@ -1589,17 +1831,24 @@ const currentModelName = computed(() => {
   }
   return 'MiniMax'
 })
+// 与后端 storeForRequest 的 fail-closed 校验一致：只有明确开启“支持图片理解”的模型才允许图片输入。
 const currentModelSupportsImages = computed(() => {
   const config = modelConfigs.value.find(item => item.configId === selectedModelConfigId.value)
-  if (config && (config.imageInputEnabled === 0 || config.imageInputEnabled === false)) {
-    return false
-  }
-  return true
+  return Boolean(config && Number(config.imageInputEnabled) === 1)
 })
-const imageAccept = computed(() => imageAcceptValue(imageInputPolicy.value.allowedMimeTypes))
-const imageInputTitle = computed(() => currentModelSupportsImages.value
-  ? '添加图片'
-  : '当前模型是纯文本模型，不能输入图片')
+
+const agentImages = useAgentImageAttachments({
+  projectId,
+  api: projectApi,
+  notify: ElMessage,
+  canAcceptImages: () => currentModelSupportsImages.value,
+  isBusy: () => agentLoading.value
+})
+const {
+  pendingAttachments: pendingImageAttachments,
+  loadPolicy: loadImageInputPolicy,
+  addFiles: addAgentImageFiles
+} = agentImages
 
 const agentModes = [
   { key: 'build', label: '构建', icon: 'cube' },
@@ -1665,6 +1914,7 @@ watch(
 )
 
 onMounted(async () => {
+  document.body.classList.add('ws-page-active')
   const pid = route.params.projectId
   if (!pid) { ElMessage.error('项目ID不存在'); router.replace({ name: 'Projects' }); return }
   projectId.value = parseInt(pid)
@@ -1703,7 +1953,10 @@ function onTerminalCommandFinished() {
 }
 
 onBeforeUnmount(() => {
+  document.body.classList.remove('ws-page-active')
+  document.body.classList.remove('is-resizing-sidebar')
   invalidateTaskRuntime()
+  filePreviewActions.dispose()
   if (terminalRefreshTimer) {
     clearTimeout(terminalRefreshTimer)
     terminalRefreshTimer = null
@@ -1747,12 +2000,13 @@ onBeforeUnmount(() => {
       msg._thinkingTimer = null
     }
   })
-  revokeImageObjectUrls(pendingImageAttachments.value)
+  agentImages.dispose()
   messages.value.forEach(msg => revokeImageObjectUrls(msg.attachments || []))
 })
 
-async function exportProject() {
-  try { const r = await projectApi.exportProject(projectId.value); const blob = r instanceof Blob ? r : new Blob([r], { type: 'application/zip' }); const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = (projectName.value || 'project') + '.zip'; document.body.appendChild(a); a.click(); document.body.removeChild(a); window.URL.revokeObjectURL(url); ElMessage.success('导出成功') } catch (e) { ElMessage.error('导出失败: ' + (e?.response?.data?.message || e?.message || '未知错误')) }
+/** 顶栏导出入口：打开确认对话框（默认排除依赖目录），由 useProjectExport 编排全程。 */
+function exportProject() {
+  projectExport.begin()
 }
 
 async function loadCommandCatalog() {
@@ -1846,31 +2100,15 @@ async function sendMessage() {
   const imageAttachments = pendingImageAttachments.value.slice()
   if ((!q && imageAttachments.length === 0) || agentLoading.value) return
 
+  // 图片二进制只走 multipart files 上传；文本绝不内嵌 data URL，
+  // 否则 Base64 会随 request.message 进入持久化 transcript 并撑爆请求体。
+  // displayMessage 仅允许 slash command 使用（AgentCommandService 契约，
+  // 非 / 开头会被后端 4xx 拒绝）；缩略图由附件元数据独立渲染，不依赖文本标签。
   let messageToSend = q
   let displayMessage = null
 
-  if (imageAttachments.length > 0) {
-    const resolvedAttachments = await Promise.all(imageAttachments.map(async (att) => {
-      if (att.dataUrl) return att
-      if (att.file) {
-        return new Promise(res => {
-          const reader = new FileReader()
-          reader.onload = e => {
-            att.dataUrl = e.target?.result || ''
-            res(att)
-          }
-          reader.onerror = () => res(att)
-          reader.readAsDataURL(att.file)
-        })
-      }
-      return att
-    }))
-
-    const imgBlocks = resolvedAttachments.map(att => {
-      const src = att.dataUrl || att.previewUrl || ''
-      return `\n\n![${att.name}](${src})\n[附图：${att.name}]`
-    }).join('')
-    messageToSend = (messageToSend ? messageToSend : '请分析所附图片') + imgBlocks
+  if (imageAttachments.length > 0 && !messageToSend) {
+    messageToSend = '请分析所附图片'
   }
 
   if (q.startsWith('/')) {
@@ -1907,7 +2145,7 @@ async function sendMessage() {
   messages.value.push({ role: 'assistant', content: '', pendingFinalContent: '', hasPendingFinalDraft: false, hasDurableFinal: false, thinking: '', _thinkingDisplay: '', _thinkingTimer: null, thinkingBlocks: [], toolCalls: [], plan: null, isStreaming: true, error: null, _nextOrder: 0, timestamp: Date.now(), conversationId: currentAgentSession.value?.conversationId || null, timing: createMessageTiming() })
   const assistantMsg = messages.value[messages.value.length - 1]
   agentInput.value = ''
-  pendingImageAttachments.value = []
+  agentImages.takeAll()
   agentLoading.value = true
   userScrolled.value = false
   await nextTick(); scrollDown(true)
@@ -2407,148 +2645,20 @@ const {
   scheduleAgentRender
 })
 
-async function loadImageInputPolicy() {
-  try {
-    const response = await projectApi.agentImageAttachmentPolicy(projectId.value)
-    const policy = response.data || {}
-    imageInputPolicy.value = {
-      maxFilesPerMessage: Number(policy.maxFilesPerMessage) || DEFAULT_AGENT_IMAGE_INPUT_POLICY.maxFilesPerMessage,
-      maxFileSizeBytes: Number(policy.maxFileSizeBytes) || DEFAULT_AGENT_IMAGE_INPUT_POLICY.maxFileSizeBytes,
-      maxTotalSizeBytes: Number(policy.maxTotalSizeBytes) || DEFAULT_AGENT_IMAGE_INPUT_POLICY.maxTotalSizeBytes,
-      allowedMimeTypes: Array.isArray(policy.allowedMimeTypes) && policy.allowedMimeTypes.length > 0
-        ? policy.allowedMimeTypes : DEFAULT_AGENT_IMAGE_INPUT_POLICY.allowedMimeTypes
-    }
-  } catch {
-    imageInputPolicy.value = DEFAULT_AGENT_IMAGE_INPUT_POLICY
-  }
-}
-
-function requestImageInput() {
-  if (agentLoading.value) return
-  if (!currentModelSupportsImages.value) {
-    ElMessage.warning('\u5f53\u524d\u6a21\u578b\u662f\u7eaf\u6587\u672c\u6a21\u578b\uff0c\u4e0d\u80fd\u8f93\u5165\u56fe\u7247\uff1b\u8bf7\u5207\u6362\u5230\u5df2\u5f00\u542f\u201c\u652f\u6301\u56fe\u7247\u7406\u89e3\u201d\u7684\u6a21\u578b\u914d\u7f6e\u3002')
-    return
-  }
-  imageInputRef.value?.click()
-}
-
-function handleImageInput(event) {
-  addImageFiles(event.target?.files)
-  event.target.value = ''
-}
-
-function handleImagePaste(event) {
-  const files = Array.from(event.clipboardData?.files || []).filter(file => file.type.startsWith('image/'))
-  if (files.length > 0) {
-    event.preventDefault()
-    addImageFiles(files)
-  }
-}
-
-function hasImageFiles(dataTransfer) {
-  return Array.from(dataTransfer?.types || []).includes('Files')
-}
-
-function handleImageDragEnter(event) {
-  if (!hasImageFiles(event.dataTransfer)) return
-  event.preventDefault()
-  imageDragActive.value = true
-}
-
-function handleImageDragOver(event) {
-  if (!hasImageFiles(event.dataTransfer)) return
-  event.preventDefault()
-  event.dataTransfer.dropEffect = currentModelSupportsImages.value ? 'copy' : 'none'
-}
-
-function handleImageDragLeave(event) {
-  if (!hasImageFiles(event.dataTransfer)) return
-  event.preventDefault()
-  if (!event.currentTarget.contains(event.relatedTarget)) imageDragActive.value = false
-}
-
-function handleImageDrop(event) {
-  if (!hasImageFiles(event.dataTransfer)) return
-  event.preventDefault()
-  imageDragActive.value = false
-  addImageFiles(event.dataTransfer?.files)
-}
-
-function addImageFiles(fileList) {
-  const files = Array.from(fileList || []).filter(Boolean)
-  if (files.length === 0 || agentLoading.value) return
-  if (!currentModelSupportsImages.value) {
-    ElMessage.warning('当前模型暂不支持图片输入；请切换模型后再试。')
-    return
-  }
-  const policy = imageInputPolicy.value
-  const existing = pendingImageAttachments.value
-  let totalBytes = existing.reduce((sum, attachment) => sum + (attachment.file?.size || 0), 0)
-  const accepted = []
-  for (const file of files) {
-    if (file.type && !file.type.startsWith('image/')) {
-      ElMessage.warning(`不支持 ${file.name} 的文件格式，请上传图片`)
-      continue
-    }
-    if (file.size <= 0 || file.size > policy.maxFileSizeBytes) {
-      ElMessage.warning(`${file.name} 超过单张图片大小限制 (20MB)`)
-      continue
-    }
-    if (existing.length + accepted.length >= policy.maxFilesPerMessage) {
-      ElMessage.warning(`一次最多添加 ${policy.maxFilesPerMessage} 张图片`)
-      break
-    }
-    if (totalBytes + file.size > policy.maxTotalSizeBytes) {
-      ElMessage.warning('图片总大小超过当前限制')
-      break
-    }
-    const duplicate = [...existing, ...accepted].some(item => item.file?.name === file.name
-      && item.file?.size === file.size && item.file?.lastModified === file.lastModified)
-    if (duplicate) continue
-    const previewUrl = URL.createObjectURL(file)
-    const att = { id: crypto.randomUUID(), file, name: file.name || 'image', previewUrl, dataUrl: '' }
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      att.dataUrl = e.target?.result || ''
-    }
-    reader.readAsDataURL(file)
-    accepted.push(att)
-    totalBytes += file.size
-  }
-  pendingImageAttachments.value.push(...accepted)
-}
-
+/** 移除待发送图片；若灯箱正在预览该图则同步关闭。 */
 function removePendingImage(attachmentId) {
-  const attachment = pendingImageAttachments.value.find(item => item.id === attachmentId)
-  if (attachment?.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
-  pendingImageAttachments.value = pendingImageAttachments.value.filter(item => item.id !== attachmentId)
+  agentImages.remove(attachmentId)
   if (imagePreviewAttachment.value?.id === attachmentId) closeImagePreview()
 }
 
-async function hydrateHistoryAttachmentPreviews() {
-  const attachments = messages.value.flatMap(message => message?.attachments || [])
-  await Promise.all(attachments.map(hydrateHistoryAttachmentPreview))
-}
-
-async function hydrateHistoryAttachmentPreview(attachment) {
-  if (!attachment || attachment.previewUrl || attachment.expired || attachment.previewFailed || attachment._previewPromise) return
-  attachment._previewPromise = projectApi.agentAttachmentPreview(projectId.value, attachment.id)
-    .then(blob => {
-      if (!(blob instanceof Blob) || blob.size === 0) throw new Error('图片预览为空')
-      attachment.previewUrl = URL.createObjectURL(blob)
-    })
-    .catch(error => {
-      const status = error?.response?.status
-      if (status === 404 || status === 410) attachment.expired = true
-      else attachment.previewFailed = true
-    })
-    .finally(() => { attachment._previewPromise = null })
-  await attachment._previewPromise
+/** 历史附件预览水合：委托给 Composable，保持零参调用契约。 */
+function hydrateHistoryAttachmentPreviews() {
+  return agentImages.hydrateMessages(messages.value)
 }
 
 function openImagePreview(attachment) {
   imagePreviewAttachment.value = attachment
-  imageLightboxSrc.value = attachment.previewUrl || attachment.url || attachment.dataUrl || ''
+  imageLightboxSrc.value = attachment.previewUrl || attachment.url || ''
   imageLightboxTitle.value = attachment.name || '图片预览'
   showImageLightbox.value = true
 }
@@ -2978,37 +3088,7 @@ async function deleteConversation(conversation) {
 }
 
 function getMergedItems(msg) {
-  if (!msg) return []
-  const thinkCount = msg.thinkingBlocks?.length || 0
-  const ctxCount = msg.contextManagementEvents?.length || 0
-  const toolCount = msg.toolCalls?.length || 0
-  const showThinking = showThinkingProcess.value
-  const versionKey = `${showThinking}:${thinkCount}:${ctxCount}:${toolCount}:${msg._nextOrder || 0}`
-
-  if (msg._mergedItemsCache && msg._mergedItemsCacheKey === versionKey) {
-    return msg._mergedItemsCache
-  }
-
-  const items = []
-  if (showThinking && msg.thinkingBlocks) {
-    for (const tb of msg.thinkingBlocks) {
-      items.push({ type: 'thinking', data: tb, _order: tb._order || 0 })
-    }
-  }
-  if (msg.contextManagementEvents) {
-    for (const event of msg.contextManagementEvents) {
-      items.push({ type: 'context', data: event, _order: event._order || 0 })
-    }
-  }
-  if (msg.toolCalls) {
-    for (const tc of msg.toolCalls) {
-      items.push({ type: 'tool', data: tc, _order: tc._order || 0 })
-    }
-  }
-  items.sort((a, b) => a._order - b._order)
-  msg._mergedItemsCache = items
-  msg._mergedItemsCacheKey = versionKey
-  return items
+  return mergedItemsResolver(msg)
 }
 
 function formatTokenCount(n) {
@@ -3026,16 +3106,7 @@ function scheduleAgentRender() {
     scrollDown()
   })
 }
-function startThinkingReveal(msg) {
-  msg._thinkingDisplay = msg.thinking || ''
-}
-function stopThinkingReveal(msg) {
-  msg._thinkingTimer = null
-}
-function flushThinkingDisplay(msg) {
-  stopThinkingReveal(msg)
-  msg._thinkingDisplay = msg.thinking || ''
-}
+// startThinkingReveal / flushThinkingDisplay 复用共享实现（agentMessageTimeline）。
 
 let tokenUsageProjectionEpoch = 0
 
@@ -3207,54 +3278,7 @@ function navigateMessage(direction) {
   })
 }
 
-const markdownRenderCache = new Map()
-const MAX_MD_CACHE_SIZE = 400
-
-function renderMarkdown(text) {
-  if (!text) return ''
-  const rawHtml = marked.parse(normalizeSpecialMarkdownBlocks(text), { gfm: true, breaks: true, silent: true })
-  return enhanceMarkdownHtml(sanitizeMarkdownHtml(String(rawHtml || '')))
-}
-
-function getCachedMarkdown(prefix, rawText) {
-  if (!rawText) return ''
-  const cacheKey = `${prefix}::${rawText}`
-  if (markdownRenderCache.has(cacheKey)) {
-    return markdownRenderCache.get(cacheKey)
-  }
-  let result = ''
-  if (prefix === 'thinking') {
-    result = renderMarkdown(stripInternalReasoningTags(rawText))
-  } else if (prefix === 'message_assistant') {
-    result = renderMarkdown(stripInternalReasoningBlocks(rawText))
-  } else {
-    result = renderMarkdown(rawText)
-  }
-  if (markdownRenderCache.size > MAX_MD_CACHE_SIZE) {
-    const firstKey = markdownRenderCache.keys().next().value
-    markdownRenderCache.delete(firstKey)
-  }
-  markdownRenderCache.set(cacheKey, result)
-  return result
-}
-
-function renderThinkingMarkdown(text) {
-  return getCachedMarkdown('thinking', text)
-}
-
-function renderMessageMarkdown(message) {
-  if (!message) return ''
-  if (message._renderedHtml && message._renderedContent === message.content && !message.isStreaming) {
-    return message._renderedHtml
-  }
-  const isAssistant = message.role === 'assistant'
-  const html = getCachedMarkdown(isAssistant ? 'message_assistant' : 'message_user', message.content)
-  if (!message.isStreaming) {
-    message._renderedContent = message.content
-    message._renderedHtml = html
-  }
-  return html
-}
+// Markdown 渲染管线已抽取至 utils/agentMarkdownRenderer.js（主视图与子代理标签共用）。
 
 // 格式化时间戳
 function formatTime(timestamp) {
@@ -3976,6 +4000,8 @@ function generateCommand() { ElMessage.info('请使用终端标签页直接输�
 function goToIssue(issue) { ElMessage.info('跳转到 ' + issue.file + ':' + issue.line) }
 function autoFix(issue) { ElMessage.success('自动修复: ' + issue.message) }
 function goBack() { router.push({ name: 'Projects' }) }
+
+function openTutorials() { router.push({ name: 'Tutorials' }) }
 async function optimizePrompt() {
   if (!agentInput.value.trim()) { ElMessage.warning('请先输入提示词'); return }
   const originalPrompt = agentInput.value.trim()
@@ -4013,6 +4039,8 @@ function startSidebarResize(e) {
   let latestX = startX
   let frame = null
   handle.setPointerCapture?.(e.pointerId)
+  // 拖动期间禁用宽度过渡，保证面板 1:1 跟手（与右侧 AI 面板同款机制）
+  document.body.classList.add('is-resizing-sidebar')
   const apply = () => {
     frame = null
     sidebarWidth.value = Math.max(180, Math.min(startWidth + latestX - startX, 520))
@@ -4020,6 +4048,7 @@ function startSidebarResize(e) {
   const move = event => { latestX = event.clientX; if (frame == null) frame = requestAnimationFrame(apply) }
   const finish = () => {
     if (frame != null) { cancelAnimationFrame(frame); frame = null; apply() }
+    document.body.classList.remove('is-resizing-sidebar')
     handle.removeEventListener('pointermove', move)
     handle.removeEventListener('pointerup', finish)
     handle.removeEventListener('pointercancel', finish)

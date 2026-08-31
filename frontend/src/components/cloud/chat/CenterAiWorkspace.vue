@@ -6,7 +6,7 @@
         <span class="icon agent-symbol-icon">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         </span>
-        <span class="topbar-title">LabexAgent</span>
+        <span class="topbar-title">{{ title }}</span>
         <span class="topbar-session-badge" v-if="currentSessionName">{{ currentSessionName }}</span>
       </div>
 
@@ -90,18 +90,15 @@
               <template v-if="msg.role === 'user'">
                 <div class="user-msg-bubble-wrap">
                   <div class="user-msg-bubble">
-                    <!-- 用户发送的图片缩略图列表 (可点击预览大图) -->
-                    <div v-if="msg.attachments?.length" class="user-msg-thumbnails">
-                      <div
-                        v-for="(att, aIdx) in msg.attachments"
-                        :key="aIdx"
-                        class="user-msg-thumb-item"
-                        @click="emit('preview-image', att)"
-                        title="点击查看原图"
-                      >
-                        <img :src="att.dataUrl || att.url || att.src" :alt="att.name || '图片附件'" />
-                      </div>
-                    </div>
+                    <!-- 用户发送的图片缩略图列表 (可点击预览大图；复用统一附件组件的 previewUrl 链路) -->
+                    <AgentImageAttachments
+                      v-if="msg.attachments?.length"
+                      :attachments="msg.attachments"
+                      variant="message"
+                      :show-names="false"
+                      aria-label="已发送图片"
+                      @preview="att => emit('preview-image', att)"
+                    />
                     <div class="user-msg-text">{{ msg.content }}</div>
                     <div class="user-msg-footer">
                       <span v-if="msg.timestamp" class="msg-time">{{ formatTime(msg.timestamp) }}</span>
@@ -140,6 +137,7 @@
                           @question="d => emit('question', d)"
                           @open-file="p => emit('open-file', p)"
                           @open-preview="u => emit('open-preview', u)"
+                          @open-subagent="p => emit('open-subagent', p)"
                         />
                       </template>
                     </template>
@@ -307,7 +305,7 @@
     </div>
 
     <!-- ==================== TAB 2: 审查 (REVIEW - ChangesPanel) ==================== -->
-    <div v-show="currentTab === 'review'" class="center-subtab-pane">
+    <div v-if="currentTab === 'review'" class="center-subtab-pane">
       <ChangesPanel
         :changes="sessionChanges || []"
         :project-id="projectId"
@@ -320,7 +318,7 @@
     </div>
 
     <!-- ==================== TAB 3: 用量 (USAGE) ==================== -->
-    <div v-show="currentTab === 'usage'" class="center-subtab-pane">
+    <div v-if="currentTab === 'usage'" class="center-subtab-pane">
       <UsagePanel
         :token-usage="tokenUsage"
         :all-token-stats="allTokenStats"
@@ -347,6 +345,7 @@ import { ref, computed, nextTick, watch, onMounted, defineAsyncComponent } from 
 import ComposerDock from '../composer/ComposerDock.vue'
 import ThinkingProcessBlock from './ThinkingProcessBlock.vue'
 import ToolCallCard from '../ToolCallCard.vue'
+import AgentImageAttachments from '@/components/cloud/AgentImageAttachments.vue'
 import { renderMermaidBlocks } from '@/utils/mermaidRenderer'
 import { normalizeWorkspacePath } from '@/utils/pathUtils'
 import { resolveEffectiveChanges, resolveMessageChanges, resolveMessageStats } from '@/composables/useEffectiveChanges'
@@ -372,6 +371,10 @@ const ChangesPanel = defineAsyncComponent(() => import('../ChangesPanel.vue'))
 const UsagePanel = defineAsyncComponent(() => import('../UsagePanel.vue'))
 
 const props = defineProps({
+  title: {
+    type: String,
+    default: 'LabexAgent',
+  },
   activeTab: {
     type: String,
     default: 'chat',
@@ -528,6 +531,7 @@ const emit = defineEmits([
   'toggle-terminal',
   'open-file',
   'open-preview',
+  'open-subagent',
 ])
 
 const currentTab = computed({
@@ -960,33 +964,8 @@ defineExpose({
   word-break: break-word;
 }
 
-.user-msg-thumbnails {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+.user-msg-bubble :deep(.agent-image-attachments) {
   margin-bottom: 8px;
-}
-
-.user-msg-thumb-item {
-  width: 52px;
-  height: 52px;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid #e4e4e7;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.user-msg-thumb-item:hover {
-  border-color: #a1a1aa;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  transform: translateY(-1px);
-}
-
-.user-msg-thumb-item img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 .user-msg-footer {
