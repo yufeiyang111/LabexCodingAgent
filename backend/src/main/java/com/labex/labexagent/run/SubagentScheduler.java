@@ -1,8 +1,0 @@
-package com.labex.labexagent.run;
-import com.labex.entity.AgentSubagent;import com.labex.entity.StudentProject;import java.util.concurrent.CompletableFuture;import java.util.concurrent.Executor;import org.springframework.beans.factory.annotation.Autowired;import org.springframework.stereotype.Service;
-@Service public class SubagentScheduler {
- private final AgentSubagentService subagents;private final AgentSubagentEventService events;private final SubagentResultSummaryService summaries;private final Executor executor;
- @Autowired public SubagentScheduler(AgentSubagentService subagents,AgentSubagentEventService events,SubagentResultSummaryService summaries){this(subagents,events,summaries,CompletableFuture.delayedExecutor(0,java.util.concurrent.TimeUnit.MILLISECONDS));}
- SubagentScheduler(AgentSubagentService subagents,AgentSubagentEventService events,SubagentResultSummaryService summaries,Executor executor){this.subagents=subagents;this.events=events;this.summaries=summaries;this.executor=executor;}
- public CompletableFuture<Void> schedule(String parentSession,Integer studentId,StudentProject project,String conversationId,Long taskId,AgentSubagent subagent,SubagentExecutor runner){return CompletableFuture.runAsync(()->{try{subagents.transition(subagent,SubagentState.RUNNING);events.append(subagent.getSubagentId(),"START",subagent.getIdentity());String summary=runner.execute(SubagentContextFactory.create(parentSession,studentId,project,conversationId,taskId,subagent),subagent);summaries.complete(subagent,summary,true);}catch(Exception error){summaries.complete(subagent,error.getMessage(),false);}},executor);}
-}

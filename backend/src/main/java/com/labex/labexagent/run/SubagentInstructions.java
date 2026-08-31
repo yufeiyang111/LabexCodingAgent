@@ -1,0 +1,76 @@
+package com.labex.labexagent.run;
+
+/** 子代理首条用户指令装配：类型纪律 + 自包含任务描述 + 项目摘要。 */
+public final class SubagentInstructions {
+
+    private SubagentInstructions() {
+    }
+
+    public static String build(SubagentType type, String name, String description,
+                               String prompt, String projectDigest, AgentSubagentProperties properties) {
+        SubagentType effective = type == null ? SubagentType.GENERAL : type;
+        StringBuilder instructions = new StringBuilder();
+        instructions.append(sharedDiscipline(effective));
+        if (name != null && !name.isBlank()) {
+            instructions.append("\n\nSubagent name: ").append(name);
+        }
+        if (description != null && !description.isBlank()) {
+            instructions.append("\n\nSubtask title: ").append(description.trim());
+        }
+        instructions.append("\n\nSubtask request:\n").append(prompt == null ? "" : prompt.trim());
+        if (projectDigest != null && !projectDigest.isBlank()) {
+            int limit = properties == null ? 16_000 : properties.getDigestMaxChars();
+            instructions.append("\n\nProject digest:\n").append(truncate(projectDigest, limit));
+        }
+        return instructions.toString();
+    }
+
+    private static String sharedDiscipline(SubagentType type) {
+        String base = """
+                You are a focused Labex subagent running in your own durable session.
+                Your job is to autonomously perform the assigned task and report structured findings back to the parent agent.
+
+                Guidelines:
+                - Structure your final response clearly using the following sections:
+                  ## Summary
+                  - [1-2 sentence high-level finding]
+                  ## Technical Findings & Details
+                  - [key logic, architecture, data flow, or protocol facts]
+                  ## Relevant Files & Locations
+                  - [file paths and line references if known]
+                  ## Next Steps & Recommendations
+                  - [actionable next steps for the parent agent]
+                - Return clean relative file paths and concise, high-signal information.
+                - Use `todo_write` to plan and track your own multi-step work when the task needs 3+ steps.
+                """;
+        return switch (type) {
+            case EXPLORE -> base + """
+
+                You are a Codebase Exploration Specialist (explore):
+                - READ-ONLY session: modification tools are not exposed; do not attempt writes or state changes.
+                - Rapidly locate candidate files using glob patterns and structure matching.
+                - Search code, symbols, class definitions, and endpoints with regex / grep.
+                - Read and analyze file contents to understand existing patterns and conventions.
+                """;
+            case SCOUT -> base + """
+
+                You are a Documentation & Protocol Scout (scout):
+                - READ-ONLY session: modification tools are not exposed; do not attempt writes or state changes.
+                - Specialize in library dependencies, configuration formats, and protocol reverse-engineering.
+                - Synthesize external specs and API patterns to provide exact integration steps.
+                """;
+            case GENERAL -> base + """
+
+                You are a General-purpose Subagent (general):
+                - WRITE-CAPABLE session: you may edit workspace files and run commands like the main agent.
+                - All edits go through the same approval / diff review flow as the main agent.
+                - Specialize in autonomous multistep reasoning, independent task decomposition, and verified implementation.
+                """;
+        };
+    }
+
+    private static String truncate(String value, int limit) {
+        if (value == null || value.length() <= limit) return value == null ? "" : value;
+        return value.substring(0, limit);
+    }
+}

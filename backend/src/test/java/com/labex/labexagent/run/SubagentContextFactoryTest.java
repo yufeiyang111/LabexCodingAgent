@@ -1,3 +1,0 @@
-package com.labex.labexagent.run;
-import static org.junit.jupiter.api.Assertions.assertEquals;import com.labex.entity.AgentSubagent;import com.labex.entity.StudentProject;import java.nio.file.Files;import java.nio.file.Path;import org.junit.jupiter.api.Test;import org.junit.jupiter.api.io.TempDir;
-class SubagentContextFactoryTest { @TempDir Path root; @Test void buildsAnIndependentContextSession(){StudentProject p=new StudentProject();p.setWorkspacePath(root.toString());AgentSubagent s=new AgentSubagent();s.setSubagentId(2L);s.setIdentity("reviewer");var c=SubagentContextFactory.create("parent",7,p,"conv",9L,s);assertEquals("parent:subagent:2",c.getSessionId());assertEquals("subagent",c.getMode());}}

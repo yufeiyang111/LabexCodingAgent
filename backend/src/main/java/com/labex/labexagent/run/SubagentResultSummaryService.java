@@ -3,6 +3,7 @@ package com.labex.labexagent.run;
 import com.labex.entity.AgentSubagent;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.stereotype.Service;
 
@@ -28,14 +29,20 @@ public class SubagentResultSummaryService {
         agent.setUpdateTime(LocalDateTime.now());
         subagents.transition(agent, target);
         events.append(agent.getSubagentId(), "FINAL", safeSummary);
-        parentEvents.appendEvent(
-                agent.getTaskId(),
-                "SUBAGENT_SUMMARY",
-                Map.of(
-                        "subagentId", agent.getSubagentId(),
-                        "identity", agent.getIdentity(),
-                        "success", success,
-                        "summary", safeSummary),
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("subagentId", agent.getSubagentId());
+        payload.put("identity", agent.getIdentity());
+        payload.put("success", success);
+        payload.put("status", target.persisted());
+        payload.put("summary", safeSummary == null ? "" : safeSummary);
+        payload.put("tokensUsed", agent.getTokensUsed());
+        payload.put("tokenBudget", agent.getTokenBudget());
+        if (agent.getParentToolCallId() != null && !agent.getParentToolCallId().isBlank()) {
+            payload.put("toolCallId", agent.getParentToolCallId());
+        }
+        com.labex.entity.AgentRunEvent summaryEvent = parentEvents.appendEvent(agent.getTaskId(), "SUBAGENT_SUMMARY", payload,
                 "subagent-" + agent.getSubagentId() + "-summary");
+        com.labex.labexagent.runtime.AgentLoopEngine.publishToActiveTask(agent.getTaskId(), "SUBAGENT_SUMMARY", payload,
+                summaryEvent == null ? null : summaryEvent.getSequenceNumber());
     }
 }
