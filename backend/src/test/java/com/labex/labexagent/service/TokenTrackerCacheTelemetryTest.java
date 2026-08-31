@@ -2,14 +2,19 @@ package com.labex.labexagent.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.labex.entity.AgentTokenUsage;
 import com.labex.labexagent.llm.CacheTelemetryStatus;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.mapper.AgentTokenUsageMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -134,6 +139,42 @@ class TokenTrackerCacheTelemetryTest {
         assertEquals(0, cacheByModel.get("qwen-max").get("cacheTelemetryCallCount"));
         assertNull(cacheByModel.get("qwen-max").get("cacheHitRate"));
     }
+
+    @Test
+    void rejectsFencedUsageWhenTheExecutionLeaseIsStale() {
+        AgentTokenUsageMapper mapper = mock(AgentTokenUsageMapper.class);
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        doThrow(new AgentRunExecutionLeaseService.StaleExecutionFenceException(
+                AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.STALE_EPOCH))
+                .when(leases).requireActiveFenceForWrite(any(), any());
+        TokenTracker tracker = new TokenTracker(mapper, null, leases);
+
+        assertThrows(AgentRunExecutionLeaseService.StaleExecutionFenceException.class,
+                () -> tracker.recordWithFence(new ExecutionFence(71L, "instance-a", 2L),
+                        "conversation", "session", 7, 12, "provider", "model",
+                        100, 20, 120, 40, 0, 40, 60,
+                        CacheTelemetryStatus.HIT, 1, null));
+
+        verify(mapper, never()).insert(any());
+    }
+
+    @Test
+    void storesTaskAndEpochIdentityOnFencedUsage() {
+        AgentTokenUsageMapper mapper = mock(AgentTokenUsageMapper.class);
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        TokenTracker tracker = new TokenTracker(mapper, null, leases);
+
+        tracker.recordWithFence(new ExecutionFence(71L, "instance-a", 4L),
+                "conversation", "session", 7, 12, "provider", "model",
+                100, 20, 120, 40, 0, 40, 60,
+                CacheTelemetryStatus.HIT, 1, null);
+
+        ArgumentCaptor<AgentTokenUsage> captor = ArgumentCaptor.forClass(AgentTokenUsage.class);
+        verify(mapper).insert(captor.capture());
+        assertEquals(71L, captor.getValue().getTaskId());
+        assertEquals(4L, captor.getValue().getExecutionEpoch());
+    }
+
     private AgentTokenUsage usage(int promptTokens, int cachedTokens, CacheTelemetryStatus status) {
         AgentTokenUsage usage = new AgentTokenUsage("conversation", "session", 1, 2,
                 "provider", "model", promptTokens, 10, promptTokens + 10, 1, null);

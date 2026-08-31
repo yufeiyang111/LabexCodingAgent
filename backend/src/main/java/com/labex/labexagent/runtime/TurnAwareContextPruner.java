@@ -79,7 +79,7 @@ public final class TurnAwareContextPruner {
         }
         List<Integer> starts = new ArrayList<>();
         for (int index = 0; index < messages.size(); index++) {
-            if ("user".equalsIgnoreCase(roleOf(messages.get(index)))) {
+            if (isRealUserTurn(messages.get(index))) {
                 starts.add(index);
             }
         }
@@ -110,7 +110,7 @@ public final class TurnAwareContextPruner {
     private int retainedTurnCount(List<Map<String, Object>> messages, int tailStart) {
         int count = 0;
         for (int index = tailStart; index < messages.size(); index++) {
-            if ("user".equalsIgnoreCase(roleOf(messages.get(index)))) {
+            if (isRealUserTurn(messages.get(index))) {
                 count++;
             }
         }
@@ -159,6 +159,14 @@ public final class TurnAwareContextPruner {
     private String roleOf(Map<String, Object> message) {
         Object role = message == null ? null : message.get("role");
         return role == null ? "user" : String.valueOf(role);
+    }
+
+    private boolean isRealUserTurn(Map<String, Object> message) {
+        if (!"user".equalsIgnoreCase(roleOf(message))) {
+            return false;
+        }
+        Object content = message == null ? null : message.get("content");
+        return !(content instanceof String text && text.stripLeading().startsWith("<agent_focus_anchor"));
     }
 
     public record Result(boolean changed, int tokensBefore, int tokensAfter, int tailStartIndex,

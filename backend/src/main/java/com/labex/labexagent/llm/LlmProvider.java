@@ -42,17 +42,20 @@ public interface LlmProvider {
     record LlmConfig(String apiKey, String baseUrl, String modelName,
                      Integer maxTokens, Double temperature, Integer connectTimeoutMs,
                      Integer readTimeoutMs, Integer maxRetries, boolean promptCacheKeyEnabled,
-                     String promptCacheKey, String reasoningEffort) {
+                     String promptCacheKey, String reasoningEffort,
+                     String requestOptionsJson,
+                     Consumer<OpenAiCompatibleChatRequestAdapter.RequestEvidence> requestEvidenceSink,
+                     boolean promptCacheKeyRejected) {
         public LlmConfig(String apiKey, String baseUrl, String modelName,
                          Integer maxTokens, Double temperature) {
-            this(apiKey, baseUrl, modelName, maxTokens, temperature, null, null, null, false, null, null);
+            this(apiKey, baseUrl, modelName, maxTokens, temperature, null, null, null, false, null, null, null, null, false);
         }
 
         public LlmConfig(String apiKey, String baseUrl, String modelName,
                          Integer maxTokens, Double temperature, Integer connectTimeoutMs,
                          Integer readTimeoutMs, Integer maxRetries) {
             this(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs, readTimeoutMs, maxRetries,
-                    false, null, null);
+                    false, null, null, null, null, false);
         }
 
         public LlmConfig(String apiKey, String baseUrl, String modelName,
@@ -60,29 +63,64 @@ public interface LlmProvider {
                          Integer readTimeoutMs, Integer maxRetries, boolean promptCacheKeyEnabled,
                          String promptCacheKey) {
             this(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs, readTimeoutMs, maxRetries,
-                    promptCacheKeyEnabled, promptCacheKey, null);
+                    promptCacheKeyEnabled, promptCacheKey, null, null, null, false);
+        }
+
+        public LlmConfig(String apiKey, String baseUrl, String modelName,
+                         Integer maxTokens, Double temperature, Integer connectTimeoutMs,
+                         Integer readTimeoutMs, Integer maxRetries, boolean promptCacheKeyEnabled,
+                         String promptCacheKey, String reasoningEffort) {
+            this(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs, readTimeoutMs, maxRetries,
+                    promptCacheKeyEnabled, promptCacheKey, reasoningEffort, null, null, false);
+        }
+
+        public LlmConfig(String apiKey, String baseUrl, String modelName,
+                         Integer maxTokens, Double temperature, Integer connectTimeoutMs,
+                         Integer readTimeoutMs, Integer maxRetries, boolean promptCacheKeyEnabled,
+                         String promptCacheKey, String reasoningEffort, String requestOptionsJson) {
+            this(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs, readTimeoutMs, maxRetries,
+                    promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, null, false);
         }
 
         public LlmConfig withPromptCacheKey(String value) {
             if (!promptCacheKeyEnabled || value == null || value.isBlank()) return this;
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, true, value, reasoningEffort);
+                    readTimeoutMs, maxRetries, true, value, reasoningEffort, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected);
         }
 
         public LlmConfig withoutPromptCacheKey() {
             if (!promptCacheKeyEnabled && (promptCacheKey == null || promptCacheKey.isBlank())) return this;
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, false, null, reasoningEffort);
+                    readTimeoutMs, maxRetries, false, null, reasoningEffort, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected);
         }
 
         public LlmConfig withReasoningEffort(String value) {
             if (java.util.Objects.equals(reasoningEffort, value)) return this;
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, value);
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, value, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected);
         }
 
         public LlmConfig withoutReasoningEffort() {
-            return reasoningEffort == null || reasoningEffort.isBlank() ? this : withReasoningEffort(null);
+            return withReasoningEffort("none");
+        }
+
+        public LlmConfig withRequestOptionsJson(String value) {
+            return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, value, requestEvidenceSink, promptCacheKeyRejected);
+        }
+
+        public LlmConfig withRequestEvidenceSink(Consumer<OpenAiCompatibleChatRequestAdapter.RequestEvidence> value) {
+            return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, value, promptCacheKeyRejected);
+        }
+
+        public LlmConfig withPromptCacheKeyRejected(boolean value) {
+            return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, requestEvidenceSink, value);
+        }
+
+        public boolean reasoningEffortDisabled() {
+            return "none".equalsIgnoreCase(reasoningEffort) || "disabled".equalsIgnoreCase(reasoningEffort);
         }
 
         public int effectiveConnectTimeoutMs() {

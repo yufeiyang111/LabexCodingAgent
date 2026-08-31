@@ -228,10 +228,44 @@ public class AgentRunMessageService {
         payload.put("role", message.getRole());
         payload.put("status", message.getStatus());
         payload.put("content", publicContent(message));
-        payload.put("metadata", message.getMetadata());
+        String metadata = message.getMetadata();
+        payload.put("metadata", metadata);
+        hoistAttachmentReferences(payload, metadata);
         payload.put("createdAt", message.getCreateTime());
         payload.put("updatedAt", message.getUpdateTime());
         return payload;
+    }
+
+    /**
+     * 历史附件投影在 payload 顶层读取 attachmentIds（metadata 本身是 JSON 字符串）。
+     * 该方法位于历史分页的每消息热路径：先用子串快筛放行绝大多数无附件消息，
+     * 命中后才做一次 JSON 解析；不新增查询、不重复解析同一字符串的其它消费方。
+     */
+    private void hoistAttachmentReferences(Map<String, Object> payload, String metadata) {
+        if (metadata == null || !metadata.contains("attachmentIds")) {
+            return;
+        }
+        try {
+            JsonElement parsed = JsonParser.parseString(metadata);
+            if (!parsed.isJsonObject()) {
+                return;
+            }
+            JsonElement ids = parsed.getAsJsonObject().get("attachmentIds");
+            if (ids == null || !ids.isJsonArray() || ids.getAsJsonArray().isEmpty()) {
+                return;
+            }
+            java.util.List<String> values = new java.util.ArrayList<>(ids.getAsJsonArray().size());
+            for (JsonElement id : ids.getAsJsonArray()) {
+                if (id.isJsonPrimitive() && !id.getAsString().isBlank()) {
+                    values.add(id.getAsString());
+                }
+            }
+            if (!values.isEmpty()) {
+                payload.put("attachmentIds", List.copyOf(values));
+            }
+        } catch (RuntimeException ignored) {
+            // 旧数据可能保存了非 JSON metadata；解析失败保持历史公开行为，不因解析失败隐藏消息。
+        }
     }
 
     private String publicContent(AgentRunMessage message) {

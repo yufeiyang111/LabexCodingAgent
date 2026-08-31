@@ -108,6 +108,9 @@ public class AgentRequestTokenEstimator {
 
     private Object normalizeVisualDataUrls(Object value, ImageCounter images) {
         if (value instanceof Map<?, ?> map) {
+            // durable 形态的 user 消息以 attachmentIds 引用附件（Base64 只在 Provider 边界注水）；
+            // 预算必须与注水后的 image_url 形态等价，否则压缩选材会低估图片占用。
+            countDurableAttachmentReferences(map, images);
             return normalizeMap(map, images);
         }
         if (value instanceof Iterable<?> iterable) {
@@ -150,6 +153,13 @@ public class AgentRequestTokenEstimator {
             images.count++;
         }
         return normalized;
+    }
+
+    /** durable 形态的附件引用按注水后的视觉权重计入；与 image_url part 互斥，不会重复计权。 */
+    private void countDurableAttachmentReferences(Map<?, ?> map, ImageCounter images) {
+        if (map.get("attachmentIds") instanceof List<?> ids && !ids.isEmpty()) {
+            images.count += ids.size();
+        }
     }
 
     private boolean isVisualDataUrlPart(Map<?, ?> value) {

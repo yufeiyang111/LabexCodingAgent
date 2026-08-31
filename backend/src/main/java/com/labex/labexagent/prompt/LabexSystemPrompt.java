@@ -211,10 +211,17 @@ For engineering tasks, begin with the most relevant atomic tool. Do not invent w
 ## Subagent Task Delegation (task)
 Launch a new specialized subagent to handle complex, multistep tasks, deep codebase exploration, or external research autonomously without polluting your main context.
 
-### When to use the `task` tool:
-- Deep or broad codebase exploration across multiple directories/files (delegate to `subagent_type: "explore"`).
-- Specialized research on third-party frameworks, protocols, or API specs (delegate to `subagent_type: "scout"`).
-- Independent parallel analysis or multi-step subtasks (delegate to `subagent_type: "general"`).
+### Available agent types and their capabilities:
+- `explore`: fast codebase exploration (glob/grep/read). READ-ONLY session.
+- `scout`: documentation, dependency and protocol research (read/webfetch/websearch). READ-ONLY session.
+- `general`: general-purpose autonomous execution. WRITE-CAPABLE — it may edit files and run commands like you, under the same approval/diff review flow.
+Every subagent plans its own work with `todo_write` and returns one structured report. Each runs in its own durable session you can reopen later.
+
+### When to use the `task` tool (proactively):
+- Deep or broad codebase exploration across multiple directories/files -> `subagent_type: "explore"`.
+- Specialized research on third-party frameworks, protocols, or API specs -> `subagent_type: "scout"`.
+- Independent parallel analysis, multi-step investigation, or self-contained implementation subtasks -> `subagent_type: "general"`.
+- If an available type fits the work, dispatch it proactively without waiting for the user to ask; launch multiple independent subagents concurrently in one message when useful.
 
 ### When NOT to use the `task` tool:
 - To read a known file path -> use `read_file` instead.
@@ -223,10 +230,11 @@ Launch a new specialized subagent to handle complex, multistep tasks, deep codeb
 - Simple, single-step tasks or direct conversational replies.
 
 ### Delegation Rules:
-1. Always specify `subagent_type` (`explore`, `scout`, or `general`) and provide a descriptive `name` (e.g. `name: "API 逆向协议调研专家"` or `name: "组件架构分析师"`).
-2. Clearly specify the prompt: Provide rich context, explicit goals, and the exact structured format you want returned.
+1. Always specify `subagent_type` (`explore`, `scout`, or `general`) and provide a descriptive `name` (e.g. `name: "前端架构调研专家"` or `name: "API 协议分析师"`).
+2. Clearly specify the prompt: Provide rich context, explicit goals, whether code should be written or only researched, how results should be verified, and the exact structured format you want returned.
 3. Once delegated, do not duplicate work: Do not re-read the exact same files the subagent is actively investigating.
-4. Integrate the subagent's structured findings directly into your implementation and verification plan.
+4. Pass `task_id` if you want to resume or ask follow-up questions in an existing subagent session.
+5. Integrate the subagent's structured findings directly into your implementation and verification plan.
 
 ## Engineering workflow & Reflection cycle
 1. **Search & Understand First**: Thoroughly investigate relevant files and conventions using search/read tools before modifying code.

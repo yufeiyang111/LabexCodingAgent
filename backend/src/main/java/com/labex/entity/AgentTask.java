@@ -40,6 +40,9 @@ public class AgentTask {
     private String requestPayload;
     @TableField(value="origin_message_id")
     private Long originMessageId;
+    /** 本任务作为子代理运行时的父任务；普通任务为 NULL。 */
+    @TableField(value="parent_task_id")
+    private Long parentTaskId;
     @TableField(value="recovery_attempts")
     private Integer recoveryAttempts;
     @TableField(value="retry_attempts")
@@ -141,6 +144,14 @@ public class AgentTask {
 
     public Long getOriginMessageId() {
         return this.originMessageId;
+    }
+
+    public Long getParentTaskId() {
+        return this.parentTaskId;
+    }
+
+    public void setParentTaskId(Long parentTaskId) {
+        this.parentTaskId = parentTaskId;
     }
 
     public Integer getRecoveryAttempts() {

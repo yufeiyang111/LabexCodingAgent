@@ -123,7 +123,7 @@ class AgentConversationCompactionServiceTest {
 
 
     @Test
-    void replacesANonReducingModelCheckpointWithTheDeterministicFallback() {
+    void adoptsSuccessfulModelCheckpointDirectly() {
         AgentConversationService conversations = mock(AgentConversationService.class);
         AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
         AgentCompactionService compactions = mock(AgentCompactionService.class);
@@ -134,63 +134,45 @@ class AgentConversationCompactionServiceTest {
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
         when(memory.project(7, 3, "conversation", 47L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
+        String structuredSummary = "## Goal\n- Refactor authentication\n\n## Progress\n### Done\n- Implemented JWT";
         when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
-                .thenReturn(CompactionAgent.Result.success(
-                        "<conversation-checkpoint>" + "z".repeat(5_000) + "</conversation-checkpoint>",
-                        17, "summary-model", false));
+                .thenReturn(CompactionAgent.Result.success(structuredSummary, 17, "summary-model", false));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
                 conversations, memory, compactions, compactionAgent, modelConfigs);
 
         AgentConversationCompactionService.Result result = service.compact(
                 7, 3, "conversation", null, compactionTask(47L), CancellationToken.none());
 
-        assertThat(result.deterministicFallback()).isTrue();
-        assertThat(result.strategy()).isEqualTo("manual_deterministic_fallback");
-        assertThat(result.summary()).contains("manual-deterministic").doesNotContain("z".repeat(1_000));
-        verify(compactions).complete(eq(running), eq(result.summary()), any(Integer.class));
+        assertThat(result.deterministicFallback()).isFalse();
+        assertThat(result.strategy()).isEqualTo("manual_model");
+        assertThat(result.summary()).isEqualTo(structuredSummary);
+        verify(compactions).complete(eq(running), eq(structuredSummary), any(Integer.class));
     }
 
     @Test
-    void failsTheRunningAuthorityWhenNeitherModelNorFallbackCanReduceTheSelectedHistory() {
+    void fallsBackToDeterministicSummaryWhenModelFails() {
         AgentConversationService conversations = mock(AgentConversationService.class);
         AgentConversationMemoryProjectionService memory = mock(AgentConversationMemoryProjectionService.class);
         AgentCompactionService compactions = mock(AgentCompactionService.class);
         CompactionAgent compactionAgent = mock(CompactionAgent.class);
         AgentModelConfigService modelConfigs = mock(AgentModelConfigService.class);
         AgentCompactionRecord running = runningRecord(95L, 48L);
-        AgentModelConfig config = new AgentModelConfig();
-        config.setConfigId(17);
-        config.setStatus(1);
-        config.setCompactionTailTurns(2);
-        config.setCompactionPreserveRecentTokens(4_000);
-        config.setContextWindowTokens(32_768);
-        config.setMaxTokens(4_096);
         when(conversations.getOwnedConversation(7, 3, "conversation")).thenReturn(conversation());
-        when(modelConfigs.resolveForStudent(7, 17)).thenReturn(config);
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
-        when(memory.project(7, 3, "conversation", 48L)).thenReturn(
-                new AgentConversationMemoryProjectionService.Projection(List.of(
-                        Map.of("role", "user", "content", "seed one"),
-                        Map.of("role", "assistant", "content", "a".repeat(300)),
-                        Map.of("role", "user", "content", "seed two"),
-                        Map.of("role", "assistant", "content", "b".repeat(300)),
-                        Map.of("role", "user", "content", "seed three"),
-                        Map.of("role", "assistant", "content", "c".repeat(300))), 13L, 3));
+        when(memory.project(7, 3, "conversation", 48L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
-        when(compactionAgent.compact(eq(7), eq(config), any(), any(), any(), any()))
-                .thenReturn(CompactionAgent.Result.success(
-                        "<conversation-checkpoint>" + "z".repeat(5_000) + "</conversation-checkpoint>",
-                        17, "summary-model", false));
+        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
+                .thenReturn(CompactionAgent.Result.failure("network error"));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
                 conversations, memory, compactions, compactionAgent, modelConfigs);
 
-        assertThatThrownBy(() -> service.compact(
-                7, 3, "conversation", 17, compactionTask(48L), CancellationToken.none()))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("did not reduce");
-        verify(compactions).fail(eq(running), eq("Conversation compaction did not reduce durable context"));
-        verify(compactions, never()).complete(any(), any(), any(Integer.class));
-        verify(conversations, never()).markCompacted(any());
+        AgentConversationCompactionService.Result result = service.compact(
+                7, 3, "conversation", null, compactionTask(48L), CancellationToken.none());
+
+        assertThat(result.deterministicFallback()).isTrue();
+        assertThat(result.strategy()).isEqualTo("manual_deterministic_fallback");
+        assertThat(result.summary()).contains("manual-deterministic");
+        verify(compactions).complete(eq(running), eq(result.summary()), any(Integer.class));
     }
 
     private AgentConversationMemoryProjectionService.Projection projection() {

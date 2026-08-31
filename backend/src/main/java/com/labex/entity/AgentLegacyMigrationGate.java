@@ -5,10 +5,8 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
-import lombok.Data;
 
 /** 记录旧版 reader 的迁移命中和删除门槛；不参与 Agent 运行时状态。 */
-@Data
 @TableName("t_agent_legacy_migration_gate")
 public class AgentLegacyMigrationGate {
     @TableId(value = "reader_key", type = IdType.INPUT)
@@ -43,4 +41,27 @@ public class AgentLegacyMigrationGate {
 
     @TableField("update_time")
     private LocalDateTime updateTime;
+
+    public String getReaderKey() { return readerKey; }
+    public void setReaderKey(String readerKey) { this.readerKey = readerKey; }
+    public String getTargetRemovalVersion() { return targetRemovalVersion; }
+    public void setTargetRemovalVersion(String targetRemovalVersion) { this.targetRemovalVersion = targetRemovalVersion; }
+    public Integer getObservationWindowDays() { return observationWindowDays; }
+    public void setObservationWindowDays(Integer observationWindowDays) { this.observationWindowDays = observationWindowDays; }
+    public Long getReadHitCount() { return readHitCount; }
+    public void setReadHitCount(Long readHitCount) { this.readHitCount = readHitCount; }
+    public Long getSourceItemHitCount() { return sourceItemHitCount; }
+    public void setSourceItemHitCount(Long sourceItemHitCount) { this.sourceItemHitCount = sourceItemHitCount; }
+    public LocalDateTime getLastReadHitAt() { return lastReadHitAt; }
+    public void setLastReadHitAt(LocalDateTime lastReadHitAt) { this.lastReadHitAt = lastReadHitAt; }
+    public Long getPendingSourceCount() { return pendingSourceCount; }
+    public void setPendingSourceCount(Long pendingSourceCount) { this.pendingSourceCount = pendingSourceCount; }
+    public LocalDateTime getLastInventoryAt() { return lastInventoryAt; }
+    public void setLastInventoryAt(LocalDateTime lastInventoryAt) { this.lastInventoryAt = lastInventoryAt; }
+    public LocalDateTime getZeroInventorySince() { return zeroInventorySince; }
+    public void setZeroInventorySince(LocalDateTime zeroInventorySince) { this.zeroInventorySince = zeroInventorySince; }
+    public LocalDateTime getCreateTime() { return createTime; }
+    public void setCreateTime(LocalDateTime createTime) { this.createTime = createTime; }
+    public LocalDateTime getUpdateTime() { return updateTime; }
+    public void setUpdateTime(LocalDateTime updateTime) { this.updateTime = updateTime; }
 }

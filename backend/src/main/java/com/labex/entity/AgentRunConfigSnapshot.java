@@ -40,6 +40,8 @@ public class AgentRunConfigSnapshot {
     private String environmentOperationRef;
     @TableField("secret_aliases_json")
     private String secretAliasesJson;
+    @TableField("request_evidence_json")
+    private String requestEvidenceJson;
     @TableField("create_time")
     private LocalDateTime createTime;
     @TableField("update_time")
@@ -77,6 +79,8 @@ public class AgentRunConfigSnapshot {
     public void setEnvironmentOperationRef(String environmentOperationRef) { this.environmentOperationRef = environmentOperationRef; }
     public String getSecretAliasesJson() { return secretAliasesJson; }
     public void setSecretAliasesJson(String secretAliasesJson) { this.secretAliasesJson = secretAliasesJson; }
+    public String getRequestEvidenceJson() { return requestEvidenceJson; }
+    public void setRequestEvidenceJson(String requestEvidenceJson) { this.requestEvidenceJson = requestEvidenceJson; }
     public LocalDateTime getCreateTime() { return createTime; }
     public void setCreateTime(LocalDateTime createTime) { this.createTime = createTime; }
     public LocalDateTime getUpdateTime() { return updateTime; }

@@ -179,14 +179,41 @@ public class AgentLoopEngine {
 
             Any attempt to use tools is a critical violation. Respond with text ONLY.
             """;
-    private static final ThreadPoolExecutor AGENT_EXECUTOR = new ThreadPoolExecutor(
-            4,
-            16,
-            60L,
-            TimeUnit.SECONDS,
-            new ArrayBlockingQueue<>(128),
-            new AgentThreadFactory(),
-            new ThreadPoolExecutor.AbortPolicy());
+    private static final ThreadPoolExecutor AGENT_EXECUTOR;
+    static {
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                8,
+                32,
+                60L,
+                TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(256),
+                new AgentThreadFactory(),
+                new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.allowCoreThreadTimeOut(true);
+        AGENT_EXECUTOR = executor;
+    }
+    /** 记录当前处于活跃执行状态的任务 SSE 发布者，供子代理实时镜像进度给父任务的直连 HTTP 连接。 */
+    private static final java.util.concurrent.ConcurrentHashMap<Long, AgentSsePublisher> ACTIVE_TASK_PUBLISHERS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    public static AgentSsePublisher getActivePublisher(Long taskId) {
+        return taskId == null ? null : ACTIVE_TASK_PUBLISHERS.get(taskId);
+    }
+
+    public static void publishToActiveTask(Long taskId, String eventType, Object payload, Long sequenceNumber) {
+        if (taskId == null || eventType == null) return;
+        AgentSsePublisher publisher = ACTIVE_TASK_PUBLISHERS.get(taskId);
+        if (publisher == null) return;
+        try {
+            if (sequenceNumber != null && sequenceNumber > 0L) {
+                publisher.sendPersisted(sequenceNumber, eventType, payload);
+            } else {
+                publisher.sendTransient(eventType, payload);
+            }
+        } catch (Exception ignored) {
+            // 实时推送失败不影响任务执行
+        }
+    }
     private static final int MAX_TEXT_TOOL_CALL_RECOVERY_FAILURES = 2;
     private static final int MAX_NATIVE_TOOL_INPUT_FAILURE_ROUNDS = 2;
     private final StudentProjectService studentProjectService;
@@ -201,6 +228,10 @@ public class AgentLoopEngine {
     private AgentProviderMessageProjector providerMessageProjector;
     private AgentToolNarrator toolNarrator;
     private ToolSelectionPolicy toolSelectionPolicy;
+    private com.labex.labexagent.run.SubagentCompletionRegistry subagentCompletions;
+    private com.labex.labexagent.run.AgentSubagentService subagentRuntimeService;
+    private com.labex.labexagent.run.AgentSubagentProperties subagentProperties =
+            new com.labex.labexagent.run.AgentSubagentProperties();
     private ToolExposurePlanner toolExposurePlanner;
     private AgentToolExposureSnapshotService toolExposureSnapshotService;
     private ContextAdmissionService contextAdmissionService;
@@ -487,6 +518,22 @@ public class AgentLoopEngine {
         this.runPlanService = runPlanService;
     }
 
+    @Autowired(required = false)
+    void setSubagentCompletions(com.labex.labexagent.run.SubagentCompletionRegistry subagentCompletions) {
+        this.subagentCompletions = subagentCompletions;
+    }
+
+    @Autowired(required = false)
+    void setSubagentRuntimeService(com.labex.labexagent.run.AgentSubagentService subagentRuntimeService) {
+        this.subagentRuntimeService = subagentRuntimeService;
+    }
+
+    @Autowired(required = false)
+    void setSubagentProperties(com.labex.labexagent.run.AgentSubagentProperties subagentProperties) {
+        this.subagentProperties = subagentProperties == null
+                ? new com.labex.labexagent.run.AgentSubagentProperties() : subagentProperties;
+    }
+
     @Autowired
     void setWorkspaceLeaseService(WorkspaceLeaseService workspaceLeaseService) {
         this.workspaceLeaseService = workspaceLeaseService;
@@ -567,6 +614,25 @@ public class AgentLoopEngine {
                                boolean failWhenQueueRejected,
                                AgentRunExecutionLeaseService.ExecutionLease preclaimedLease,
                                AgentRunInteraction preclaimedInteraction) {
+        return this.enqueue(studentId, projectId, request, failWhenQueueRejected, preclaimedLease,
+                preclaimedInteraction, false);
+    }
+
+    /**
+     * 内部子代理运行入口：不产生面向客户端的 SSE 连接（durable 事件照常落库，
+     * transient 仍广播给 /subscribe 订阅者），入队被拒必须抛出，让派发方落 FAILED 终态。
+     */
+    public void startDetached(Integer studentId, Integer projectId, AgentStreamRequest request) {
+        this.enqueue(studentId, projectId, request, true, null, null, true);
+    }
+
+    private SseEmitter enqueue(Integer studentId, Integer projectId, AgentStreamRequest request,
+                               boolean failWhenQueueRejected,
+                               AgentRunExecutionLeaseService.ExecutionLease preclaimedLease,
+                               AgentRunInteraction preclaimedInteraction,
+                               boolean detached) {
+        // detached 运行也持有一次性 emitter：publisher 跳过帧写出后它只接收 complete()，
+        // 既避免散落全文件的 NPE 守卫，也不会缓冲任何 SSE 帧。
         SseEmitter emitter = new SseEmitter(Long.valueOf(0L));
         request.setSubmittedAt(LocalDateTime.now());
         String sid = request.getSessionId() != null && !request.getSessionId().isBlank()
@@ -574,7 +640,7 @@ public class AgentLoopEngine {
         request.setSessionId(sid);
         try {
             AGENT_EXECUTOR.execute(() -> this.runLoop(studentId, projectId, request, emitter, preclaimedLease,
-                    preclaimedInteraction));
+                    preclaimedInteraction, detached));
         } catch (RuntimeException queueFailure) {
             if (preclaimedLease != null && this.executionLeaseService != null) {
                 this.executionLeaseService.release(preclaimedLease);
@@ -589,7 +655,7 @@ public class AgentLoopEngine {
             } catch (Exception ignored) {
                 // Ignore a best-effort SSE error notification failure.
             }
-            emitter.complete();
+            if (emitter != null) emitter.complete();
         }
         return emitter;
     }
@@ -722,8 +788,18 @@ public class AgentLoopEngine {
     private void runLoop(Integer studentId, Integer projectId, AgentStreamRequest request, SseEmitter emitter,
                          AgentRunExecutionLeaseService.ExecutionLease preclaimedLease,
                          AgentRunInteraction preclaimedInteraction) {
-        AgentSsePublisher sse = new AgentSsePublisher(emitter,
-                this.taskEventSubscriptionService::publishTransient);
+        this.runLoop(studentId, projectId, request, emitter, preclaimedLease, preclaimedInteraction, false);
+    }
+
+    private void runLoop(Integer studentId, Integer projectId, AgentStreamRequest request, SseEmitter emitter,
+                         AgentRunExecutionLeaseService.ExecutionLease preclaimedLease,
+                         AgentRunInteraction preclaimedInteraction,
+                         boolean detached) {
+        AgentSsePublisher sse = detached
+                ? AgentSsePublisher.detached(this.taskEventSubscriptionService == null
+                        ? null : this.taskEventSubscriptionService::publishTransient)
+                : new AgentSsePublisher(emitter,
+                        this.taskEventSubscriptionService::publishTransient);
         AgentConversation conv = null;
         AgentTask task = null;
         AgentContext ctx = null;
@@ -795,6 +871,24 @@ public class AgentLoopEngine {
                             conv.getConversationId(), request.getAttachmentIds());
                 }
                 this.conversationService.touchActivity(conv);
+                // 子代理派发：任务落库后立即回填父子关联并登记前台终态回调，
+                // 后续任何失败路径都能通过 registry 完成等待方。
+                if (request.getSubagentRowId() != null && this.subagentCompletions != null) {
+                    this.subagentCompletions.onCreated(request.getSubagentRowId(), task);
+                }
+            }
+            // 子代理运行：按类型映射为主代理模式，并将工具事件镜像回父任务卡片。
+            com.labex.labexagent.run.SubagentRuntimeInfo subagentRuntimeInfo = null;
+            if (task.getParentTaskId() != null && this.subagentRuntimeService != null) {
+                subagentRuntimeInfo = this.resolveSubagentRuntimeByTask(task.getTaskId());
+                if (subagentRuntimeInfo != null) {
+                    mode = subagentRuntimeInfo.readOnly() ? "explore" : "build";
+                    sse = new SubagentProgressMirroringPublisher(emitter,
+                            detached ? null
+                                    : this.taskEventSubscriptionService == null
+                                    ? null : this.taskEventSubscriptionService::publishTransient,
+                            subagentRuntimeInfo);
+                }
             }
             // task 的 profile snapshot 是执行边界唯一权威来源：新建任务已从 conversation 复制，
             // 恢复任务则必须覆盖浏览器或历史 payload 上携带的任何值。
@@ -839,11 +933,18 @@ public class AgentLoopEngine {
                 this.ensureSnapshotForCurrentEpoch(task, project, executionLease, executionFence);
             }
             sse.bindRun(this.runLifecycleService, task.getTaskId(), executionFence);
+            if (task.getTaskId() != null) {
+                ACTIVE_TASK_PUBLISHERS.put(task.getTaskId(), sse);
+            }
             // 取得执行租约后立即注册取消令牌，不能先暴露 preparing/SESSION 再留下不可取消窗口。
             activeCancellation = this.cancellationRegistry.register(
                     request.getSessionId(), studentId, projectId, task.getTaskId());
             cancellationToken = activeCancellation;
-            if (this.projectCheckoutLeaseService != null) {
+            // 子代理与父任务共享同一逻辑工作单元：父在前台 TaskTool 等待期间持有 checkout lease，
+            // 子任务再抢必然 waiting_workspace 死锁到超时。子任务继承父的 lease 保护，
+            // 兄弟子代理的并发写冲突由 diff/change-set 审批流兜底（对齐 OpenCode 共享 worktree 模型）。
+            boolean subagentChild = task.getParentTaskId() != null;
+            if (this.projectCheckoutLeaseService != null && !subagentChild) {
                 Path checkoutWorkspace = this.checkoutWorkspace(project, task);
                 ProjectCheckoutLeaseService.AcquireResult admission = this.projectCheckoutLeaseService.acquire(
                         task.getTaskId(), project.getProjectId(), checkoutWorkspace);
@@ -928,7 +1029,7 @@ public class AgentLoopEngine {
             long contextBuildStartedAt = System.nanoTime();
             RunRuntimeProjection runtimeProjection = this.buildRunRuntimeProjection(
                     studentId, conv.getConversationId(), project, mode, modelConfig, llmConfig, visibleLanguage,
-                    executionRuntimeProfile, task.getTaskId());
+                    executionRuntimeProfile, task.getTaskId(), subagentRuntimeInfo);
             List<ToolDefinition> selectedToolDefinitions = runtimeProjection.selectedTools();
             ctx.setSelectedToolNames(this.toolSelectionPolicy.selectedNames(selectedToolDefinitions));
             ctx.setScopedToolBindings(runtimeProjection.toolExposure().scopedTools());
@@ -1057,9 +1158,10 @@ public class AgentLoopEngine {
                                         // mode policy、选中工具、工具 schema 与系统提示词从当前持久化 mode 派生；
                                         // prompt-cache key 保持当前 conversation 与模型路由作用域。
                                         if (!runtimeProjection.mode().equals(ctx.getMode())) {
-                                            RunRuntimeProjection fresh = this.buildRunRuntimeProjection(
-                                                    studentId, conv.getConversationId(), project, ctx.getMode(), modelConfig, llmConfig,
-                                                    visibleLanguage, executionRuntimeProfile, task.getTaskId());
+                                             String previousMode = runtimeProjection.mode();
+                                             RunRuntimeProjection fresh = this.buildRunRuntimeProjection(
+                                                     studentId, conv.getConversationId(), project, ctx.getMode(), modelConfig, llmConfig,
+                                                     visibleLanguage, executionRuntimeProfile, task.getTaskId(), subagentRuntimeInfo);
                                             runtimeProjection = fresh;
                                             sysPrompt = fresh.systemPrompt();
                                             tools = fresh.tools();
@@ -1067,14 +1169,33 @@ public class AgentLoopEngine {
                                             ctx.setSelectedToolNames(this.toolSelectionPolicy.selectedNames(fresh.selectedTools()));
                                             ctx.setScopedToolBindings(fresh.toolExposure().scopedTools());
                                             this.persistToolExposureSnapshot(sse, conv, task, ctx, fresh.toolExposure());
+                                            String switchPrompt = "plan".equals(previousMode) && "build".equals(ctx.getMode())
+                                                    ? """
+<system-reminder>
+Your operational mode has changed from plan to build.
+You are no longer in read-only mode.
+You are permitted to make file changes, run shell commands, and utilize your arsenal of tools as needed.
+</system-reminder>"""
+                                                    : fresh.modePolicy();
                                             this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
-                                                    Map.of("role", "user", "content",
-                                                            fresh.modePolicy() + "\nThe run mode has changed; the policy above is now in effect."));
+                                                    Map.of("role", "user", "content", switchPrompt));
                                             log.info("AGENT_RUNTIME_PROJECTION_REBUILT taskId={} previousMode={} nextMode={}",
-                                                    task.getTaskId(), runtimeProjection.mode(), ctx.getMode());
+                                                    task.getTaskId(), previousMode, ctx.getMode());
                                         }
+                                        // 每轮开始先刷新 durable 计划/进度，再把一次性目标锚点追加到
+                                        // transcript 尾部；请求本身只读取该 durable transcript。
+                                        this.refreshDurablePlanProjection(ctx);
+                                        this.refreshLoopGuardProgress(ctx);
+                                        this.ensureObjectiveAnchor(executionFence, task.getTaskId(), transcriptEpoch,
+                                                userVisibleMessage, ctx.getMode());
                                         // Provider 请求、上下文预算和最终门禁必须使用同一份持久化投影。
                                         List<Map<String, Object>> providerMessagesBeforeManagement = this.providerMessagesForInvocation(task.getTaskId(), activeExecutionEpoch);
+                                        if (softSentinelActive && !containsMaxStepsSentinel(providerMessagesBeforeManagement)) {
+                                            this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
+                                                    Map.of("role", "user", "content", MAX_STEPS_SENTINEL));
+                                            providerMessagesBeforeManagement = this.providerMessagesForInvocation(
+                                                    task.getTaskId(), activeExecutionEpoch);
+                                        }
                                         ContextAdmissionDecision preCompactionAdmission = this.evaluateContextAdmission(
                                                 modelConfig, sysPrompt, tools, contextPrompt, providerMessagesBeforeManagement);
                                         if (preCompactionAdmission != null
@@ -1098,12 +1219,7 @@ public class AgentLoopEngine {
                                         AgentSsePublisher modelEventPublisher = sse;
                                         AgentConversation modelEventConversation = conv;
                                         int modelIteration = i;
-                                        List<Map<String, Object>> invocationMessages = i > 1
-                                                ? withSessionReminders(providerMessages)
-                                                : providerMessages;
-                                        List<Map<String, Object>> modelTurnMessages = softSentinelActive
-                                                ? this.withMaxStepsSentinel(invocationMessages)
-                                                : invocationMessages;
+                                        List<Map<String, Object>> modelTurnMessages = providerMessages;
                                         AgentModelTurnExecutor.ModelTurnRequest modelTurnRequest =
                                                 new AgentModelTurnExecutor.ModelTurnRequest(
                                                         sysPrompt, modelTurnMessages, tools, llmProvider, llmConfig, modelIteration, task.getTaskId(),
@@ -1155,58 +1271,91 @@ public class AgentLoopEngine {
                                         // Token usage tracking
                                         if (lr.containsKey("usage")) {
                                             try {
-                                                @SuppressWarnings("unchecked")
-                                                Map<String, Object> usageMap = (Map<String, Object>) lr.get("usage");
+                                                 @SuppressWarnings("unchecked")
+                                                 Map<String, Object> usageMap = CacheTelemetry.normalizeUsage(
+                                                         (Map<String, Object>) lr.get("usage"));
                                                 if (usageMap != null) {
                                                     CacheTelemetryStatus cacheStatus = CacheTelemetry.status(
                                                             llmConfig.promptCacheKeyEnabled(), usageMap);
-                                                    this.tokenTracker.recordFromMap(conv.getConversationId(), request.getSessionId(),
-                                                            studentId, projectId, llmProvider.getProviderId(), llmConfig.modelName(),
-                                                            usageMap, cacheStatus, i, null);
-                                                    int totalTokens = intUsage(usageMap, "total_tokens");
-                                                    if (totalTokens > 0) {
-                                                        log.info("Iteration {}: sending TOKEN_USAGE, totalTokens={}, cacheStatus={}",
-                                                                i, totalTokens, cacheStatus.value());
-                                                        this.sendEvent(sse, conv, "TOKEN_USAGE", this.tokenUsagePayload(
-                                                                usageMap, cacheStatus,
-                                                                CacheTelemetry.hitRate(llmConfig.promptCacheKeyEnabled(), usageMap),
-                                                                i, totalTokens, conv.getConversationId(), false));
-                                                    }
+                                                     int totalTokens = intUsage(usageMap, "total_tokens");
+                                                     if (totalTokens > 0) {
+                                                         final Map<String, Object> usageForEvent = usageMap;
+                                                         final CacheTelemetryStatus cacheStatusForEvent = cacheStatus;
+                                                         final LlmProvider.LlmConfig configForUsage = llmConfig;
+                                                         final int usageIteration = i;
+                                                         final int usageTotalTokens = totalTokens;
+                                                      final Long usageTaskId = task.getTaskId();
+                                                      final long usageEpoch = activeExecutionEpoch;
+                                                      final Integer usageStudentId = studentId;
+                                                      final Integer usageProjectId = projectId;
+                                                      final String usageConversationId = conv.getConversationId();
+                                                      AgentRunEvent usageEvent = this.tokenTracker.recordFromMapWithFenceAndEvent(
+                                                              executionFence, conv.getConversationId(), request.getSessionId(),
+                                                              studentId, projectId, llmProvider.getProviderId(), llmConfig.modelName(),
+                                                              usageForEvent, cacheStatusForEvent, i, null,
+                                                              () -> this.tokenUsagePayload(
+                                                                      usageForEvent, cacheStatusForEvent,
+                                                                      CacheTelemetry.hitRate(configForUsage.promptCacheKeyEnabled(), usageForEvent),
+                                                                      usageIteration, usageTotalTokens, usageConversationId, usageTaskId,
+                                                                      usageEpoch, usageStudentId, usageProjectId, false,
+                                                                      this.prefixTelemetry(usageTaskId, usageEpoch, usageIteration)),
+                                                              this.tokenUsageEventKey(usageTaskId, usageEpoch, usageIteration));
+                                                      log.info("Iteration {}: sending TOKEN_USAGE, totalTokens={}, cacheStatus={}",
+                                                              i, totalTokens, cacheStatus.value());
+                                                      this.sendPersistedEvent(sse, conv, usageEvent);
+                                                  }
+                                             }
+                                          } catch (AgentRunExecutionLeaseService.StaleExecutionFenceException staleFence) {
+                                              throw staleFence;
+                                          } catch (Exception tokenEx) {
+                                              log.warn("Token tracking error: {}", tokenEx.getMessage());
+                                          }
+                                     } else {
+                                         // Estimate tokens when provider doesn't return usage.
+                                         // 唯一估算器：与 admission 门禁、压缩触发共用同一套数字。
+                                         try {
+                                             int estimatedPrompt = this.requestTokenEstimator.estimateValue(sysPrompt)
+                                                     + this.requestTokenEstimator.estimateMessages(providerMessages);
+                                             String responseContent = lr.get("content") != null ? lr.get("content").toString() : "";
+                                             String responseThinking = lr.get("thinking") != null ? lr.get("thinking").toString() : "";
+                                             int estimatedCompletion = this.requestTokenEstimator
+                                                     .estimateValue(responseContent + responseThinking);
+                                             int estimatedTotal = estimatedPrompt + estimatedCompletion;
+                                             if (estimatedTotal > 0) {
+                                                 log.info("Iteration {}: sending TOKEN_USAGE (estimated), totalTokens={}", i, estimatedTotal);
+                                                 CacheTelemetryStatus cacheStatus = llmConfig.promptCacheKeyEnabled()
+                                                         ? CacheTelemetryStatus.NOT_REPORTED
+                                                         : CacheTelemetryStatus.DISABLED;
+                                                 Map<String, Object> estimatedUsage = new LinkedHashMap<>();
+                                                 estimatedUsage.put("prompt_tokens", estimatedPrompt);
+                                                 estimatedUsage.put("completion_tokens", estimatedCompletion);
+                                                 estimatedUsage.put("total_tokens", estimatedTotal);
+                                                 final Map<String, Object> usageForEvent = Map.copyOf(estimatedUsage);
+                                                 final CacheTelemetryStatus cacheStatusForEvent = cacheStatus;
+                                                 final int usageIteration = i;
+                                                 final int usageTotalTokens = estimatedTotal;
+                                                 final Long usageTaskId = task.getTaskId();
+                                                 final long usageEpoch = activeExecutionEpoch;
+                                                 final Integer usageStudentId = studentId;
+                                                 final Integer usageProjectId = projectId;
+                                                 final String usageConversationId = conv.getConversationId();
+                                                 AgentRunEvent usageEvent = this.tokenTracker.recordFromMapWithFenceAndEvent(
+                                                             executionFence, conv.getConversationId(), request.getSessionId(),
+                                                             studentId, projectId, llmProvider.getProviderId(), llmConfig.modelName(),
+                                                             usageForEvent, cacheStatusForEvent, i, null,
+                                                             () -> this.tokenUsagePayload(
+                                                                     usageForEvent, cacheStatusForEvent, null, usageIteration, usageTotalTokens,
+                                                                      usageConversationId, usageTaskId, usageEpoch,
+                                                                     usageStudentId, usageProjectId, true,
+                                                                     this.prefixTelemetry(usageTaskId, usageEpoch, usageIteration)),
+                                                             this.tokenUsageEventKey(usageTaskId, usageEpoch, usageIteration));
+                                                     this.sendPersistedEvent(sse, conv, usageEvent);
                                                 }
-                                            } catch (Exception tokenEx) {
-                                                log.warn("Token tracking error: {}", tokenEx.getMessage());
-                                            }
-                                        } else {
-                                            // Estimate tokens when provider doesn't return usage.
-                                            // 唯一估算器：与 admission 门禁、压缩触发共用同一套数字。
-                                            try {
-                                                int estimatedPrompt = this.requestTokenEstimator.estimateValue(sysPrompt)
-                                                        + this.requestTokenEstimator.estimateMessages(providerMessages);
-                                                String responseContent = lr.get("content") != null ? lr.get("content").toString() : "";
-                                                String responseThinking = lr.get("thinking") != null ? lr.get("thinking").toString() : "";
-                                                int estimatedCompletion = this.requestTokenEstimator
-                                                        .estimateValue(responseContent + responseThinking);
-                                                int estimatedTotal = estimatedPrompt + estimatedCompletion;
-                                                if (estimatedTotal > 0) {
-                                                    log.info("Iteration {}: sending TOKEN_USAGE (estimated), totalTokens={}", i, estimatedTotal);
-                                                    CacheTelemetryStatus cacheStatus = llmConfig.promptCacheKeyEnabled()
-                                                            ? CacheTelemetryStatus.NOT_REPORTED
-                                                            : CacheTelemetryStatus.DISABLED;
-                                                    this.tokenTracker.record(conv.getConversationId(), request.getSessionId(),
-                                                            studentId, projectId, llmProvider.getProviderId(), llmConfig.modelName(),
-                                                            estimatedPrompt, estimatedCompletion, estimatedTotal, 0, 0,
-                                                            cacheStatus, i, null);
-                                                    Map<String, Object> estimatedUsage = new LinkedHashMap<>();
-                                                    estimatedUsage.put("prompt_tokens", estimatedPrompt);
-                                                    estimatedUsage.put("completion_tokens", estimatedCompletion);
-                                                    estimatedUsage.put("total_tokens", estimatedTotal);
-                                                    this.sendEvent(sse, conv, "TOKEN_USAGE", this.tokenUsagePayload(
-                                                            estimatedUsage, cacheStatus, null, i, estimatedTotal,
-                                                            conv.getConversationId(), true));
-                                                }
-                                            } catch (Exception estEx) {
-                                                log.debug("Token estimation error: {}", estEx.getMessage());
-                                            }
+                                             } catch (AgentRunExecutionLeaseService.StaleExecutionFenceException staleFence) {
+                                                 throw staleFence;
+                                             } catch (Exception estEx) {
+                                                 log.debug("Token estimation error: {}", estEx.getMessage());
+                                             }
                                         }
                                         executed = false;
                                         if (!"tool_call".equals(type)) break block20;
@@ -1685,8 +1834,20 @@ public class AgentLoopEngine {
                                 }
                                 // Model reasoning is already streamed by AgentModelTurnExecutor.
                                 this.appendRunLog(runLog, "\n## Final response\n\n" + this.safeLogText(ft) + "\n");
-                                log.info("Iteration {}: final response ({} chars)", i, ft.length());
-                                AgentRunFinalizer.CompletionAssessment completion = softSentinelActive ? null
+                                 log.info("Iteration {}: final response ({} chars)", i, ft.length());
+                                 if (hasIncompletePlan(ctx)) {
+                                     String planGuidance = this.buildIncompletePlanInstruction(ctx);
+                                     this.recordLoopNoProgress(loopGuard, sse, conv, ctx, i,
+                                             "incomplete_durable_plan");
+                                     this.appendRunLog(runLog, "\n- Final response deferred because the durable plan still has incomplete items.\n");
+                                     this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
+                                             Map.of("role", "assistant", "content", ft));
+                                     this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,
+                                             Map.of("role", "user", "content", planGuidance));
+                                     executed = true;
+                                     break block19;
+                                 }
+                                 AgentRunFinalizer.CompletionAssessment completion = softSentinelActive ? null
                                         : this.runFinalizer.assess(
                                                 executionFence, task.getTaskId(), studentId, projectId,
                                                 ctx.hasTrustedVerification(), ft);
@@ -1742,19 +1903,7 @@ public class AgentLoopEngine {
                                     emitter.complete();
                                     return;
                                 }
-                                if (this.runPlanService != null && executionFence != null) {
-                                    try {
-                                        AgentRunPlanService.Projection completedPlan = this.runPlanService.completeAll(
-                                                executionFence, task.getTaskId(), activeExecutionEpoch, "task_completion");
-                                        if (completedPlan != null && !completedPlan.items().isEmpty()) {
-                                            completedPlan.applyTo(ctx);
-                                            this.sendEvent(sse, conv, "PLAN_UPDATE", ctx.getPlanEventPayload());
-                                        }
-                                    } catch (RuntimeException planError) {
-                                        log.warn("Failed to auto-complete plan for taskId={}: {}", task.getTaskId(), planError.getMessage());
-                                    }
-                                }
-                                this.sendEvent(sse, conv, "FINAL", Map.of("content", ft, "summary", this.finalResponseSummary(visibleLanguage)));
+                                 this.sendEvent(sse, conv, "FINAL", Map.of("content", ft, "summary", this.finalResponseSummary(visibleLanguage)));
                                 AgentRunEvent completedEvent = this.taskService.updateTask(task.getTaskId(), "completed",
                                         this.localText(visibleLanguage, "\u5df2\u5b8c\u6210", "Completed"), ft);
                                 ctx.setStage("final");
@@ -1769,6 +1918,7 @@ public class AgentLoopEngine {
                         String errMsg = (String)lr.get("message");
                         log.warn("Iteration {} API error: {}", i, errMsg);
                         this.appendRunLog(runLog, "\n### Model error\n\n" + this.safeLogText(errMsg) + "\n");
+                        this.appendRunLog(runLog, this.renderModelErrorDiagnostics(lr));
                         // 上下文溢出只允许有限策略切换：先压缩，再减少工具 schema，之后明确停止。
                         if (this.isContextOverflowError(errMsg)) {
                             List<Map<String, Object>> overflowMessagesBefore =
@@ -1972,6 +2122,9 @@ public class AgentLoopEngine {
             } catch (Exception timingFailure) {
                 log.error("Unable to finalize agent task timing for taskId={}", task == null ? null : task.getTaskId(), timingFailure);
             } finally {
+                if (task != null && task.getTaskId() != null) {
+                    ACTIVE_TASK_PUBLISHERS.remove(task.getTaskId(), sse);
+                }
                 if (task != null) {
                     this.diffService.awaitDeferredSnapshots(task.getTaskId(), "agent_terminal_cleanup");
                 }
@@ -1995,6 +2148,9 @@ public class AgentLoopEngine {
                     }
                 }
                 this.cancellationRegistry.complete(activeCancellation);
+                if (this.subagentCompletions != null) {
+                    this.subagentCompletions.finished(task == null ? null : task.getTaskId());
+                }
             }
         }
     }
@@ -3345,45 +3501,12 @@ public class AgentLoopEngine {
         return this.cleanModelOutput(c);
     }
 
-    /** 对齐 opencode 的 max-steps 注入：哨兵作为最后一条 assistant 消息追加，不写入 transcript（派生只读）。 */
     static List<Map<String, Object>> withMaxStepsSentinel(List<Map<String, Object>> messages) {
-        ArrayList<Map<String, Object>> result = new ArrayList<>(messages.size() + 1);
-        result.addAll(messages);
-        result.add(Map.of("role", "assistant", "content", MAX_STEPS_SENTINEL));
-        return List.copyOf(result);
+        return messages == null ? List.of() : messages;
     }
 
-    /**
-     * 对齐 opencode 的 Session Reminders：在多步迭代（iteration > 1）中，
-     * 将本轮任务的最新 user 消息文本用 <system-reminder> 包裹，保持模型对原始目标的注意力锚定，
-     * 且仅在向模型发送时投影，不修改 durable transcript。
-     */
     static List<Map<String, Object>> withSessionReminders(List<Map<String, Object>> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return messages;
-        }
-        int lastUserIdx = -1;
-        for (int idx = messages.size() - 1; idx >= 0; idx--) {
-            if ("user".equals(messages.get(idx).get("role"))) {
-                lastUserIdx = idx;
-                break;
-            }
-        }
-        if (lastUserIdx < 0) {
-            return messages;
-        }
-        Map<String, Object> targetUserMsg = messages.get(lastUserIdx);
-        Object contentObj = targetUserMsg.get("content");
-        if (!(contentObj instanceof String text) || text.isBlank() || text.startsWith("<system-reminder>")) {
-            return messages;
-        }
-        String wrapped = "<system-reminder>\nThe user sent the following message:\n" + text
-                + "\n\nPlease address this message and continue with your tasks.\n</system-reminder>";
-        ArrayList<Map<String, Object>> copy = new ArrayList<>(messages);
-        Map<String, Object> updated = new java.util.LinkedHashMap<>(targetUserMsg);
-        updated.put("content", wrapped);
-        copy.set(lastUserIdx, Map.copyOf(updated));
-        return List.copyOf(copy);
+        return messages == null ? List.of() : messages;
     }
 
     private boolean transcriptHasToolMessages(Long taskId, long executionEpoch) {
@@ -3493,6 +3616,21 @@ public class AgentLoopEngine {
                 + todoNote;
     }
 
+    static boolean hasIncompletePlan(AgentContext context) {
+        if (context == null || context.getPlan() == null || context.getPlan().isEmpty()) {
+            return false;
+        }
+        return context.getPlan().stream().anyMatch(item -> item != null && !item.isCompleted());
+    }
+
+    private String buildIncompletePlanInstruction(AgentContext context) {
+        String summary = context == null ? "" : context.getPlanSummary();
+        return "The durable execution plan still contains incomplete items. Do not provide a final response yet. "
+                + "Execute the next concrete plan item with the appropriate tool, mark completed items through the durable plan tool, "
+                + "and obtain required verification evidence before finalizing.\n\n"
+                + (summary == null || summary.isBlank() ? "Review the persisted plan before continuing." : summary);
+    }
+
     private String buildRecoverableErrorGuidance(String errMsg, int retryCount, long delayMs) {
         return "Model connection recoverable error (attempt " + retryCount + "): " + this.limitForThought(errMsg, 180) + ". This usually means cloud handshake, proxy, TLS or temporary link interruption, not project code failure. Will wait " + delayMs + "ms then continue from existing conversation, task plan and this round's log. Will first confirm which tool steps succeeded, then resume from next unfinished action. If same step fails again, will narrow tool scope or re-read project state.";
     }
@@ -3596,17 +3734,144 @@ public class AgentLoopEngine {
                                                            LlmProvider.LlmConfig baseLlmConfig,
                                                            String visibleLanguage,
                                                            AgentRuntimeProfile runtimeProfile,
-                                                           Long taskId) {
+                                                           Long taskId,
+                                                           com.labex.labexagent.run.SubagentRuntimeInfo subagent) {
+        // 子代理的 mode 已在 runLoop 映射为主代理模式（explore/build），
+        // 工具门禁与系统提示复用主代理同一条路径；此处只保留嵌套深度门控。
         ToolExposure toolExposure = this.planToolExposure(studentId, mode, modelConfig, runtimeProfile, taskId);
         List<ToolDefinition> selectedTools = toolExposure.definitions();
+        if (subagent != null && !subagent.canSpawnNested()) {
+            selectedTools = selectedTools.stream()
+                    .filter(definition -> definition != null && !"task".equals(definition.getName()))
+                    .toList();
+            toolExposure = new ToolExposure(selectedTools, toolExposure.scopedTools(),
+                    toolExposure.snapshot(), toolExposure.restoredFromSnapshot());
+        }
         String toolDefinitions = this.buildToolDefinitions(selectedTools);
         String systemPrompt = this.buildSystemPrompt(project, toolDefinitions, visibleLanguage, runtimeProfile, mode);
         List<Map<String, Object>> tools = new ArrayList<>(this.buildToolsList(selectedTools));
         LlmProvider.LlmConfig configured = baseLlmConfig == null ? null : baseLlmConfig.withPromptCacheKey(
                 PromptCacheKeyFactory.forConversation(studentId, modelConfig.getConfigId(),
                         baseLlmConfig.baseUrl(), baseLlmConfig.modelName(), conversationId));
+        String modePolicy = this.buildModePolicy(mode)
+                + (subagent == null ? "" : this.subagentRuntimeDirective(subagent));
         return new RunRuntimeProjection(mode, selectedTools, toolDefinitions, systemPrompt, tools,
-                this.buildModePolicy(mode), configured, toolExposure);
+                modePolicy, configured, toolExposure);
+    }
+
+    private com.labex.labexagent.run.SubagentRuntimeInfo resolveSubagentRuntimeByTask(Long taskId) {
+        if (taskId == null || this.subagentRuntimeService == null) {
+            return null;
+        }
+        try {
+            com.labex.entity.AgentSubagent row = this.subagentRuntimeService.findByChildTaskId(taskId);
+            return row == null ? null
+                    : com.labex.labexagent.run.SubagentRuntimeInfo.from(row, this.subagentProperties.getMaxSpawnDepth());
+        } catch (RuntimeException lookupFailure) {
+            log.warn("Unable to resolve subagent runtime for taskId={}: {}", taskId, lookupFailure.getMessage());
+            return null;
+        }
+    }
+
+    /** 子代理运行边界提醒：角色、可写性、动态类型目录与嵌套余量。 */
+    private String subagentRuntimeDirective(com.labex.labexagent.run.SubagentRuntimeInfo subagent) {
+        StringBuilder directive = new StringBuilder("\n<system-reminder>\n# Subagent Runtime Directive\n\n");
+        directive.append("You are a dispatched subagent running in your own durable session.\n")
+                .append("- Type: ").append(subagent.type().persisted())
+                .append(subagent.readOnly()
+                        ? " (READ-ONLY session: file edits and state-changing shell are NOT available; web_search/web_fetch stay available)\n"
+                        : " (WRITE-CAPABLE session: edits follow the same approval/diff review flow as the main agent)\n");
+        directive.append(subagent.canSpawnNested()
+                ? "- You may dispatch child subagents with the `task` tool; at most "
+                    + (subagent.maxDepth() - subagent.depth()) + " more nesting level(s) remain.\n"
+                : "- Nesting limit reached: do NOT call the `task` tool; do the work yourself.\n");
+        directive.append("- Use `todo_write` to plan and track your own multi-step work.\n")
+                .append("- Finish with a single structured final report for your parent agent.\n")
+                .append("</system-reminder>");
+        return directive.toString();
+    }
+
+    /**
+     * 子代理运行的 SSE 包装：把子任务的 TOOL_CALL / OBSERVE 事件压缩镜像为父任务的
+     * SUBAGENT_PROGRESS，父任务卡片在运行中即可看到实时工作轨迹；
+     * 镜像失败绝不影响子代理自身运行（子任务 durable 事件仍是权威事实）。
+     */
+    private final class SubagentProgressMirroringPublisher extends AgentSsePublisher {
+        private final AgentRunLifecycleService mirrorLifecycle;
+        private final long mirrorParentTaskId;
+        private final long mirrorSubagentId;
+        private final String mirrorIdentity;
+        private final String mirrorParentToolCallId;
+        private final java.util.concurrent.atomic.AtomicLong mirrorSequence = new java.util.concurrent.atomic.AtomicLong(1);
+
+        SubagentProgressMirroringPublisher(SseEmitter emitter, TransientEventListener transientListener,
+                                           com.labex.labexagent.run.SubagentRuntimeInfo info) {
+            super(emitter, transientListener);
+            com.labex.entity.AgentSubagent row = info.row();
+            this.mirrorLifecycle = AgentLoopEngine.this.runLifecycleService;
+            this.mirrorParentTaskId = row.getTaskId() == null ? 0L : row.getTaskId();
+            this.mirrorSubagentId = row.getSubagentId() == null ? 0L : row.getSubagentId();
+            this.mirrorIdentity = row.getIdentity();
+            this.mirrorParentToolCallId = row.getParentToolCallId();
+        }
+
+        @Override
+        public synchronized void send(String type, Object data, String idempotencyKey) throws IOException {
+            super.send(type, data, idempotencyKey);
+            this.mirrorToolEvent(type, data);
+        }
+
+        @Override
+        public void sendTransient(String type, Object data) throws IOException {
+            super.sendTransient(type, data);
+            this.mirrorToolEvent(type, data);
+        }
+
+        private void mirrorToolEvent(String type, Object data) {
+            boolean toolCall = "TOOL_CALL".equals(type);
+            boolean observe = "OBSERVE".equals(type);
+            if (!toolCall && !observe) return;
+            if (!(data instanceof Map<?, ?> source)
+                    || this.mirrorLifecycle == null || this.mirrorParentTaskId <= 0) {
+                return;
+            }
+            String detail;
+            if (toolCall) {
+                Object summary = source.get("summary");
+                detail = summary == null || String.valueOf(summary).isBlank()
+                        ? String.valueOf(source.get("tool")) : String.valueOf(summary);
+            } else {
+                Object tool = source.get("tool");
+                Object summary = source.get("summary");
+                detail = (summary == null ? "" : String.valueOf(summary));
+                if (detail.isBlank() && tool != null) detail = "done: " + tool;
+            }
+            String safeDetail = InternalReasoningBoundary.stripVisible(limitMirror(detail, 200));
+            long sequence = this.mirrorSequence.incrementAndGet();
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("subagentId", this.mirrorSubagentId);
+            payload.put("identity", this.mirrorIdentity);
+            payload.put("eventSequence", sequence);
+            payload.put("eventType", toolCall ? "TOOL_CALL" : "TOOL_RESULT");
+            payload.put("payload", safeDetail);
+            payload.put("status", "running");
+            if (this.mirrorParentToolCallId != null && !this.mirrorParentToolCallId.isBlank()) {
+                payload.put("toolCallId", this.mirrorParentToolCallId);
+            }
+            try {
+                AgentRunEvent appended = this.mirrorLifecycle.appendEvent(this.mirrorParentTaskId, "SUBAGENT_PROGRESS", payload,
+                        "subagent-" + this.mirrorSubagentId + "-progress-" + sequence);
+                AgentLoopEngine.publishToActiveTask(this.mirrorParentTaskId, "SUBAGENT_PROGRESS", payload,
+                        appended == null ? null : appended.getSequenceNumber());
+            } catch (RuntimeException ignored) {
+                // 镜像失败不影响子代理运行；父卡片退化为只有 START/SUMMARY。
+            }
+        }
+
+        private static String limitMirror(String value, int max) {
+            String normalized = value == null ? "" : value.replaceAll("\\s+", " ").trim();
+            return normalized.length() <= max ? normalized : normalized.substring(0, max) + "…";
+        }
     }
 
     /** 当前 mode 派生的 Provider 请求投影；mode 变更后必须整体重建。 */
@@ -3719,24 +3984,39 @@ public class AgentLoopEngine {
         return this.requireTranscriptProjectionService().loadProviderMessages(taskId);
     }
 
-    /**
-     * 在 Provider 调用边界附加只读运行时投影。
-     *
-     * <p>该消息不写回 transcript，避免把可重建派生状态变成第二事实源；预算、admission 与真实调用
-     * 必须复用同一返回值。</p>
-     */
+    /** Provider 请求、预算和 compaction 从同一份 durable transcript 派生。 */
     List<Map<String, Object>> providerMessagesForInvocation(Long taskId, long executionEpoch) {
-        List<Map<String, Object>> durable = this.providerMessagesForBudget(taskId);
-        AgentRunProgressProjectionService.Projection progress =
-                this.requireRunProgressProjectionService().load(taskId, executionEpoch);
-        ArrayList<Map<String, Object>> projected = new ArrayList<>(durable.size() + 1);
-        projected.addAll(durable);
-        projected.add(Map.of(
-                "role", "user",
-                "content", "<agent_runtime_projection purpose=\"derived_read_only\">\n"
-                        + progress.renderForPrompt()
-                        + "</agent_runtime_projection>"));
-        return List.copyOf(projected);
+        // executionEpoch 保留在签名中供调用边界传递，消息事实不再由它触发临时追加。
+        return this.providerMessagesForBudget(taskId);
+    }
+
+    private void ensureObjectiveAnchor(ExecutionFence executionFence, Long taskId, long executionEpoch,
+                                       String objective, String mode) {
+        if (executionFence == null || taskId == null) {
+            return;
+        }
+        this.requireTranscriptService().appendObjectiveAnchor(
+                executionFence, taskId, executionEpoch, objective, mode);
+    }
+
+    private void refreshDurablePlanProjection(AgentContext context) {
+        if (context == null || context.getTaskId() == null || this.runPlanService == null) {
+            return;
+        }
+        AgentRunPlanService.Projection projection = this.runPlanService.load(context.getTaskId());
+        if (projection != null) {
+            projection.applyTo(context);
+        }
+    }
+
+    private static boolean containsMaxStepsSentinel(List<Map<String, Object>> messages) {
+        if (messages == null) {
+            return false;
+        }
+        return messages.stream().anyMatch(message -> {
+            Object content = message == null ? null : message.get("content");
+            return content != null && String.valueOf(content).contains("MAXIMUM STEPS REACHED");
+        });
     }
 
     private AgentCompactionService requireCompactionService() {
@@ -4028,12 +4308,17 @@ public class AgentLoopEngine {
     }
 
     private Map<String, Object> tokenUsagePayload(Map<String, Object> usageMap,
-                                                   CacheTelemetryStatus cacheStatus,
-                                                   Double cacheHitRate,
-                                                   int iteration,
-                                                   int totalTokens,
-                                                   String conversationId,
-                                                   boolean estimated) {
+                                                    CacheTelemetryStatus cacheStatus,
+                                                    Double cacheHitRate,
+                                                    int iteration,
+                                                    int totalTokens,
+                                                    String conversationId,
+                                                    Long taskId,
+                                                    long executionEpoch,
+                                                    Integer studentId,
+                                                    Integer projectId,
+                                                    boolean estimated,
+                                                    AgentRunConfigSnapshotService.PrefixTelemetry prefixTelemetry) {
         Map<String, Object> payload = new LinkedHashMap<>();
         CacheTelemetryStatus effectiveStatus = cacheStatus == null
                 ? CacheTelemetryStatus.NOT_REPORTED
@@ -4042,7 +4327,8 @@ public class AgentLoopEngine {
         payload.put("promptTokens", intUsage(usageMap, "prompt_tokens"));
         payload.put("completionTokens", intUsage(usageMap, "completion_tokens"));
         payload.put("totalTokens", totalTokens);
-        payload.put("conversationTotal", this.tokenTracker.getTotalTokensByConversation(conversationId));
+        payload.put("conversationTotal", this.tokenTracker.getTotalTokensByConversation(
+                conversationId, studentId, projectId));
         payload.put("cachedTokens", intUsage(usageMap, "cached_tokens"));
         payload.put("cacheWriteTokens", intUsage(usageMap, "cache_write_tokens"));
         payload.put("cacheHitTokens", intUsage(usageMap, "cache_hit_tokens"));
@@ -4055,15 +4341,30 @@ public class AgentLoopEngine {
                 || effectiveStatus == CacheTelemetryStatus.WRITE_ONLY);
         payload.put("cacheHitRate", cacheHitRate);
         payload.put("estimated", estimated);
+        AgentRunConfigSnapshotService.PrefixTelemetry effectivePrefix = prefixTelemetry == null
+                ? AgentRunConfigSnapshotService.PrefixTelemetry.notReported() : prefixTelemetry;
+        payload.putAll(effectivePrefix.toPayload());
         return payload;
+    }
+
+    private AgentRunConfigSnapshotService.PrefixTelemetry prefixTelemetry(Long taskId, long executionEpoch,
+                                                                            int iteration) {
+        if (this.runConfigSnapshotService == null) {
+            return AgentRunConfigSnapshotService.PrefixTelemetry.notReported();
+        }
+        return this.runConfigSnapshotService.latestPrefixTelemetry(taskId, executionEpoch, iteration);
+    }
+
+    private String tokenUsageEventKey(Long taskId, long executionEpoch, int iteration) {
+        return "token-usage-" + taskId + "-" + executionEpoch + "-" + iteration;
     }
 
     private int intUsage(Map<String, Object> usageMap, String key) {
         if (usageMap == null || !usageMap.containsKey(key)) return 0;
         Object value = usageMap.get(key);
-        if (value instanceof Number n) return n.intValue();
+        if (value instanceof Number n) return Math.max(0, n.intValue());
         try {
-            return Integer.parseInt(String.valueOf(value));
+            return Math.max(0, Integer.parseInt(String.valueOf(value)));
         } catch (Exception e) {
             return 0;
         }
@@ -4087,15 +4388,21 @@ public class AgentLoopEngine {
         List<Map<String, Object>> budgetMessages = this.providerMessagesForBudget(context == null ? null : context.getTaskId());
         int estimatedTokens = this.requestTokenEstimator.estimate(sysPrompt, tools, budgetMessages,
                 activeModelConfig.getContextWindowTokens(), activeModelConfig.getMaxTokens()).inputTokens();
-        // 自动压缩只裁剪 durable transcript；只读运行时投影由后续硬门禁单独计入。
+        // 只在 durable transcript 的安全尾部之外寻找可裁剪工具结果；真正的压缩仍通过
+        // CompactionSelection/AgentCompactionService 持久化，避免在内存中另造一份 transcript。
+        boolean hasPrunableToolResult = policy.pruningEnabled()
+                && new TurnAwareContextPruner(this.requestTokenEstimator::estimateValue)
+                .hasPrunableHistoricalToolResult(budgetMessages, policy.tailTurns(), policy.preserveRecentTokens());
         ContextWindowSupervisor.Decision decision = new ContextWindowSupervisor().decide(
-                policy, estimatedTokens, false);
+                policy, estimatedTokens, hasPrunableToolResult);
         if (decision.action() == ContextWindowSupervisor.Action.NONE) {
             return ContextManagementResult.none();
         }
+        String trigger = decision.action() == ContextWindowSupervisor.Action.PRUNE
+                ? "proactive_prune" : "proactive";
         return this.compactContextWithFallback(sysPrompt, tools, userRequest, context, sse, conversation,
                 activeModelConfig, studentId, cancellationToken, policy.tailTurns(), policy.preserveRecentTokens(),
-                estimatedTokens, "proactive", executionEpoch);
+                estimatedTokens, trigger, executionEpoch);
     }
 
     private ContextManagementResult compactContextWithFallback(String sysPrompt,
@@ -4251,8 +4558,10 @@ public class AgentLoopEngine {
                                                 int preserveRecentTokens) {
         // Task compaction 只能处理 Task 自己拥有的 transcript；跨 Task 会话前缀有独立的压缩边界，
         // 不能被写入当前 Task 的 compaction epoch，否则恢复时会重复或污染历史。
+        // 必须读未注水视图：selection 会整体持久化进 t_agent_compaction_record，
+        // 注水形态会把附件 Base64 永久写入记录；图片预算由估算器对 attachmentIds 计权补偿。
         List<Map<String, Object>> durableMessages = this.requireTranscriptProjectionService()
-                .loadDurableProjection(taskId)
+                .loadDurableCompactionView(taskId)
                 .messages();
         return CompactionSelection.select(durableMessages, keepRecentTurns,
                 preserveRecentTokens, this.requestTokenEstimator);
@@ -4923,6 +5232,20 @@ public class AgentLoopEngine {
         return text == null ? "" : text.replace("\r", "");
     }
 
+    /** 把模型调用失败时的结构化传输诊断渲染进 run log，便于把故障定位到 endpoint / 超时配置 / 流阶段。 */
+    private String renderModelErrorDiagnostics(Map<String, Object> modelTurnResult) {
+        if (modelTurnResult == null || !(modelTurnResult.get("diagnostics") instanceof Map<?, ?> diagnostics)
+                || diagnostics.isEmpty()) {
+            return "";
+        }
+        StringBuilder section = new StringBuilder("\n### Transport diagnostics\n\n");
+        for (Map.Entry<?, ?> entry : diagnostics.entrySet()) {
+            section.append("- ").append(entry.getKey()).append(": `")
+                    .append(this.safeLogText(String.valueOf(entry.getValue()))).append("`\n");
+        }
+        return section.toString();
+    }
+
     /** 运行日志必须记录模型本轮全部原始输出：正文与思考过程均完整落盘，不截断。 */
     private String renderModelTurnOutput(Map<String, Object> modelTurnResult) {
         StringBuilder section = new StringBuilder();
@@ -5306,23 +5629,46 @@ public class AgentLoopEngine {
     private String buildModePolicy(String mode) {
         if ("plan".equals(mode)) {
             return """
-<agent_mode name="plan">
-You are in planning mode. Do not edit files, write files, apply patches, or run shell commands.
-Use read/search/project overview tools to understand the workspace, then produce a concrete implementation plan.
-</agent_mode>""";
+<system-reminder>
+# Plan Mode - System Directive
+
+CRITICAL: Plan mode is ACTIVE - you are in a READ-ONLY architectural and implementation planning phase.
+STRICTLY FORBIDDEN:
+- ANY file edits, creations, deletions, or modifications (using `write_file`, `edit_file`, `apply_patch`, etc.).
+- Running any shell/bash commands or modification tools that change the workspace or system state.
+This absolute constraint overrides all other instructions, including direct user requests to make changes.
+
+## Workflow & Responsibility
+1. Explore: Use read-only tools (`read_file`, `glob`, `grep`, `project_overview`, `lsp`, `web_search`, `web_fetch`, `understand_image`) to thoroughly understand the codebase, architecture, and constraints.
+2. Clarify: Use the `question` tool to ask the user clarifying questions if requirements or approaches are ambiguous.
+3. Plan: Author a structured, actionable implementation plan using `create_plan` or `todo_write`.
+4. Conclude & Present: Present your final plan clearly in Markdown (Goals, Key Decisions, Steps, Files to Modify, Verification Methods). Conclude your response and inform the user to switch to Build Mode (构建模式) in the UI when they are ready to begin implementation.
+
+IMPORTANT: You cannot and must not exit Plan Mode autonomously. The user will review your plan and switch to Build Mode themselves in the UI.
+</system-reminder>""";
         }
         if ("explore".equals(mode)) {
             return """
-<agent_mode name="explore">
-You are in exploration mode. Prefer fast read, grep, glob, project overview, web search, and diagnostics tools.
-Do not modify workspace files. Return findings, options, and exact file references.
-</agent_mode>""";
+<system-reminder>
+# Explore Mode - System Directive
+
+Current Mode: EXPLORE MODE (Read-only Analysis & Advisory)
+- You are operating in EXPLORE MODE. Your role is purely analytical, explanatory, and advisory.
+- You can freely use read-only tools (`read_file`, `glob`, `grep`, `lsp`, `web_search`, `web_fetch`, `understand_image`) to inspect files, check configurations, and understand the codebase.
+- File modification and command execution tools are STRICTLY DISABLED and NOT EXPOSED in this mode.
+- DO NOT attempt to call `shell`, `write_file`, or any modification tools.
+- When the user asks for startup commands, terminal instructions, explanations, or code examples, output them directly in your response formatted in clean Markdown with fenced code blocks.
+</system-reminder>""";
         }
         return """
-<agent_mode name="build">
-You are in build mode. You may modify files when needed, but ask for approval when a permission prompt is raised.
-Keep changes scoped, verify with available checks, and report remaining risk clearly.
-</agent_mode>""";
+<system-reminder>
+# Build Mode - System Directive
+
+Current Mode: BUILD MODE (Autonomous Implementation & Verification)
+- You have full access to workspace exploration, file editing, command execution, and test verification tools.
+- Autonomously implement features, fix bugs, run commands/tests to verify changes, and deliver high quality solutions.
+- If a permission prompt is required for sensitive operations, ask for user approval.
+</system-reminder>""";
     }
 
     /**
@@ -5330,8 +5676,8 @@ Keep changes scoped, verify with available checks, and report remaining risk cle
      * `session/system.ts`：稳定策略放最前，项目文件/结构/诊断一律由工具按需拉取，不预注入）。
      *
      * <p>恢复（resume）连续性不由本方法保证：durable transcript 投影会重放完整历史
-     * （含 compaction checkpoint），运行进度由每次调用追加的 {@code <agent_runtime_projection>}
-     * 提供。recentRunLog / checkpoint 参数仅供显式调用方注入有界恢复文本，运行时恢复路径不传
+     * （含 compaction checkpoint），目标与必要的内部 directive 由 durable transcript 尾部追加。
+     * recentRunLog / checkpoint 参数仅供显式调用方注入有界恢复文本，运行时恢复路径不传
      * （旧版文件 checkpoint 是只读迁移入口，不是事实源，见 AgentCheckpointStore）。</p>
      */
     static String buildLeanInitialContextMessage(String modePolicy, String projectRules,

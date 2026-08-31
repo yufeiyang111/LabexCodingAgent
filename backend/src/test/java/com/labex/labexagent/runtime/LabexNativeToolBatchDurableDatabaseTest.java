@@ -291,6 +291,7 @@ class LabexNativeToolBatchDurableDatabaseTest {
                         last_event_sequence BIGINT,
                         request_payload CLOB,
                         origin_message_id BIGINT,
+                        parent_task_id BIGINT,
                         recovery_attempts INT,
                         retry_attempts INT,
                         next_retry_at TIMESTAMP,

@@ -75,11 +75,33 @@ public class AgentToolNarrator {
         };
     }
 
+    private String taskState(String content) {
+        if (content == null || content.isBlank()) return "";
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("<task\\b[^>]*\\bstate=[\\\"'](running|error|completed)[\\\"']", java.util.regex.Pattern.CASE_INSENSITIVE)
+                .matcher(content);
+        return matcher.find() ? matcher.group(1).toLowerCase(Locale.ROOT) : "";
+    }
+
     String buildResultThought(String toolName, JsonObject args, ToolResult result, String visibleLanguage) {
         String tool = this.safeTool(toolName);
         String target = this.toolTarget(tool, args);
         String content = result == null ? "" : result.getContent();
         String compact = this.limitForThought(content, 180);
+        if ("task".equals(tool) || "subagent".equals(tool)) {
+            String state = taskState(content);
+            if ("running".equals(state) && result != null && result.isSuccess()) {
+                return this.isChineseLanguage(visibleLanguage)
+                        ? "子代理已启动并在后台调研，等待它返回持久化结论。"
+                        : "The subagent has started and is working in the background; waiting for its durable result.";
+            }
+            if ("error".equals(state)) {
+                String error = compact.isBlank() ? "子代理执行失败" : compact;
+                return this.isChineseLanguage(visibleLanguage)
+                        ? "子代理执行失败：" + error
+                        : "Subagent execution failed: " + error;
+            }
+        }
         if (this.isCompletedNonZeroShellResult(result)) {
             String exit = String.valueOf(result.getExecutionExitCode());
             return this.isChineseLanguage(visibleLanguage)

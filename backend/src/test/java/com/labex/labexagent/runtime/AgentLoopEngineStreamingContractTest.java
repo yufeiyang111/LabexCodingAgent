@@ -67,13 +67,27 @@ class AgentLoopEngineStreamingContractTest {
     }
 
     @Test
-    void maxStepsSentinelIsDerivedReadOnlyAndNeverWrittenToTheTranscript() {
-        assertTrue(source.contains("withMaxStepsSentinel(providerMessages)")
-                || source.contains("withMaxStepsSentinel(invocationMessages)"));
-        assertTrue(source.contains("Map.of(\"role\", \"assistant\", \"content\", MAX_STEPS_SENTINEL)"));
-        assertTrue(source.contains("List.copyOf(result)"));
-        assertFalse(source.contains("this.appendProviderMessage(task.getTaskId(), transcriptEpoch, Map.of(\"role\", \"assistant\", \"content\", MAX_STEPS_SENTINEL"));
-        assertFalse(source.contains("MAX_STEPS_SENTINEL\"));"));
+    void projectsDurablePrefixEvidenceSeparatelyFromProviderCacheTelemetry() {
+        assertTrue(source.contains("this.prefixTelemetry(usageTaskId, usageEpoch, usageIteration)"));
+        assertTrue(source.contains("latestPrefixTelemetry(taskId, executionEpoch, iteration)"));
+        assertTrue(source.contains("effectivePrefix.toPayload()"));
+        assertTrue(source.contains("payload.put(\"executionEpoch\", executionEpoch)"));
+        assertTrue(source.contains("CacheTelemetry.hitRate"));
+    }
+
+    @Test
+    void maxStepsSentinelIsDurableBeforeItCanReachTheProvider() {
+        assertTrue(source.contains("containsMaxStepsSentinel(providerMessagesBeforeManagement)"));
+        assertTrue(source.contains("Map.of(\"role\", \"user\", \"content\", MAX_STEPS_SENTINEL)"));
+        assertTrue(source.contains("this.appendProviderMessage(executionFence, task.getTaskId(), transcriptEpoch,"));
+        assertFalse(source.contains("withMaxStepsSentinel(providerMessages)"));
+        assertFalse(source.contains("withMaxStepsSentinel(invocationMessages)"));
+    }
+
+    @Test
+    void finalizationCannotAutoCompleteAnIncompleteDurablePlan() {
+        assertTrue(source.contains("if (hasIncompletePlan(ctx))"));
+        assertFalse(source.contains("runPlanService.completeAll("));
     }
 
     @Test

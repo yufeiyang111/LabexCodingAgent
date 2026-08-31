@@ -28,6 +28,12 @@ public class AgentStreamRequest {
     @JsonIgnore
     private String resumeInteractionId;
     /**
+     * 仅限子代理派发链路：本次运行对应的 t_agent_subagent 行 ID；
+     * 引擎在子任务创建后据此回填 child_task_id / parent_task_id 并登记终态回调。
+     */
+    @JsonIgnore
+    private Long subagentRowId;
+    /**
      * 仅限 scheduler/continuation 使用；不能进入 HTTP 请求协议，也不能进入持久化 transcript
      * （只允许在 Provider 调用边界的只读派生投影中附加）。
      */
@@ -130,6 +136,16 @@ public class AgentStreamRequest {
     @JsonIgnore
     public void setResumeNote(String resumeNote) {
         this.resumeNote = resumeNote;
+    }
+
+    @JsonIgnore
+    public Long getSubagentRowId() {
+        return this.subagentRowId;
+    }
+
+    @JsonIgnore
+    public void setSubagentRowId(Long subagentRowId) {
+        this.subagentRowId = subagentRowId;
     }
 
     public boolean isBackgroundRun() {

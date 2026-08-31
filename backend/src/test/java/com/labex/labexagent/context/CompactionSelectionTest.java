@@ -39,6 +39,22 @@ class CompactionSelectionTest {
     }
 
     @Test
+    void doesNotCountTheObjectiveAnchorAsASeparateUserTurn() {
+        List<Map<String, Object>> messages = List.of(
+                Map.of("role", "user", "content", "initial context"),
+                Map.of("role", "assistant", "content", "old answer"),
+                Map.of("role", "user", "content", "<agent_focus_anchor version=\"1\">\nobjective\n</agent_focus_anchor>"),
+                Map.of("role", "user", "content", "actual latest request"),
+                Map.of("role", "assistant", "content", "working"));
+
+        CompactionSelection selection = CompactionSelection.select(messages, 1, 10_000, estimator);
+
+        assertTrue(selection.changed());
+        assertEquals(1, selection.retainedTurns());
+        assertEquals("actual latest request", selection.retainedTail().get(0).get("content"));
+    }
+
+    @Test
     void neverSplitsLatestTurnEvenWhenItExceedsTailBudget() {
         List<Map<String, Object>> messages = List.of(
                 Map.of("role", "user", "content", "old"),

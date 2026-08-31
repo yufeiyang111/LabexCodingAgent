@@ -66,6 +66,7 @@ public class DefaultPermissionRuleset {
                     new PermissionRule("question", "*", PermissionAction.ALLOW),
                     new PermissionRule("read", "*", PermissionAction.ALLOW),
                     new PermissionRule("read_file", "*", PermissionAction.ALLOW),
+                    new PermissionRule("read_tool_output", "*", PermissionAction.ALLOW),
                     new PermissionRule("list", "*", PermissionAction.ALLOW),
                     new PermissionRule("list_files", "*", PermissionAction.ALLOW),
                     new PermissionRule("glob", "*", PermissionAction.ALLOW),
@@ -75,6 +76,7 @@ public class DefaultPermissionRuleset {
                     new PermissionRule("project_overview", "*", PermissionAction.ALLOW),
                     new PermissionRule("repo_overview", "*", PermissionAction.ALLOW),
                     new PermissionRule("lsp_symbols", "*", PermissionAction.ALLOW),
+                    new PermissionRule("lsp", "*", PermissionAction.ALLOW),
                     new PermissionRule("diagnostics", "*", PermissionAction.ALLOW),
                     new PermissionRule("web_search", "*", PermissionAction.ALLOW),
                     new PermissionRule("websearch", "*", PermissionAction.ALLOW),
@@ -83,7 +85,13 @@ public class DefaultPermissionRuleset {
                     new PermissionRule("understand_image", "*", PermissionAction.ALLOW),
                     new PermissionRule("image", "*", PermissionAction.ALLOW),
                     new PermissionRule("shell", "*", PermissionAction.ALLOW),
-                    new PermissionRule("bash", "*", PermissionAction.ALLOW)
+                    new PermissionRule("bash", "*", PermissionAction.ALLOW),
+                    new PermissionRule("task", "*", PermissionAction.ALLOW),
+                    new PermissionRule("todo_write", "*", PermissionAction.ALLOW),
+                    new PermissionRule("todowrite", "*", PermissionAction.ALLOW),
+                    new PermissionRule("todo", "*", PermissionAction.ALLOW),
+                    new PermissionRule("context_note", "*", PermissionAction.ALLOW),
+                    new PermissionRule("skill", "*", PermissionAction.ALLOW)
             )
     );
 

@@ -154,8 +154,31 @@ public class AgentRunExecutionLeaseService {
         throw new StaleExecutionFenceException(reasonOf(fence, effectiveNow));
     }
 
+    /**
+     * Requires a fence while holding the task row lock for the caller's write transaction.
+     *
+     * <p>Executor-side telemetry and snapshot writes use this stronger form so a lease
+     * takeover cannot pass the fence check between validation and the durable write. The
+     * caller must run inside a transaction; otherwise the row lock is released before its
+     * subsequent write.
+     */
+    @Transactional
+    public void requireActiveFenceForWrite(ExecutionFence fence, LocalDateTime now) {
+        LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
+        validateFenceShape(fence);
+        AgentTask task = taskMapper.selectByTaskIdForUpdate(fence.taskId());
+        if (isActiveFence(task, fence, effectiveNow)) {
+            return;
+        }
+        throw new StaleExecutionFenceException(reasonOf(fence, task, effectiveNow));
+    }
+
     private StaleExecutionFenceException.Reason reasonOf(ExecutionFence fence, LocalDateTime now) {
-        AgentTask task = taskMapper.selectById(fence.taskId());
+        return reasonOf(fence, taskMapper.selectById(fence.taskId()), now);
+    }
+
+    private StaleExecutionFenceException.Reason reasonOf(ExecutionFence fence, AgentTask task,
+                                                         LocalDateTime now) {
         if (task == null) {
             return StaleExecutionFenceException.Reason.TASK_NOT_FOUND;
         }
@@ -169,6 +192,23 @@ public class AgentRunExecutionLeaseService {
             return StaleExecutionFenceException.Reason.EXPIRED_LEASE;
         }
         return StaleExecutionFenceException.Reason.STALE_FENCE;
+    }
+
+    private boolean isActiveFence(AgentTask task, ExecutionFence fence, LocalDateTime now) {
+        return task != null
+                && fence != null
+                && fence.taskId().equals(task.getTaskId())
+                && fence.owner().equals(task.getExecutionOwner())
+                && task.getExecutionEpoch() != null
+                && task.getExecutionEpoch() == fence.epoch()
+                && task.getExecutionLeaseExpiresAt() != null
+                && task.getExecutionLeaseExpiresAt().isAfter(now);
+    }
+
+    private void validateFenceShape(ExecutionFence fence) {
+        if (fence == null || fence.taskId() == null || fence.owner() == null || fence.owner().isBlank()) {
+            throw new StaleExecutionFenceException(StaleExecutionFenceException.Reason.INVALID_FENCE);
+        }
     }
 
     public String instanceId() { return instanceId; }

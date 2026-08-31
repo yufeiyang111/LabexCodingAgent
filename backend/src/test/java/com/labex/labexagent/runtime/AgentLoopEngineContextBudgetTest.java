@@ -108,7 +108,7 @@ class AgentLoopEngineContextBudgetTest {
     }
 
     @Test
-    void appendsFreshDurableProgressOnlyAtTheProviderInvocationBoundary() throws Exception {
+    void providerInvocationUsesOnlyDurableMessagesAndDoesNotAppendRuntimeProgress() throws Exception {
         AgentLoopEngine engine = newEngine();
         AgentTranscriptProjectionService transcript = mock(AgentTranscriptProjectionService.class);
         AgentRunProgressProjectionService progress = mock(AgentRunProgressProjectionService.class);
@@ -126,14 +126,34 @@ class AgentLoopEngineContextBudgetTest {
 
         List<Map<String, Object>> invocation = engine.providerMessagesForInvocation(71L, 3L);
 
-        assertEquals(2, invocation.size());
-        assertEquals(durableMessages.get(0), invocation.get(0));
-        String projection = String.valueOf(invocation.get(1).get("content"));
-        assertTrue(projection.contains("<agent_runtime_projection"));
-        assertTrue(projection.contains("stage: implement"));
-        assertTrue(projection.contains("write_count: 1"));
-        assertTrue(projection.contains("durable-progress.txt"));
+        assertEquals(durableMessages, invocation);
+        verify(progress, never()).load(71L, 3L);
         assertEquals(1, engine.providerMessagesForBudget(71L).size());
+    }
+
+    @Test
+    void sessionReminderProjectionNeverRewritesAnExistingUserMessage() {
+        List<Map<String, Object>> messages = List.of(
+                Map.of("role", "user", "content", "original objective"),
+                Map.of("role", "assistant", "content", "tool call"));
+
+        List<Map<String, Object>> projected = AgentLoopEngine.withSessionReminders(messages);
+
+        assertEquals(messages, projected);
+        assertEquals("original objective", projected.get(0).get("content"));
+    }
+
+    @Test
+    void doesNotConsiderAnEmptyOrCompletedPlanAsAFinalizationBlocker() {
+        AgentContext empty = new AgentContext("session", 1, null, "conversation", 71L, null, List.of(), -1);
+        AgentContext completed = new AgentContext("session", 1, null, "conversation", 71L, null,
+                List.of(new AgentContext.PlanItem("finish", "", true)), 0);
+        AgentContext pending = new AgentContext("session", 1, null, "conversation", 71L, null,
+                List.of(new AgentContext.PlanItem("finish", "", false)), 0);
+
+        assertFalse(AgentLoopEngine.hasIncompletePlan(empty));
+        assertFalse(AgentLoopEngine.hasIncompletePlan(completed));
+        assertTrue(AgentLoopEngine.hasIncompletePlan(pending));
     }
 
     @Test
@@ -154,7 +174,7 @@ class AgentLoopEngineContextBudgetTest {
                 Map.of("role", "user", "content", "task recent request"),
                 Map.of("role", "assistant", "content", "task recent answer"));
         when(projection.loadProviderMessages(72L)).thenReturn(conversationPrefixedProviderMessages);
-        when(projection.loadDurableProjection(72L)).thenReturn(
+        when(projection.loadDurableCompactionView(72L)).thenReturn(
                 new AgentTranscriptProjectionService.Projection(currentTaskMessages, "durable_transcript"));
         var projectionField = AgentLoopEngine.class.getDeclaredField("transcriptProjectionService");
         projectionField.setAccessible(true);
@@ -166,7 +186,7 @@ class AgentLoopEngineContextBudgetTest {
         assertTrue(selection.changed());
         assertEquals("task old request", selection.compactedHead().get(0).get("content"));
         assertEquals("task recent request", selection.retainedTail().get(0).get("content"));
-        verify(projection).loadDurableProjection(72L);
+        verify(projection).loadDurableCompactionView(72L);
         verify(projection, never()).loadProviderMessages(72L);
     }
 
@@ -192,6 +212,14 @@ class AgentLoopEngineContextBudgetTest {
     void removesTheLegacyInPlaceMessagePruner() {
         assertThrows(NoSuchMethodException.class, () -> AgentLoopEngine.class.getDeclaredMethod(
                 "trimMessagesIfNeeded", List.class, String.class, java.util.OptionalInt.class));
+    }
+
+    @Test
+    void contextManagementConsultsTheConfiguredSafeToolResultPruner() throws Exception {
+        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));
+        assertTrue(source.contains("policy.pruningEnabled()"));
+        assertTrue(source.contains("hasPrunableHistoricalToolResult"));
     }
 
     private AgentLoopEngine newEngine() throws Exception {

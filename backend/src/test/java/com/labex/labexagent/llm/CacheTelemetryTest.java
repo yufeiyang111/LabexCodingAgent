@@ -37,4 +37,18 @@ class CacheTelemetryTest {
         assertNull(CacheTelemetry.hitRate(true,
                 Map.of("prompt_tokens", -100, "cached_tokens", 40, "cache_usage_reported", true)));
     }
+
+    @Test
+    void derivesMutuallyConsistentHitAndMissFieldsFromCachedOnlyUsage() {
+        Map<String, Object> normalized = CacheTelemetry.normalizeUsage(Map.of(
+                "prompt_tokens", 100,
+                "cached_tokens", 40,
+                "cache_hit_tokens", 0,
+                "cache_miss_tokens", 0,
+                "cache_usage_reported", true));
+
+        assertEquals(40, normalized.get("cache_hit_tokens"));
+        assertEquals(60, normalized.get("cache_miss_tokens"));
+        assertEquals(40.0, CacheTelemetry.hitRate(true, normalized));
+    }
 }

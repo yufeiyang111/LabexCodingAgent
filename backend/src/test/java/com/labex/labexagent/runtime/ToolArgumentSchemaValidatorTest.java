@@ -5,10 +5,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
+import com.labex.labexagent.run.AgentSubagentProperties;
+import com.labex.labexagent.run.AgentSubagentService;
 import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.impl.TaskTool;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+
+import static org.mockito.Mockito.mock;
 
 class ToolArgumentSchemaValidatorTest {
     private final ToolArgumentSchemaValidator validator = new ToolArgumentSchemaValidator();
@@ -59,8 +63,9 @@ class ToolArgumentSchemaValidatorTest {
     }
 
     @Test
-    void taskToolAcceptsBooleanBackgroundAndDoesNotAdvertiseUnusedTaskId() {
-        ToolDefinition definition = new TaskTool(null, null).definition();
+    void taskToolAcceptsBooleanBackgroundAndAdvertisesTaskIdForResume() {
+        ToolDefinition definition = new TaskTool(null, mock(AgentSubagentService.class),
+                null, new AgentSubagentProperties()).definition();
         JsonObject arguments = new JsonObject();
         arguments.addProperty("description", "research tool contracts");
         arguments.addProperty("background", true);
@@ -70,7 +75,7 @@ class ToolArgumentSchemaValidatorTest {
         assertTrue(result.valid());
         @SuppressWarnings("unchecked")
         Map<String, Object> properties = (Map<String, Object>) definition.getInputSchema().get("properties");
-        assertFalse(properties.containsKey("task_id"));
+        assertTrue(properties.containsKey("task_id"));
     }
 
     @Test

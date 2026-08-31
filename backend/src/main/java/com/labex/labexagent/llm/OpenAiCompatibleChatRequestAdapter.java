@@ -130,8 +130,11 @@ public class OpenAiCompatibleChatRequestAdapter {
                 || reasoning.get("enabled").getAsBoolean());
         if (!enabled) return;
         String selected = config.reasoningEffort();
-        if (selected == null || selected.isBlank()) {
+        if (selected == null || selected.isBlank() || "none".equalsIgnoreCase(selected)) {
             selected = stringAt(reasoning, "defaultLevel", "medium");
+        }
+        if ("none".equalsIgnoreCase(selected)) {
+            return;
         }
         List<String> allowed = stringListAt(reasoning, "allowedLevels", DEFAULT_REASONING_LEVELS);
         if (!allowed.contains(selected)) {

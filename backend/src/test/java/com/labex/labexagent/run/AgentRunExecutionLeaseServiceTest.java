@@ -74,6 +74,40 @@ class AgentRunExecutionLeaseServiceTest {
     }
 
     @Test
+    void writeFenceLocksAndValidatesTheTaskRow() {
+        AgentTaskMapper mapper = mock(AgentTaskMapper.class);
+        AgentTask task = task();
+        task.setExecutionOwner("instance-a");
+        task.setExecutionEpoch(4L);
+        task.setExecutionLeaseExpiresAt(LocalDateTime.of(2026, 7, 23, 10, 1));
+        when(mapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        AgentRunExecutionLeaseService service = new AgentRunExecutionLeaseService(mapper, "instance-a", 30_000L);
+
+        service.requireActiveFenceForWrite(new ExecutionFence(71L, "instance-a", 4L),
+                LocalDateTime.of(2026, 7, 23, 10, 0));
+
+        verify(mapper).selectByTaskIdForUpdate(71L);
+    }
+
+    @Test
+    void writeFenceFailsClosedWhenTheLockedTaskNoLongerMatches() {
+        AgentTaskMapper mapper = mock(AgentTaskMapper.class);
+        AgentTask task = task();
+        task.setExecutionOwner("instance-b");
+        task.setExecutionEpoch(4L);
+        task.setExecutionLeaseExpiresAt(LocalDateTime.of(2026, 7, 23, 10, 1));
+        when(mapper.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        AgentRunExecutionLeaseService service = new AgentRunExecutionLeaseService(mapper, "instance-a", 30_000L);
+
+        AgentRunExecutionLeaseService.StaleExecutionFenceException ex = assertThrows(
+                AgentRunExecutionLeaseService.StaleExecutionFenceException.class,
+                () -> service.requireActiveFenceForWrite(new ExecutionFence(71L, "instance-a", 4L),
+                        LocalDateTime.of(2026, 7, 23, 10, 0)));
+
+        assertEquals(AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.STALE_OWNER, ex.reason());
+    }
+
+    @Test
     void staleOwnerFenceFailsWithTypedReason() {
         AgentTaskMapper mapper = mock(AgentTaskMapper.class);
         AgentTask task = task();

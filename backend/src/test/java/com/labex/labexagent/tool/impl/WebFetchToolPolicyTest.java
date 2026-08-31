@@ -7,28 +7,42 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
 import com.labex.labexagent.network.OutboundUrlPolicy;
+import com.labex.labexagent.network.WebFetchProperties;
 import com.labex.labexagent.tool.ToolResult;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 
 class WebFetchToolPolicyTest {
 
     @Test
     void marksTheProductionConstructorForSpringInjection() throws Exception {
         assertTrue(WebFetchTool.class
-                .getConstructor(OutboundUrlPolicy.class, com.labex.labexagent.network.WebFetchProperties.class)
+                .getConstructor(OutboundUrlPolicy.class, WebFetchProperties.class)
                 .isAnnotationPresent(Autowired.class));
     }
 
     @Test
-    void rejectsBlockedDestinationsBeforeSendingTheFetchRequest() throws Exception {
+    void rejectsInvalidUrlSchemes() {
+        OutboundUrlPolicy policy = new OutboundUrlPolicy(host -> new InetAddress[] {InetAddress.getLoopbackAddress()});
+        WebFetchTool tool = new WebFetchTool(policy, new WebFetchProperties());
+        JsonObject args = new JsonObject();
+        args.addProperty("url", "ftp://example.com/file");
+
+        ToolResult result = tool.execute(null, args);
+
+        assertFalse(result.isSuccess());
+        assertTrue(result.getContent().contains("url must start with http:// or https://"));
+    }
+
+    @Test
+    void rejectsBlockedDestinationsBeforeSendingTheFetchRequest() {
         OutboundUrlPolicy policy = new OutboundUrlPolicy(host ->
                 new InetAddress[] {InetAddress.getByName("127.0.0.1")});
-        WebFetchTool tool = new WebFetchTool(policy, new com.labex.labexagent.network.WebFetchProperties());
+        WebFetchTool tool = new WebFetchTool(policy, new WebFetchProperties());
         JsonObject args = new JsonObject();
         args.addProperty("url", "http://private.example.test/internal");
 
@@ -37,6 +51,7 @@ class WebFetchToolPolicyTest {
         assertFalse(result.isSuccess());
         assertTrue(result.getContent().contains("Outbound request blocked"));
     }
+
     @Test
     void rejectsDeclaredOversizedResponseBeforeReadingItsBody() {
         InputStream body = new InputStream() {

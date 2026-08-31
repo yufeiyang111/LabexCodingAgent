@@ -43,12 +43,19 @@ public class AdditiveSchemaMigrator {
             new ColumnDefinition("t_agent_token_usage", "cache_status", "VARCHAR(24) NOT NULL DEFAULT 'not_reported'"),
             new ColumnDefinition("t_agent_token_usage", "cache_hit_tokens", "INT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_token_usage", "cache_miss_tokens", "INT NOT NULL DEFAULT 0"),
+            new ColumnDefinition("t_agent_token_usage", "task_id", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_token_usage", "execution_epoch", "BIGINT DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "model_config_id", "INT DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "runtime_profile", "VARCHAR(32) DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "run_version", "BIGINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "last_event_sequence", "BIGINT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "request_payload", "LONGTEXT DEFAULT NULL"),
             new ColumnDefinition("t_agent_task", "origin_message_id", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_task", "parent_task_id", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_subagent", "parent_tool_call_id", "VARCHAR(160) DEFAULT NULL"),
+            new ColumnDefinition("t_agent_subagent", "child_task_id", "BIGINT DEFAULT NULL"),
+            new ColumnDefinition("t_agent_subagent", "spawn_depth", "INT NOT NULL DEFAULT 0"),
+            new ColumnDefinition("t_agent_subagent", "agent_type", "VARCHAR(16) NOT NULL DEFAULT 'general'"),
             new ColumnDefinition("t_agent_task", "recovery_attempts", "INT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "retry_attempts", "INT NOT NULL DEFAULT 0"),
             new ColumnDefinition("t_agent_task", "next_retry_at", "DATETIME(3) DEFAULT NULL"),
@@ -151,6 +158,7 @@ public class AdditiveSchemaMigrator {
             }
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_retry_due", "status, next_retry_at");
             addIndexIfMissing(metadata, catalog, "t_agent_task", "idx_task_execution_lease", "execution_lease_expires_at");
+            addIndexIfMissing(metadata, catalog, "t_agent_token_usage", "idx_token_task_epoch", "task_id, execution_epoch");
             addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_conv_project_updated", "student_id, project_id, status, update_time");
             addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_agent_conversation_fork_task", "forked_from_task_id");
             addIndexIfMissing(metadata, catalog, "t_agent_conversation", "idx_agent_conversation_execution_lease", "execution_lease_expires_at");
@@ -164,7 +172,32 @@ public class AdditiveSchemaMigrator {
             addIndexIfMissing(metadata, catalog, "t_agent_compaction_record",
                     "idx_agent_compaction_conversation_scope",
                     "conversation_id, student_id, project_id, scope, status, compaction_epoch");
+            relaxOpsAlertFingerprintUniqueIndex(metadata, catalog);
         }
+    }
+
+    /**
+     * t_ops_alert 的 uk(rule_id,fingerprint,status) 唯一键是历史错误：第二次告警周期
+     * resolve 时会与上一周期的 RESOLVED 行撞键，导致评估循环每分钟报错。
+     * 活跃去重的权威在 AlertDeduplicationService；本迁移仅在检测到旧唯一键时
+     * 将其降级为普通索引（条件式执行以保持既有 migrator 精确计数测试语义）。
+     */
+    private void relaxOpsAlertFingerprintUniqueIndex(DatabaseMetaData metadata, String catalog) throws SQLException {
+        if (!indexExists(metadata, catalog, "t_ops_alert", "uk_ops_alert_fingerprint_status")
+                && !indexExists(metadata, null, "t_ops_alert", "uk_ops_alert_fingerprint_status")) {
+            return;
+        }
+        try {
+            jdbcTemplate.execute("ALTER TABLE t_ops_alert DROP INDEX uk_ops_alert_fingerprint_status");
+        } catch (RuntimeException failure) {
+            // 并发实例可能已删除同名索引（MySQL 1091）；确认不存在即视为成功。
+            if (indexExists(metadata, catalog, "t_ops_alert", "uk_ops_alert_fingerprint_status")
+                    || indexExists(metadata, null, "t_ops_alert", "uk_ops_alert_fingerprint_status")) {
+                throw failure;
+            }
+        }
+        addIndexIfMissing(metadata, catalog, "t_ops_alert",
+                "idx_ops_alert_rule_fingerprint_status", "rule_id, fingerprint, status");
     }
 
 

@@ -3,6 +3,7 @@ package com.labex.labexagent.runtime;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.ProviderCapabilities;
+import com.labex.labexagent.llm.ProviderFailure;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -73,6 +74,10 @@ public class AgentModelTurnExecutor {
         StringBuilder thinking = new StringBuilder();
         Map<Integer, LlmProvider.StreamChunk> toolCalls = new LinkedHashMap<>();
         AtomicReference<String> error = new AtomicReference<>();
+        AtomicReference<ProviderFailure> capturedFailure = new AtomicReference<>();
+        AtomicReference<Throwable> executorCause = new AtomicReference<>();
+        boolean[] watchdogTimedOut = {false};
+        long turnStartedAt = System.nanoTime();
         AtomicReference<Map<String, Object>> usage = new AtomicReference<>(Map.of());
         boolean[] cancelled = {false};
         boolean[] terminalEvent = {false};
@@ -157,6 +162,7 @@ public class AgentModelTurnExecutor {
                             }
                             case ERROR -> {
                                 terminalEvent[0] = true;
+                                if (chunk.failure() != null) capturedFailure.set(chunk.failure());
                                 String failureMessage = chunk.content();
                                 if ((failureMessage == null || failureMessage.isBlank()) && chunk.failure() != null) {
                                     failureMessage = chunk.failure().message();
@@ -191,6 +197,7 @@ public class AgentModelTurnExecutor {
         } catch (TimeoutException timeout) {
             turnCancellationToken.requestTimeoutCancellation();
             future.cancel(true);
+            watchdogTimedOut[0] = true;
             failureReason = FailureReason.MODEL_TIMEOUT;
             error.set(localText(request.visibleLanguage(),
                     "模型服务响应超时，已自动停止本次请求。请检查模型服务、网络或换一个模型后重试。",
@@ -213,6 +220,7 @@ public class AgentModelTurnExecutor {
                 cancelled[0] = true;
             } else {
                 Throwable cause = failure.getCause() == null ? failure : failure.getCause();
+                executorCause.set(cause);
                 String failureMessage = cause.getMessage();
                 error.set(failureMessage == null || failureMessage.isBlank()
                         ? "Provider stream failed without an error message." : failureMessage);
@@ -237,7 +245,9 @@ public class AgentModelTurnExecutor {
 
         Map<String, Object> usageValue = usage.get() == null ? Map.of() : usage.get();
         if (error.get() != null) {
-            return ModelTurnResult.error(failureReason, error.get(), content.toString(), thinking.toString(), usageValue);
+            return ModelTurnResult.error(failureReason, error.get(), content.toString(), thinking.toString(),
+                    usageValue, turnDiagnostics(watchdogTimedOut[0], capturedFailure.get(), executorCause.get(),
+                            content.length(), thinking.length(), turnStartedAt));
         }
         if (cancelled[0] || request.cancellationToken().isCancellationRequested()) {
             return ModelTurnResult.cancelled(content.toString(), thinking.toString(), usageValue);
@@ -322,6 +332,35 @@ public class AgentModelTurnExecutor {
         }
     }
 
+    /**
+     * 合并 provider 传输层诊断与 executor 侧现场：watchdog 超时时 provider 可能没有产出任何
+     * failure chunk，此时至少保留总时限、实际耗时与部分输出规模，保证 run log 可定位最小范围。
+     */
+    private Map<String, Object> turnDiagnostics(boolean watchdogTimedOut, ProviderFailure capturedFailure,
+                                                Throwable executorCause, int contentChars, int thinkingChars,
+                                                long turnStartedAt) {
+        Map<String, Object> diag = new LinkedHashMap<>();
+        if (capturedFailure != null && capturedFailure.diagnostics() != null) {
+            diag.putAll(capturedFailure.diagnostics());
+            if (capturedFailure.type() != null) diag.putIfAbsent("failure_type", capturedFailure.type().name().toLowerCase(java.util.Locale.ROOT));
+        }
+        if (executorCause != null) {
+            diag.putIfAbsent("error_class", executorCause.getClass().getName());
+        }
+        if (watchdogTimedOut && diag.isEmpty()) {
+            diag.put("failure_type", "watchdog_total_timeout");
+        }
+        if (watchdogTimedOut) {
+            diag.put("watchdog_total_timeout_ms", timeoutMs);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - turnStartedAt);
+            diag.put("watchdog_elapsed_ms", Math.min(elapsedMs, timeoutMs > 0 ? timeoutMs + 5_000L : elapsedMs));
+        }
+        if (!diag.isEmpty()) {
+            diag.put("partial_output_chars", contentChars + thinkingChars);
+        }
+        return diag;
+    }
+
     private static String localText(String visibleLanguage, String zh, String en) {
         return "zh".equalsIgnoreCase(visibleLanguage) ? zh : en;
     }
@@ -357,19 +396,22 @@ public class AgentModelTurnExecutor {
 
     record ModelTurnResult(ResultType type, String content, String thinking, String message,
                            List<NativeToolCall> toolCalls, Map<String, Object> usage,
-                           FailureReason failureReason) {
+                           FailureReason failureReason, Map<String, Object> diagnostics) {
         ModelTurnResult {
             toolCalls = toolCalls == null ? List.of() : List.copyOf(toolCalls);
             failureReason = failureReason == null ? FailureReason.NONE : failureReason;
+            diagnostics = diagnostics == null ? Map.of() : Map.copyOf(diagnostics);
         }
 
         static ModelTurnResult text(String content, String thinking, Map<String, Object> usage) {
-            return new ModelTurnResult(ResultType.TEXT, content, thinking, "", List.of(), usage, FailureReason.NONE);
+            return new ModelTurnResult(ResultType.TEXT, content, thinking, "", List.of(), usage,
+                    FailureReason.NONE, Map.of());
         }
 
         static ModelTurnResult toolCalls(String content, String thinking, List<NativeToolCall> toolCalls,
                                          Map<String, Object> usage) {
-            return new ModelTurnResult(ResultType.TOOL_CALL, content, thinking, "", toolCalls, usage, FailureReason.NONE);
+            return new ModelTurnResult(ResultType.TOOL_CALL, content, thinking, "", toolCalls, usage,
+                    FailureReason.NONE, Map.of());
         }
 
         static ModelTurnResult error(String message, String content, String thinking, Map<String, Object> usage) {
@@ -378,13 +420,20 @@ public class AgentModelTurnExecutor {
 
         static ModelTurnResult error(FailureReason failureReason, String message, String content,
                                      String thinking, Map<String, Object> usage) {
+            return error(failureReason, message, content, thinking, usage, Map.of());
+        }
+
+        static ModelTurnResult error(FailureReason failureReason, String message, String content,
+                                     String thinking, Map<String, Object> usage, Map<String, Object> diagnostics) {
             FailureReason effectiveReason = failureReason == null || failureReason == FailureReason.NONE
                     ? FailureReason.PROVIDER_ERROR : failureReason;
-            return new ModelTurnResult(ResultType.ERROR, content, thinking, message, List.of(), usage, effectiveReason);
+            return new ModelTurnResult(ResultType.ERROR, content, thinking, message, List.of(), usage,
+                    effectiveReason, diagnostics);
         }
 
         static ModelTurnResult cancelled(String content, String thinking, Map<String, Object> usage) {
-            return new ModelTurnResult(ResultType.CANCELLED, content, thinking, "", List.of(), usage, FailureReason.NONE);
+            return new ModelTurnResult(ResultType.CANCELLED, content, thinking, "", List.of(), usage,
+                    FailureReason.NONE, Map.of());
         }
         String reasonCode() {
             return failureReason.code();
@@ -423,6 +472,7 @@ public class AgentModelTurnExecutor {
             if (type == ResultType.ERROR) {
                 result.put("message", message == null ? "" : message);
                 result.put("reasonCode", reasonCode());
+                if (diagnostics != null && !diagnostics.isEmpty()) result.put("diagnostics", diagnostics);
             }
             if (type == ResultType.TOOL_CALL && !toolCalls.isEmpty()) {
                 NativeToolCall first = toolCalls.get(0);

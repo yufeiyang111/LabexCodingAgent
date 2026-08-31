@@ -162,6 +162,7 @@ class AgentRunConfigSnapshotMapperDatabaseTest {
                         verification_policy_json LONGTEXT DEFAULT NULL,
                         environment_operation_ref VARCHAR(64) DEFAULT NULL,
                         secret_aliases_json LONGTEXT DEFAULT NULL,
+                        request_evidence_json LONGTEXT DEFAULT NULL,
                         create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                         update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                     )

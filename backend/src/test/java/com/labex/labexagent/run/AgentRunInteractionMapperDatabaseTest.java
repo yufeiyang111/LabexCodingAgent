@@ -317,6 +317,7 @@ class AgentRunInteractionMapperDatabaseTest {
                         last_event_sequence BIGINT NOT NULL DEFAULT 0,
                         request_payload LONGTEXT,
                         origin_message_id BIGINT,
+                        parent_task_id BIGINT,
                         recovery_attempts INT NOT NULL DEFAULT 0,
                         retry_attempts INT NOT NULL DEFAULT 0,
                         next_retry_at DATETIME(3),

@@ -2,14 +2,15 @@ package com.labex.labexagent.runtime;
 
 import com.google.gson.JsonObject;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.AgentSubagentProperties;
 import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.tool.AgentTool;
 import com.labex.labexagent.tool.ToolRegistry;
 import com.labex.labexagent.tool.ToolResult;
 import java.time.LocalDateTime;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -17,10 +18,19 @@ import java.util.concurrent.TimeoutException;
 /** 工具本轮的 Schema/模式门禁与执行 watchdog。交互暂停和任务状态仍由上层编排。 */
 @org.springframework.stereotype.Service
 public class AgentToolTurnExecutor {
-    private static final ThreadPoolExecutor EXECUTOR = new ThreadPoolExecutor(
-            0, 32, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64),
-            runnable -> { Thread thread = new Thread(runnable, "labex-agent-tool-turn"); thread.setDaemon(true); return thread; },
-            new ThreadPoolExecutor.AbortPolicy());
+    private static final ThreadPoolExecutor EXECUTOR;
+    static {
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                32, 64, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(256),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "labex-agent-tool-turn");
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.allowCoreThreadTimeOut(true);
+        EXECUTOR = executor;
+    }
     /**
      * 当前工具执行线程的 toolCallId 绑定。工具在池线程内执行，因此绑定必须在提交的
      * 任务里于执行线程上设置/清理；工具（如 propose_project_config）从该绑定读取
@@ -28,11 +38,20 @@ public class AgentToolTurnExecutor {
      */
     private static final ThreadLocal<String> CURRENT_TOOL_CALL_ID = new ThreadLocal<>();
     private final ToolRegistry registry;
+    private final AgentSubagentProperties subagentProperties;
     private final ToolArgumentSchemaValidator argumentSchemaValidator = new ToolArgumentSchemaValidator();
     private AgentRunExecutionLeaseService executionLeaseService;
 
     public AgentToolTurnExecutor(ToolRegistry registry) {
+        this(registry, new AgentSubagentProperties());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentToolTurnExecutor(ToolRegistry registry,
+                                 @org.springframework.beans.factory.annotation.Autowired(required = false)
+                                 AgentSubagentProperties subagentProperties) {
         this.registry = registry;
+        this.subagentProperties = subagentProperties == null ? new AgentSubagentProperties() : subagentProperties;
     }
 
     /** 绑定当前执行线程的 toolCallId；调用方负责在 finally 中清理。 */
@@ -134,7 +153,7 @@ public class AgentToolTurnExecutor {
 
     public ToolResult execute(AgentTool tool, AgentContext context, JsonObject arguments, String toolName) throws Exception {
         this.requireActiveExecutionFence(context);
-        long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments);
+        long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments, subagentProperties.getTaskTimeoutMs());
         Future<ToolResult> future = EXECUTOR.submit(() -> {
             clearCurrentToolCallId();
             try {
@@ -164,7 +183,7 @@ public class AgentToolTurnExecutor {
     public ToolResult execute(AgentTool tool, AgentContext context, JsonObject arguments, String toolName,
                               String toolCallId) throws Exception {
         this.requireActiveExecutionFence(context);
-        long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments);
+        long budgetMs = ToolExecutionBudget.timeoutMs(toolName, arguments, subagentProperties.getTaskTimeoutMs());
         Future<ToolResult> future = EXECUTOR.submit(() -> {
             bindCurrentToolCallId(toolCallId);
             try {

@@ -25,6 +25,25 @@ class AgentToolNarratorTest {
     }
 
     @Test
+    void doesNotNarrateAStartedBackgroundSubagentAsCompleted() {
+        ToolResult result = ToolResult.ok("<task id=\"7\" state=\"running\"><summary>research</summary></task>");
+
+        String thought = narrator.buildResultThought("task", new JsonObject(), result, "zh");
+
+        assertTrue(thought.contains("已启动"));
+        assertFalse(thought.contains("步骤完成"));
+    }
+
+    @Test
+    void narratesAnErrorSubagentAsFailed() {
+        ToolResult result = ToolResult.failed("<task id=\"7\" state=\"error\"><task_error>token budget exceeded</task_error></task>");
+
+        String thought = narrator.buildResultThought("task", new JsonObject(), result, "zh");
+
+        assertTrue(thought.contains("执行失败"));
+    }
+
+    @Test
     void describesVerificationResultsAndPlanProgress() {
         JsonObject verification = new JsonObject();
         verification.addProperty("command", "npm test");

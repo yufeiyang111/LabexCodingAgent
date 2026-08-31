@@ -17,6 +17,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.labex.entity.AgentRunEvent;
 import com.labex.entity.AgentRunOutbox;
+import com.labex.entity.AgentTokenUsage;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.run.AgentRunExecutionLeaseService.StaleExecutionFenceException;
 import com.labex.labexagent.runtime.ToolExposureSnapshot;
@@ -25,6 +26,7 @@ import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentRunOutboxMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.mapper.AgentTokenUsageMapper;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -769,6 +771,67 @@ class AgentRunLifecycleServiceTest {
         verify(events, never()).insert(any(AgentRunEvent.class));
         verify(outbox, never()).insert(any(AgentRunOutbox.class));
         verify(parts, never()).recordEventPart(any(), any(), any(), anyLong());
+    }
+
+    @Test
+    void persistsTokenUsageAndEventAsOneFencedIdempotentOperation() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentTokenUsageMapper usages = mock(AgentTokenUsageMapper.class);
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        AgentTask task = task(AgentRunState.RUNNING);
+        task.setExecutionOwner("instance-a");
+        task.setExecutionEpoch(4L);
+        task.setExecutionLeaseExpiresAt(FENCE_NOW.plusMinutes(1));
+        when(tasks.selectByTaskIdForUpdate(71L)).thenReturn(task);
+        when(events.selectOne(any())).thenReturn(null);
+        when(tasks.update(org.mockito.ArgumentMatchers.isNull(), any())).thenReturn(1);
+        when(events.insert(any(AgentRunEvent.class))).thenAnswer(invocation -> {
+            invocation.<AgentRunEvent>getArgument(0).setEventId(901L);
+            return 1;
+        });
+        when(outbox.insert(any(AgentRunOutbox.class))).thenReturn(1);
+        when(usages.insert(any(AgentTokenUsage.class))).thenReturn(1);
+        AgentRunLifecycleService service = new AgentRunLifecycleService(
+                tasks, events, outbox, null, leases, usages);
+
+        AgentRunEvent event = service.appendTokenUsage(
+                new ExecutionFence(71L, "instance-a", 4L), 71L,
+                new AgentTokenUsage("conversation", "session", 7, 12, "provider", "model",
+                        100, 20, 120, 2, null),
+                () -> Map.of("taskId", 71L, "totalTokens", 120),
+                "token-usage-71-4-2");
+
+        assertEquals("TOKEN_USAGE", event.getEventType());
+        verify(usages).insert(any(AgentTokenUsage.class));
+        verify(events).insert(any(AgentRunEvent.class));
+    }
+
+    @Test
+    void doesNotInsertASecondUsageRowWhenTheTokenEventAlreadyExists() {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunEventMapper events = mock(AgentRunEventMapper.class);
+        AgentRunOutboxMapper outbox = mock(AgentRunOutboxMapper.class);
+        AgentTokenUsageMapper usages = mock(AgentTokenUsageMapper.class);
+        AgentRunExecutionLeaseService leases = mock(AgentRunExecutionLeaseService.class);
+        AgentRunEvent existing = new AgentRunEvent();
+        existing.setEventId(902L);
+        existing.setEventType("TOKEN_USAGE");
+        when(events.selectOne(any())).thenReturn(existing);
+        AgentRunLifecycleService service = new AgentRunLifecycleService(
+                tasks, events, outbox, null, leases, usages);
+
+        AgentRunEvent event = service.appendTokenUsage(
+                new ExecutionFence(71L, "instance-a", 4L), 71L,
+                new AgentTokenUsage("conversation", "session", 7, 12, "provider", "model",
+                        100, 20, 120, 2, null),
+                () -> Map.of("totalTokens", 120),
+                "token-usage-71-4-2");
+
+        assertEquals(902L, event.getEventId());
+        verify(usages, never()).insert(any(AgentTokenUsage.class));
+        verify(events, never()).insert(any(AgentRunEvent.class));
     }
 
     @Test

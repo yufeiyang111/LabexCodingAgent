@@ -54,6 +54,37 @@ class AgentRequestTokenEstimatorTest {
                 () -> "image data URL must not be charged as ordinary text, estimated=" + estimate.totalTokens());
     }
 
+    @Test
+    void budgetsDurableAttachmentReferencesEquallyWithHydratedImagesWithoutAnyBase64() {
+        // durable 形态：压缩选材视图里 user 消息只携带 attachmentIds 引用。
+        Map<String, Object> durableUserMessage = Map.of(
+                "role", "user",
+                "content", "inspect this screenshot",
+                "attachmentIds", List.of("image-1", "image-2"));
+
+        AgentRequestTokenEstimator.ValueEstimate durable = estimator.analyzeValue(durableUserMessage);
+        assertEquals(2, durable.imageCount());
+        assertEquals(2 * 8_192, durable.imageInputTokens());
+
+        // 预算等价性：与注水后的 image_url 形态计权一致，选材不因未注水而低估图片占用。
+        List<Map<String, Object>> hydratedUserMessage = OpenAiImageProtocolFixture.userMessagesOf(2);
+        AgentRequestTokenEstimator.ValueEstimate hydrated = estimator.analyzeValue(hydratedUserMessage.get(0));
+        assertEquals(durable.imageInputTokens(), hydrated.imageInputTokens());
+
+        // estimate 全链路（system+tools+messages）同样覆盖引用预算，防止压缩触发线漏算图片。
+        int withAttachments = estimator.estimate("sys", List.of(), List.of(durableUserMessage), 200_000, 512)
+                .messageTokens();
+        int withoutAttachments = estimator.estimate("sys", List.of(),
+                List.of(Map.of("role", "user", "content", "inspect this screenshot")), 200_000, 512)
+                .messageTokens();
+        assertTrue(withAttachments >= withoutAttachments + 2 * 8_192,
+                () -> "attachment references must carry the visual budget, with=" + withAttachments
+                        + " without=" + withoutAttachments);
+
+        // 无附件消息不得被误计视觉权重。
+        assertEquals(0, estimator.analyzeValue(Map.of("role", "user", "content", "plain text")).imageCount());
+    }
+
 
     @Test
     void rejectsUnknownOrUnsafeModelWindowInsteadOfUsingPermissiveDefault() {

@@ -22,7 +22,7 @@ class ToolSelectionPolicyTest {
 
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "edit_file", "write_file", "shell",
-                "todo_write", "question", "web_search", "web_fetch", "understand_image", "mcp_weather"),
+                "todo_write", "question", "web_search", "web_fetch", "understand_image", "task", "mcp_weather"),
                 names(policy.select(registry, "build", all)));
 
         assertNotNull(registry.get("create_plan"));
@@ -41,11 +41,11 @@ class ToolSelectionPolicyTest {
 
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "todo_write", "question", "web_search",
-                "web_fetch", "understand_image", "plan_exit"),
+                "web_fetch", "understand_image", "task"),
                 names(policy.select(registry, "plan", all)));
         assertEquals(List.of(
-                "read_file", "read_tool_output", "glob", "grep", "question", "web_search", "web_fetch",
-                "understand_image"), names(policy.select(registry, "explore", all)));
+                "read_file", "read_tool_output", "glob", "grep", "todo_write", "question", "web_search",
+                "web_fetch", "understand_image", "task"), names(policy.select(registry, "explore", all)));
     }
 
     @Test
@@ -57,15 +57,17 @@ class ToolSelectionPolicyTest {
 
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "write_file", "apply_patch", "shell",
-                "todo_write", "question", "web_search", "web_fetch", "understand_image", "lsp", "skill"),
+                "todo_write", "question", "web_search", "web_fetch", "understand_image", "lsp", "skill", "task"),
                 names(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE)));
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "todo_write", "question", "web_search",
-                "web_fetch", "understand_image", "lsp", "skill", "plan_exit"),
+                "web_fetch", "understand_image", "lsp", "skill", "task"),
                 names(policy.select(registry, "plan", all, AgentRuntimeProfile.LABEX_NATIVE)));
         assertFalse(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "edit_file"));
         assertTrue(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "apply_patch"));
         assertTrue(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "todo_write"));
+        assertTrue(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "task"));
+        assertTrue(policy.isSelected(policy.select(registry, "plan", all, AgentRuntimeProfile.LABEX_NATIVE), "task"));
         assertFalse(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "run_tests"));
         assertFalse(policy.isSelected(policy.select(registry, "build", all, AgentRuntimeProfile.LABEX_NATIVE), "mcp_weather"));
     }
@@ -106,7 +108,7 @@ class ToolSelectionPolicyTest {
 
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "edit_file", "write_file", "shell",
-                "todo_write", "question"), names(selected));
+                "todo_write", "question", "task"), names(selected));
         assertFalse(policy.isSelected(selected, "understand_image"));
         assertFalse(policy.isSelected(selected, "mcp_weather"));
         assertTrue(policy.isSelected(selected, "shell"));

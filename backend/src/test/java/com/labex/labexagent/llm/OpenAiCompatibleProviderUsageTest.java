@@ -53,6 +53,8 @@ class OpenAiCompatibleProviderUsageTest {
             assertEquals(2, usageChunk.usage().get("completion_tokens"));
             assertEquals(12, usageChunk.usage().get("total_tokens"));
             assertEquals(4, usageChunk.usage().get("cached_tokens"));
+            assertEquals(4, usageChunk.usage().get("cache_hit_tokens"));
+            assertEquals(6, usageChunk.usage().get("cache_miss_tokens"));
             assertEquals(true, usageChunk.usage().get("cache_usage_reported"));
 
             LlmProvider.StreamChunk doneChunk = chunks.stream()

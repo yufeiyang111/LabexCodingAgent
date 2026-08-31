@@ -104,18 +104,17 @@ public class AgentConversationCompactionService {
 
             boolean fallback = modelResult == null || !modelResult.success()
                     || modelResult.checkpoint() == null || modelResult.checkpoint().isBlank();
-            String summary = fallback ? "" : modelResult.checkpoint();
-            int tokensAfter = fallback ? tokensBefore
-                    : tokenEstimator.estimateMessages(selection.projectedWithSummary(summary));
-            if (!fallback && tokensAfter >= tokensBefore) {
-                fallback = true;
-            }
-            if (fallback) {
+            String summary;
+            int tokensAfter;
+            if (!fallback) {
+                summary = modelResult.checkpoint();
+                tokensAfter = tokenEstimator.estimateMessages(selection.projectedWithSummary(summary));
+            } else {
                 summary = deterministicCheckpoint(selection.compactedHead());
                 tokensAfter = tokenEstimator.estimateMessages(selection.projectedWithSummary(summary));
-            }
-            if (tokensAfter >= tokensBefore) {
-                throw new IllegalStateException("Conversation compaction did not reduce durable context");
+                if (tokensAfter >= tokensBefore) {
+                    throw new IllegalStateException("Conversation compaction did not reduce durable context");
+                }
             }
             String strategy = fallback ? "manual_deterministic_fallback" : "manual_model";
             compactions.complete(record, summary, tokensAfter);

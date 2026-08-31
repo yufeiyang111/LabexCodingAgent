@@ -176,6 +176,28 @@ class AgentTranscriptProjectionServiceTest {
     }
 
     @Test
+    void compactionViewKeepsAttachmentReferencesUnhydratedSoSelectionPersistenceStaysBase64Free() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentInputAttachmentService attachments = mock(AgentInputAttachmentService.class);
+        List<Map<String, Object>> durable = List.of(Map.of(
+                "role", "user", "content", "inspect this screenshot",
+                "attachmentIds", List.of("image-1", "image-2")));
+        when(transcript.loadProjectableTranscript(9L)).thenReturn(durable);
+
+        AgentTranscriptProjectionService service = new AgentTranscriptProjectionService(
+                transcript, new AgentProviderMessageProjector(), mock(AgentCompactionService.class), attachments);
+
+        AgentTranscriptProjectionService.Projection view = service.loadDurableCompactionView(9L);
+
+        // 选材视图必须保留 durable 引用形态：Base64 只允许存在于 Provider 请求边界，
+        // 绝不能随 CompactionSelection 序列化进 t_agent_compaction_record。
+        assertThat(view.messages().get(0).get("content")).isEqualTo("inspect this screenshot");
+        assertThat(view.messages().get(0).get("attachmentIds")).isEqualTo(List.of("image-1", "image-2"));
+        assertThat(String.valueOf(view.messages())).doesNotContain("image_url");
+        verifyNoInteractions(attachments);
+    }
+
+    @Test
     void providerLoaderFailsClosedWhenDurableProjectionIsEmpty() {
         AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
         when(transcript.loadProjectableTranscript(7L)).thenReturn(List.of());

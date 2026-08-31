@@ -2,9 +2,19 @@ package com.labex.labexagent.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.labex.entity.AgentTokenUsage;
+import com.labex.entity.AgentRunEvent;
+import com.labex.labexagent.llm.CacheTelemetry;
 import com.labex.labexagent.llm.CacheTelemetryStatus;
+import com.labex.labexagent.projectconfig.AgentRunConfigSnapshotService;
+import com.labex.labexagent.run.AgentRunExecutionLeaseService;
+import com.labex.labexagent.run.AgentRunLifecycleService;
+import com.labex.labexagent.run.ExecutionFence;
 import com.labex.mapper.AgentTokenUsageMapper;
+import java.time.LocalDateTime;
+import java.util.function.Supplier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -13,9 +23,31 @@ import java.util.stream.Collectors;
 public class TokenTracker {
 
     private final AgentTokenUsageMapper mapper;
+    private final AgentRunConfigSnapshotService prefixEvidenceService;
+    private final AgentRunExecutionLeaseService executionLeaseService;
+    private final AgentRunLifecycleService runLifecycleService;
+
+    @Autowired
+    public TokenTracker(AgentTokenUsageMapper mapper, AgentRunConfigSnapshotService prefixEvidenceService,
+                        AgentRunExecutionLeaseService executionLeaseService,
+                        AgentRunLifecycleService runLifecycleService) {
+        this.mapper = mapper;
+        this.prefixEvidenceService = prefixEvidenceService;
+        this.executionLeaseService = executionLeaseService;
+        this.runLifecycleService = runLifecycleService;
+    }
+
+    public TokenTracker(AgentTokenUsageMapper mapper, AgentRunConfigSnapshotService prefixEvidenceService,
+                        AgentRunExecutionLeaseService executionLeaseService) {
+        this(mapper, prefixEvidenceService, executionLeaseService, null);
+    }
+
+    public TokenTracker(AgentTokenUsageMapper mapper, AgentRunConfigSnapshotService prefixEvidenceService) {
+        this(mapper, prefixEvidenceService, null);
+    }
 
     public TokenTracker(AgentTokenUsageMapper mapper) {
-        this.mapper = mapper;
+        this(mapper, null, null);
     }
 
     public void record(String conversationId, String sessionId, Integer studentId, Integer projectId,
@@ -55,7 +87,30 @@ public class TokenTracker {
         usage.setCacheHitTokens(cacheHitTokens);
         usage.setCacheMissTokens(cacheMissTokens);
         usage.setCacheStatus((cacheStatus == null ? CacheTelemetryStatus.NOT_REPORTED : cacheStatus).value());
-        mapper.insert(usage);
+        usage.setTaskId(null);
+        usage.setExecutionEpoch(null);
+        insert(usage);
+    }
+
+    /** Persists usage only while the executor still holds the task/epoch write fence. */
+    @Transactional(rollbackFor = Exception.class)
+    public void recordWithFence(ExecutionFence fence, String conversationId, String sessionId,
+                                Integer studentId, Integer projectId, String provider, String model,
+                                int promptTokens, int completionTokens, int totalTokens,
+                                int cachedTokens, int cacheWriteTokens, int cacheHitTokens,
+                                int cacheMissTokens, CacheTelemetryStatus cacheStatus,
+                                int iteration, String toolName) {
+        requireWriteFence(fence);
+        AgentTokenUsage usage = new AgentTokenUsage(conversationId, sessionId, studentId, projectId,
+                provider, model, promptTokens, completionTokens, totalTokens, iteration, toolName);
+        usage.setCachedTokens(cachedTokens);
+        usage.setCacheWriteTokens(cacheWriteTokens);
+        usage.setCacheHitTokens(cacheHitTokens);
+        usage.setCacheMissTokens(cacheMissTokens);
+        usage.setCacheStatus((cacheStatus == null ? CacheTelemetryStatus.NOT_REPORTED : cacheStatus).value());
+        usage.setTaskId(fence.taskId());
+        usage.setExecutionEpoch(fence.epoch());
+        insert(usage);
     }
 
     public void recordFromMap(String conversationId, String sessionId, Integer studentId, Integer projectId,
@@ -68,27 +123,93 @@ public class TokenTracker {
     public void recordFromMap(String conversationId, String sessionId, Integer studentId, Integer projectId,
                               String provider, String model, Map<String, Object> usageMap,
                               CacheTelemetryStatus cacheStatus, int iteration, String toolName) {
+        recordFromMapInternal(null, conversationId, sessionId, studentId, projectId, provider, model,
+                usageMap, cacheStatus, iteration, toolName);
+    }
+
+    /** Fenced counterpart used by the durable Agent loop. */
+    @Transactional(rollbackFor = Exception.class)
+    public void recordFromMapWithFence(ExecutionFence fence, String conversationId, String sessionId,
+                                       Integer studentId, Integer projectId, String provider, String model,
+                                       Map<String, Object> usageMap, CacheTelemetryStatus cacheStatus,
+                                       int iteration, String toolName) {
+        recordFromMapInternal(fence, conversationId, sessionId, studentId, projectId, provider, model,
+                usageMap, cacheStatus, iteration, toolName);
+    }
+
+    /** Persists the usage row and its durable TOKEN_USAGE event in one lifecycle transaction. */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunEvent recordFromMapWithFenceAndEvent(
+            ExecutionFence fence, String conversationId, String sessionId,
+            Integer studentId, Integer projectId, String provider, String model,
+            Map<String, Object> usageMap, CacheTelemetryStatus cacheStatus, int iteration,
+            String toolName, Supplier<Map<String, Object>> payloadSupplier, String idempotencyKey) {
+        if (usageMap == null) return null;
+        if (runLifecycleService == null) {
+            throw new IllegalStateException("Agent run lifecycle service is unavailable");
+        }
+        Map<String, Object> normalized = CacheTelemetry.normalizeUsage(usageMap);
+        int prompt = getInt(normalized, "prompt_tokens");
+        int completion = getInt(normalized, "completion_tokens");
+        int total = getInt(normalized, "total_tokens");
+        int cached = getInt(normalized, "cached_tokens");
+        int cacheWrite = getInt(normalized, "cache_write_tokens");
+        int cacheHit = getInt(normalized, "cache_hit_tokens");
+        int cacheMiss = getInt(normalized, "cache_miss_tokens");
+        if (cacheHit == 0) cacheHit = cached;
+        if (cacheMiss == 0) cacheMiss = cacheWrite;
+        if (total == 0) total = prompt + completion;
+        if (total <= 0) return null;
+
+        requireWriteFence(fence);
+        AgentTokenUsage usage = new AgentTokenUsage(conversationId, sessionId, studentId, projectId,
+                provider, model, prompt, completion, total, iteration, toolName);
+        usage.setCachedTokens(cached);
+        usage.setCacheWriteTokens(cacheWrite);
+        usage.setCacheHitTokens(cacheHit);
+        usage.setCacheMissTokens(cacheMiss);
+        usage.setCacheStatus((cacheStatus == null ? CacheTelemetryStatus.NOT_REPORTED : cacheStatus).value());
+        return runLifecycleService.appendTokenUsage(fence, fence.taskId(), usage, payloadSupplier, idempotencyKey);
+    }
+
+    private void recordFromMapInternal(ExecutionFence fence, String conversationId, String sessionId,
+                                       Integer studentId, Integer projectId, String provider, String model,
+                                       Map<String, Object> usageMap, CacheTelemetryStatus cacheStatus,
+                                       int iteration, String toolName) {
         if (usageMap == null) return;
-        int prompt = getInt(usageMap, "prompt_tokens");
-        int completion = getInt(usageMap, "completion_tokens");
-        int total = getInt(usageMap, "total_tokens");
-        int cached = getInt(usageMap, "cached_tokens");
-        int cacheWrite = getInt(usageMap, "cache_write_tokens");
-        int cacheHit = getInt(usageMap, "cache_hit_tokens");
-        int cacheMiss = getInt(usageMap, "cache_miss_tokens");
+        Map<String, Object> normalized = CacheTelemetry.normalizeUsage(usageMap);
+        int prompt = getInt(normalized, "prompt_tokens");
+        int completion = getInt(normalized, "completion_tokens");
+        int total = getInt(normalized, "total_tokens");
+        int cached = getInt(normalized, "cached_tokens");
+        int cacheWrite = getInt(normalized, "cache_write_tokens");
+        int cacheHit = getInt(normalized, "cache_hit_tokens");
+        int cacheMiss = getInt(normalized, "cache_miss_tokens");
         if (cacheHit == 0) cacheHit = cached;
         if (cacheMiss == 0) cacheMiss = cacheWrite;
         if (total == 0) total = prompt + completion;
         if (total > 0) {
-            record(conversationId, sessionId, studentId, projectId, provider, model,
-                    prompt, completion, total, cached, cacheWrite, cacheHit, cacheMiss,
-                    cacheStatus, iteration, toolName);
+            if (fence == null) {
+                record(conversationId, sessionId, studentId, projectId, provider, model,
+                        prompt, completion, total, cached, cacheWrite, cacheHit, cacheMiss,
+                        cacheStatus, iteration, toolName);
+            } else {
+                recordWithFence(fence, conversationId, sessionId, studentId, projectId, provider, model,
+                        prompt, completion, total, cached, cacheWrite, cacheHit, cacheMiss,
+                        cacheStatus, iteration, toolName);
+            }
         }
     }
 
     public int getTotalTokensByConversation(String conversationId) {
+        return getTotalTokensByConversation(conversationId, null, null);
+    }
+
+    public int getTotalTokensByConversation(String conversationId, Integer studentId, Integer projectId) {
         QueryWrapper<AgentTokenUsage> qw = new QueryWrapper<>();
         qw.eq("conversation_id", conversationId);
+        if (studentId != null) qw.eq("student_id", studentId);
+        if (projectId != null) qw.eq("project_id", projectId);
         List<AgentTokenUsage> list = mapper.selectList(qw);
         return list.stream().mapToInt(u -> value(u.getTotalTokens())).sum();
     }
@@ -101,8 +222,15 @@ public class TokenTracker {
     }
 
     public Map<String, Object> getConversationStats(String conversationId) {
+        return getConversationStats(conversationId, null, null);
+    }
+
+    public Map<String, Object> getConversationStats(String conversationId, Integer studentId,
+                                                     Integer projectId) {
         QueryWrapper<AgentTokenUsage> qw = new QueryWrapper<>();
         qw.eq("conversation_id", conversationId);
+        if (studentId != null) qw.eq("student_id", studentId);
+        if (projectId != null) qw.eq("project_id", projectId);
         List<AgentTokenUsage> list = mapper.selectList(qw);
 
         int totalPrompt = list.stream().mapToInt(u -> value(u.getPromptTokens())).sum();
@@ -149,6 +277,10 @@ public class TokenTracker {
         stats.put("cacheStatus", cache.status().value());
         stats.put("cacheTelemetryCallCount", cache.reportedCallCount());
         stats.put("cacheHitRate", cache.hitRate());
+        if (this.prefixEvidenceService != null) {
+            stats.putAll(this.prefixEvidenceService.prefixStatsForConversation(conversationId, studentId,
+                    projectId).toPayload());
+        }
         stats.put("callCount", list.size());
         stats.put("byTool", byTool);
         stats.put("perIteration", perIteration);
@@ -212,6 +344,9 @@ public class TokenTracker {
         stats.put("cacheStatus", cache.status().value());
         stats.put("cacheTelemetryCallCount", cache.reportedCallCount());
         stats.put("cacheHitRate", cache.hitRate());
+        if (this.prefixEvidenceService != null) {
+            stats.putAll(this.prefixEvidenceService.prefixStatsForStudent(studentId).toPayload());
+        }
         stats.put("callCount", list.size());
         stats.put("byModel", byModel);
         stats.put("cacheByModel", cacheByModel);
@@ -258,7 +393,7 @@ public class TokenTracker {
                 : CacheTelemetryStatus.NOT_REPORTED;
         Double hitRate = (reportedPrompt <= 0 || reportedCached <= 0)
                 ? null
-                : Math.round(reportedCached * 10000.0 / reportedPrompt) / 100.0;
+                : Math.min(100.0, Math.round(reportedCached * 10000.0 / reportedPrompt) / 100.0);
         return new CacheAggregate(status, reportedCalls, hitRate);
     }
 
@@ -273,16 +408,30 @@ public class TokenTracker {
     }
 
     private int value(Integer value) {
-        return value == null ? 0 : value;
+        return value == null ? 0 : Math.max(0, value);
     }
 
     private int getInt(Map<String, Object> map, String key) {
         Object v = map.get(key);
-        if (v instanceof Number) return ((Number) v).intValue();
+        if (v instanceof Number) return Math.max(0, ((Number) v).intValue());
         if (v instanceof String) {
-            try { return Integer.parseInt((String) v); } catch (Exception e) { return 0; }
+            try { return Math.max(0, Integer.parseInt((String) v)); } catch (Exception e) { return 0; }
         }
         return 0;
+    }
+
+    private void requireWriteFence(ExecutionFence fence) {
+        if (fence == null) {
+            throw new IllegalStateException("ExecutionFence is required for fenced token usage writes");
+        }
+        if (executionLeaseService == null) {
+            throw new IllegalStateException("Execution lease service is unavailable");
+        }
+        executionLeaseService.requireActiveFenceForWrite(fence, LocalDateTime.now());
+    }
+
+    private void insert(AgentTokenUsage usage) {
+        mapper.insert(usage);
     }
 
     private record CacheAggregate(CacheTelemetryStatus status, int reportedCallCount, Double hitRate) {

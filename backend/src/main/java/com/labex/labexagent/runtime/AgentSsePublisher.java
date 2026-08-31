@@ -32,6 +32,15 @@ public class AgentSsePublisher {
         this.transientEventListener = transientEventListener;
     }
 
+    /**
+     * 内部运行（如子代理任务）没有直连 HTTP 客户端：durable 事件照常落库，
+     * transient 事件仍通过 {@link TransientEventListener} 提供给 /subscribe 订阅者，
+     * 仅跳过 SSE 帧写出。绝不向客户端返回该 publisher 绑定的 emitter。
+     */
+    public static AgentSsePublisher detached(TransientEventListener transientEventListener) {
+        return new AgentSsePublisher(null, transientEventListener);
+    }
+
     public void bindRun(AgentRunLifecycleService lifecycleService, Long taskId) {
         bindRun(lifecycleService, taskId, null);
     }
@@ -184,6 +193,9 @@ public class AgentSsePublisher {
     }
 
     private void sendFrame(Long sequenceNumber, String type, Object data) throws IOException {
+        if (this.emitter == null) {
+            return;
+        }
         SseEmitter.SseEventBuilder event = SseEmitter.event()
                 .name(type)
                 .data(GSON.toJson(new AgentEvent(type, data)));

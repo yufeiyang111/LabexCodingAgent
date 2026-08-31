@@ -148,6 +148,8 @@ class AgentLoopEngineCompactionTerminalityTest {
         when(projection.loadProviderMessages(71L)).thenReturn(taskMessages);
         when(projection.loadDurableProjection(71L)).thenReturn(
                 new AgentTranscriptProjectionService.Projection(taskMessages, "durable_transcript"));
+        when(projection.loadDurableCompactionView(71L)).thenReturn(
+                new AgentTranscriptProjectionService.Projection(taskMessages, "durable_transcript"));
         engine.setTranscriptProjectionService(projection);
         AgentRunTranscriptService transcriptService = mock(AgentRunTranscriptService.class);
         when(transcriptService.nextSequence(71L)).thenReturn(5L);

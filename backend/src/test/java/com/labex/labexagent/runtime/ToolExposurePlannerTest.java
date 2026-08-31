@@ -41,7 +41,7 @@ class ToolExposurePlannerTest {
 
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "write_file", "apply_patch", "shell",
-                "todo_write", "question", "web_search", "web_fetch", "understand_image", "lsp", "skill", "mcp_docs_search"),
+                "todo_write", "question", "web_search", "web_fetch", "understand_image", "lsp", "skill", "task", "mcp_docs_search"),
                 exposure.definitions().stream().map(ToolDefinition::getName).toList());
         assertTrue(exposure.scopedTools().containsKey("mcp_docs_search"));
         assertFalse(exposure.scopedTools().containsKey("mcp_shared"));
@@ -115,7 +115,7 @@ class ToolExposurePlannerTest {
                 tool("read_file"), tool("read_tool_output"), tool("glob"), tool("grep"),
                 tool("edit_file"), tool("write_file"), tool("apply_patch"), tool("shell"), tool("todo_write"), tool("question"),
                 tool("web_search"), tool("web_fetch"), tool("understand_image"), tool("lsp"), tool("skill"),
-                tool("mcp_call"), tool("create_plan"), tool("plan_exit"), tool("run_tests")));
+                tool("task"), tool("mcp_call"), tool("create_plan"), tool("plan_exit"), tool("run_tests")));
     }
 
     private static McpToolAdapter.McpToolInfo mcpTool(String serverKey, String serverName, String toolName) {

@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.ProviderCapabilities;
+import com.labex.labexagent.llm.ProviderFailure;
+import com.labex.labexagent.llm.ProviderFailureType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -181,6 +183,53 @@ class AgentModelTurnExecutorTest {
         assertFalse(parentRun.isCancellationRequested());
         assertTrue(providerCancellationObserved.get());
         assertEquals("model_timeout", result.toMap().get("reasonCode"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void surfacesProviderTransportDiagnosticsThroughTheErrorResult() throws Exception {
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
+        Map<String, Object> diagnostics = Map.of(
+                "endpoint", "https://example.com/v1/chat/completions",
+                "model", "test-model",
+                "failure_stage", "mid_stream",
+                "elapsed_ms", 4_200L);
+        LlmProvider.StreamChunk failureChunk = new LlmProvider.StreamChunk("error", "Read timed out", null, null,
+                null, true, null, null, null,
+                new ProviderFailure(ProviderFailureType.TIMEOUT, null, "Read timed out", true, diagnostics));
+        LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE,
+                callback -> callback.accept(failureChunk));
+
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request(provider, new ArrayList<>()));
+
+        assertEquals(AgentModelTurnExecutor.ResultType.ERROR, result.type());
+        assertEquals("provider_error", result.toMap().get("reasonCode"));
+        Map<String, Object> surfaced = (Map<String, Object>) result.toMap().get("diagnostics");
+        assertEquals("https://example.com/v1/chat/completions", surfaced.get("endpoint"));
+        assertEquals("mid_stream", surfaced.get("failure_stage"));
+        assertEquals(4_200L, surfaced.get("elapsed_ms"));
+        assertEquals("timeout", surfaced.get("failure_type"));
+        assertTrue(((Number) surfaced.get("partial_output_chars")).intValue() >= 0);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void annotatesWatchdogTimeoutsWithExecutorSideDiagnosticsWhenTheProviderStaysSilent() throws Exception {
+        AgentCancellationRegistry.ActiveRun parentRun = new AgentCancellationRegistry()
+                .register("watchdog-diag-parent", 7, 12, 51L);
+        AtomicReference<CancellationToken> providerToken = new AtomicReference<>();
+        AtomicBoolean providerCancellationObserved = new AtomicBoolean();
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 20);
+        LlmProvider provider = blockingProvider(providerToken, providerCancellationObserved);
+
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(
+                request(provider, new ArrayList<>()).withCancellationToken(parentRun));
+
+        assertEquals(AgentModelTurnExecutor.ResultType.ERROR, result.type());
+        Map<String, Object> surfaced = (Map<String, Object>) result.toMap().get("diagnostics");
+        assertEquals("watchdog_total_timeout", surfaced.get("failure_type"));
+        assertEquals(20L, surfaced.get("watchdog_total_timeout_ms"));
+        assertTrue(((Number) surfaced.get("watchdog_elapsed_ms")).longValue() >= 15L);
     }
 
     private LlmProvider blockingProvider(AtomicReference<CancellationToken> providerToken,

@@ -163,16 +163,62 @@ public class AgentTranscriptProjectionService {
         return providerProjector.project(combined);
     }
 
-    /** JVM 重启时直接从 transcript 与最新 compaction epoch 重建。 */
+    /** JVM 重启时直接从 transcript 与最新 compaction epoch 重建（附件在 Provider 边界注水）。 */
     public Projection loadDurableProjection(Long taskId) {
-        DurableProjection durable = durableProjection(taskId, false);
+        DurableProjection durable = durableView(taskId, false, true);
         return new Projection(durable.messages(), durable.detail());
     }
 
     /** 审批或提问恢复时保留可恢复的等待 Tool Part。 */
     public Projection loadDurableProjectionForInteractionResume(Long taskId) {
-        DurableProjection durable = durableProjection(taskId, true);
+        DurableProjection durable = durableView(taskId, true, true);
         return new Projection(durable.messages(), durable.detail());
+    }
+
+    /**
+     * 压缩选材专用视图：应用已完成压缩，但绝不把 attachmentIds 注水成 Base64 data URL。
+     *
+     * <p>选出的 compactedHead/retainedTail 会整体序列化进 t_agent_compaction_record；
+     * 若在此放行注水，图片负载将随 selection 永久写入压缩记录，附件过期后变成无法回收的死重。
+     * 预算准确性由 AgentRequestTokenEstimator 对 durable 形态 attachmentIds 的视觉权重补偿。</p>
+     */
+    public Projection loadDurableCompactionView(Long taskId) {
+        DurableProjection durable = durableView(taskId, false, false);
+        return new Projection(durable.messages(), durable.detail());
+    }
+
+    private DurableProjection durableView(Long taskId, boolean interactionResume, boolean hydrateAttachments) {
+        if (taskId == null || taskId <= 0) {
+            throw new IllegalArgumentException("Durable Provider transcript requires a positive taskId");
+        }
+        java.util.Optional<AgentCompactionService.Projection> compacted = interactionResume
+                    ? compactionService.projectLatestForInteractionResume(taskId,
+                    boundary -> transcriptService.loadProjectableTranscriptForInteractionResumeAfter(taskId, boundary))
+                    : compactionService.projectLatest(taskId,
+                    boundary -> transcriptService.loadProjectableTranscriptAfter(taskId, boundary));
+        if (compacted.isPresent()) {
+            AgentCompactionService.Projection value = compacted.orElseThrow();
+            return new DurableProjection(
+                    finalizeDurableView(taskId, value.messages(), interactionResume, hydrateAttachments),
+                    "compaction_epoch=" + value.compactionEpoch()
+                            + ",source_max_sequence=" + value.sourceMaxSequence());
+        }
+        List<Map<String, Object>> durableMessages = interactionResume
+                ? transcriptService.loadProjectableTranscriptForInteractionResume(taskId)
+                : transcriptService.loadProjectableTranscript(taskId);
+        return new DurableProjection(
+                finalizeDurableView(taskId, durableMessages, interactionResume, hydrateAttachments),
+                interactionResume ? "interaction_resume" : "durable_transcript");
+    }
+
+    private List<Map<String, Object>> finalizeDurableView(Long taskId, List<Map<String, Object>> messages,
+                                                          boolean interactionResume, boolean hydrateAttachments) {
+        if (!hydrateAttachments || attachmentService == null) {
+            // 未注水视图仍需深拷贝，避免 selection 序列化与上游缓存共享可变结构。
+            return providerProjector.copyMessages(messages);
+        }
+        List<Map<String, Object>> hydrated = hydrateAttachments(taskId, messages);
+        return interactionResume ? providerProjector.copyMessages(hydrated) : providerProjector.project(hydrated);
     }
 
     private boolean usesConversationGraph(AgentTask task) {
@@ -194,34 +240,6 @@ public class AgentTranscriptProjectionService {
                 .eq(AgentConversation::getStatus, 1));
         return conversation != null && AgentConversationMessageGraphVersion.matches(
                 conversation.getHistoryProjectionVersion());
-    }
-
-    private DurableProjection durableProjection(Long taskId, boolean interactionResume) {
-        if (taskId == null || taskId <= 0) {
-            throw new IllegalArgumentException("Durable Provider transcript requires a positive taskId");
-        }
-        java.util.Optional<AgentCompactionService.Projection> compacted = interactionResume
-                    ? compactionService.projectLatestForInteractionResume(taskId,
-                    boundary -> transcriptService.loadProjectableTranscriptForInteractionResumeAfter(taskId, boundary))
-                    : compactionService.projectLatest(taskId,
-                    boundary -> transcriptService.loadProjectableTranscriptAfter(taskId, boundary));
-        if (compacted.isPresent()) {
-            AgentCompactionService.Projection value = compacted.orElseThrow();
-            List<Map<String, Object>> hydrated = hydrateAttachments(taskId, value.messages());
-            return new DurableProjection(interactionResume
-                            ? providerProjector.copyMessages(hydrated)
-                            : providerProjector.project(hydrated),
-                    "compaction_epoch=" + value.compactionEpoch()
-                            + ",source_max_sequence=" + value.sourceMaxSequence());
-        }
-        List<Map<String, Object>> durableMessages = interactionResume
-                ? transcriptService.loadProjectableTranscriptForInteractionResume(taskId)
-                : transcriptService.loadProjectableTranscript(taskId);
-        List<Map<String, Object>> hydrated = hydrateAttachments(taskId, durableMessages);
-        return new DurableProjection(interactionResume
-                        ? providerProjector.copyMessages(hydrated)
-                        : providerProjector.project(hydrated),
-                interactionResume ? "interaction_resume" : "durable_transcript");
     }
 
     private List<Map<String, Object>> hydrateAttachments(Long taskId, List<Map<String, Object>> messages) {

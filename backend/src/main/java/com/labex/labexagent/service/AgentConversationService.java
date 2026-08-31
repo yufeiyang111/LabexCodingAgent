@@ -70,6 +70,7 @@ public class AgentConversationService {
         if (conversationId != null && !conversationId.isBlank()
                 && (existing = getOwnedConversation(studentId, project.getProjectId(), conversationId)) != null) {
             assertRequestedProfileMatches(existing, requestedRuntimeProfile);
+            assertNoModeEscalation(existing, mode);
             applyModelMetadata(existing, modelConfig);
             return existing;
         }
@@ -100,6 +101,66 @@ public class AgentConversationService {
 
     private AgentRuntimeProfile resolveNewConversationProfile(AgentRuntimeProfile requestedRuntimeProfile) {
         return requestedRuntimeProfile == null ? runtimeProfileProperties.resolveDefaultProfile() : requestedRuntimeProfile;
+    }
+
+    /**
+     * 子代理会话是独立持久会话，但绝不允许通过公共入口把 mode 升级成可写模式；
+     * 子代理内部的多轮追问必须保持 subagent 运行边界。
+     */
+    private void assertNoModeEscalation(AgentConversation existing, String requestedMode) {
+        if (!"subagent".equalsIgnoreCase(existing.getMode())) return;
+        String normalized;
+        try {
+            normalized = com.labex.labexagent.runtime.AgentMode.normalize(requestedMode);
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException("Unsupported agent mode for a subagent conversation");
+        }
+        if (!"subagent".equals(normalized)) {
+            throw new IllegalArgumentException("A subagent conversation cannot escalate to mode: " + normalized);
+        }
+    }
+
+    /**
+     * 创建子代理专属会话：mode 固定 subagent、继承父会话 provider/model/profile，
+     * parent_conversation_id 记录派生关系；不出现在普通会话列表（list 过滤）。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentConversation createSubagentConversation(Integer studentId, StudentProject project,
+                                                        AgentConversation parentConversation, String title,
+                                                        AgentModelConfig modelConfig) {
+        LocalDateTime now = LocalDateTime.now();
+        AgentConversation conversation = new AgentConversation();
+        conversation.setConversationId(UUID.randomUUID().toString());
+        conversation.setStudentId(studentId);
+        conversation.setProjectId(project.getProjectId());
+        conversation.setTitle(title == null || title.isBlank() ? "Subagent" : title);
+        conversation.setMode("subagent");
+        if (modelConfig != null) {
+            conversation.setProvider(normalizeProvider(modelConfig.getProvider()));
+            conversation.setModel(normalizeModel(modelConfig.getModelName()));
+        } else if (parentConversation != null) {
+            conversation.setProvider(parentConversation.getProvider());
+            conversation.setModel(parentConversation.getModel());
+        } else {
+            conversation.setProvider(ragConfig.getLlmProvider());
+            conversation.setModel("ollama".equalsIgnoreCase(ragConfig.getLlmProvider())
+                    ? ragConfig.getOllamaModel() : ragConfig.getMiniMaxModel());
+        }
+        conversation.setRuntimeProfile((parentConversation == null
+                ? resolveNewConversationProfile(null)
+                : AgentRuntimeProfile.fromPersisted(parentConversation.getRuntimeProfile())).persistedValue());
+        if (parentConversation != null) {
+            conversation.setParentConversationId(parentConversation.getConversationId());
+        }
+        conversation.setHistoryProjectionVersion(AgentLegacyConversationHistoryMigrationService.DURABLE_VERSION);
+        conversation.setHistoryMigratedAt(now);
+        conversation.setStatus(1);
+        conversation.setCreateTime(now);
+        conversation.setUpdateTime(now);
+        if (conversationMapper.insert(conversation) != 1) {
+            throw new IllegalStateException("Unable to persist subagent conversation");
+        }
+        return conversation;
     }
 
     private void assertRequestedProfileMatches(AgentConversation conversation,

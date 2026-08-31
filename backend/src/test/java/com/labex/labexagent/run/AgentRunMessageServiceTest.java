@@ -252,6 +252,51 @@ class AgentRunMessageServiceTest {
         assertThat(history).singleElement().extracting(item -> item.get("messageKey"))
                 .isEqualTo("assistant:final");
     }
+
+    @Test
+    void publicHistoryHoistsDurableAttachmentReferencesToTheTopLevelForHistoryProjection() {
+        // 历史附件投影从 payload 顶层读取 attachmentIds；metadata 只是 JSON 字符串，
+        // 不提升会导致刷新后 turn.attachments 恒为空、图片缩略图从会话气泡消失。
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessage imageMessage = new AgentRunMessage();
+        imageMessage.setMessageKey("provider:1:message:1");
+        imageMessage.setRole("user");
+        imageMessage.setContent("这个图片里有什么东西");
+        imageMessage.setMetadata("{\"provider\":true,\"executionEpoch\":1,"
+                + "\"attachmentIds\":[\"475449ca-0d47-4711-ae67-7686308dedf9\",\"\"]}");
+        AgentRunMessage plainMessage = new AgentRunMessage();
+        plainMessage.setMessageKey("assistant:final");
+        plainMessage.setRole("assistant");
+        plainMessage.setContent("done");
+        plainMessage.setMetadata("{\"provider\":true}");
+        when(messages.selectList(any())).thenReturn(List.of(imageMessage, plainMessage));
+
+        List<Map<String, Object>> history = new AgentRunMessageService(messages, tasks).publicHistory(7L);
+
+        assertThat(history).hasSize(2);
+        assertThat(history.get(0).get("attachmentIds"))
+                .isEqualTo(List.of("475449ca-0d47-4711-ae67-7686308dedf9"));
+        assertThat(history.get(1)).doesNotContainKey("attachmentIds");
+    }
+
+    @Test
+    void publicHistoryToleratesMalformedMetadataWithoutHidingMessages() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunMessage brokenMetadata = new AgentRunMessage();
+        brokenMetadata.setMessageKey("provider:1:message:2");
+        brokenMetadata.setRole("user");
+        brokenMetadata.setContent("legacy row");
+        brokenMetadata.setMetadata("not-json{");
+        when(messages.selectList(any())).thenReturn(List.of(brokenMetadata));
+
+        List<Map<String, Object>> history = new AgentRunMessageService(messages, tasks).publicHistory(7L);
+
+        assertThat(history).singleElement()
+                .extracting(item -> ((Map<?, ?>) item).get("content"))
+                .isEqualTo("legacy row");
+    }
     @Test
     void reasoningEventKeepsReasoningBodyButRemovesPrivateBlocksFromVisibleMetadata() {
         AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);

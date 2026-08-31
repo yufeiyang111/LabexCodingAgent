@@ -81,3 +81,10 @@ sandbox/windows-helper/**/*.lib
 # AI agent scratch and dev-server artifacts
 .codex-tmp/
 vite.config.js.timestamp-*
+
+# Deploy release archives
+deploy/linux/*.tar
+deploy/linux/*.tar.gz
+deploy/linux/*.sql
+deploy/linux/release/
+deploy/linux/archive-inputs.txt

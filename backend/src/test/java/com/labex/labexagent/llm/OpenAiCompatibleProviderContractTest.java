@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -362,6 +363,7 @@ class OpenAiCompatibleProviderContractTest {
     void retriesWithoutPromptCacheKeyWhenAnOptedInCompatibleGatewayRejectsTheField() throws Exception {
         AtomicInteger requests = new AtomicInteger();
         List<String> bodies = new ArrayList<>();
+        List<OpenAiCompatibleChatRequestAdapter.RequestEvidence> evidence = new ArrayList<>();
         HttpServer server = startServer(exchange -> {
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             bodies.add(request);
@@ -374,10 +376,11 @@ class OpenAiCompatibleProviderContractTest {
         try {
             List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
             providerForLocalServer().chatStream("system", List.of(), List.of(),
-                    promptCacheConfig(server), chunks::add);
+                    promptCacheConfig(server).withRequestEvidenceSink(evidence::add), chunks::add);
             assertEquals(2, requests.get());
             assertTrue(bodies.get(0).contains("\"prompt_cache_key\""));
             assertFalse(bodies.get(1).contains("\"prompt_cache_key\""));
+            assertTrue(evidence.stream().anyMatch(OpenAiCompatibleChatRequestAdapter.RequestEvidence::promptCacheKeyRejected));
             assertTrue(chunks.stream().anyMatch(chunk -> "text_delta".equals(chunk.type())));
         } finally {
             server.stop(0);
@@ -450,6 +453,41 @@ class OpenAiCompatibleProviderContractTest {
 
     private static LlmProvider.LlmConfig config(HttpServer server) {
         return new LlmProvider.LlmConfig("test-key", baseUrl(server), "test-model", 32, 0.1, 1_000, 1_000, 0);
+    }
+
+    @Test
+    void attachesTransportDiagnosticsWhenTheFirstStreamEventTimesOut() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            try {
+                Thread.sleep(2_500L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            sendSse(exchange, "data: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            LlmProvider.StreamChunk failure = chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.ERROR)
+                    .findFirst()
+                    .orElseThrow();
+            assertEquals(ProviderFailureType.TIMEOUT, failure.failure().type());
+            Map<String, Object> diagnostics = failure.failure().diagnostics();
+            assertEquals("http://127.0.0.1:" + server.getAddress().getPort() + "/chat/completions",
+                    diagnostics.get("endpoint"));
+            assertEquals("test-model", diagnostics.get("model"));
+            assertEquals("await_response_headers", diagnostics.get("failure_stage"));
+            assertEquals(Boolean.FALSE, diagnostics.get("stream_data_received"));
+            assertEquals(1_000, diagnostics.get("first_event_timeout_ms"));
+            assertEquals(1_000, diagnostics.get("read_timeout_ms"));
+            assertTrue(((Number) diagnostics.get("elapsed_ms")).longValue() >= 900L);
+            assertTrue(((Number) diagnostics.get("attempts_completed")).intValue() >= 1);
+        } finally {
+            server.stop(0);
+        }
     }
 
     private static LlmProvider.LlmConfig promptCacheConfig(HttpServer server) {

@@ -3,6 +3,7 @@ package com.labex.labexagent.tool.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -97,9 +98,14 @@ class ShellToolContractTest {
         ToolResult result = new RunCommandTool(worker).execute(context(), args);
 
         assertThat(result.isSuccess()).isTrue();
+        // python 命令会先触发一次只读工具探测（10s 预算），随后才是真实命令（python 默认 180s）。
         ArgumentCaptor<ProcessExecutionRequest> request = ArgumentCaptor.forClass(ProcessExecutionRequest.class);
         verify(worker).execute(any(), request.capture(), any());
-        assertThat(request.getValue().timeout()).isEqualTo(Duration.ofSeconds(180));
+        ProcessExecutionRequest call = request.getValue();
+        assertThat(call.timeout()).isEqualTo(Duration.ofSeconds(180));
+        assertThat(call.command())
+                .containsExactly("/bin/bash", "--noprofile", "--norc", "-lc", "python -m pytest -q");
+        assertThat(call.workingDirectory()).isEqualTo(workspace.toAbsolutePath().normalize());
     }
 
     @Test

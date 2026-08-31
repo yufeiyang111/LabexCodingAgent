@@ -48,7 +48,7 @@ class AdditiveSchemaMigratorTimingTest {
         new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, org.mockito.Mockito.times(16)).execute(sql.capture());
+        verify(jdbcTemplate, org.mockito.Mockito.times(17)).execute(sql.capture());
         assertTrue(sql.getAllValues().containsAll(List.of(
                 "ALTER TABLE t_agent_task ADD COLUMN submitted_at DATETIME(3) DEFAULT NULL",
                 "ALTER TABLE t_agent_task ADD COLUMN started_at DATETIME(3) DEFAULT NULL",
@@ -57,7 +57,8 @@ class AdditiveSchemaMigratorTimingTest {
                 "ALTER TABLE t_agent_task ADD COLUMN elapsed_ms BIGINT DEFAULT NULL",
                 "ALTER TABLE t_agent_task ADD COLUMN active_elapsed_ms BIGINT NOT NULL DEFAULT 0",
                 "ALTER TABLE t_agent_task ADD INDEX idx_task_retry_due (status, next_retry_at)",
-                "ALTER TABLE t_agent_task ADD INDEX idx_task_execution_lease (execution_lease_expires_at)",
+                 "ALTER TABLE t_agent_task ADD INDEX idx_task_execution_lease (execution_lease_expires_at)",
+                 "ALTER TABLE t_agent_token_usage ADD INDEX idx_token_task_epoch (task_id, execution_epoch)",
                 "ALTER TABLE t_agent_conversation ADD INDEX idx_conv_project_updated (student_id, project_id, status, update_time)",
                 "ALTER TABLE t_agent_conversation ADD INDEX idx_agent_conversation_fork_task (forked_from_task_id)",
                 "ALTER TABLE t_agent_conversation ADD INDEX idx_agent_conversation_execution_lease (execution_lease_expires_at)",
@@ -93,10 +94,11 @@ class AdditiveSchemaMigratorTimingTest {
                     .contains(column.toLowerCase());
             return missingProcessColumn ? missing : present;
         });
-        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, false);
+        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, true, false);
         when(existingIndexes.getString("INDEX_NAME")).thenReturn(
                 "idx_task_retry_due",
                 "idx_task_execution_lease",
+                "idx_token_task_epoch",
                 "idx_conv_project_updated",
                 "idx_agent_conversation_fork_task",
                 "idx_agent_conversation_execution_lease",
@@ -162,10 +164,11 @@ class AdditiveSchemaMigratorTimingTest {
         when(present.next()).thenReturn(true);
         when(metadata.getColumns(any(), isNull(), anyString(), anyString())).thenReturn(present);
         when(metadata.getTables(any(), isNull(), anyString(), any())).thenReturn(present);
-        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, false);
+        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, true, false);
         when(existingIndexes.getString("INDEX_NAME")).thenReturn(
                 "idx_task_retry_due",
                 "idx_task_execution_lease",
+                "idx_token_task_epoch",
                 "idx_conv_project_updated",
                 "idx_agent_conversation_fork_task",
                 "idx_agent_conversation_execution_lease",
@@ -235,7 +238,8 @@ class AdditiveSchemaMigratorTimingTest {
             String table = invocation.getArgument(2, String.class);
             String column = invocation.getArgument(3, String.class);
             return "t_agent_token_usage".equalsIgnoreCase(table)
-                    && List.of("cache_hit_tokens", "cache_miss_tokens").contains(column.toLowerCase())
+                    && List.of("cache_hit_tokens", "cache_miss_tokens", "task_id", "execution_epoch")
+                    .contains(column.toLowerCase())
                     ? missing : present;
         });
 
@@ -247,6 +251,10 @@ class AdditiveSchemaMigratorTimingTest {
                 "ALTER TABLE t_agent_token_usage ADD COLUMN cache_hit_tokens INT NOT NULL DEFAULT 0"));
         assertTrue(sql.getAllValues().contains(
                 "ALTER TABLE t_agent_token_usage ADD COLUMN cache_miss_tokens INT NOT NULL DEFAULT 0"));
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_token_usage ADD COLUMN task_id BIGINT DEFAULT NULL"));
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_token_usage ADD COLUMN execution_epoch BIGINT DEFAULT NULL"));
     }
 
     @Test

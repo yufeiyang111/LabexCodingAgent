@@ -706,4 +706,80 @@ class AgentRunTranscriptServiceTest {
         verify(messages, never()).insert(any(AgentRunMessage.class));
         verify(messages, never()).updateById(any(AgentRunMessage.class));
     }
+
+    @Test
+    void persistsOneImmutableObjectiveAnchorForTheWholeTask() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunExecutionLeaseService leaseService = mock(AgentRunExecutionLeaseService.class);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(messages.selectList(any())).thenReturn(List.of());
+        when(tasks.selectById(7L)).thenReturn(task());
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(71L);
+            return 1;
+        });
+
+        boolean appended = new AgentRunTranscriptService(messages, parts, tasks, leaseService)
+                .appendObjectiveAnchor(new ExecutionFence(7L, "instance-a", 4L), 7L, 4L,
+                        "Implement the requested feature", "build");
+
+        assertThat(appended).isTrue();
+        AgentRunMessage message = capturedMessage(messages);
+        assertThat(message.getMessageKey()).isEqualTo("provider:objective-anchor:v1");
+        assertThat(message.getRole()).isEqualTo("user");
+        assertThat(message.getContent()).contains("<agent_focus_anchor")
+                .contains("Implement the requested feature")
+                .contains("mode: build");
+        assertThat(message.getMetadata()).contains("objectiveAnchor").contains("visibility");
+    }
+
+    @Test
+    void resolvesObjectiveFromTheDurableOriginInsteadOfAResumeNote() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunExecutionLeaseService leaseService = mock(AgentRunExecutionLeaseService.class);
+        AgentTask durableTask = task();
+        durableTask.setOriginMessageId(101L);
+        when(messages.selectOne(any())).thenReturn(null);
+        when(messages.selectList(any())).thenReturn(List.of());
+        when(messages.selectById(101L)).thenReturn(message(101L, "user:origin", 1L, "user", "original durable objective"));
+        when(tasks.selectById(7L)).thenReturn(durableTask);
+        when(messages.insert(any(AgentRunMessage.class))).thenAnswer(invocation -> {
+            AgentRunMessage message = invocation.getArgument(0);
+            message.setRunMessageId(71L);
+            return 1;
+        });
+
+        boolean appended = new AgentRunTranscriptService(messages, parts, tasks, leaseService)
+                .appendObjectiveAnchor(new ExecutionFence(7L, "instance-a", 4L), 7L, 4L,
+                        "resume note: continue the previous answer", "build");
+
+        assertThat(appended).isTrue();
+        AgentRunMessage anchor = capturedMessage(messages);
+        assertThat(anchor.getContent()).contains("original durable objective")
+                .doesNotContain("resume note");
+        assertThat(anchor.getMetadata()).contains("origin_message");
+    }
+
+    @Test
+    void doesNotDuplicateObjectiveAnchorWhenAResumeUsesANewEpoch() {
+        AgentRunMessageMapper messages = mock(AgentRunMessageMapper.class);
+        AgentRunPartMapper parts = mock(AgentRunPartMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentRunExecutionLeaseService leaseService = mock(AgentRunExecutionLeaseService.class);
+        AgentRunMessage existing = message(71L, "provider:objective-anchor:v1", 9L, "user", "existing anchor");
+        when(messages.selectOne(any())).thenReturn(existing);
+
+        boolean appended = new AgentRunTranscriptService(messages, parts, tasks, leaseService)
+                .appendObjectiveAnchor(new ExecutionFence(7L, "instance-a", 9L), 7L, 9L,
+                        "same objective", "build");
+
+        assertThat(appended).isFalse();
+        verify(messages, never()).insert(any(AgentRunMessage.class));
+        verify(messages, never()).updateById(any(AgentRunMessage.class));
+    }
 }

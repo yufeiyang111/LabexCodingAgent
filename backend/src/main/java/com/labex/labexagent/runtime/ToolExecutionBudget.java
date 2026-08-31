@@ -21,7 +21,14 @@ public final class ToolExecutionBudget {
     }
 
     public static long timeoutMs(String toolName, JsonObject arguments) {
+        return timeoutMs(toolName, arguments, 900_000L);
+    }
+
+    public static long timeoutMs(String toolName, JsonObject arguments, long subagentTimeoutMs) {
         String normalized = toolName == null ? "" : toolName.toLowerCase(Locale.ROOT);
+        if ("task".equals(normalized) || "subagent".equals(normalized)) {
+            return Math.max(60_000L, Math.min(3_600_000L, subagentTimeoutMs));
+        }
         if (isCommandTool(normalized)) {
             long requestedMs = commandTimeoutMs(normalized, arguments);
             return Math.min(MAX_COMMAND_MS, requestedMs + COMMAND_MARGIN_MS);

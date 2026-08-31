@@ -11,6 +11,8 @@ public class AgentTokenUsage {
     private Long id;
     private String conversationId;
     private String sessionId;
+    private Long taskId;
+    private Long executionEpoch;
     private Integer studentId;
     private Integer projectId;
     private String provider;
@@ -55,6 +57,10 @@ public class AgentTokenUsage {
     public void setConversationId(String conversationId) { this.conversationId = conversationId; }
     public String getSessionId() { return sessionId; }
     public void setSessionId(String sessionId) { this.sessionId = sessionId; }
+    public Long getTaskId() { return taskId; }
+    public void setTaskId(Long taskId) { this.taskId = taskId; }
+    public Long getExecutionEpoch() { return executionEpoch; }
+    public void setExecutionEpoch(Long executionEpoch) { this.executionEpoch = executionEpoch; }
     public Integer getStudentId() { return studentId; }
     public void setStudentId(Integer studentId) { this.studentId = studentId; }
     public Integer getProjectId() { return projectId; }

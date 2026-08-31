@@ -14,6 +14,12 @@ class ToolExecutionBudgetTest {
     }
 
     @Test
+    void givesSubagentDelegationItsOwnLongRunningWatchdog() {
+        assertEquals(900_000L, ToolExecutionBudget.timeoutMs("task", new JsonObject(), 900_000L));
+        assertEquals(120_000L, ToolExecutionBudget.timeoutMs("subagent", new JsonObject(), 120_000L));
+    }
+
+    @Test
     void derivesBuildSizedBudgetsForMavenAndNodeShellCommands() {
         JsonObject maven = new JsonObject();
         maven.addProperty("command", "mvn -q test");

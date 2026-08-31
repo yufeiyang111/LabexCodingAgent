@@ -13,12 +13,18 @@ import com.labex.mapper.AgentRunEventMapper;
 import com.labex.mapper.AgentRunInteractionMapper;
 import com.labex.mapper.AgentRunOutboxMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.mapper.AgentTokenUsageMapper;
+import com.labex.entity.AgentTokenUsage;
+import com.labex.mapper.AgentTokenUsageMapper;
+import com.labex.entity.AgentTokenUsage;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Supplier;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,18 +44,28 @@ public class AgentRunLifecycleService {
     private final AgentRunOutboxMapper outboxMapper;
     private final AgentRunInteractionMapper interactionMapper;
     private final AgentRunExecutionLeaseService leaseService;
+    private final AgentTokenUsageMapper tokenUsageMapper;
     private AgentRunPartService partService;
 
     @Autowired
     public AgentRunLifecycleService(AgentTaskMapper taskMapper, AgentRunEventMapper eventMapper,
-                                    AgentRunOutboxMapper outboxMapper,
-                                    AgentRunInteractionMapper interactionMapper,
-                                    AgentRunExecutionLeaseService leaseService) {
+                                     AgentRunOutboxMapper outboxMapper,
+                                     AgentRunInteractionMapper interactionMapper,
+                                     AgentRunExecutionLeaseService leaseService,
+                                     AgentTokenUsageMapper tokenUsageMapper) {
         this.taskMapper = taskMapper;
         this.eventMapper = eventMapper;
         this.outboxMapper = outboxMapper;
         this.interactionMapper = interactionMapper;
         this.leaseService = Objects.requireNonNull(leaseService, "leaseService is required");
+        this.tokenUsageMapper = tokenUsageMapper;
+    }
+
+    public AgentRunLifecycleService(AgentTaskMapper taskMapper, AgentRunEventMapper eventMapper,
+                                    AgentRunOutboxMapper outboxMapper,
+                                    AgentRunInteractionMapper interactionMapper,
+                                    AgentRunExecutionLeaseService leaseService) {
+        this(taskMapper, eventMapper, outboxMapper, interactionMapper, leaseService, null);
     }
 
     public AgentRunLifecycleService(AgentTaskMapper taskMapper, AgentRunEventMapper eventMapper,
@@ -612,6 +628,44 @@ public class AgentRunLifecycleService {
         return appendEventIfCurrentInternal(fence, taskId, null, eventType, payload, idempotencyKey);
     }
 
+    /**
+     * Atomically persists a TOKEN_USAGE event and its query projection. The task row is locked
+     * before the idempotency check, so a replay cannot insert a second usage row for the same
+     * task/epoch/iteration key. The payload supplier runs after the usage row is inserted and
+     * therefore sees the committed transaction's conversation total.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public AgentRunEvent appendTokenUsage(ExecutionFence fence, Long taskId,
+                                          AgentTokenUsage usage,
+                                          Supplier<Map<String, Object>> payloadSupplier,
+                                          String idempotencyKey) {
+        requireFence(fence);
+        if (tokenUsageMapper == null) {
+            throw new IllegalStateException("Token usage mapper is unavailable");
+        }
+        leaseService.requireActiveFenceForWrite(fence, LocalDateTime.now());
+        AgentRunEvent existing = findByIdempotencyKey(taskId, idempotencyKey);
+        if (existing != null) {
+            return existing;
+        }
+        if (usage == null) {
+            throw new IllegalArgumentException("Token usage is required");
+        }
+        usage.setTaskId(taskId);
+        usage.setExecutionEpoch(fence.epoch());
+        if (tokenUsageMapper.insert(usage) != 1) {
+            throw new IllegalStateException("Unable to persist token usage");
+        }
+        Map<String, Object> payload = payloadSupplier == null ? Map.of() : payloadSupplier.get();
+        boolean[] created = new boolean[1];
+        AgentRunEvent event = appendEventIfCurrentInternal(fence, taskId, null, "TOKEN_USAGE", payload,
+                idempotencyKey, created);
+        if (!created[0]) {
+            throw new IllegalStateException("Token usage event became non-idempotent during append");
+        }
+        return event;
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public Integer recordRecoveryAttemptIfCurrent(Long taskId, AgentRunState expectedState) {
         require(taskId, "taskId");
@@ -657,6 +711,14 @@ public class AgentRunLifecycleService {
     private AgentRunEvent appendEventIfCurrentInternal(ExecutionFence fence, Long taskId,
                                                        AgentRunState expectedState,
                                                        String eventType, Object payload, String idempotencyKey) {
+        return appendEventIfCurrentInternal(fence, taskId, expectedState, eventType, payload,
+                idempotencyKey, null);
+    }
+
+    private AgentRunEvent appendEventIfCurrentInternal(ExecutionFence fence, Long taskId,
+                                                       AgentRunState expectedState,
+                                                       String eventType, Object payload, String idempotencyKey,
+                                                       boolean[] created) {
         require(taskId, "taskId");
         require(eventType, "eventType");
         require(idempotencyKey, "idempotencyKey");
@@ -717,6 +779,7 @@ public class AgentRunLifecycleService {
         task.setUpdateTime(now);
         persistOutbox(event, safePayload, now);
         recordEventPartBestEffort(task.getTaskId(), event.getEventType(), safePayload, nextSequence);
+        if (created != null) created[0] = true;
         return event;
     }
 

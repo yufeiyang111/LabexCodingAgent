@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.google.gson.JsonParser;
 import com.labex.entity.AgentProjectConfigRevision;
 import com.labex.entity.AgentRunConfigSnapshot;
 import com.labex.entity.AgentTask;
@@ -18,11 +19,13 @@ import com.labex.labexagent.run.AgentRunExecutionLeaseService;
 import com.labex.labexagent.run.ExecutionFence;
 import com.labex.mapper.AgentProjectConfigRevisionMapper;
 import com.labex.mapper.AgentRunConfigSnapshotMapper;
+import com.labex.mapper.AgentTaskMapper;
 import com.labex.service.StudentProjectService;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.List;
 import javax.sql.DataSource;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.SqlSession;
@@ -115,6 +118,103 @@ class AgentRunConfigSnapshotServiceTest {
     }
 
     @Test
+    void replacesProviderFallbackEvidenceWithinTheSameIteration() {
+        try (SqlSession session = sessionFactory.openSession(true)) {
+            service.createForNewTask(7, project, 71L, 42, "plan");
+            ExecutionFence fence = new ExecutionFence(71L, "instance-a", 0L);
+            var first = new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.RequestEvidence(
+                    List.of(), List.of(), List.of(), "medium", "medium", "shape-a", "request-a",
+                    List.of(new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.MessageFingerprint(
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 12)), 12, 0, false);
+            var fallback = new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.RequestEvidence(
+                    List.of(), List.of(), List.of(), "medium", "medium", "shape-b", "request-b",
+                    List.of(new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.MessageFingerprint(
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 13)), 13, 0, false);
+            var next = new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.RequestEvidence(
+                    List.of(), List.of(), List.of(), "medium", "medium", "shape-b", "request-c",
+                    List.of(
+                            new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.MessageFingerprint(
+                                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 13),
+                            new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.MessageFingerprint(
+                                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 14)), 27, 0, false);
+
+            service.appendRequestEvidence(fence, 1, first);
+            service.appendRequestEvidence(fence, 1, fallback);
+            service.appendRequestEvidence(fence, 2, next);
+
+            var entries = JsonParser.parseString(service.getForEpoch(71L, 0L).getRequestEvidenceJson())
+                    .getAsJsonArray();
+            assertThat(entries).hasSize(2);
+            assertThat(entries.get(0).getAsJsonObject().get("requestShapeDigest").getAsString())
+                    .isEqualTo("shape-b");
+            assertThat(entries.get(1).getAsJsonObject().get("prefixState").getAsString())
+                    .isEqualTo("stable");
+        }
+    }
+
+    @Test
+    void carriesARejectedPromptCacheCapabilityAcrossExecutionEpochs() {
+        try (SqlSession session = sessionFactory.openSession(true)) {
+            service.createForNewTask(7, project, 71L, 42, "plan");
+            ExecutionFence initialFence = new ExecutionFence(71L, "instance-a", 0L);
+            service.appendRequestEvidence(initialFence, 1,
+                    new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.RequestEvidence(
+                            List.of(), List.of(), List.of(), "medium", "medium", "shape", "request",
+                            List.of(), 0, 0, true));
+
+            assertThat(service.promptCacheKeyRejected(71L, 0L)).isTrue();
+
+            service.copyForNewEpoch(71L, 3L, new ExecutionFence(71L, "instance-a", 3L));
+
+            assertThat(service.promptCacheKeyRejected(71L, 3L)).isTrue();
+        }
+    }
+
+    @Test
+    void recordsAppendOnlyPrefixEvidenceWithoutPersistingMessageContent() {
+        try (SqlSession session = sessionFactory.openSession(true)) {
+            service.createForNewTask(7, project, 71L, 42, "plan");
+            ExecutionFence fence = new ExecutionFence(71L, "instance-a", 0L);
+
+            service.appendRequestEvidence(fence, 1,
+                    new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.RequestEvidence(
+                            List.of(), List.of(), List.of(), "medium", "medium", "shape-a", "request-a",
+                            List.of(new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.MessageFingerprint(
+                                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 12)), 12, 0, false));
+            service.appendRequestEvidence(fence, 2,
+                    new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.RequestEvidence(
+                            List.of(), List.of(), List.of(), "medium", "medium", "shape-a", "request-b",
+                            List.of(
+                                    new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.MessageFingerprint(
+                                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 12),
+                                    new com.labex.labexagent.llm.OpenAiCompatibleChatRequestAdapter.MessageFingerprint(
+                                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 14)),
+                            26, 0, false));
+
+            String evidence = service.getForEpoch(71L, 0L).getRequestEvidenceJson();
+            var entries = JsonParser.parseString(evidence).getAsJsonArray();
+            assertThat(entries.get(0).getAsJsonObject().get("prefixState").getAsString())
+                    .isEqualTo("baseline");
+            assertThat(entries.get(1).getAsJsonObject().get("prefixStable").getAsBoolean()).isTrue();
+            assertThat(entries.get(1).getAsJsonObject().get("commonPrefixMessages").getAsInt())
+                    .isEqualTo(1);
+            assertThat(entries.get(1).getAsJsonObject().get("prefixResetReason").getAsString())
+                    .isEqualTo("append_only");
+            assertThat(entries.get(0).getAsJsonObject().has("messageFingerprints")).isFalse();
+            assertThat(evidence).doesNotContain("original objective");
+
+            AgentRunConfigSnapshotService.PrefixTelemetry telemetry =
+                    service.latestPrefixTelemetry(71L, 0L, 2);
+            assertThat(telemetry.state()).isEqualTo("stable");
+            assertThat(telemetry.reported()).isTrue();
+            assertThat(telemetry.stable()).isTrue();
+            assertThat(telemetry.commonPrefixMessages()).isEqualTo(1);
+            assertThat(telemetry.resetReason()).isEqualTo("append_only");
+            assertThat(service.latestPrefixTelemetry(71L, 0L, 1).reported()).isFalse();
+        }
+    }
+
+    @Test
     void copiesTheSameEffectiveRevisionIntoANewEpochWithoutMutatingThePriorRow() {
         try (SqlSession session = sessionFactory.openSession(true)) {
             service.createForNewTask(7, project, 71L, 42, "plan");
@@ -137,7 +237,7 @@ class AgentRunConfigSnapshotServiceTest {
             service.createForNewTask(7, project, 71L, 42, "plan");
             doThrow(new AgentRunExecutionLeaseService.StaleExecutionFenceException(
                             AgentRunExecutionLeaseService.StaleExecutionFenceException.Reason.EXPIRED_LEASE))
-                    .when(leaseService).requireActiveFence(any(), any());
+                    .when(leaseService).requireActiveFenceForWrite(any(), any());
 
             ExecutionFence fence = new ExecutionFence(71L, "instance-a", 3L);
             assertThatThrownBy(() -> service.copyForNewEpoch(71L, 3L, fence))
@@ -188,6 +288,95 @@ class AgentRunConfigSnapshotServiceTest {
         }
     }
 
+    @Test
+    void aggregatesHistoricalPrefixEvidenceWithoutCreatingAnotherFactSource() {
+        AgentRunConfigSnapshotMapper snapshots = mock(AgentRunConfigSnapshotMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentTask durableTask = new AgentTask();
+        durableTask.setTaskId(71L);
+        durableTask.setConversationId("conversation-7");
+        AgentRunConfigSnapshot snapshot = new AgentRunConfigSnapshot();
+        snapshot.setTaskId(71L);
+        snapshot.setExecutionEpoch(0L);
+        snapshot.setRequestEvidenceJson("""
+                [{"iteration":1,"prefixState":"baseline"},
+                 {"iteration":2,"prefixState":"stable","prefixStable":true,"prefixResetReason":"append_only"},
+                 {"iteration":3,"prefixState":"reset","prefixStable":false,"prefixResetReason":"static_prefix_changed"}]
+                """);
+        when(tasks.selectList(any())).thenReturn(List.of(durableTask));
+        when(snapshots.selectList(any())).thenReturn(List.of(snapshot));
+
+        AgentRunConfigSnapshotService aggregateService = new AgentRunConfigSnapshotService(
+                snapshots, mock(AgentEffectiveProjectConfigService.class),
+                mock(AgentRunExecutionLeaseService.class), tasks);
+
+        AgentRunConfigSnapshotService.PrefixAggregate aggregate =
+                aggregateService.prefixStatsForConversation("conversation-7");
+
+        assertThat(aggregate.reportedCalls()).isEqualTo(2);
+        assertThat(aggregate.stableCalls()).isEqualTo(1);
+        assertThat(aggregate.resetCalls()).isEqualTo(1);
+        assertThat(aggregate.stabilityRate()).isEqualTo(50.0);
+        assertThat(aggregate.state()).isEqualTo("reset");
+        assertThat(aggregate.toPayload()).containsEntry("prefixReportedCalls", 2);
+    }
+
+    @Test
+    void latestBaselineFromANewerTaskDoesNotReuseAnOlderStableState() {
+        AgentRunConfigSnapshotMapper snapshots = mock(AgentRunConfigSnapshotMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentTask olderTask = new AgentTask();
+        olderTask.setTaskId(71L);
+        olderTask.setConversationId("conversation-7");
+        AgentTask newerTask = new AgentTask();
+        newerTask.setTaskId(72L);
+        newerTask.setConversationId("conversation-7");
+        AgentRunConfigSnapshot older = new AgentRunConfigSnapshot();
+        older.setTaskId(71L);
+        older.setExecutionEpoch(0L);
+        older.setRequestEvidenceJson("[{\"prefixState\":\"stable\",\"prefixStable\":true}]");
+        AgentRunConfigSnapshot newer = new AgentRunConfigSnapshot();
+        newer.setTaskId(72L);
+        newer.setExecutionEpoch(0L);
+        newer.setRequestEvidenceJson("[{\"prefixState\":\"baseline\"}]");
+        when(tasks.selectList(any())).thenReturn(List.of(olderTask, newerTask));
+        when(snapshots.selectList(any())).thenReturn(List.of(older, newer));
+
+        AgentRunConfigSnapshotService aggregateService = new AgentRunConfigSnapshotService(
+                snapshots, mock(AgentEffectiveProjectConfigService.class),
+                mock(AgentRunExecutionLeaseService.class), tasks);
+
+        assertThat(aggregateService.prefixStatsForConversation("conversation-7").state())
+                .isEqualTo("baseline");
+    }
+
+    @Test
+    void latestEmptySnapshotDoesNotReuseAnOlderComparisonState() {
+        AgentRunConfigSnapshotMapper snapshots = mock(AgentRunConfigSnapshotMapper.class);
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentTask olderTask = new AgentTask();
+        olderTask.setTaskId(71L);
+        olderTask.setConversationId("conversation-7");
+        AgentTask newerTask = new AgentTask();
+        newerTask.setTaskId(72L);
+        newerTask.setConversationId("conversation-7");
+        AgentRunConfigSnapshot older = new AgentRunConfigSnapshot();
+        older.setTaskId(71L);
+        older.setRequestEvidenceJson("[{\"prefixState\":\"stable\",\"prefixStable\":true}]");
+        AgentRunConfigSnapshot newer = new AgentRunConfigSnapshot();
+        newer.setTaskId(72L);
+        newer.setRequestEvidenceJson("[]");
+        when(tasks.selectList(any())).thenReturn(List.of(olderTask, newerTask));
+        when(snapshots.selectList(any())).thenReturn(List.of(older, newer));
+
+        AgentRunConfigSnapshotService aggregateService = new AgentRunConfigSnapshotService(
+                snapshots, mock(AgentEffectiveProjectConfigService.class),
+                mock(AgentRunExecutionLeaseService.class), tasks);
+
+        assertThat(aggregateService.prefixStatsForConversation("conversation-7").state())
+                .isEqualTo("not_reported");
+    }
+
     private static DataSource dataSource(String name) {
         JdbcDataSource dataSource = new JdbcDataSource();
         dataSource.setURL("jdbc:h2:mem:" + name + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1");
@@ -225,6 +414,7 @@ class AgentRunConfigSnapshotServiceTest {
                       verification_policy_json LONGTEXT,
                       environment_operation_ref VARCHAR(128),
                       secret_aliases_json LONGTEXT,
+                      request_evidence_json LONGTEXT,
                       create_time DATETIME,
                       update_time DATETIME,
                       UNIQUE KEY uk_task_epoch (task_id, execution_epoch)

@@ -30,7 +30,8 @@ class AgentLoopEnginePolicyContractTest {
         assertTrue(engine.contains("requireLegacyCheckpointMigrationService().restoreOrMigrate"));
         assertFalse(engine.contains("checkpointStore.loadLegacy"));
         assertTrue(engine.contains("providerMessagesForInvocation"));
-        assertTrue(engine.contains("<agent_runtime_projection"));
+        assertTrue(engine.contains("ensureObjectiveAnchor"));
+        assertFalse(engine.contains("<agent_runtime_projection"));
         assertFalse(engine.contains("checkpointStore.save"));
         assertFalse(engine.contains("restoreInto(ctx)"));
         assertFalse(engine.contains("checkpointStore::renderForPrompt"));

@@ -2,6 +2,7 @@ package com.labex.labexagent.fixtures;
 
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +27,16 @@ public final class OpenAiImageProtocolFixture {
                 "content", List.of(
                         Map.of("type", "text", "text", text == null ? "" : text),
                         imagePart()));
+    }
+
+    /** 注水后的多图单条 user 消息，与 hydrateProviderMessage 的输出形态同构。 */
+    public static List<Map<String, Object>> userMessagesOf(int imageCount) {
+        List<Object> content = new ArrayList<>();
+        content.add(Map.of("type", "text", "text", "inspect this screenshot"));
+        for (int i = 0; i < Math.max(1, imageCount); i++) {
+            content.add(imagePart());
+        }
+        return List.of(Map.of("role", "user", "content", content));
     }
 
     public static int dataUrlChars() {

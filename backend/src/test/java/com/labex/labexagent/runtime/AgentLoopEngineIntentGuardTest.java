@@ -32,18 +32,13 @@ class AgentLoopEngineIntentGuardTest {
     }
 
     @Test
-    void appendsMaxStepsSentinelAsTrailingAssistantMessage() {
+    void leavesNoTransientMaxStepsSentinelInTheRequestProjection() {
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", "do the work"));
         messages.add(Map.of("role", "assistant", "content", "ok"));
         List<Map<String, Object>> projected = AgentLoopEngine.withMaxStepsSentinel(messages);
 
-        assertThat(projected).hasSize(3);
-        assertThat(projected.get(2).get("role")).isEqualTo("assistant");
-        String sentinel = projected.get(2).get("content").toString();
-        assertThat(sentinel).contains("CRITICAL - MAXIMUM STEPS REACHED");
-        assertThat(sentinel).contains("Tools are disabled until next user input. Respond with text only.");
-        assertThat(sentinel).contains("Any attempt to use tools is a critical violation. Respond with text ONLY.");
+        assertThat(projected).containsExactlyElementsOf(messages);
         assertThat(messages).hasSize(2);
     }
 }

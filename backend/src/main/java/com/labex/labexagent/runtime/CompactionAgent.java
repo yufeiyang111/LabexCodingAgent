@@ -74,30 +74,71 @@ public class CompactionAgent {
             List<Map<String, Object>> promptMessages = List.of(Map.of(
                     "role", "user",
                     "content", buildInput(messages, taskRequest, context, selected)));
-            Map<String, Object> response = provider.chatWithTools(systemPrompt(), promptMessages, List.of(),
-                    compactionConfig, cancellationToken);
+
+            // 优先通过 streaming 方式收集压缩输出，防止长上下文生成时非流式网关超时（对齐 OpenCode 架构）
+            StringBuilder contentBuffer = new StringBuilder();
+            boolean[] streamError = new boolean[]{false};
+            String[] streamErrorMessage = new String[]{""};
+
+            try {
+                provider.chatStream(systemPrompt(), promptMessages, List.of(), compactionConfig, cancellationToken, chunk -> {
+                    if ("error".equals(chunk.type())) {
+                        streamError[0] = true;
+                        if (chunk.content() != null && !chunk.content().isBlank()) {
+                            streamErrorMessage[0] = chunk.content();
+                        }
+                    } else if (chunk.content() != null) {
+                        contentBuffer.append(chunk.content());
+                    }
+                });
+            } catch (Exception streamEx) {
+                log.debug("Compaction stream attempt threw exception, falling back to chatWithTools: {}", streamEx.getMessage());
+                streamError[0] = true;
+            }
+
+            String content = contentBuffer.toString().trim();
+            if (content.isBlank() && (cancellationToken == null || !cancellationToken.isCancellationRequested())) {
+                // 流式为空或不支持时，降级使用非流式 chatWithTools
+                Map<String, Object> response = provider.chatWithTools(systemPrompt(), promptMessages, List.of(),
+                        compactionConfig, cancellationToken);
+                if (cancellationToken != null && cancellationToken.isCancellationRequested()) {
+                    return Result.failure("Compaction cancelled");
+                }
+                if (response != null && !"error".equals(String.valueOf(response.get("type")))) {
+                    Object raw = response.get("content");
+                    if (raw instanceof String rawStr) {
+                        content = rawStr.trim();
+                    }
+                } else if (response != null) {
+                    String msg = String.valueOf(response.get("message"));
+                    log.warn("Compaction non-streaming fallback returned error: {}", msg);
+                }
+            }
+
             if (cancellationToken != null && cancellationToken.isCancellationRequested()) {
                 return Result.failure("Compaction cancelled");
             }
-            if (response == null || "error".equals(String.valueOf(response.get("type")))) {
-                return Result.failure("Compaction model request failed");
+            if (content.isBlank()) {
+                String reason = streamError[0] && !streamErrorMessage[0].isBlank()
+                        ? streamErrorMessage[0] : "Compaction model returned empty content";
+                log.warn("Compaction agent received empty content from model: {}", reason);
+                return Result.failure(reason);
             }
-            Object rawContent = response.get("content");
-            if (!(rawContent instanceof String content)) {
-                return Result.failure("Compaction model returned no text content");
-            }
+
             String visibleContent = InternalReasoningBoundary.stripVisible(content).trim();
             if (visibleContent.isBlank()) {
                 return Result.failure("Compaction model returned no text content");
             }
             String checkpoint = parseAndRenderCheckpoint(visibleContent, selected.getModelName());
             if (checkpoint == null) {
+                log.warn("Compaction agent output did not match structured Markdown format. Raw snippet: {}",
+                        visibleContent.substring(0, Math.min(200, visibleContent.length())));
                 return Result.failure("Compaction model returned invalid structured output");
             }
             return Result.success(checkpoint, selected.getConfigId(), selected.getModelName(), dedicated);
         } catch (Exception e) {
-            log.warn("Compaction agent failed: {}", e.getMessage());
-            return Result.failure("Compaction model request failed");
+            log.warn("Compaction agent failed: {}", e.getMessage(), e);
+            return Result.failure("Compaction model request failed: " + e.getMessage());
         }
     }
 
@@ -105,7 +146,9 @@ public class CompactionAgent {
         int configuredMax = base.maxTokens() == null ? SUMMARY_MAX_OUTPUT_TOKENS : base.maxTokens();
         int maxTokens = Math.max(256, Math.min(configuredMax, SUMMARY_MAX_OUTPUT_TOKENS));
         return new LlmProvider.LlmConfig(base.apiKey(), base.baseUrl(), base.modelName(), maxTokens, 0.0,
-                base.connectTimeoutMs(), base.readTimeoutMs(), base.maxRetries(), false, null);
+                base.connectTimeoutMs(), base.readTimeoutMs(), base.maxRetries(), false, null,
+                base.reasoningEffort(), base.requestOptionsJson(), base.requestEvidenceSink(),
+                false);
     }
 
     private String buildInput(List<Map<String, Object>> messages, String taskRequest,
@@ -292,12 +335,27 @@ public class CompactionAgent {
                 + "- Do not include credentials, tokens, passwords, API keys, or authorization values.";
     }
 
+    private String limitAndRedactMarkdown(String value, int maxChars) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String redacted = redact(value);
+        String normalized = redacted.replace("\r\n", "\n").replace('\r', '\n')
+                .replaceAll("[ \t]+(?=\n)", "")
+                .replaceAll("\n{3,}", "\n\n")
+                .trim();
+        if (normalized.length() <= maxChars) {
+            return normalized;
+        }
+        return normalized.substring(0, maxChars) + "\n\n...";
+    }
+
     private String limitAndRedact(String value, int maxChars) {
         String safe = redact(value == null ? "" : value).replaceAll("\\s+", " ").trim();
         if (safe.length() <= maxChars) {
             return safe;
         }
-        return safe.substring(0, maxChars) + "?";
+        return safe.substring(0, maxChars) + "...";
     }
 
     private String redact(String value) {

@@ -44,4 +44,14 @@ class AgentLoopEngineDurableCompactionWiringTest {
         assertFalse(source.contains("this.transcriptProjectionService != null"));
         assertFalse(source.contains("this.compactionAgent == null"));
     }
+
+    @Test
+    void compactionSelectionReadsTheUnhydratedViewSoSelectionPersistenceNeverCarriesBase64() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));
+
+        // 选材结果会整体持久化进 t_agent_compaction_record；
+        // 必须读取未注水的 durable 视图，Base64 只允许出现在 Provider 请求边界。
+        assertTrue(source.contains("loadDurableCompactionView(taskId)"));
+    }
 }

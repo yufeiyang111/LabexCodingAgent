@@ -98,7 +98,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
             if (token.isCancellationRequested()) {
                 return cancelledResponse();
             }
-            if (config.reasoningEffort() != null && !config.reasoningEffort().isBlank()
+            if (!config.reasoningEffortDisabled()
                     && shouldRetryWithoutReasoningEffortMessage(e.getMessage())) {
                 log.info("LLM_CHAT_RETRY_WITHOUT_REASONING_EFFORT model={}", config.modelName());
                 return chatWithTools(sysPrompt, msgs, tools, config.withoutReasoningEffort(), token);
@@ -131,11 +131,17 @@ public class OpenAiCompatibleProvider implements LlmProvider {
             }
             HttpURLConnection conn = null;
             boolean emittedStreamEvent = false;
+            boolean responseHeadersReceived = false;
+            Long headersElapsedMs = null;
+            boolean streamDataReceived = false;
+            long attemptStartedAt = System.nanoTime();
+            int requestBytes = 0;
+            int firstEventTimeoutMs = 0;
             try {
-                long requestStartedAt = System.nanoTime();
+                long requestStartedAt = attemptStartedAt;
                 String body = buildRequestBody(sysPrompt, msgs, tools, requestConfig, true, includeUsage);
-                int requestBytes = body.getBytes(StandardCharsets.UTF_8).length;
-                int firstEventTimeoutMs = initialStreamResponseTimeoutMs(config);
+                requestBytes = body.getBytes(StandardCharsets.UTF_8).length;
+                firstEventTimeoutMs = initialStreamResponseTimeoutMs(config);
                 log.info("LLM_STREAM_REQUEST model={} messages={} tools={} requestBytes={} maxTokens={} connectTimeoutMs={} firstEventTimeoutMs={}",
                         config.modelName(), msgs == null ? 0 : msgs.size() + 1, tools == null ? 0 : tools.size(),
                         requestBytes, config.maxTokens(), config.effectiveConnectTimeoutMs(), firstEventTimeoutMs);
@@ -157,7 +163,9 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                         return;
                     }
                     int code = conn.getResponseCode();
-                    long responseHeadersMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - requestStartedAt);
+                    responseHeadersReceived = true;
+                    long responseHeadersMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStartedAt);
+                    headersElapsedMs = responseHeadersMs;
                     log.info("LLM_STREAM_HEADERS model={} status={} elapsedMs={}", config.modelName(), code, responseHeadersMs);
                     if (code != 200) {
                         String errBody = readAll(conn.getErrorStream());
@@ -172,7 +180,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                                 && shouldRetryWithoutPromptCacheKey(code, errBody)
                                 && !token.isCancellationRequested()) {
                             log.info("LLM_STREAM_RETRY_WITHOUT_PROMPT_CACHE_KEY model={} status={}", config.modelName(), code);
-                            requestConfig = requestConfig.withoutPromptCacheKey();
+                            requestConfig = requestConfig.withoutPromptCacheKey().withPromptCacheKeyRejected(true);
                             continue;
                         }
                         if (includeUsage && shouldRetryWithoutStreamUsage(code, errBody) && !token.isCancellationRequested()) {
@@ -180,7 +188,11 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                             includeUsage = false;
                             continue;
                         }
-                        ProviderFailure failure = retryPolicy.httpFailure(code, "API error " + code + ": " + errBody);
+                        ProviderFailure failure = retryPolicy.httpFailure(code, "API error " + code + ": " + errBody)
+                                .withDiagnostics(transportDiagnostics(config, msgs, tools, null, code,
+                                        requestBytes, firstEventTimeoutMs, responseHeadersReceived, headersElapsedMs,
+                                        streamDataReceived || emittedStreamEvent, retries,
+                                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStartedAt)));
                         if (retryPolicy.shouldRetry(failure, retries, config)) {
                             int nextRetry = retries + 1;
                             log.warn("LLM_STREAM_RETRY model={} reason=http_{} retry={}", config.modelName(), code, nextRetry);
@@ -228,8 +240,9 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                             if (data.isEmpty()) continue;
                             if (!firstSseEvent) {
                                 firstSseEvent = true;
+                                streamDataReceived = true;
                                 log.info("LLM_STREAM_FIRST_EVENT model={} elapsedMs={}", config.modelName(),
-                                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - requestStartedAt));
+                                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStartedAt));
                             }
                             if ("[DONE]".equals(data)) {
                                 if (!terminalEventEmitted) {
@@ -305,7 +318,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     }
                     log.info("LLM_STREAM_COMPLETE model={} emittedEvent={} elapsedMs={} completionChars={} thinkingChars={}",
                             config.modelName(), emittedStreamEvent,
-                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - requestStartedAt),
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStartedAt),
                             contentBuf.length(), thinkingBuf.length());
                     return;
                 }
@@ -316,7 +329,11 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     emitCancelled(onChunk);
                     return;
                 }
-                ProviderFailure failure = retryPolicy.exceptionFailure(e);
+                ProviderFailure failure = retryPolicy.exceptionFailure(e)
+                        .withDiagnostics(transportDiagnostics(config, msgs, tools, e, null,
+                                requestBytes, firstEventTimeoutMs, responseHeadersReceived, headersElapsedMs,
+                                streamDataReceived || emittedStreamEvent, retries,
+                                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStartedAt)));
                 if (!emittedStreamEvent && retryPolicy.shouldRetry(failure, retries, config)) {
                     int nextRetry = retries + 1;
                     log.warn("LLM_STREAM_RETRY model={} reason={} retry={}", config.modelName(), failure.type(), nextRetry);
@@ -334,6 +351,40 @@ public class OpenAiCompatibleProvider implements LlmProvider {
 
     static int initialStreamResponseTimeoutMs(LlmConfig config) {
         return Math.min(config.effectiveReadTimeoutMs(), 30_000);
+    }
+
+    /**
+     * 失败现场的结构化传输层诊断：只描述连接与流进度事实，不携带密钥或请求体内容，
+     * 供 run log / 运维把故障定位到 endpoint、超时配置或流阶段的最小范围。
+     */
+    private Map<String, Object> transportDiagnostics(LlmConfig config, List<Map<String, Object>> messages,
+                                                     List<Map<String, Object>> tools, Exception error,
+                                                     Integer statusCode, int requestBytes, int firstEventTimeoutMs,
+                                                     boolean responseHeadersReceived, Long headersElapsedMs,
+                                                     boolean streamDataReceived, int attemptsCompleted,
+                                                     long elapsedMs) {
+        Map<String, Object> diag = new LinkedHashMap<>();
+        diag.put("endpoint", buildApiUrl(config.baseUrl(), "/chat/completions"));
+        diag.put("model", config.modelName());
+        if (error != null) {
+            diag.put("error_class", error.getClass().getName());
+            diag.put("failure_stage", !responseHeadersReceived ? "await_response_headers"
+                    : (!streamDataReceived ? "before_first_stream_event" : "mid_stream"));
+        } else {
+            diag.put("failure_stage", !streamDataReceived ? "http_error_before_stream" : "mid_stream");
+        }
+        diag.put("stream_data_received", streamDataReceived);
+        if (statusCode != null && statusCode > 0) diag.put("status_code", statusCode);
+        diag.put("elapsed_ms", elapsedMs);
+        if (headersElapsedMs != null && headersElapsedMs >= 0L) diag.put("response_headers_elapsed_ms", headersElapsedMs);
+        diag.put("connect_timeout_ms", config.effectiveConnectTimeoutMs());
+        diag.put("read_timeout_ms", config.effectiveReadTimeoutMs());
+        if (firstEventTimeoutMs > 0) diag.put("first_event_timeout_ms", firstEventTimeoutMs);
+        if (messages != null) diag.put("messages_count", messages.size() + 1);
+        if (tools != null) diag.put("tools_count", tools.size());
+        if (requestBytes >= 0) diag.put("request_bytes", requestBytes);
+        diag.put("attempts_completed", attemptsCompleted + 1);
+        return diag;
     }
 
     private StreamChunk toolCallChunk(ToolCallAccumulator.ToolCall call, String thinking, Map<String, Object> usage) {
@@ -358,6 +409,8 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         }
     }
 
+    private final OpenAiCompatibleChatRequestAdapter requestAdapter = new OpenAiCompatibleChatRequestAdapter();
+
     private String buildRequestBody(String sysPrompt, List<Map<String, Object>> msgs,
                                      List<Map<String, Object>> tools, LlmConfig config, boolean stream) {
         return buildRequestBody(sysPrompt, msgs, tools, config, stream, false);
@@ -366,41 +419,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
     private String buildRequestBody(String sysPrompt, List<Map<String, Object>> msgs,
                                      List<Map<String, Object>> tools, LlmConfig config, boolean stream,
                                      boolean includeStreamUsage) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", config.modelName());
-
-        List<Map<String, Object>> messages = new ArrayList<>();
-        messages.add(Map.of("role", "system", "content", sysPrompt));
-        messages.addAll(msgs);
-        if (config.promptCacheKeyEnabled()) {
-            messages = PromptCachePolicy.applyToMessages(messages);
-        }
-        body.put("messages", messages);
-
-        body.put("max_tokens", config.maxTokens() != null ? config.maxTokens() : AgentModelConfigService.DEFAULT_MAX_TOKENS);
-        if (config.temperature() != null) body.put("temperature", config.temperature());
-        if (config.reasoningEffort() != null && !config.reasoningEffort().isBlank()) {
-            body.put("reasoning_effort", config.reasoningEffort());
-        }
-        if (config.promptCacheKeyEnabled() && config.promptCacheKey() != null && !config.promptCacheKey().isBlank()) {
-            body.put("prompt_cache_key", config.promptCacheKey());
-        }
-        if (stream) {
-            body.put("stream", true);
-            if (includeStreamUsage) {
-                body.put("stream_options", Map.of("include_usage", true));
-            }
-        }
-
-        if (tools != null && !tools.isEmpty()) {
-            List<Map<String, Object>> effectiveTools = config.promptCacheKeyEnabled()
-                    ? PromptCachePolicy.applyToTools(tools) : tools;
-            body.put("tools", effectiveTools);
-            body.put("tool_choice", "auto");
-            body.put("parallel_tool_calls", false);
-        }
-
-        return GSON.toJson(body);
+        return requestAdapter.adapt(sysPrompt, msgs, tools, config, stream, includeStreamUsage).body();
     }
 
     private Map<String, Object> parseResponse(String response) {
@@ -525,7 +544,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
             result.put("cache_hit_tokens", intValue(usage, "prompt_cache_hit_tokens"));
             result.put("cache_miss_tokens", deepSeekMiss);
             result.put("cache_usage_reported", cacheUsageReported);
-            return result;
+            return CacheTelemetry.normalizeUsage(result);
         } catch (Exception e) {
             return null;
         }

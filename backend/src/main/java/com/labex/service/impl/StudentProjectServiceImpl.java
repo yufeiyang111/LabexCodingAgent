@@ -307,7 +307,8 @@ implements StudentProjectService {
             return project;
         }
         catch (IOException e) {
-            throw new RuntimeException("Failed to delete project item: " + e.getMessage(), e);
+            throw new RuntimeException("删除失败（" + target.getFileName() + "）："
+                    + e.getClass().getSimpleName() + " - " + e.getMessage(), e);
         }
     }
 

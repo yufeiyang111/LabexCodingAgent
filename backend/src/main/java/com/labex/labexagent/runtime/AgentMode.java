@@ -5,7 +5,8 @@ import java.util.Set;
 
 /** 服务端认可的 Agent 运行模式；未知值必须拒绝，不能回退到可写模式。 */
 public final class AgentMode {
-    private static final Set<String> SUPPORTED = Set.of("agent", "build", "plan", "explore");
+    /** subagent：由主 Agent/上层子代理派发的独立运行；工具可见性按子代理类型二次裁剪。 */
+    private static final Set<String> SUPPORTED = Set.of("agent", "build", "plan", "explore", "subagent");
 
     private AgentMode() {
     }

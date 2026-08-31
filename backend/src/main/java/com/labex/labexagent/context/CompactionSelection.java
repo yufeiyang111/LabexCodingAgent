@@ -34,7 +34,7 @@ public record CompactionSelection(List<Map<String, Object>> compactedHead,
         }
         List<Integer> userStarts = new ArrayList<>();
         for (int index = 0; index < source.size(); index++) {
-            if ("user".equalsIgnoreCase(String.valueOf(source.get(index).get("role")))) {
+            if (isRealUserTurn(source.get(index))) {
                 userStarts.add(index);
             }
         }
@@ -139,11 +139,19 @@ public record CompactionSelection(List<Map<String, Object>> compactedHead,
     private static int countUserTurns(List<Map<String, Object>> messages) {
         int count = 0;
         for (Map<String, Object> message : messages) {
-            if ("user".equalsIgnoreCase(String.valueOf(message.get("role")))) {
+            if (isRealUserTurn(message)) {
                 count++;
             }
         }
         return count;
+    }
+
+    private static boolean isRealUserTurn(Map<String, Object> message) {
+        if (message == null || !"user".equalsIgnoreCase(String.valueOf(message.get("role")))) {
+            return false;
+        }
+        Object content = message.get("content");
+        return !(content instanceof String text && text.stripLeading().startsWith("<agent_focus_anchor"));
     }
 
     private static List<Map<String, Object>> immutableCopy(List<Map<String, Object>> messages) {

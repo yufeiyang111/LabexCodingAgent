@@ -27,13 +27,23 @@ class AgentLoopEngineWiringContractTest {
                 Path.of("src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"),
                 StandardCharsets.UTF_8);
 
-        // 核心运行时依赖必须 required；可选功能服务（run plan / workspace instruction）允许 optional
+        // 核心运行时依赖必须 required；可选功能服务允许 optional，但必须是本清单内的已知项，
+        // 防止未来悄悄塞入新的 optional 依赖（新依赖要么 required 要么先更新本契约）。
+        java.util.List<String> allowedOptionalSetters = java.util.List.of(
+                "void setRunPlanService(AgentRunPlanService runPlanService)",
+                "void setSubagentCompletions(com.labex.labexagent.run.SubagentCompletionRegistry subagentCompletions)",
+                "void setSubagentRuntimeService(com.labex.labexagent.run.AgentSubagentService subagentRuntimeService)",
+                "void setSubagentProperties(com.labex.labexagent.run.AgentSubagentProperties subagentProperties)");
         int optionalAutowired = source.indexOf("@Autowired(required = false)");
         assertTrue(optionalAutowired >= 0);
         assertTrue(source.indexOf("void setRunPlanService(AgentRunPlanService runPlanService)") > optionalAutowired);
-        assertFalse(source.indexOf("@Autowired(required = false)", optionalAutowired + 1) >= 0);
+        for (String setter : allowedOptionalSetters) {
+            assertTrue(source.contains(setter), "missing known optional setter: " + setter);
+        }
+        assertEquals(allowedOptionalSetters.size(), count(source, "@Autowired(required = false)"),
+                "unexpected @Autowired(required = false) count; extend the allowlist deliberately");
         assertTrue(source.contains("workspaceInstructionService == null"));
-        assertTrue(source.contains("runPlanService != null"));
+        assertTrue(source.contains("this.runPlanService == null"));
         assertTrue(source.contains("void setExecutionLeaseServices"));
         assertTrue(source.contains("void setRunFinalizer"));
         assertTrue(source.contains("void setArtifactService"));

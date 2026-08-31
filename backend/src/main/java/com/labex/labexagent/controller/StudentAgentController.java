@@ -497,7 +497,11 @@ public class StudentAgentController {
     @GetMapping(value={"/tokens/{conversationId}"})
     public Result<Map<String, Object>> tokenStats(@PathVariable Integer projectId, @PathVariable String conversationId, Authentication auth) {
         try {
-            return Result.success(this.tokenTracker.getConversationStats(conversationId));
+            Integer studentId = this.getStudentId(auth);
+            if (this.conversationService.getOwnedConversation(studentId, projectId, conversationId) == null) {
+                return Result.error("Conversation not found");
+            }
+            return Result.success(this.tokenTracker.getConversationStats(conversationId, studentId, projectId));
         }
         catch (Exception e) {
             return Result.error((String)e.getMessage());

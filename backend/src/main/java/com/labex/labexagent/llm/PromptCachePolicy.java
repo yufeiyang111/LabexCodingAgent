@@ -13,8 +13,9 @@ import java.util.Map;
  * 2. System Prompt 消息 (System Prompt)
  * 3. 最后一个用户提问消息 (Latest User Turn)
  *
- * <p>在单轮会话中连续触发多轮 Tool Call 时，前缀 System + Tools + Latest User 保持不变，
- * 使得后续每一轮 Tool Call 的 API 请求均可命中前缀缓存，降低 80%+ 的 Token 消耗与延迟。</p>
+ * <p>该工具只供明确支持 inline cache hint 的协议适配器使用。当前
+ * {@link OpenAiCompatibleChatRequestAdapter} 走 OpenAI-compatible 的隐式前缀缓存，
+ * 不向请求体写入这些无效 hint。</p>
  */
 public final class PromptCachePolicy {
     private static final Map<String, Object> EPHEMERAL_CACHE_HINT = Map.of("type", "ephemeral");
