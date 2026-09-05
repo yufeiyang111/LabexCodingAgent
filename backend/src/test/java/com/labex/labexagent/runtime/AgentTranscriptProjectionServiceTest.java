@@ -166,13 +166,65 @@ class AgentTranscriptProjectionServiceTest {
         List<Map<String, Object>> hydrated = List.of(Map.of(
                 "role", "user", "content", List.of(Map.of("type", "text", "text", "inspect this"))));
         when(transcript.loadProjectableTranscript(7L)).thenReturn(durable);
-        when(attachments.hydrateProviderMessage(7L, durable.get(0))).thenReturn(hydrated.get(0));
+        when(attachments.hydrateProviderMessage(7L, durable.get(0), false)).thenReturn(hydrated.get(0));
 
         AgentTranscriptProjectionService service = new AgentTranscriptProjectionService(
                 transcript, new AgentProviderMessageProjector(), mock(AgentCompactionService.class), attachments);
 
         assertThat(service.loadProviderMessages(7L)).isEqualTo(hydrated);
-        org.mockito.Mockito.verify(attachments).hydrateProviderMessage(7L, durable.get(0));
+        org.mockito.Mockito.verify(attachments).hydrateProviderMessage(7L, durable.get(0), false);
+    }
+
+    @Test
+    void latestImageCarrierIsHydratedWhileConsumedCarriersAreFlaggedAsModelConsumed() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentInputAttachmentService attachments = mock(AgentInputAttachmentService.class);
+        Map<String, Object> consumedCarrier = Map.of(
+                "role", "user", "content", "earlier turn with image", "attachmentIds", List.of("image-old"));
+        Map<String, Object> assistantReply = Map.of("role", "assistant", "content", "seen it");
+        Map<String, Object> latestCarrier = Map.of(
+                "role", "user", "content", "another screenshot", "attachmentIds", List.of("image-new"));
+        when(transcript.loadProjectableTranscript(11L))
+                .thenReturn(List.of(consumedCarrier, assistantReply, latestCarrier));
+        Map<String, Object> degraded = Map.of("role", "user", "content",
+                "earlier turn with image\n[Image attachments omitted]");
+        when(attachments.hydrateProviderMessage(11L, consumedCarrier, true)).thenReturn(degraded);
+        when(attachments.hydrateProviderMessage(11L, assistantReply, false)).thenReturn(assistantReply);
+        Map<String, Object> hydratedLatest = Map.of("role", "user",
+                "content", List.of(Map.of("type", "text", "text", "another screenshot")));
+        when(attachments.hydrateProviderMessage(11L, latestCarrier, false)).thenReturn(hydratedLatest);
+
+        AgentTranscriptProjectionService service = new AgentTranscriptProjectionService(
+                transcript, new AgentProviderMessageProjector(), mock(AgentCompactionService.class), attachments);
+
+        assertThat(service.loadProviderMessages(11L))
+                .containsExactly(degraded, assistantReply, hydratedLatest);
+        org.mockito.Mockito.verify(attachments).hydrateProviderMessage(11L, consumedCarrier, true);
+        org.mockito.Mockito.verify(attachments).hydrateProviderMessage(11L, latestCarrier, false);
+    }
+
+    @Test
+    void imageCarrierWithoutSubsequentAssistantReplyStaysHydratable() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        AgentInputAttachmentService attachments = mock(AgentInputAttachmentService.class);
+        Map<String, Object> firstCarrier = Map.of(
+                "role", "user", "content", "first image turn", "attachmentIds", List.of("image-1"));
+        Map<String, Object> assistantReply = Map.of("role", "assistant", "content", "done");
+        Map<String, Object> plainFollowUp = Map.of("role", "user", "content", "continue");
+        when(transcript.loadProjectableTranscript(12L))
+                .thenReturn(List.of(firstCarrier, assistantReply, plainFollowUp));
+        Map<String, Object> degraded = Map.of("role", "user", "content",
+                "first image turn\n[Image attachments omitted]");
+        when(attachments.hydrateProviderMessage(12L, firstCarrier, true)).thenReturn(degraded);
+        when(attachments.hydrateProviderMessage(12L, assistantReply, false)).thenReturn(assistantReply);
+        when(attachments.hydrateProviderMessage(12L, plainFollowUp, false)).thenReturn(plainFollowUp);
+
+        AgentTranscriptProjectionService service = new AgentTranscriptProjectionService(
+                transcript, new AgentProviderMessageProjector(), mock(AgentCompactionService.class), attachments);
+
+        assertThat(service.loadProviderMessages(12L))
+                .containsExactly(degraded, assistantReply, plainFollowUp);
+        org.mockito.Mockito.verify(attachments).hydrateProviderMessage(12L, firstCarrier, true);
     }
 
     @Test

@@ -246,9 +246,30 @@ public class AgentTranscriptProjectionService {
         if (attachmentService == null || messages == null || messages.isEmpty()) {
             return messages == null ? List.of() : messages;
         }
-        return messages.stream()
-                .map(message -> attachmentService.hydrateProviderMessage(taskId, message))
-                .toList();
+        // 图片一次性注入策略：带附件的 user 消息仅在"其后尚无 assistant 回复"（模型尚未消费）
+        // 时注水 Base64；已被消费的历史消息降级为文本占位，避免同一图片随每轮请求重复
+        // 读取磁盘并重复编码上行。durable transcript 与压缩选材视图不受影响。
+        int lastAssistantIndex = lastAssistantIndex(messages);
+        List<Map<String, Object>> hydrated = new ArrayList<>(messages.size());
+        for (int index = 0; index < messages.size(); index++) {
+            Map<String, Object> message = messages.get(index);
+            boolean modelConsumed = index <= lastAssistantIndex
+                    && message != null
+                    && "user".equalsIgnoreCase(String.valueOf(message.get("role")))
+                    && message.get("attachmentIds") != null;
+            hydrated.add(attachmentService.hydrateProviderMessage(taskId, message, modelConsumed));
+        }
+        return hydrated;
+    }
+
+    private int lastAssistantIndex(List<Map<String, Object>> messages) {
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            Map<String, Object> message = messages.get(index);
+            if (message != null && "assistant".equalsIgnoreCase(String.valueOf(message.get("role")))) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     public record Projection(List<Map<String, Object>> messages, String detail) {

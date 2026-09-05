@@ -287,10 +287,10 @@ class OpenAiCompatibleProviderContractTest {
     }
 
     @Test
-    void disablesParallelToolCallsInOpenAiCompatibleRequests() throws Exception {
+    void omitsParallelToolCallsByDefault() throws Exception {
+        AtomicReference<String> requestBody = new AtomicReference<>();
         HttpServer server = startServer(exchange -> {
-            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-            assertTrue(request.contains("\"parallel_tool_calls\":false"));
+            requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             sendSse(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n");
         });
         try {
@@ -299,6 +299,28 @@ class OpenAiCompatibleProviderContractTest {
                     List.of(java.util.Map.of("type", "function", "function", java.util.Map.of("name", "read_file"))),
                     config(server), chunks::add);
             assertTrue(chunks.stream().anyMatch(chunk -> "text_delta".equals(chunk.type())));
+            assertFalse(requestBody.get().contains("\"parallel_tool_calls\""),
+                    () -> "default request must not force parallel_tool_calls: " + requestBody.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void honorsExplicitParallelToolCallsFromRequestOptions() throws Exception {
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = startServer(exchange -> {
+            requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendSse(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(),
+                    List.of(java.util.Map.of("type", "function", "function", java.util.Map.of("name", "read_file"))),
+                    configWithRequestOptions(server, "{\"parallel_tool_calls\":true}"), chunks::add);
+            assertTrue(chunks.stream().anyMatch(chunk -> "text_delta".equals(chunk.type())));
+            assertTrue(requestBody.get().contains("\"parallel_tool_calls\":true"),
+                    () -> "explicit request options must be honored: " + requestBody.get());
         } finally {
             server.stop(0);
         }
@@ -324,7 +346,6 @@ class OpenAiCompatibleProviderContractTest {
             assertAppearsBefore(request, "\"prompt_cache_key\"", "\"stream\"");
             assertAppearsBefore(request, "\"stream\"", "\"tools\"");
             assertAppearsBefore(request, "\"tools\"", "\"tool_choice\"");
-            assertAppearsBefore(request, "\"tool_choice\"", "\"parallel_tool_calls\"");
         } finally {
             server.stop(0);
         }
@@ -453,6 +474,11 @@ class OpenAiCompatibleProviderContractTest {
 
     private static LlmProvider.LlmConfig config(HttpServer server) {
         return new LlmProvider.LlmConfig("test-key", baseUrl(server), "test-model", 32, 0.1, 1_000, 1_000, 0);
+    }
+
+    private static LlmProvider.LlmConfig configWithRequestOptions(HttpServer server, String optionsJson) {
+        return new LlmProvider.LlmConfig("test-key", baseUrl(server), "test-model", 32, 0.1,
+                1_000, 1_000, 0, false, null, null, optionsJson, null, false);
     }
 
     @Test

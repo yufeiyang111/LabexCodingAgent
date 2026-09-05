@@ -170,14 +170,31 @@ public class AgentInputAttachmentService {
         return message;
     }
 
-    /** \u5728 Provider \u8bf7\u6c42\u8fb9\u754c\u4ece\u4e34\u65f6\u6587\u4ef6\u91cd\u5efa\u56fe\u7247 data URL\u3002 */
+    /** 在 Provider 请求边界从临时文件重建图片 data URL（默认视为模型尚未消费）。 */
     public Map<String, Object> hydrateProviderMessage(Long taskId, Map<String, Object> durableMessage) {
+        return hydrateProviderMessage(taskId, durableMessage, false);
+    }
+
+    /**
+     * 图片一次性注入策略：带附件的 user 消息仅在模型尚未消费（该消息之后尚无 assistant 回复）
+     * 时注水 Base64；已被消费的历史消息降级为纯文本占位，durable 持久化与前端历史展示不变。
+     */
+    public Map<String, Object> hydrateProviderMessage(Long taskId, Map<String, Object> durableMessage,
+                                                      boolean modelConsumed) {
         if (durableMessage == null || !"user".equalsIgnoreCase(stringValue(durableMessage.get("role")))) {
             return durableMessage;
         }
         List<String> attachmentIds = attachmentIds(durableMessage.get("attachmentIds"));
         if (attachmentIds.isEmpty()) {
             return withoutAttachmentIds(durableMessage);
+        }
+        if (modelConsumed) {
+            LinkedHashMap<String, Object> degraded = withoutAttachmentIds(durableMessage);
+            String original = stringValue(durableMessage.get("content"));
+            degraded.put("content", (original.isBlank() ? "" : original + "\n")
+                    + "[Image attachments from an earlier turn were already provided to the model "
+                    + "and are omitted from subsequent requests to save context.]");
+            return degraded;
         }
         if (taskId == null || taskId <= 0) {
             throw new IllegalStateException("Attachment projection requires a durable task ID");

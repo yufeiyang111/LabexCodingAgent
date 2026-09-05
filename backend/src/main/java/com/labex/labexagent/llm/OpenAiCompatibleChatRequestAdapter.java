@@ -21,8 +21,9 @@ import java.security.NoSuchAlgorithmException;
  * OpenAI-compatible Chat 的唯一请求构造 Adapter。
  *
  * <p>该模块只负责把已解析的 LLM 配置转换成 HTTP 请求，不负责发送请求、解析响应或维护
- * Agent transcript。默认配置保持旧路径的 reasoning_effort=medium 行为；高级字段只有在用户
- * 明确配置路径和值后才会写入请求。
+ * Agent transcript。默认配置保持旧路径的 reasoning_effort=medium 行为；parallel_tool_calls
+ * 默认不写入请求（避免非标字段触发兼容端点 400、不约束模型并发工具调用），仅当用户在
+ * requestOptionsJson 顶层显式配置时透传；高级字段只有在用户明确配置路径和值后才会写入请求。
  */
 public class OpenAiCompatibleChatRequestAdapter {
     private static final Gson GSON = new Gson();
@@ -64,7 +65,7 @@ public class OpenAiCompatibleChatRequestAdapter {
         if (effectiveTools != null && !effectiveTools.isEmpty()) {
             body.add("tools", GSON.toJsonTree(effectiveTools));
             body.addProperty("tool_choice", "auto");
-            body.addProperty("parallel_tool_calls", false);
+            applyParallelToolCalls(body, options);
         }
 
         List<String> appliedPaths = new ArrayList<>();
@@ -76,7 +77,7 @@ public class OpenAiCompatibleChatRequestAdapter {
         JsonObject bodyOverride = objectAt(overrides, "body");
         rejectProtectedBodyOverrides(bodyOverride, "");
         deepMerge(body, bodyOverride);
-        restoreDynamicFields(body, config, messages, tools, stream, includeStreamUsage);
+        restoreDynamicFields(body, options, config, messages, tools, stream, includeStreamUsage);
 
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Content-Type", "application/json");
@@ -177,8 +178,22 @@ public class OpenAiCompatibleChatRequestAdapter {
         appliedPaths.add("/budget/path");
     }
 
-    private void restoreDynamicFields(JsonObject body, LlmProvider.LlmConfig config, JsonArray messages,
-                                      List<Map<String, Object>> tools, boolean stream,
+    /**
+     * parallel_tool_calls 默认不写入：避免非标字段被部分 OpenAI 兼容网关拒绝（400），
+     * 同时不强制约束模型单轮只能发起一个工具调用，保留并发派发子代理的能力。
+     * 仅当用户在 requestOptionsJson 顶层显式配置 parallel_tool_calls（boolean）时透传。
+     */
+    private void applyParallelToolCalls(JsonObject body, JsonObject options) {
+        body.remove("parallel_tool_calls");
+        if (options != null && options.has("parallel_tool_calls")
+                && options.get("parallel_tool_calls").isJsonPrimitive()
+                && options.get("parallel_tool_calls").getAsJsonPrimitive().isBoolean()) {
+            body.addProperty("parallel_tool_calls", options.get("parallel_tool_calls").getAsBoolean());
+        }
+    }
+
+    private void restoreDynamicFields(JsonObject body, JsonObject options, LlmProvider.LlmConfig config,
+                                      JsonArray messages, List<Map<String, Object>> tools, boolean stream,
                                       boolean includeStreamUsage) {
         body.addProperty("model", config.modelName());
         body.add("messages", messages);
@@ -189,7 +204,7 @@ public class OpenAiCompatibleChatRequestAdapter {
         } else {
             body.add("tools", GSON.toJsonTree(tools));
             body.addProperty("tool_choice", "auto");
-            body.addProperty("parallel_tool_calls", false);
+            applyParallelToolCalls(body, options);
         }
         if (stream) {
             body.addProperty("stream", true);

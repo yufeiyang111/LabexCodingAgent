@@ -4432,6 +4432,15 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         AgentRunTranscriptService transcriptService = this.requireTranscriptService();
         String previousSummary = compactionService.previousSummary(taskId);
         List<Map<String, Object>> headForSummary = this.compactionHead(selection.compactedHead(), previousSummary);
+        // 轻量裁剪 head 中的旧工具结果（native role=tool 与 legacy 文本统一占位化，协议字段保留），
+        // 让 LLM 摘要与确定性 checkpoint 的输入体积缩小，提高压缩成功率并降低摘要成本。
+        // 只影响本次摘要输入与 checkpoint 文本，不回写 durable transcript。
+        TurnAwareContextPruner.Result headPrune = new TurnAwareContextPruner(this.requestTokenEstimator::estimateValue)
+                .pruneAllEligible(headForSummary);
+        if (headPrune.changed()) {
+            log.info("COMPACTION_HEAD_PRUNED taskId={} trigger={} prunedToolResults={} tokensBefore={} tokensAfter={}",
+                    taskId, trigger, headPrune.prunedToolResults(), headPrune.tokensBefore(), headPrune.tokensAfter());
+        }
         long sourceMaxSequence = transcriptService.nextSequence(taskId) - 1L;
         AgentCompactionRecord compactionRecord = compactionService.start(new AgentCompactionService.StartRequest(
                 taskId, context.getConversationId(), context.getStudentId(), context.getProject().getProjectId(),

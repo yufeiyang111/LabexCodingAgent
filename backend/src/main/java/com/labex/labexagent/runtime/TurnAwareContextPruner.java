@@ -12,9 +12,18 @@ import java.util.regex.Pattern;
 /**
  * Clears only safe historical tool output from the in-memory provider request. It never mutates
  * persisted conversation messages, change records, or run logs.
+ *
+ * <p>支持两种工具结果形态：</p>
+ * <ul>
+ *   <li>native 协议：{@code role=tool} 消息（{@code tool_call_id}/{@code name}/{@code content}）；
+ *       只替换 content 为占位文本，保留协议字段以维持 assistant tool_calls 与 tool result 的
+ *       一一配对，不破坏 {@code AgentProviderProtocolValidator} 校验。</li>
+ *   <li>legacy 文本：工具结果伪装为 {@code [Tool xxx result]} 开头的 user 消息（历史 transcript 兼容）。</li>
+ * </ul>
  */
 public final class TurnAwareContextPruner {
     private static final Pattern TOOL_RESULT = Pattern.compile("^\\[Tool\\s+(.+?)\\s+result]", Pattern.CASE_INSENSITIVE);
+    private static final String CLEARED_MARKER = "[Old tool result content cleared.";
     private static final Set<String> PROTECTED_TOOLS = Set.of(
             "write_file", "write", "edit_file", "edit", "apply_patch", "patch",
             "run_tests", "create_plan", "plan", "todo_write", "todowrite",
@@ -39,7 +48,7 @@ public final class TurnAwareContextPruner {
     public boolean hasPrunableHistoricalToolResult(List<Map<String, Object>> messages, int tailTurns, int tailTokenBudget) {
         int tailStart = selectTailStart(messages, tailTurns, tailTokenBudget);
         for (int index = 0; index < tailStart; index++) {
-            if (isEligibleToolResult(contentOf(messages.get(index)))) {
+            if (eligibleToolNameOf(messages.get(index)) != null) {
                 return true;
             }
         }
@@ -51,26 +60,86 @@ public final class TurnAwareContextPruner {
         int tailStart = selectTailStart(messages, tailTurns, tailTokenBudget);
         int pruned = 0;
         for (int index = 0; index < tailStart; index++) {
-            Map<String, Object> message = messages.get(index);
-            String content = contentOf(message);
-            if (!isEligibleToolResult(content)) {
-                continue;
+            if (clearToolResultContent(messages, index)) {
+                pruned++;
             }
-            String toolName = toolName(content);
-            String replacement = "[Tool " + toolName + " result]\n[Old tool result content cleared. Re-run "
-                    + toolName + " if exact output is needed.]";
-            if (replacement.length() >= content.length()) {
-                continue;
-            }            Map<String, Object> rewritten = new java.util.LinkedHashMap<>();
-            if (message != null) {
-                rewritten.putAll(message);
-            }
-            rewritten.put("content", replacement);
-            messages.set(index, rewritten);
-            pruned++;
         }
         int after = estimate(messages);
         return new Result(pruned > 0, before, after, tailStart, retainedTurnCount(messages, tailStart), pruned);
+    }
+
+    /**
+     * 占位化列表中全部可裁剪的工具结果，无尾部保护（调用方保证传入的是待摘要/丢弃的 head）。
+     * 用于压缩链路的 head 预处理：native role=tool 与 legacy 文本两种形态统一处理，
+     * 让 LLM 摘要与确定性 checkpoint 的输入体积显著缩小。
+     */
+    public Result pruneAllEligible(List<Map<String, Object>> messages) {
+        int before = estimate(messages);
+        int pruned = 0;
+        for (int index = 0; index < messages.size(); index++) {
+            if (clearToolResultContent(messages, index)) {
+                pruned++;
+            }
+        }
+        int after = estimate(messages);
+        return new Result(pruned > 0, before, after, 0, countUserTurns(messages), pruned);
+    }
+
+    private boolean clearToolResultContent(List<Map<String, Object>> messages, int index) {
+        Map<String, Object> message = messages.get(index);
+        if (message == null) {
+            return false;
+        }
+        String toolName = eligibleToolNameOf(message);
+        if (toolName == null) {
+            return false;
+        }
+        String content = contentOf(message);
+        String replacement = placeholder(toolName);
+        if (replacement.length() >= content.length()) {
+            return false;
+        }
+        Map<String, Object> rewritten = new java.util.LinkedHashMap<>();
+        rewritten.putAll(message);
+        rewritten.put("content", replacement);
+        messages.set(index, rewritten);
+        return true;
+    }
+
+    /**
+     * 返回可裁剪的工具名；不可裁剪返回 null。native role=tool 以 {@code name} 字段为准，
+     * legacy 文本以 {@code [Tool xxx result]} 前缀为准；错误结果与受保护工具一律豁免。
+     */
+    private String eligibleToolNameOf(Map<String, Object> message) {
+        String content = contentOf(message);
+        if ("tool".equalsIgnoreCase(roleOf(message))) {
+            String toolName = normalizeTool(stringValue(message.get("name")));
+            if (toolName.isEmpty()) {
+                return null;
+            }
+            if (content.isBlank() || content.contains(CLEARED_MARKER) || containsErrorSignal(content)) {
+                return null;
+            }
+            return PROTECTED_TOOLS.contains(toolName) ? null : toolName;
+        }
+        Matcher matcher = TOOL_RESULT.matcher(content);
+        if (!matcher.find() || content.contains(CLEARED_MARKER) || containsErrorSignal(content)) {
+            return null;
+        }
+        String toolName = normalizeTool(matcher.group(1));
+        return PROTECTED_TOOLS.contains(toolName) ? null : toolName;
+    }
+
+    private boolean containsErrorSignal(String content) {
+        String lower = content.toLowerCase(Locale.ROOT);
+        return lower.contains("error") || lower.contains("exception") || lower.contains("failed")
+                || lower.contains("failure") || lower.contains("unresolved") || lower.contains("错误")
+                || lower.contains("异常") || lower.contains("失败") || lower.contains("未解决");
+    }
+
+    private String placeholder(String toolName) {
+        return "[Tool " + toolName + " result]\n[Old tool result content cleared. Re-run "
+                + toolName + " if exact output is needed.]";
     }
 
     private int selectTailStart(List<Map<String, Object>> messages, int tailTurns, int tailTokenBudget) {
@@ -117,27 +186,14 @@ public final class TurnAwareContextPruner {
         return count;
     }
 
-    private boolean isEligibleToolResult(String content) {
-        Matcher matcher = TOOL_RESULT.matcher(content);
-        if (!matcher.find() || content.contains("[Old tool result content cleared]")) {
-            return false;
+    private int countUserTurns(List<Map<String, Object>> messages) {
+        int count = 0;
+        for (Map<String, Object> message : messages) {
+            if (isRealUserTurn(message)) {
+                count++;
+            }
         }
-        String lower = content.toLowerCase(Locale.ROOT);
-        if (lower.contains("error") || lower.contains("exception") || lower.contains("failed")
-                || lower.contains("failure") || lower.contains("unresolved") || lower.contains("错误")
-                || lower.contains("异常") || lower.contains("失败") || lower.contains("未解决")) {
-            return false;
-        }
-        return !PROTECTED_TOOLS.contains(normalizeTool(matcher.group(1)));
-    }
-
-    private String toolName(String content) {
-        Matcher matcher = TOOL_RESULT.matcher(content);
-        return matcher.find() ? matcher.group(1).trim() : "tool";
-    }
-
-    private String normalizeTool(String tool) {
-        return tool == null ? "" : tool.trim().toLowerCase(Locale.ROOT);
+        return count;
     }
 
     private int estimate(List<Map<String, Object>> messages) {
@@ -159,6 +215,14 @@ public final class TurnAwareContextPruner {
     private String roleOf(Map<String, Object> message) {
         Object role = message == null ? null : message.get("role");
         return role == null ? "user" : String.valueOf(role);
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
+    }
+
+    private String normalizeTool(String tool) {
+        return tool == null ? "" : tool.trim().toLowerCase(Locale.ROOT);
     }
 
     private boolean isRealUserTurn(Map<String, Object> message) {
