@@ -19,6 +19,12 @@ import org.springframework.stereotype.Service;
  * （互不等待，多个 task 子代理因此天然并行），但 durable 结果仍按 Provider 返回顺序
  * 串行投影，保证 transcript 顺序、Part 状态机与审批/交互语义不变。</p>
  *
+ * <p>线程隔离（防"等待型工具饿死普通工具"）：task / subagent 等会长时间阻塞等待
+ * 子代理终态的调用进入独立 {@code wait} 池（线程数 = max-parallel）；read/write/
+ * bash 等普通工具进入 {@code batch} 池（线程数 = max(max-parallel × 2, 8)）。
+ * 主代理一次派发 N 个前台子代理时，等待不挤占普通工具线程，子代理 runLoop 内的
+ * 工具调用不再排队。</p>
+ *
  * <p>终态语义（对齐既有不变式）：按顺序消费每个工具的结果；遇到第一个终态指令
  * （等待审批、用户交互、环境阻断、循环阻断或取消）即终止本批：仍在运行的工具被
  * interrupt 并显式标记为 skipped / interrupted，已经跑完但尚未消费的工具则按真实
@@ -34,15 +40,21 @@ public class LabexNativeToolBatchExecutor {
     private static final String CANCELLATION_DETAIL =
             "Interrupted because the run was cancelled before this tool call started.";
 
-    /** 工具委托可能在等待子代理/审批时长时间阻塞，线程池按可配置的并行上限弹性伸缩。 */
+    /** 普通工具并发上限（守护线程、空闲回收）。 */
     private static final int MAX_PARALLEL_TOOLS = 16;
+    /** 等待型工具（task/subagent）等待线程池上限，与子代理并发上限对齐。 */
+    private static final int MAX_PARALLEL_WAIT_TOOLS = 16;
 
     private final AgentToolCallBatchProtocol protocol;
     private final AgentProviderTranscriptAppender transcriptAppender;
     private final AgentToolCallJournalService toolCallJournalService;
     private final AgentSubagentProperties subagentProperties;
+    /** 普通工具线程池：并行上限 = max(max-parallel × 2, 8)，只跑非等待型工具。 */
     private final java.util.concurrent.ExecutorService toolPool;
+    /** 等待型工具线程池：并行上限 = max-parallel，只跑 task/subagent 等长阻塞调用。 */
+    private final java.util.concurrent.ExecutorService waitPool;
     private final java.util.concurrent.atomic.AtomicInteger poolSequence = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger waitSequence = new java.util.concurrent.atomic.AtomicInteger();
 
     public LabexNativeToolBatchExecutor(AgentToolCallBatchProtocol protocol,
                                         AgentProviderTranscriptAppender transcriptAppender,
@@ -60,7 +72,9 @@ public class LabexNativeToolBatchExecutor {
         this.toolCallJournalService = Objects.requireNonNull(toolCallJournalService,
                 "toolCallJournalService is required");
         this.subagentProperties = subagentProperties == null ? new AgentSubagentProperties() : subagentProperties;
-        int parallel = Math.max(2, Math.min(this.subagentProperties.getMaxParallel(), MAX_PARALLEL_TOOLS));
+        // 普通工具池：给一次批派发留出明显余量（≥ 2×并行上限，至少 8 线程），
+        // 保证多个 runLoop（主代理 + 子代理）的普通工具调用互不排队。
+        int parallel = Math.max(8, Math.min(MAX_PARALLEL_TOOLS, this.subagentProperties.getMaxParallel() * 2));
         java.util.concurrent.ThreadPoolExecutor pool = new java.util.concurrent.ThreadPoolExecutor(
                 parallel, parallel, 60L, java.util.concurrent.TimeUnit.SECONDS,
                 new java.util.concurrent.LinkedBlockingQueue<>(512),
@@ -72,6 +86,20 @@ public class LabexNativeToolBatchExecutor {
                 });
         pool.allowCoreThreadTimeOut(true);
         this.toolPool = pool;
+        // 等待型工具池：线程数 = max-parallel（子代理并发上限天然约束同时等待数量），
+        // 与普通工具池隔离，task 的前台等待不再挤占 read/write/bash 等工具的执行线程。
+        int waitThreads = Math.max(1, Math.min(MAX_PARALLEL_WAIT_TOOLS, this.subagentProperties.getMaxParallel()));
+        java.util.concurrent.ThreadPoolExecutor waitExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                waitThreads, waitThreads, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(512),
+                runnable -> {
+                    Thread thread = new Thread(runnable,
+                            "labex-agent-tool-wait-" + waitSequence.incrementAndGet());
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        waitExecutor.allowCoreThreadTimeOut(true);
+        this.waitPool = waitExecutor;
     }
 
     /**
@@ -118,13 +146,17 @@ public class LabexNativeToolBatchExecutor {
 
         // ---------- 阶段 2：并发派发 ----------
         // 每个 allowed 工具在独立线程上立即开始执行；未派发位置留 null 占位，保持 index 对齐。
+        // 等待型工具（task/subagent）进入独立的 wait 池，不占用普通工具线程：
+        // 主代理一次派发 N 个子代理时，子代理 runLoop 内的普通工具调用仍然畅通。
         List<java.util.concurrent.Future<CallExecution>> inFlight = new ArrayList<>(request.admissions().size());
         for (Admission admission : request.admissions()) {
             if (!admission.allowed() || cancelledBeforeDispatch) {
                 inFlight.add(null);
                 continue;
             }
-            inFlight.add(this.toolPool.submit(() -> invokeDelegate(delegate, admission)));
+            java.util.concurrent.ExecutorService targetPool =
+                    ToolExecutionBudget.isBlockingWaitTool(admission.call().toolName()) ? this.waitPool : this.toolPool;
+            inFlight.add(targetPool.submit(() -> invokeDelegate(delegate, admission)));
         }
         if (cancelledBeforeDispatch) {
             this.settleRemaining(request, outcomes, 0, inFlight, true, CANCELLATION_DETAIL, resultProjection);

@@ -18,8 +18,10 @@ import com.labex.labexagent.tool.ToolResult;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -211,6 +213,54 @@ class LabexNativeToolBatchExecutorTest {
                 .containsExactly("call-install:WAITING_APPROVAL", "call-read:COMPLETED");
         verify(journal, never()).skipped(any(ExecutionFence.class), eq(71L), eq("call-read"), eq("read_file"),
                 any(com.google.gson.JsonObject.class), eq(3), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void blockingWaitToolsAreDispatchedToDedicatedPoolWithoutStarvingRegularTools() throws Exception {
+        AgentProviderTranscriptAppender transcript = mock(AgentProviderTranscriptAppender.class);
+        AgentToolCallJournalService journal = mock(AgentToolCallJournalService.class);
+        LabexNativeToolBatchExecutor.ToolExecutionDelegate delegate = mock(
+                LabexNativeToolBatchExecutor.ToolExecutionDelegate.class);
+        LabexNativeToolBatchExecutor executor = new LabexNativeToolBatchExecutor(
+                new AgentToolCallBatchProtocol(), transcript, journal);
+
+        LabexNativeToolBatchExecutor.Admission waitCall = admission("task", "call-task", 0);
+        LabexNativeToolBatchExecutor.Admission regularCall = admission("read_file", "call-read", 1);
+
+        AtomicReference<String> waitThreadName = new AtomicReference<>();
+        AtomicReference<String> regularThreadName = new AtomicReference<>();
+        CountDownLatch regularFinished = new CountDownLatch(1);
+
+        when(delegate.execute(waitCall)).thenAnswer(invocation -> {
+            waitThreadName.set(Thread.currentThread().getName());
+            // 等待普通工具先执行完成，验证等待型调用阻塞并未阻碍普通工具在另一个池中立即执行
+            assertThat(regularFinished.await(5, TimeUnit.SECONDS)).isTrue();
+            return LabexNativeToolBatchExecutor.CallExecution.completed(ToolResult.ok("task finished"));
+        });
+
+        when(delegate.execute(regularCall)).thenAnswer(invocation -> {
+            regularThreadName.set(Thread.currentThread().getName());
+            regularFinished.countDown();
+            return LabexNativeToolBatchExecutor.CallExecution.completed(ToolResult.ok("file content"));
+        });
+
+        LabexNativeToolBatchExecutor.BatchResult result = executor.execute(
+                request(List.of(waitCall, regularCall), () -> false),
+                delegate,
+                (admission, toolResult, kind) -> kind.name() + ":" + admission.call().toolCallId());
+
+        assertThat(result.terminal()).isEqualTo(LabexNativeToolBatchExecutor.Terminal.CONTINUE);
+        assertThat(result.outcomes())
+                .extracting(outcome -> outcome.admission().call().toolCallId() + ":" + outcome.status())
+                .containsExactly("call-task:COMPLETED", "call-read:COMPLETED");
+
+        // 验证线程池隔离：等待型工具进入专用 wait 线程池，普通工具进入 batch 线程池
+        assertThat(waitThreadName.get())
+                .as("Blocking wait tools must run in dedicated wait pool")
+                .startsWith("labex-agent-tool-wait-");
+        assertThat(regularThreadName.get())
+                .as("Regular tools must run in standard tool batch pool")
+                .startsWith("labex-agent-tool-batch-");
     }
 
     private LabexNativeToolBatchExecutor.BatchRequest request(

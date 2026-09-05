@@ -26,7 +26,7 @@ public final class ToolExecutionBudget {
 
     public static long timeoutMs(String toolName, JsonObject arguments, long subagentTimeoutMs) {
         String normalized = toolName == null ? "" : toolName.toLowerCase(Locale.ROOT);
-        if ("task".equals(normalized) || "subagent".equals(normalized)) {
+        if (isBlockingWaitTool(normalized)) {
             return Math.max(60_000L, Math.min(3_600_000L, subagentTimeoutMs));
         }
         if (isCommandTool(normalized)) {
@@ -37,6 +37,16 @@ public final class ToolExecutionBudget {
         if (isRemoteOrLspTool(normalized)) return REMOTE_OR_LSP_MS;
         if ("repo_clone".equals(normalized) || "repo_map".equals(normalized)) return REPOSITORY_OPERATION_MS;
         return DEFAULT_MS;
+    }
+
+    /**
+     * 等待型工具判定（单一事实源）：task / subagent 会在执行线程上长时间阻塞等待
+     * 子代理终态（上限 subagent.task-timeout-ms）。批处理器据此把这类调用放入
+     * 独立等待线程池，避免占满普通工具线程导致其余工具排队。
+     */
+    public static boolean isBlockingWaitTool(String toolName) {
+        String normalized = toolName == null ? "" : toolName.toLowerCase(Locale.ROOT);
+        return "task".equals(normalized) || "subagent".equals(normalized);
     }
 
     private static long commandTimeoutMs(String toolName, JsonObject arguments) {
