@@ -5141,12 +5141,18 @@ You are permitted to make file changes, run shell commands, and utilize your ars
     private record RunLogTarget(Path path, boolean reused) {
     }
 
+    /** 运行日志文件的 per-path 锁：并行工具 delegate 会从多个线程追加同一 run log。 */
+    private static final java.util.Map<Path, Object> RUN_LOG_LOCKS = new java.util.concurrent.ConcurrentHashMap<>();
+
     private void appendRunLog(Path path, String text) {
         if (path == null || text == null) {
             return;
         }
         try {
-            Files.writeString(path, text, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            Object lock = RUN_LOG_LOCKS.computeIfAbsent(path, ignored -> new Object());
+            synchronized (lock) {
+                Files.writeString(path, text, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            }
         }
         catch (IOException e) {
             log.warn("Unable to append agent run log {}: {}", path, e.getMessage());

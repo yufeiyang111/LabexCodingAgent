@@ -129,9 +129,19 @@ implements AgentTool {
                         "Subagent exceeded " + (timeoutMs / 1_000) + "s foreground budget; it keeps running in the background."));
             }
 
-            AgentSubagent finished = this.subagentService.findById(dispatch.subagent().getSubagentId());
+            // future 完成后行收束与父级解除等待在同一事务链内，但行状态写入后仍可能
+            // 有读-写竞态窗口：这里做有界轮询，等待行进入终态而不是一次性误判。
+            AgentSubagent finished = this.awaitTerminalRow(dispatch.subagent().getSubagentId());
             String state = finished == null ? dispatch.subagent().getStatus() : finished.getStatus();
             if (!SubagentState.COMPLETED.persisted().equalsIgnoreCase(state == null ? "" : state)) {
+                if (finished != null && isRecoverableState(state)) {
+                    // 子代理仍在后台运行（如等待审批/用户输入后被恢复路径接管），
+                    // 不是失败：父任务解除阻塞，摘要稍后通过 SUBAGENT_SUMMARY 回传。
+                    return ToolResult.failed(formatSubtaskError(
+                            String.valueOf(dispatch.subagent().getSubagentId()), name, subagentType, description,
+                            state, "Subagent is still running (state " + state
+                            + "); it continues in the background and its summary is delivered when it finishes."));
+                }
                 String failure = finished == null ? null : finished.getSummary();
                 if (failure == null || failure.isBlank()) failure = "Subagent ended in state " + state;
                 return ToolResult.failed(formatSubtaskError(
@@ -149,6 +159,38 @@ implements AgentTool {
                     ? "subtask dispatch failed"
                     : ToolSupport.limit(detail, 512)));
         }
+    }
+
+    /** 有界轮询子代理行直至进入终态；等待上限 3s，用于吸收行收束与 future 完成间的写读竞态。 */
+    private AgentSubagent awaitTerminalRow(long subagentId) {
+        long deadline = System.currentTimeMillis() + 3_000L;
+        AgentSubagent row = null;
+        while (System.currentTimeMillis() < deadline) {
+            row = this.subagentService.findById(subagentId);
+            if (row != null && isTerminalState(row.getStatus())) {
+                return row;
+            }
+            try {
+                Thread.sleep(100L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return row;
+            }
+        }
+        return row;
+    }
+
+    private static boolean isTerminalState(String state) {
+        if (state == null) return false;
+        String normalized = state.toLowerCase(Locale.ROOT);
+        return "completed".equals(normalized) || "failed".equals(normalized) || "cancelled".equals(normalized);
+    }
+
+    private static boolean isRecoverableState(String state) {
+        if (state == null) return false;
+        String normalized = state.toLowerCase(Locale.ROOT);
+        return "running".equals(normalized) || "queued".equals(normalized)
+                || normalized.startsWith("waiting_") || "retry_backoff".equals(normalized);
     }
 
     private String resumeContext(String priorTaskId) {

@@ -32,7 +32,7 @@ class SubagentDepthAndCompletionTest {
         SubagentCompletionRegistry registry = new SubagentCompletionRegistry();
         CompletableFuture<Void> future = registry.register(7L,
                 (rowId, task) -> task.setParentTaskId(rowId),
-                childTaskId -> { });
+                childTaskId -> true);
 
         com.labex.entity.AgentTask task = new com.labex.entity.AgentTask();
         task.setTaskId(99L);
@@ -44,7 +44,7 @@ class SubagentDepthAndCompletionTest {
         registry = new SubagentCompletionRegistry();
         CompletableFuture<Void> future2 = registry.register(8L,
                 (rowId, t) -> { },
-                childTaskId -> finisherArg[0] = childTaskId);
+                childTaskId -> { finisherArg[0] = childTaskId; return true; });
         com.labex.entity.AgentTask task2 = new com.labex.entity.AgentTask();
         task2.setTaskId(100L);
         registry.onCreated(8L, task2);
@@ -56,9 +56,46 @@ class SubagentDepthAndCompletionTest {
     }
 
     @Test
+    void completionRegistryKeepsWaitingWhenFinisherReportsNonTerminalAndCompletesOnRetry() {
+        SubagentCompletionRegistry registry = new SubagentCompletionRegistry();
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        CompletableFuture<Void> future = registry.register(21L,
+                (rowId, task) -> { },
+                childTaskId -> calls.incrementAndGet() >= 2);
+        com.labex.entity.AgentTask task = new com.labex.entity.AgentTask();
+        task.setTaskId(101L);
+        registry.onCreated(21L, task);
+
+        // 第一次运行结束但子任务处于可恢复等待态（如审批暂停）：finisher 返回 false，
+        // 父任务不得解除阻塞，注册必须保持以支持恢复路径二次触发。
+        registry.finished(101L);
+        assertFalse(future.isDone(), "non-terminal finalize must keep the parent waiting");
+        assertTrue(registry.isPending(21L));
+
+        // 恢复后的运行再次结束，子任务到达真终态：finisher 返回 true，父任务解除阻塞。
+        registry.finished(101L);
+        assertTrue(future.isDone());
+        assertEquals(2, calls.get());
+        assertFalse(registry.isPending(21L));
+    }
+
+    @Test
+    void completionRegistryFinisherFailureCompletesExceptionally() {
+        SubagentCompletionRegistry registry = new SubagentCompletionRegistry();
+        CompletableFuture<Void> future = registry.register(22L,
+                (rowId, task) -> { },
+                childTaskId -> { throw new IllegalStateException("illegal subagent transition"); });
+        com.labex.entity.AgentTask task = new com.labex.entity.AgentTask();
+        task.setTaskId(102L);
+        registry.onCreated(22L, task);
+        registry.finished(102L);
+        assertTrue(future.isCompletedExceptionally());
+    }
+
+    @Test
     void completionRegistryFailedCompletesExceptionally() {
         SubagentCompletionRegistry registry = new SubagentCompletionRegistry();
-        CompletableFuture<Void> future = registry.register(9L, (r, t) -> { }, id -> { });
+        CompletableFuture<Void> future = registry.register(9L, (r, t) -> { }, id -> true);
         RuntimeException failure = new RuntimeException("queue rejected");
         registry.failed(9L, failure);
         assertTrue(future.isCompletedExceptionally());

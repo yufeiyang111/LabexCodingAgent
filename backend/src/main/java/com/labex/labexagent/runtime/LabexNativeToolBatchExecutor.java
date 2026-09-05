@@ -1,6 +1,7 @@
 package com.labex.labexagent.runtime;
 
 import com.google.gson.JsonObject;
+import com.labex.labexagent.run.AgentSubagentProperties;
 import com.labex.labexagent.run.AgentToolCallJournalService;
 import com.labex.labexagent.run.EnvironmentBlockerClassifier;
 import com.labex.labexagent.run.ExecutionFence;
@@ -13,35 +14,72 @@ import org.springframework.stereotype.Service;
 /**
  * Native structured tool-call 的 durable 批处理编排。
  *
- * <p>一个模型 turn 的所有 tool call 必须先写入 assistant transcript 与 Tool Part，随后才按照
- * Provider 返回顺序串行执行。等待审批、用户交互、环境阻断、循环阻断或取消会为未执行的调用写入
- * 明确终态，避免模型、浏览器和恢复逻辑看到半截且无归属的 tool batch。</p>
+ * <p>一个模型 turn 的所有 tool call 必须先写入 assistant transcript 与 Tool Part，
+ * 随后按 OpenCode / AI SDK 的并发工具调度模型执行：同一批全部 allowed 工具并发派发
+ * （互不等待，多个 task 子代理因此天然并行），但 durable 结果仍按 Provider 返回顺序
+ * 串行投影，保证 transcript 顺序、Part 状态机与审批/交互语义不变。</p>
+ *
+ * <p>终态语义（对齐既有不变式）：按顺序消费每个工具的结果；遇到第一个终态指令
+ * （等待审批、用户交互、环境阻断、循环阻断或取消）即终止本批：仍在运行的工具被
+ * interrupt 并显式标记为 skipped / interrupted，已经跑完但尚未消费的工具则按真实
+ * 结果收尾——任何 Tool Part 都不会滞留 pending，模型、浏览器与恢复逻辑永远看到
+ * 明确终态。与旧串行实现的唯一行为差异：终态判定点之后的工具可能在并发窗口内已
+ * 经完成，其副作用真实发生并如实入账（这正是 OpenCode 并行工具调用的语义）。</p>
  *
  * <p>具体工具执行、循环判定、SSE 投影和生命周期迁移仍由上层调用方拥有；本组件只收敛
- * structured batch 的 durable 协议、串行顺序与 Part 状态机。</p>
+ * structured batch 的 durable 协议、并发派发、顺序投影与 Part 状态机。</p>
  */
 @Service
 public class LabexNativeToolBatchExecutor {
     private static final String CANCELLATION_DETAIL =
             "Interrupted because the run was cancelled before this tool call started.";
 
+    /** 工具委托可能在等待子代理/审批时长时间阻塞，线程池按可配置的并行上限弹性伸缩。 */
+    private static final int MAX_PARALLEL_TOOLS = 16;
+
     private final AgentToolCallBatchProtocol protocol;
     private final AgentProviderTranscriptAppender transcriptAppender;
     private final AgentToolCallJournalService toolCallJournalService;
+    private final AgentSubagentProperties subagentProperties;
+    private final java.util.concurrent.ExecutorService toolPool;
+    private final java.util.concurrent.atomic.AtomicInteger poolSequence = new java.util.concurrent.atomic.AtomicInteger();
 
     public LabexNativeToolBatchExecutor(AgentToolCallBatchProtocol protocol,
                                         AgentProviderTranscriptAppender transcriptAppender,
                                         AgentToolCallJournalService toolCallJournalService) {
+        this(protocol, transcriptAppender, toolCallJournalService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public LabexNativeToolBatchExecutor(AgentToolCallBatchProtocol protocol,
+                                        AgentProviderTranscriptAppender transcriptAppender,
+                                        AgentToolCallJournalService toolCallJournalService,
+                                        AgentSubagentProperties subagentProperties) {
         this.protocol = Objects.requireNonNull(protocol, "protocol is required");
         this.transcriptAppender = Objects.requireNonNull(transcriptAppender, "transcriptAppender is required");
         this.toolCallJournalService = Objects.requireNonNull(toolCallJournalService,
                 "toolCallJournalService is required");
+        this.subagentProperties = subagentProperties == null ? new AgentSubagentProperties() : subagentProperties;
+        int parallel = Math.max(2, Math.min(this.subagentProperties.getMaxParallel(), MAX_PARALLEL_TOOLS));
+        java.util.concurrent.ThreadPoolExecutor pool = new java.util.concurrent.ThreadPoolExecutor(
+                parallel, parallel, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(512),
+                runnable -> {
+                    Thread thread = new Thread(runnable,
+                            "labex-agent-tool-batch-" + poolSequence.incrementAndGet());
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        pool.allowCoreThreadTimeOut(true);
+        this.toolPool = pool;
     }
 
     /**
      * 执行一个已经完成参数/schema admission 的 native tool batch。
      *
-     * <p>调用方提供的 delegate 是唯一的实际工具执行入口，因此文件快照、权限、post-edit hook、
+     * <p>并发派发全部 allowed 工具（对齐 OpenCode：同一 turn 的多个 tool call 并行执行，
+     * task 子代理互不串行等待），再按 Provider 顺序消费结果：顺序投影与终态语义见类注释。
+     * 调用方提供的 delegate 是唯一的实际工具执行入口，因此文件快照、权限、post-edit hook、
      * 指标与循环守卫仍复用既有 AgentLoopEngine 路径。这里保证 delegate 永远不会在整批 pending
      * Part 写入前被调用。</p>
      */
@@ -76,32 +114,57 @@ public class LabexNativeToolBatchExecutor {
         }
 
         List<Outcome> outcomes = new ArrayList<>();
+        boolean cancelledBeforeDispatch = request.cancellationProbe().isCancellationRequested();
+
+        // ---------- 阶段 2：并发派发 ----------
+        // 每个 allowed 工具在独立线程上立即开始执行；未派发位置留 null 占位，保持 index 对齐。
+        List<java.util.concurrent.Future<CallExecution>> inFlight = new ArrayList<>(request.admissions().size());
+        for (Admission admission : request.admissions()) {
+            if (!admission.allowed() || cancelledBeforeDispatch) {
+                inFlight.add(null);
+                continue;
+            }
+            inFlight.add(this.toolPool.submit(() -> invokeDelegate(delegate, admission)));
+        }
+        if (cancelledBeforeDispatch) {
+            this.settleRemaining(request, outcomes, 0, inFlight, true, CANCELLATION_DETAIL, resultProjection);
+            return BatchResult.terminal(Terminal.CANCELLED, outcomes, null);
+        }
+
+        // ---------- 阶段 3：按 Provider 顺序消费结果 ----------
         for (int index = 0; index < request.admissions().size(); index++) {
             Admission admission = request.admissions().get(index);
             if (request.cancellationProbe().isCancellationRequested()) {
-                this.interruptRemaining(request, outcomes, index, resultProjection);
+                this.settleRemaining(request, outcomes, index, inFlight, true, CANCELLATION_DETAIL,
+                        resultProjection);
                 return BatchResult.terminal(Terminal.CANCELLED, outcomes, null);
             }
 
             if (!admission.allowed()) {
                 ToolResult rejection = admission.rejection();
-                this.appendProviderToolResult(request, admission, rejection, ProjectionKind.REJECTION, resultProjection);
+                this.appendProviderToolResult(request, admission, rejection, ProjectionKind.REJECTION,
+                        resultProjection);
                 outcomes.add(new Outcome(admission, rejection, OutcomeStatus.REJECTED));
                 continue;
             }
 
-            CallExecution execution = delegate.execute(admission);
-            if (execution == null || execution.result() == null) {
+            CallExecution execution = this.awaitExecution(request, outcomes, index, inFlight, resultProjection);
+            if (execution == null) {
+                // 并发窗口内被取消/中断的调用已由 awaitExecution 结算并产出 interrupted outcome。
+                continue;
+            }
+            if (execution.result() == null) {
                 execution = CallExecution.completed(ToolResult.failed("Tool execution returned no result."));
             }
             ToolResult result = execution.result();
 
             if (execution.directive() == ExecutionDirective.LOOP_GUARD_BLOCKED) {
                 this.journalResult(request, admission, result);
-                this.appendProviderToolResult(request, admission, result, ProjectionKind.LOOP_GUARD, resultProjection);
+                this.appendProviderToolResult(request, admission, result, ProjectionKind.LOOP_GUARD,
+                        resultProjection);
                 Outcome terminalOutcome = new Outcome(admission, result, OutcomeStatus.LOOP_GUARD_BLOCKED);
                 outcomes.add(terminalOutcome);
-                this.skipRemaining(request, outcomes, index + 1,
+                this.settleRemaining(request, outcomes, index + 1, inFlight, false,
                         "Skipped because an earlier tool call in the same model turn was blocked by the loop guard.",
                         resultProjection);
                 return BatchResult.terminal(Terminal.LOOP_GUARD, outcomes, terminalOutcome);
@@ -109,10 +172,12 @@ public class LabexNativeToolBatchExecutor {
 
             if (isCancelledResult(result) || request.cancellationProbe().isCancellationRequested()) {
                 this.journalResult(request, admission, result);
-                this.appendProviderToolResult(request, admission, result, ProjectionKind.INTERRUPTED, resultProjection);
+                this.appendProviderToolResult(request, admission, result, ProjectionKind.INTERRUPTED,
+                        resultProjection);
                 Outcome terminalOutcome = new Outcome(admission, result, OutcomeStatus.INTERRUPTED);
                 outcomes.add(terminalOutcome);
-                this.interruptRemaining(request, outcomes, index + 1, resultProjection);
+                this.settleRemaining(request, outcomes, index + 1, inFlight, true, CANCELLATION_DETAIL,
+                        resultProjection);
                 return BatchResult.terminal(Terminal.CANCELLED, outcomes, terminalOutcome);
             }
 
@@ -124,7 +189,7 @@ public class LabexNativeToolBatchExecutor {
                         resultProjection);
                 Outcome terminalOutcome = new Outcome(admission, result, OutcomeStatus.ENVIRONMENT_BLOCKED);
                 outcomes.add(terminalOutcome);
-                this.skipRemaining(request, outcomes, index + 1,
+                this.settleRemaining(request, outcomes, index + 1, inFlight, false,
                         "Skipped because an earlier tool call in the same model turn is blocked by the environment.",
                         resultProjection);
                 return BatchResult.terminal(Terminal.ENVIRONMENT_BLOCKED, outcomes, terminalOutcome);
@@ -136,7 +201,7 @@ public class LabexNativeToolBatchExecutor {
                         request.iteration(), result.getApprovalId());
                 Outcome terminalOutcome = new Outcome(admission, result, OutcomeStatus.WAITING_APPROVAL);
                 outcomes.add(terminalOutcome);
-                this.skipRemaining(request, outcomes, index + 1,
+                this.settleRemaining(request, outcomes, index + 1, inFlight, false,
                         "Skipped because an earlier tool call in the same model turn is waiting for approval.",
                         resultProjection);
                 return BatchResult.terminal(Terminal.WAITING_APPROVAL, outcomes, terminalOutcome);
@@ -146,7 +211,7 @@ public class LabexNativeToolBatchExecutor {
             if (result.isInteractionRequired()) {
                 Outcome terminalOutcome = new Outcome(admission, result, OutcomeStatus.WAITING_USER);
                 outcomes.add(terminalOutcome);
-                this.skipRemaining(request, outcomes, index + 1,
+                this.settleRemaining(request, outcomes, index + 1, inFlight, false,
                         "Skipped because an earlier tool call in the same model turn is waiting for user input.",
                         resultProjection);
                 return BatchResult.terminal(Terminal.WAITING_USER, outcomes, terminalOutcome);
@@ -158,38 +223,123 @@ public class LabexNativeToolBatchExecutor {
         return BatchResult.continues(outcomes);
     }
 
-    private void skipRemaining(BatchRequest request, List<Outcome> outcomes, int startIndex,
-                               String reason, ToolResultProjection resultProjection) {
+    /** 在独立线程上执行委托；抛出的异常原样保留供 awaitExecution 重抛。 */
+    private CallExecution invokeDelegate(ToolExecutionDelegate delegate, Admission admission) {
+        try {
+            return delegate.execute(admission);
+        } catch (Exception failure) {
+            throw new DelegateExecutionException(failure);
+        }
+    }
+
+    /**
+     * 按序等待第 index 个工具的结果；若该调用已在并发窗口内被取消（终态判定之后仍
+     * 在跑的调用被 interrupt），则结算为 interrupted outcome 并返回 null，消费方跳过。
+     */
+    private CallExecution awaitExecution(BatchRequest request, List<Outcome> outcomes, int index,
+                                         List<java.util.concurrent.Future<CallExecution>> inFlight,
+                                         ToolResultProjection resultProjection) throws Exception {
+        java.util.concurrent.Future<CallExecution> future = inFlight.get(index);
+        if (future == null) {
+            return null;
+        }
+        try {
+            CallExecution execution = future.get();
+            return execution == null ? CallExecution.completed(
+                    ToolResult.failed("Tool execution returned no result.")) : execution;
+        } catch (java.util.concurrent.CancellationException cancelled) {
+            // 本批后续终态已中断该调用：由消费方 settleRemaining 结算，这里只占位 outcome。
+            ToolResult interrupted = ToolResult.failed(CANCELLATION_DETAIL);
+            outcomes.add(new Outcome(request.admissions().get(index), interrupted, OutcomeStatus.INTERRUPTED));
+            return null;
+        } catch (java.util.concurrent.ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            // 与旧串行语义一致：delegate 异常向上传播；尚在运行的其余调用先结算为 interrupted，
+            // 避免 Tool Part 滞留 pending（比依赖 reconciler 事后回收更早闭环）。
+            this.settleRemaining(request, outcomes, index + 1, inFlight, true, CANCELLATION_DETAIL,
+                    resultProjection);
+            if (cause instanceof Exception exception) {
+                throw exception;
+            }
+            throw new IllegalStateException(cause);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        }
+    }
+
+    /**
+     * 终态之后的剩余结算：并发窗口内已完成的调用按真实结果入账（不伪造成 skipped，
+     * 其副作用真实发生过），尚未完成的一律 interrupt 并显式标记 skipped / interrupted，
+     * 已拒绝（输入门禁）的调用补齐 REJECTION 投影。保证没有任何 Tool Part 滞留 pending。
+     */
+    private void settleRemaining(BatchRequest request, List<Outcome> outcomes, int startIndex,
+                                 List<java.util.concurrent.Future<CallExecution>> inFlight,
+                                 boolean interrupted, String reason,
+                                 ToolResultProjection resultProjection) throws Exception {
         for (int index = Math.max(0, startIndex); index < request.admissions().size(); index++) {
             Admission admission = request.admissions().get(index);
             if (!admission.allowed()) {
                 ToolResult rejection = admission.rejection();
-                this.appendProviderToolResult(request, admission, rejection, ProjectionKind.REJECTION, resultProjection);
+                this.appendProviderToolResult(request, admission, rejection, ProjectionKind.REJECTION,
+                        resultProjection);
                 outcomes.add(new Outcome(admission, rejection, OutcomeStatus.REJECTED));
                 continue;
             }
-            ToolResult skipped = ToolResult.failed(reason);
-            this.toolCallJournalService.skipped(request.executionFence(), request.taskId(),
-                    admission.call().toolCallId(), admission.call().toolName(), admission.publicArguments(),
-                    request.iteration(), reason);
-            this.appendProviderToolResult(request, admission, skipped, ProjectionKind.SKIPPED, resultProjection);
-            outcomes.add(new Outcome(admission, skipped, OutcomeStatus.SKIPPED));
+            java.util.concurrent.Future<CallExecution> future = inFlight.get(index);
+            if (future == null) {
+                continue;
+            }
+            if (future.isDone() && !future.isCancelled()) {
+                // 已在并发窗口内完成：以真实结果收尾，绝不伪造 skipped。
+                try {
+                    CallExecution execution = future.get();
+                    ToolResult real = execution == null || execution.result() == null
+                            ? ToolResult.failed("Tool execution returned no result.") : execution.result();
+                    this.appendProviderToolResult(request, admission, real, ProjectionKind.RESULT,
+                            resultProjection);
+                    outcomes.add(new Outcome(admission, real, OutcomeStatus.COMPLETED));
+                } catch (java.util.concurrent.ExecutionException failure) {
+                    ToolResult real = ToolResult.failed(
+                            "Tool execution failed while the batch was settling: "
+                                    + (failure.getCause() == null ? "unknown" : failure.getCause().getMessage()));
+                    this.appendProviderToolResult(request, admission, real, ProjectionKind.RESULT,
+                            resultProjection);
+                    outcomes.add(new Outcome(admission, real, OutcomeStatus.COMPLETED));
+                } catch (InterruptedException interruptedWait) {
+                    Thread.currentThread().interrupt();
+                    ToolResult real = ToolResult.failed("Tool execution was interrupted while the batch settled.");
+                    this.appendProviderToolResult(request, admission, real, ProjectionKind.INTERRUPTED,
+                            resultProjection);
+                    outcomes.add(new Outcome(admission, real, OutcomeStatus.INTERRUPTED));
+                }
+                continue;
+            }
+            // 尚未完成：interrupt 并显式标记终态。
+            future.cancel(true);
+            ToolResult settled = ToolResult.failed(reason);
+            if (interrupted) {
+                this.toolCallJournalService.interrupted(request.executionFence(), request.taskId(),
+                        admission.call().toolCallId(), admission.call().toolName(), admission.publicArguments(),
+                        request.iteration(), reason);
+                this.appendProviderToolResult(request, admission, settled, ProjectionKind.INTERRUPTED,
+                        resultProjection);
+                outcomes.add(new Outcome(admission, settled, OutcomeStatus.INTERRUPTED));
+            } else {
+                this.toolCallJournalService.skipped(request.executionFence(), request.taskId(),
+                        admission.call().toolCallId(), admission.call().toolName(), admission.publicArguments(),
+                        request.iteration(), reason);
+                this.appendProviderToolResult(request, admission, settled, ProjectionKind.SKIPPED,
+                        resultProjection);
+                outcomes.add(new Outcome(admission, settled, OutcomeStatus.SKIPPED));
+            }
         }
     }
 
-    private void interruptRemaining(BatchRequest request, List<Outcome> outcomes, int startIndex,
-                                    ToolResultProjection resultProjection) {
-        for (int index = Math.max(0, startIndex); index < request.admissions().size(); index++) {
-            Admission admission = request.admissions().get(index);
-            ToolResult interrupted = ToolResult.failed(CANCELLATION_DETAIL);
-            if (admission.allowed()) {
-                this.toolCallJournalService.interrupted(request.executionFence(), request.taskId(),
-                        admission.call().toolCallId(), admission.call().toolName(), admission.publicArguments(),
-                        request.iteration(), CANCELLATION_DETAIL);
-            }
-            this.appendProviderToolResult(request, admission, interrupted, ProjectionKind.INTERRUPTED,
-                    resultProjection);
-            outcomes.add(new Outcome(admission, interrupted, OutcomeStatus.INTERRUPTED));
+    /** 包装 delegate 异常，避免被线程池吞成裸 RuntimeException。 */
+    private static final class DelegateExecutionException extends RuntimeException {
+        private DelegateExecutionException(Exception cause) {
+            super(cause);
         }
     }
 

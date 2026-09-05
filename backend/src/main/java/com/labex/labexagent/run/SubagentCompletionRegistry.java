@@ -21,7 +21,12 @@ public class SubagentCompletionRegistry {
 
     /** 子任务终态后的同步回调（行状态、摘要、父级镜像）。 */
     public interface TaskFinisher {
-        void finish(Long childTaskId);
+        /**
+         * @param childTaskId 子任务的 AgentTask ID
+         * @return true 表示子代理行已收束到真终态（父任务可解除阻塞）；
+         *         false 表示仍处于可恢复等待态（注册保持，恢复后的再次 finished 会重试）。
+         */
+        boolean finish(Long childTaskId);
     }
 
     private static final class Entry {
@@ -65,16 +70,31 @@ public class SubagentCompletionRegistry {
     /** 引擎 runLoop finally 调用；未注册的 taskId 静默忽略（普通任务零开销）。 */
     public void finished(Long taskId) {
         if (taskId == null) return;
-        Long rowId = taskIdIndex.remove(taskId);
+        Long rowId = taskIdIndex.get(taskId);
         if (rowId == null) return;
-        Entry entry = byRowId.remove(rowId);
+        Entry entry = byRowId.get(rowId);
         if (entry == null) return;
-        try {
-            if (entry.finisher != null) entry.finisher.finish(taskId);
-        } catch (RuntimeException ignored) {
-            // 终态同步失败不能阻塞父任务解除等待。
+        synchronized (entry) {
+            try {
+                // finisher 只有在子任务到达真终态时才返回 true：
+                // - true  → 行已收束，解除父任务等待并注销注册；
+                // - false → 可恢复等待态（审批/用户输入/租约丢失），保持注册，
+                //           等恢复路径再次跑完时二次触发，父任务继续等待或转后台。
+                boolean finalized = entry.finisher == null || entry.finisher.finish(taskId);
+                if (!finalized) {
+                    return;
+                }
+            } catch (RuntimeException failure) {
+                // 终态同步失败不再静默吞掉：如实上报，父任务看到精确失败原因。
+                taskIdIndex.remove(taskId);
+                byRowId.remove(rowId);
+                entry.future.completeExceptionally(failure);
+                return;
+            }
+            taskIdIndex.remove(taskId);
+            byRowId.remove(rowId);
+            entry.future.complete(null);
         }
-        entry.future.complete(null);
     }
 
     /** 派发失败（入队被拒/前置校验异常）时由 launcher 主动完成并清理。 */

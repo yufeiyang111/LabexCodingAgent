@@ -11,6 +11,7 @@ import com.labex.labexagent.service.AgentConversationService;
 import com.labex.labexagent.service.ProjectIndexService;
 import com.labex.mapper.AgentTaskMapper;
 import java.util.concurrent.CompletableFuture;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 /**
@@ -44,6 +45,7 @@ public class SubagentLaunchService {
     private final AgentSubagentProperties properties;
     private final SubagentCompletionRegistry completions;
     private final SubagentResultSummaryService summaries;
+    private final SubagentRunSyncService runSync;
     private final AgentTaskMapper taskMapper;
     private final AgentLoopEngine engine;
 
@@ -53,14 +55,16 @@ public class SubagentLaunchService {
                                  AgentSubagentProperties properties,
                                  SubagentCompletionRegistry completions,
                                  SubagentResultSummaryService summaries,
+                                 SubagentRunSyncService runSync,
                                  AgentTaskMapper taskMapper,
-                                 AgentLoopEngine engine) {
+                                 @Lazy AgentLoopEngine engine) {
         this.subagents = subagents;
         this.conversations = conversations;
         this.projectIndexService = projectIndexService;
         this.properties = properties == null ? new AgentSubagentProperties() : properties;
         this.completions = completions;
         this.summaries = summaries;
+        this.runSync = runSync;
         this.taskMapper = taskMapper;
         this.engine = engine;
     }
@@ -106,7 +110,14 @@ public class SubagentLaunchService {
                 task.setParentTaskId(row.getTaskId());
                 this.taskMapper.updateById(task);
             }
-        });
+            // 子任务落库即代表运行已开始：补齐 queued → running 状态迁移，
+            // 使终态收束（queued → completed 本就不合法）能通过状态机守卫。
+            try {
+                this.subagents.transition(row, SubagentState.RUNNING);
+            } catch (RuntimeException alreadyRunning) {
+                // onCreated 由引擎在任务创建处调用；恢复场景重复回调时行可能已 running。
+            }
+        }, this.runSync::finalizeFromTask);
 
         AgentStreamRequest request = new AgentStreamRequest();
         request.setSessionId((spec.parentSessionId() == null ? "session" : spec.parentSessionId())
