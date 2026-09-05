@@ -12,6 +12,9 @@ import com.labex.labexagent.tool.ToolSupport;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -20,12 +23,16 @@ import java.time.Duration;
 import java.util.Locale;
 import java.util.Set;
 import org.jsoup.Jsoup;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
 public class WebFetchTool implements AgentTool {
+    private static final Logger log = LoggerFactory.getLogger(WebFetchTool.class);
     private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+    private static final String HONEST_USER_AGENT = "opencode";
     private static final Set<String> SUPPORTED_FORMATS = Set.of("markdown", "text", "html");
     private final OutboundUrlPolicy outboundUrlPolicy;
     private final WebFetchProperties properties;
@@ -69,47 +76,7 @@ public class WebFetchTool implements AgentTool {
         int outputMaxChars = boundedOutputChars(args);
 
         try {
-            OutboundUrlPolicy.ValidatedDestination destination = outboundUrlPolicy.validate(url);
-            for (int redirectCount = 0; redirectCount <= maxRedirects(); redirectCount++) {
-                destination = outboundUrlPolicy.validate(destination.uri());
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(destination.uri())
-                        .timeout(Duration.ofSeconds(timeoutSeconds))
-                        .header("User-Agent", DEFAULT_USER_AGENT)
-                        .header("Accept", acceptHeaderFor(format))
-                        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                        .GET()
-                        .build();
-
-                HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-                try (InputStream body = response.body()) {
-                    if (isRedirect(response.statusCode())) {
-                        String location = response.headers().firstValue("Location").orElse("");
-                        if (location.isBlank()) {
-                            return ToolResult.failed("Web fetch redirect did not provide a destination");
-                        }
-                        destination = outboundUrlPolicy.validateRedirect(destination.uri(), location);
-                        continue;
-                    }
-
-                    String contentType = response.headers().firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
-                    long contentLength = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
-                    byte[] rawBytes = readBoundedBytes(body, contentLength, maxResponseBytes());
-
-                    // 检查是否为图片类型
-                    if (isImageMime(contentType)) {
-                        return ToolResult.ok("status=" + response.statusCode() + " content_type=" + contentType
-                                + "\n[Image URL: " + destination.uri() + ", size=" + rawBytes.length + " bytes]");
-                    }
-
-                    String responseBody = new String(rawBytes, StandardCharsets.UTF_8);
-                    String processedContent = formatContent(responseBody, contentType, format);
-
-                    return ToolResult.ok("status=" + response.statusCode() + " content_type=" + (contentType.isBlank() ? "unknown" : contentType)
-                            + "\n\n" + ToolSupport.limit(processedContent, outputMaxChars));
-                }
-            }
-            return ToolResult.failed("Web fetch exceeded the redirect limit");
+            return doFetch(url, format, timeoutSeconds, outputMaxChars);
         } catch (ResponseTooLargeException e) {
             return ToolResult.failed(e.getMessage());
         } catch (OutboundUrlPolicy.RejectedOutboundUrlException e) {
@@ -118,8 +85,127 @@ public class WebFetchTool implements AgentTool {
             Thread.currentThread().interrupt();
             return ToolResult.failed("Web fetch interrupted");
         } catch (Exception e) {
+            // 直连请求异常（如连接超时），尝试触发 Reader 兜底
+            ToolResult fallback = tryReaderFallback(url, format, timeoutSeconds, outputMaxChars, e);
+            if (fallback != null) {
+                return fallback;
+            }
             return ToolResult.failed("Web fetch failed: " + (e.getMessage() == null ? "request error" : e.getMessage()));
         }
+    }
+
+    private ToolResult doFetch(String url, String format, int timeoutSeconds, int outputMaxChars) throws Exception {
+        OutboundUrlPolicy.ValidatedDestination destination = outboundUrlPolicy.validate(url);
+        for (int redirectCount = 0; redirectCount <= maxRedirects(); redirectCount++) {
+            destination = outboundUrlPolicy.validate(destination.uri());
+            HttpRequest request = buildRequest(destination.uri(), timeoutSeconds, format, DEFAULT_USER_AGENT);
+
+            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+
+            // 对齐 OpenCode：若遭遇 Cloudflare 反爬质询拦截 (403 challenge)，自动改用坦诚 UA 重试一次
+            if (response.statusCode() == 403 && properties.isCfRetryEnabled() && isCloudflareMitigated(response)) {
+                try {
+                    response.body().close();
+                } catch (Exception ignored) {}
+                HttpRequest retryRequest = buildRequest(destination.uri(), timeoutSeconds, format, HONEST_USER_AGENT);
+                response = httpClient.send(retryRequest, HttpResponse.BodyHandlers.ofInputStream());
+            }
+
+            try (InputStream body = response.body()) {
+                if (isRedirect(response.statusCode())) {
+                    String location = response.headers().firstValue("Location").orElse("");
+                    if (location.isBlank()) {
+                        return ToolResult.failed("Web fetch redirect did not provide a destination");
+                    }
+                    destination = outboundUrlPolicy.validateRedirect(destination.uri(), location);
+                    continue;
+                }
+
+                // 遇到不可恢复的客户端/服务端状态码（如持续 403/502/503），尝试走 Reader 兜底
+                if (response.statusCode() >= 400) {
+                    ToolResult fallback = tryReaderFallback(url, format, timeoutSeconds, outputMaxChars,
+                            new IOException("HTTP " + response.statusCode()));
+                    if (fallback != null) {
+                        return fallback;
+                    }
+                }
+
+                String contentType = response.headers().firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
+                long contentLength = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+                byte[] rawBytes = readBoundedBytes(body, contentLength, maxResponseBytes());
+
+                // 检查是否为图片类型
+                if (isImageMime(contentType)) {
+                    return ToolResult.ok("status=" + response.statusCode() + " content_type=" + contentType
+                            + "\n[Image URL: " + destination.uri() + ", size=" + rawBytes.length + " bytes]");
+                }
+
+                String responseBody = new String(rawBytes, StandardCharsets.UTF_8);
+                String processedContent = formatContent(responseBody, contentType, format);
+
+                return ToolResult.ok("status=" + response.statusCode() + " content_type=" + (contentType.isBlank() ? "unknown" : contentType)
+                        + "\n\n" + ToolSupport.limit(processedContent, outputMaxChars));
+            }
+        }
+        return ToolResult.failed("Web fetch exceeded the redirect limit");
+    }
+
+    private HttpRequest buildRequest(URI uri, int timeoutSeconds, String format, String userAgent) {
+        return HttpRequest.newBuilder()
+                .uri(uri)
+                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .header("User-Agent", userAgent)
+                .header("Accept", acceptHeaderFor(format))
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                .GET()
+                .build();
+    }
+
+    /**
+     * 兜底抓取方案：通过高可用 Reader 服务（如 Jina Reader）代理抓取并渲染动态正文。
+     * 当且仅当原有直连网络不可达、超时或遭遇强反爬拦截时触发，保证原有直连机制第一优先级。
+     */
+    private ToolResult tryReaderFallback(String rawUrl, String format, int timeoutSeconds, int outputMaxChars, Exception primaryError) {
+        if (!properties.isReaderFallbackEnabled()) {
+            return null;
+        }
+        String endpoint = properties.getReaderEndpoint();
+        if (endpoint == null || endpoint.isBlank()) {
+            endpoint = "https://r.jina.ai/";
+        }
+        if (!endpoint.endsWith("/")) {
+            endpoint += "/";
+        }
+        String targetReaderUrl = endpoint + rawUrl;
+        try {
+            OutboundUrlPolicy.ValidatedDestination readerDest = outboundUrlPolicy.validate(targetReaderUrl);
+            HttpRequest readerRequest = HttpRequest.newBuilder()
+                    .uri(readerDest.uri())
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
+                    .header("User-Agent", "LabexAgent/1.0 (WebFetch Fallback)")
+                    .header("Accept", "text/markdown, text/plain;q=0.8, */*;q=0.1")
+                    .header("X-Return-Format", "markdown")
+                    .header("X-Timeout", String.valueOf(timeoutSeconds))
+                    .GET()
+                    .build();
+
+            HttpResponse<InputStream> response = httpClient.send(readerRequest, HttpResponse.BodyHandlers.ofInputStream());
+            try (InputStream body = response.body()) {
+                if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                    long contentLength = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+                    byte[] rawBytes = readBoundedBytes(body, contentLength, maxResponseBytes());
+                    String responseBody = new String(rawBytes, StandardCharsets.UTF_8);
+                    String processedContent = formatContent(responseBody, "text/markdown", format);
+
+                    log.info("Web fetch fallback succeeded for url={} via reader endpoint", rawUrl);
+                    return ToolResult.ok("status=200 content_type=text/markdown (via reader fallback)"
+                            + "\n\n" + ToolSupport.limit(processedContent, outputMaxChars));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Reader fallback failed for url={}: {}", rawUrl, e.getMessage());
+        }
+        return null;
     }
 
     private String formatContent(String body, String contentType, String format) {
@@ -149,6 +235,18 @@ public class WebFetchTool implements AgentTool {
         return contentType.startsWith("image/") || contentType.contains("image/png")
                 || contentType.contains("image/jpeg") || contentType.contains("image/webp")
                 || contentType.contains("image/gif") || contentType.contains("image/svg+xml");
+    }
+
+    private static boolean isCloudflareMitigated(HttpResponse<?> response) {
+        if (response == null) {
+            return false;
+        }
+        String cfMitigated = response.headers().firstValue("cf-mitigated").orElse("");
+        if ("challenge".equalsIgnoreCase(cfMitigated)) {
+            return true;
+        }
+        String server = response.headers().firstValue("server").orElse("").toLowerCase(Locale.ROOT);
+        return server.contains("cloudflare") && response.headers().firstValue("cf-ray").isPresent();
     }
 
     private String parseFormat(JsonObject args) {
@@ -199,11 +297,59 @@ public class WebFetchTool implements AgentTool {
 
     private static HttpClient newHttpClient(WebFetchProperties properties) {
         WebFetchProperties safeProperties = properties == null ? new WebFetchProperties() : properties;
-        return HttpClient.newBuilder()
+        HttpClient.Builder builder = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(Math.max(1, safeProperties.getConnectTimeoutSeconds())))
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
+                .followRedirects(HttpClient.Redirect.NEVER);
+
+        ProxyConfig proxy = resolveProxy(safeProperties);
+        if (proxy != null) {
+            builder.proxy(ProxySelector.of(new InetSocketAddress(proxy.host(), proxy.port())));
+        }
+        return builder.build();
     }
+
+    private static ProxyConfig resolveProxy(WebFetchProperties properties) {
+        if (properties != null && properties.getProxyHost() != null && !properties.getProxyHost().isBlank()
+                && properties.getProxyPort() != null && properties.getProxyPort() > 0) {
+            return new ProxyConfig(properties.getProxyHost().trim(), properties.getProxyPort());
+        }
+
+        // 自动探测环境变量中的代理
+        String[] envKeys = {"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"};
+        for (String key : envKeys) {
+            String val = System.getenv(key);
+            if (val != null && !val.isBlank()) {
+                ProxyConfig parsed = parseProxyUrl(val);
+                if (parsed != null) {
+                    return parsed;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static ProxyConfig parseProxyUrl(String proxyStr) {
+        try {
+            String clean = proxyStr.trim();
+            if (clean.startsWith("http://") || clean.startsWith("https://") || clean.startsWith("socks5://")) {
+                URI uri = URI.create(clean);
+                if (uri.getHost() != null && uri.getPort() > 0) {
+                    return new ProxyConfig(uri.getHost(), uri.getPort());
+                }
+            }
+            int colonIdx = clean.lastIndexOf(':');
+            if (colonIdx > 0 && colonIdx < clean.length() - 1) {
+                String host = clean.substring(0, colonIdx).trim();
+                int port = Integer.parseInt(clean.substring(colonIdx + 1).trim());
+                if (!host.isBlank() && port > 0 && port <= 65535) {
+                    return new ProxyConfig(host, port);
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private record ProxyConfig(String host, int port) {}
 
     private int boundedOutputChars(JsonObject args) {
         int min = Math.max(1, properties.getMinMaxChars());

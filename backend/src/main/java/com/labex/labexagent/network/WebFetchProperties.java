@@ -15,6 +15,60 @@ public class WebFetchProperties {
     private int minMaxChars = 1_000;
     private int maxMaxChars = 50_000;
 
+    /** 可选代理服务器主机，默认尝试自适应环境变量 HTTP_PROXY / HTTPS_PROXY */
+    private String proxyHost;
+    /** 可选代理服务器端口 */
+    private Integer proxyPort;
+
+    /** 是否开启对齐 OpenCode 的 Cloudflare 质询自愈重试机制 */
+    private boolean cfRetryEnabled = true;
+
+    /** 是否在直连建连超时或反爬拦截时启用 Reader 备用抓取兜底 */
+    private boolean readerFallbackEnabled = true;
+
+    /** 兜底 Reader 服务前缀，默认使用公网高质量 Reader 服务 */
+    private String readerEndpoint = "https://r.jina.ai/";
+
+    public String getProxyHost() {
+        return proxyHost;
+    }
+
+    public void setProxyHost(String proxyHost) {
+        this.proxyHost = proxyHost;
+    }
+
+    public Integer getProxyPort() {
+        return proxyPort;
+    }
+
+    public void setProxyPort(Integer proxyPort) {
+        this.proxyPort = proxyPort;
+    }
+
+    public boolean isCfRetryEnabled() {
+        return cfRetryEnabled;
+    }
+
+    public void setCfRetryEnabled(boolean cfRetryEnabled) {
+        this.cfRetryEnabled = cfRetryEnabled;
+    }
+
+    public boolean isReaderFallbackEnabled() {
+        return readerFallbackEnabled;
+    }
+
+    public void setReaderFallbackEnabled(boolean readerFallbackEnabled) {
+        this.readerFallbackEnabled = readerFallbackEnabled;
+    }
+
+    public String getReaderEndpoint() {
+        return readerEndpoint;
+    }
+
+    public void setReaderEndpoint(String readerEndpoint) {
+        this.readerEndpoint = readerEndpoint;
+    }
+
     public int getConnectTimeoutSeconds() {
         return connectTimeoutSeconds;
     }

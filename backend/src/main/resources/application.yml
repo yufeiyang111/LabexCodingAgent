@@ -272,6 +272,11 @@ labex-agent:
     default-max-chars: ${LABEX_AGENT_WEB_FETCH_DEFAULT_MAX_CHARS:12000}
     min-max-chars: ${LABEX_AGENT_WEB_FETCH_MIN_MAX_CHARS:1000}
     max-max-chars: ${LABEX_AGENT_WEB_FETCH_MAX_MAX_CHARS:50000}
+    proxy-host: ${LABEX_AGENT_WEB_FETCH_PROXY_HOST:}
+    proxy-port: ${LABEX_AGENT_WEB_FETCH_PROXY_PORT:}
+    cf-retry-enabled: ${LABEX_AGENT_WEB_FETCH_CF_RETRY_ENABLED:true}
+    reader-fallback-enabled: ${LABEX_AGENT_WEB_FETCH_READER_FALLBACK_ENABLED:true}
+    reader-endpoint: ${LABEX_AGENT_WEB_FETCH_READER_ENDPOINT:https://r.jina.ai/}
 
 rag:
   mini-max-api-key: ${MINIMAX_API_KEY:}
