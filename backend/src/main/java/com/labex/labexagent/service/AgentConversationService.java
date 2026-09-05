@@ -207,6 +207,7 @@ public class AgentConversationService {
                 .eq(AgentConversation::getStudentId, studentId)
                 .eq(AgentConversation::getProjectId, projectId)
                 .eq(AgentConversation::getStatus, 1)
+                .and(w -> w.ne(AgentConversation::getMode, "subagent").or().isNull(AgentConversation::getMode))
                 .orderByDesc(AgentConversation::getUpdateTime)
                 .orderByDesc(AgentConversation::getCreateTime)
                 .orderByDesc(AgentConversation::getConversationId));

@@ -61,5 +61,6 @@ class AgentConversationServicePagingTest {
         verify(conversationMapper).selectList(captor.capture());
         String sql = captor.getValue().getSqlSegment().replaceAll("\\s+", " ").toLowerCase();
         assertTrue(sql.contains("order by update_time desc,create_time desc,conversation_id desc"), sql);
+        assertTrue(sql.contains("mode") && (sql.contains("<>") || sql.contains("!=")), sql);
     }
 }

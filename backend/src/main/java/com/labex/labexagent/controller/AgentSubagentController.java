@@ -6,10 +6,12 @@ import com.labex.entity.AgentTask;
 import com.labex.labexagent.run.AgentSubagentEventService;
 import com.labex.labexagent.run.AgentSubagentService;
 import com.labex.labexagent.service.AgentTaskService;
+import com.labex.mapper.AgentTaskMapper;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,6 +29,9 @@ public class AgentSubagentController {
     private final AgentTaskService taskService;
     private final AgentSubagentService subagentService;
     private final AgentSubagentEventService eventService;
+
+    @Autowired(required = false)
+    private AgentTaskMapper taskMapper;
 
     public AgentSubagentController(AgentTaskService taskService,
                                    AgentSubagentService subagentService,
@@ -46,7 +51,7 @@ public class AgentSubagentController {
         }
         List<Map<String, Object>> payload = new ArrayList<>();
         for (AgentSubagent row : this.subagentService.listByParentTask(taskId)) {
-            payload.add(publicRow(row));
+            payload.add(publicRow(row, studentId, projectId));
         }
         return Result.success(payload);
     }
@@ -61,7 +66,7 @@ public class AgentSubagentController {
         if (row == null || !owned(studentId, projectId, row)) {
             return Result.error(404, "Agent subagent not found");
         }
-        Map<String, Object> payload = publicRow(row);
+        Map<String, Object> payload = publicRow(row, studentId, projectId);
         long after = afterSequence == null ? 0L : Math.max(0L, afterSequence);
         List<Object> events = new ArrayList<>();
         for (com.labex.entity.AgentSubagentEvent event : this.eventService.replay(subagentId, after)) {
@@ -83,12 +88,26 @@ public class AgentSubagentController {
         return parent != null;
     }
 
-    private Map<String, Object> publicRow(AgentSubagent row) {
+    private Map<String, Object> publicRow(AgentSubagent row, Integer studentId, Integer projectId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("subagentId", row.getSubagentId());
         payload.put("taskId", row.getTaskId());
         payload.put("childTaskId", row.getChildTaskId());
-        payload.put("conversationId", null);
+        String conversationId = null;
+        if (row.getChildTaskId() != null) {
+            AgentTask childTask = null;
+            if (studentId != null && projectId != null) {
+                childTask = this.taskService.getOwnedTask(studentId, projectId, row.getChildTaskId());
+            }
+            if (childTask == null && this.taskMapper != null) {
+                childTask = this.taskMapper.selectById(row.getChildTaskId());
+            }
+            if (childTask != null) {
+                conversationId = childTask.getConversationId();
+            }
+        }
+        payload.put("conversationId", conversationId);
+        payload.put("childConversationId", conversationId);
         payload.put("identity", row.getIdentity());
         payload.put("agentType", row.getAgentType());
         payload.put("status", row.getStatus());

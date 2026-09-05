@@ -66,6 +66,11 @@
   border-right: 1px solid #e4e4e7;
   flex-shrink: 0;
   overflow: hidden;
+  /* 宽度由 inline CSS 变量驱动（拖拽时逻辑直写变量，绕开响应式 patch；默认 240px 兜底） */
+  width: var(--ws-sidebar-w, 240px);
+  /* contain: layout paint 把侧边栏内部的文本重排/绘制隔离在局部，
+     拖拽每帧宽度变化时，文件树的换行重排不会向外扩散产生整页级 reflow */
+  contain: layout paint;
   transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
 }
 .ws-sidebar.is-collapsed {
@@ -75,7 +80,25 @@
   pointer-events: none;
   border-right: none;
 }
-.ws-resize-handle { width: 5px; cursor: col-resize; flex: 0 0 5px; background: transparent; }
+/* 拖拽拉伸条：视觉 5px，命中区加宽到 12px（移动端触摸友好）；touch-action: none 禁止浏览器手势介入 */
+.ws-resize-handle {
+  width: 5px;
+  cursor: col-resize;
+  flex: 0 0 5px;
+  background: transparent;
+  touch-action: none;
+  position: relative;
+  z-index: 15;
+}
+.ws-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+  cursor: col-resize;
+}
 .ws-resize-handle:hover { background: #d4d4d8; }
 .ws-preview-container {
   display: flex;
@@ -85,6 +108,8 @@
   overflow: hidden;
   position: relative;
   background: #ffffff;
+  /* 预览拖拽期间用 scaleX 模拟宽度：锚定左缘，纯合成器缩放，iframe 内部零重排 */
+  transform-origin: left center;
 }
 .ws-shell.ws-dark .ws-preview-container {
   background: #18181b;

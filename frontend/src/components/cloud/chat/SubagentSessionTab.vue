@@ -101,6 +101,8 @@ import { createTokenUsageState } from '@/composables/cacheTelemetryStatus'
 const props = defineProps({
   projectId: { type: [Number, String], required: true },
   subagentId: { type: [Number, String], required: true },
+  childTaskId: { type: [Number, String], default: null },
+  initialConversationId: { type: String, default: null },
   name: { type: String, default: '' },
   isDark: { type: Boolean, default: false }
 })
@@ -544,16 +546,59 @@ async function refreshDetail() {
   } catch { /* 静默 */ }
 }
 
+async function resolveConversationId(subagentData) {
+  if (subagentData?.conversationId) return subagentData.conversationId
+  if (subagentData?.childConversationId) return subagentData.childConversationId
+  if (props.initialConversationId) return props.initialConversationId
+  const taskId = subagentData?.childTaskId || props.childTaskId
+  if (taskId) {
+    try {
+      const taskRes = await projectApi.agentTask(projectIdRef.value, taskId)
+      const convId = taskRes?.data?.conversationId || taskRes?.data?.runSession?.conversationId
+      if (convId) return convId
+    } catch {
+      // 忽略兜底任务查询异常
+    }
+  }
+  return null
+}
+
 async function initialize() {
   loadError.value = ''
   try {
-    const r = await projectApi.agentSubagent(projectIdRef.value, props.subagentId)
-    if (r.code !== 0 || !r.data) throw new Error(r.message || '子代理不存在或无权访问')
-    detail.value = r.data
-    const conversationId = r.data.conversationId
-      || r.data.childConversationId
-      || null
-    if (!conversationId) throw new Error('子代理会话尚未创建，请稍后重试')
+    let subagentData = null
+    let conversationId = null
+
+    // 如果子代理会话/子任务刚在后端异步创建，重试最多 4 次（每次 400ms）确保能平滑拉取到
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const r = await projectApi.agentSubagent(projectIdRef.value, props.subagentId)
+        if (r.code === 0 && r.data) {
+          subagentData = r.data
+          conversationId = await resolveConversationId(subagentData)
+          if (conversationId) break
+        }
+      } catch {
+        // 忽略重试期间的临时异常
+      }
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, 400))
+      }
+    }
+
+    if (!subagentData) {
+      throw new Error('子代理不存在或无权访问')
+    }
+    detail.value = subagentData
+
+    if (!conversationId) {
+      conversationId = await resolveConversationId(subagentData)
+    }
+
+    if (!conversationId) {
+      throw new Error('子代理会话尚未创建，请稍后重试')
+    }
+
     currentAgentSession.value = { sessionId: crypto.randomUUID(), conversationId }
     await loadConversationMessages(conversationId)
     // 若子任务仍在运行，恢复主线的订阅/恢复机制（断线、刷新、waiting_* 全覆盖）。

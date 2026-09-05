@@ -8,6 +8,7 @@ const loading = await readFile(new URL('../components/cloud/layout/AsyncLoadingS
 
 test('workspace heavy panels use immediate async loading states', () => {
   assert.match(workspace, /defineAsyncComponent\(\{ loader: \(\) => import\('\@\/components\/cloud\/chat\/CenterAiWorkspace\.vue'\), loadingComponent: AsyncLoadingState/)
+  assert.match(workspace, /defineAsyncComponent\(\{ loader: \(\) => import\('\@\/components\/cloud\/chat\/SubagentSessionTab\.vue'\), loadingComponent: AsyncLoadingState/)
   assert.match(workspace, /defineAsyncComponent\(\{ loader: \(\) => import\('\@\/components\/terminal\/TerminalPanel\.vue'\), loadingComponent: AsyncLoadingState/)
   assert.match(workspace, /defineAsyncComponent\(\{ loader: \(\) => import\('\@\/components\/MonacoEditor\.vue'\), loadingComponent: AsyncLoadingState/)
   assert.match(workspace, /loadEcharts/)

@@ -23,7 +23,7 @@ echarts.use([
 ])
 
 export function loadEcharts() {
-  return import('@/utils/echarts')
+  return Promise.resolve({ default: echarts })
 }
 
 export default echarts

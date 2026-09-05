@@ -64,7 +64,8 @@
       </nav>
 
       <!-- 2. 左侧资源管理器 / 会话列表面板 (向左侧边界平滑收缩与展开) -->
-      <aside class="ws-sidebar" :class="{ 'is-collapsed': !explorerVisible }" :style="{ width: explorerVisible ? `${sidebarWidth}px` : '0px' }">
+      <!-- 宽度由 --ws-sidebar-w 变量驱动：非拖拽时由 Vue 绑定 ref；拖拽时 resize 逻辑直写变量，绕过响应式 patch 减少主线程开销 -->
+      <aside class="ws-sidebar" :class="{ 'is-collapsed': !explorerVisible }" :style="{ '--ws-sidebar-w': explorerVisible ? `${sidebarWidth}px` : '0px' }">
         <SidebarNav :view="sidebarView" @change="sidebarView = $event" />
         <FileExplorerPanel
           v-show="sidebarView === 'files'"
@@ -256,9 +257,15 @@
             :key="activeSubagentTab.id"
             :project-id="projectId"
             :subagent-id="activeSubagentTab.subagentId"
+            :child-task-id="activeSubagentTab.childTaskId"
+            :initial-conversation-id="activeSubagentTab.conversationId"
             :name="activeSubagentTab.name"
             :is-dark="aiDarkTheme"
             @open-file="handleOpenFile"
+            @open-file-diff="handleOpenFileDiff"
+            @insert-editor="insertToEditor"
+            @open-preview="handleOpenPreview"
+            @request-close="closeSubagentTab(activeSubagentTab.id)"
           />
 
           <!-- 当处于文件编辑标签时显示 Monaco 编辑器或中心 Diff 变更对比视图 (如图所示) -->
@@ -429,7 +436,13 @@
 
               <!-- Messages -->
               <TransitionGroup :key="conversationRenderEpoch" name="ai-msg" tag="div" class="ai-msg-list">
-                <div v-for="(msg, i) in messages" :key="msg.taskId || msg.id || msg.timestamp || ('msg-' + i)" class="ai-msg" :class="msg.role">
+                <div
+                  v-for="(msg, i) in messages"
+                  :key="getMessageKey(msg, i)"
+                  class="ai-msg"
+                  :class="msg.role"
+                  :data-index="i"
+                >
                   <div class="ai-msg-header">
                     <div class="ai-msg-avatar">
                       <svg v-if="msg.role === 'user'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -937,7 +950,6 @@ import SidebarNav from '@/components/sidebar/SidebarNav.vue'
 import AgentImageAttachments from '@/components/cloud/AgentImageAttachments.vue'
 import ContextLimitBlockerCard from '@/components/cloud/ContextLimitBlockerCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
-import * as echarts from 'echarts'
 import { useAgentStream } from '@/composables/useAgentStream'
 import { useAgentTaskRuntime } from '@/composables/useAgentTaskRuntime'
 import { useAgentEventTimeline } from '@/composables/useAgentEventTimeline'
@@ -967,7 +979,7 @@ import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
 import { applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
 import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
 import { enhanceFileLinks } from '@/utils/fileLinks'
-import { loadEcharts } from '@/utils/echarts'
+const loadEcharts = () => import('@/utils/echarts')
 import { normalizeWorkspacePath, languageForPath } from '@/utils/pathUtils'
 import { resolveEffectiveChanges, resolveMessageChanges, resolveMessageStats } from '@/composables/useEffectiveChanges'
 import 'highlight.js/styles/github-dark.css'
@@ -998,6 +1010,7 @@ const AgentTimer = defineAsyncComponent(() => import('@/components/cloud/AgentTi
 const ContextUsageDialog = defineAsyncComponent(() => import('@/components/cloud/ContextUsageDialog.vue'))
 const ModelConfigDialog = defineAsyncComponent(() => import('@/components/cloud/ModelConfigDialog.vue'))
 const CenterAiWorkspace = defineAsyncComponent({ loader: () => import('@/components/cloud/chat/CenterAiWorkspace.vue'), loadingComponent: AsyncLoadingState })
+const SubagentSessionTab = defineAsyncComponent({ loader: () => import('@/components/cloud/chat/SubagentSessionTab.vue'), loadingComponent: AsyncLoadingState })
 const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/ChangesPanel.vue'))
 const UsagePanel = defineAsyncComponent(() => import('@/components/cloud/UsagePanel.vue'))
 const CenterDiffViewer = defineAsyncComponent(() => import('@/components/cloud/CenterDiffViewer.vue'))
@@ -1212,6 +1225,21 @@ const aiInputRef = ref(null)
 const imagePreviewAttachment = ref(null)
 const showScrollBtn = ref(false)
 const selectedCode = ref('')
+
+// ===== 消息列表 Key 稳定性保证（避免 taskId 变化导致 Vue 重建 DOM 节点引起闪烁）=====
+const messageKeyMap = new WeakMap()
+let messageKeySeq = 0
+function getMessageKey(msg, i) {
+  if (msg && typeof msg === 'object') {
+    let k = messageKeyMap.get(msg)
+    if (!k) {
+      k = msg.taskId ? `task-${msg.taskId}` : (msg.id ? `id-${msg.id}` : `msg-${++messageKeySeq}`)
+      messageKeyMap.set(msg, k)
+    }
+    return k
+  }
+  return `msg-${i}`
+}
 
 // 滚动行为优化
 const initialScrollDone = ref(false)
@@ -1602,11 +1630,15 @@ async function openSubagentTab(payload) {
     return
   }
   let name = payload?.name || ''
+  let childTaskId = payload?.childTaskId || null
+  let conversationId = payload?.conversationId || null
   try {
-    if (!payload?.childTaskId || !name) {
+    if (!childTaskId || !name || !conversationId) {
       const r = await projectApi.agentSubagent(projectId.value, subagentId)
       if (r.code === 0 && r.data) {
         name = name || r.data.identity || ('子代理 #' + subagentId)
+        childTaskId = childTaskId || r.data.childTaskId || null
+        conversationId = conversationId || r.data.conversationId || r.data.childConversationId || null
       }
     }
   } catch { /* 名字缺失不阻塞打开 */ }
@@ -1614,7 +1646,8 @@ async function openSubagentTab(payload) {
     id: 'sgt-' + subagentId,
     type: 'subagent',
     subagentId,
-    childTaskId: payload?.childTaskId || null,
+    childTaskId,
+    conversationId,
     name: name || ('子代理 #' + subagentId)
   }
   subagentTabs.value.push(tab)
@@ -2150,13 +2183,20 @@ async function sendMessage() {
   userScrolled.value = false
   await nextTick(); scrollDown(true)
 
+  let activeConversationId = currentAgentSession.value?.conversationId
+  const activeConv = conversations.value.find(c => c.conversationId === activeConversationId)
+  if (activeConv && activeConv.mode === 'subagent') {
+    activeConversationId = null
+    currentAgentSession.value = null
+  }
+
   const sessionId = currentAgentSession.value?.sessionId || crypto.randomUUID()
   const streamConversationGeneration = conversationSelectionGuard.capture()
 
   try {
     await streamAgent(projectId.value, {
       sessionId,
-      conversationId: currentAgentSession.value?.conversationId,
+      conversationId: activeConversationId || null,
       mode: agentMode.value,
       message: messageToSend,
       displayMessage,
@@ -2886,12 +2926,19 @@ function startTerminalResize(event) {
   const startHeight = terminalHeight.value
   let latestY = startY
   let frame = null
+  let lastFitAt = 0
 
   const applyHeight = () => {
     frame = null
     const maxHeight = Math.max(140, Math.floor(center.clientHeight * 0.7))
     terminalHeight.value = Math.min(maxHeight, Math.max(140, startHeight + startY - latestY))
-    nextTick(() => terminalPanelRef.value?.fitAllTerminals())
+    // xterm fit() 内部强制同步读 offsetWidth/offsetHeight，每帧调用会造成强制同步布局开销；
+    // 按 200ms 节流（视觉无感），松手时再做最终 fit 保证像素级准确
+    const now = performance.now()
+    if (now - lastFitAt > 200) {
+      lastFitAt = now
+      nextTick(() => terminalPanelRef.value?.fitAllTerminals())
+    }
   }
   const onMove = moveEvent => {
     latestY = moveEvent.clientY
@@ -3134,6 +3181,7 @@ async function loadAllTokenStats() {
 
 async function initUsageCharts() {
   await nextTick()
+  const { default: echarts } = await loadEcharts()
   await loadAllTokenStats()
   const stats = allTokenStats.value
 
@@ -3247,7 +3295,6 @@ function navigateMessage(direction) {
   currentMessageIndex.value = newIndex
   userScrolled.value = true
 
-  // 滚动到目标消息
   nextTick(() => {
     const container = msgContainer.value
     if (!container) {
@@ -3257,21 +3304,17 @@ function navigateMessage(direction) {
     const msgElements = container.querySelectorAll('.ai-msg')
     if (msgElements && msgElements[newIndex]) {
       const targetEl = msgElements[newIndex]
-      // 使用 getBoundingClientRect 计算相对于视口的位置
       const containerRect = container.getBoundingClientRect()
       const targetRect = targetEl.getBoundingClientRect()
-      // 计算目标元素相对于容器顶部的偏移量
       const relativeTop = targetRect.top - containerRect.top
-      // 计算需要滚动的位置（当前滚动位置 + 相对偏移）
       const scrollTo = container.scrollTop + relativeTop
       container.scrollTo({
         top: scrollTo,
         behavior: 'smooth'
       })
-      // 等待滚动动画完成后重置导航状态
       setTimeout(() => {
         isNavigating.value = false
-      }, 500) // 平滑滚动动画大约 300-500ms
+      }, 500)
     } else {
       isNavigating.value = false
     }
@@ -4034,6 +4077,10 @@ function atFile() {
 
 function startSidebarResize(e) {
   const handle = e.currentTarget
+  const sidebar = handle.previousElementSibling?.classList.contains('ws-sidebar')
+    ? handle.previousElementSibling
+    : document.querySelector('.ws-sidebar')
+  if (!sidebar) return
   const startX = e.clientX
   const startWidth = sidebarWidth.value
   let latestX = startX
@@ -4041,14 +4088,38 @@ function startSidebarResize(e) {
   handle.setPointerCapture?.(e.pointerId)
   // 拖动期间禁用宽度过渡，保证面板 1:1 跟手（与右侧 AI 面板同款机制）
   document.body.classList.add('is-resizing-sidebar')
+  // ===== AI 放大到中心时的重排保护 =====
+  // CenterAiWorkspace 的消息列表（数千 DOM 节点）位于 .ws-center，左侧拖拽会使 flex:1 的
+  // ws-center 宽度每帧变化并触发其全量重排 → 掉帧。此时把 ws-center 冻结在拖拽开始宽度
+  // （CSS 变量 + flex-basis 钉死），拖拽中其内容零重排；松手后解除冻结，内容一次性重排到位。
+  const center = workspaceCenterRef.value
+  const freezeCenter = messages.value.length > 0 && isAgentInCenter.value
+  if (freezeCenter && center) {
+    center.classList.add('center-frozen')
+    center.style.setProperty('--ws-center-frozen-w', `${center.offsetWidth}px`)
+  }
+  let latestApplied = startWidth
+  // 排除固定安装 Monaco auto-layout 之前的旧引用：Monaco 已自管布局（见 MonacoEditor.vue），此处只驱动宽度
   const apply = () => {
     frame = null
-    sidebarWidth.value = Math.max(180, Math.min(startWidth + latestX - startX, 520))
+    // Math.round 对齐设备像素网格：非整数宽度会触发亚像素重排，成本与模糊同时上升（旧实现漏了取整）
+    const width = Math.round(Math.max(180, Math.min(startWidth + latestX - startX, 520)))
+    // 直写 CSS 变量而非响应式 ref：拖拽的 60Hz 高频路径上绕开 Vue 依赖收集/patch，仅保留浏览器一次样式计算
+    sidebar.style.setProperty('--ws-sidebar-w', `${width}px`)
+    latestApplied = width
   }
   const move = event => { latestX = event.clientX; if (frame == null) frame = requestAnimationFrame(apply) }
   const finish = () => {
-    if (frame != null) { cancelAnimationFrame(frame); frame = null; apply() }
+    if (frame != null) { cancelAnimationFrame(frame); frame = null }
+    // 无条件应用最终宽度（末尾 pointermove 的 rAF 可能未及消费，避免“拖动不生效”）
+    apply()
     document.body.classList.remove('is-resizing-sidebar')
+    if (freezeCenter && center) {
+      center.classList.remove('center-frozen')
+      center.style.removeProperty('--ws-center-frozen-w')
+    }
+    // 松手时同步回响应式状态，保证后续折叠/展开、持久化等逻辑读到正确宽度
+    sidebarWidth.value = latestApplied
     handle.removeEventListener('pointermove', move)
     handle.removeEventListener('pointerup', finish)
     handle.removeEventListener('pointercancel', finish)
@@ -4073,11 +4144,12 @@ function startResize(e) {
   panel.classList.add('is-resizing')
   handle.setPointerCapture?.(e.pointerId)
 
+  // 消息列表已虚拟化（useVirtualMessageList）：任何时刻 DOM 仅 ~20 条可见消息，
+  // 每帧宽度变化的重排成本 <1ms，因此直接 1:1 实时跟手（资源管理器级别）。
+  const nextWidth = () => Math.round(Math.max(300, Math.min(startWidth + startX - latestX, window.innerWidth * 0.8)))
   const applyWidth = () => {
     resizeFrame = null
-    const diff = startX - latestX
-    const width = Math.max(300, Math.min(startWidth + diff, window.innerWidth * 0.8))
-    aiPanelWidth.value = Math.round(width)
+    aiPanelWidth.value = nextWidth()
   }
   const onMove = event => {
     latestX = event.clientX
@@ -4087,8 +4159,10 @@ function startResize(e) {
     if (resizeFrame != null) {
       cancelAnimationFrame(resizeFrame)
       resizeFrame = null
-      applyWidth()
     }
+    // 必须无条件提交最终宽度：末尾几次 pointermove 的 rAF 帧可能未及消费
+    // （如松手发生在帧间隔内），若仅当 frame 挂起时提交，会出现“拖动没生效”的卡死
+    applyWidth()
     document.body.classList.remove('is-resizing-ai')
     panel.classList.remove('is-resizing')
     handle.removeEventListener('pointermove', onMove)
@@ -4102,18 +4176,35 @@ function startResize(e) {
 
 function startPreviewResize(e) {
   const handle = e.currentTarget
+  // 预览容器是拉伸条的下一兄弟；iframe 子页面 reflow 成本不可控（跨文档），
+  // 拖拽期间不改变容器布局宽度，改用 transform: scaleX 模拟视觉宽度（纯合成器操作，0 reflow），
+  // 松手后再一次性提交真实宽度，iframe 内部只重排一次。transform-origin 由 CSS 锚定左缘。
+  const panel = handle.nextElementSibling?.classList.contains('ws-preview-container')
+    ? handle.nextElementSibling
+    : document.querySelector('.ws-preview-container')
+  if (!panel) return
   const startX = e.clientX
-  const startWidth = webPreviewWidth.value
+  const startWidth = webPreviewWidth.value || panel.offsetWidth
   let latestX = startX
   let frame = null
   handle.setPointerCapture?.(e.pointerId)
+  document.body.classList.add('is-resizing-preview')
+  let pendingPreviewWidth = startWidth
   const apply = () => {
     frame = null
-    webPreviewWidth.value = Math.max(320, Math.min(startWidth - (latestX - startX), window.innerWidth * 0.7))
+    const width = Math.round(Math.max(320, Math.min(startWidth - (latestX - startX), window.innerWidth * 0.7)))
+    const ratio = startWidth > 0 ? width / startWidth : 1
+    panel.style.transform = ratio === 1 ? '' : `scaleX(${ratio})`
+    pendingPreviewWidth = width
   }
   const move = event => { latestX = event.clientX; if (frame == null) frame = requestAnimationFrame(apply) }
   const finish = () => {
-    if (frame != null) { cancelAnimationFrame(frame); frame = null; apply() }
+    if (frame != null) { cancelAnimationFrame(frame); frame = null }
+    // 无条件应用最终宽度/比例（末尾 pointermove 的 rAF 可能未及消费，避免“拖动不生效”）
+    apply()
+    document.body.classList.remove('is-resizing-preview')
+    panel.style.transform = ''
+    webPreviewWidth.value = pendingPreviewWidth
     handle.removeEventListener('pointermove', move)
     handle.removeEventListener('pointerup', finish)
     handle.removeEventListener('pointercancel', finish)

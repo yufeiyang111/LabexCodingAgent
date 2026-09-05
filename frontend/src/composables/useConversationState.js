@@ -137,7 +137,8 @@ export function useConversationState({
   async function loadConversations() {
     try {
       const response = await api.agentConversations(projectId.value)
-      conversations.value = [...(response.data || [])]
+      const list = response.data || []
+      conversations.value = list.filter(item => item && item.mode !== 'subagent')
       return conversations.value
     } catch {
       return conversations.value
@@ -148,7 +149,7 @@ export function useConversationState({
     const selectedConversationId = selectionStore.read()
     if (selectedConversationId) {
       const selectedConversation = conversations.value.find(item => item.conversationId === selectedConversationId)
-      if (selectedConversation) return selectedConversation
+      if (selectedConversation && selectedConversation.mode !== 'subagent') return selectedConversation
       selectionStore.clear()
     }
     return null
