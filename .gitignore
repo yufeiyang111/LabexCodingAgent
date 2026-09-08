@@ -4,6 +4,8 @@ node_modules/
 
 # Build outputs
 dist/
+dist-*/
+frontend/dist*/
 target/
 
 # Runtime data
@@ -32,6 +34,8 @@ frontend/frontend-test-output.txt
 /agent-ui-demo.html
 /labex-ui-redesign.html
 /workspace_redesign_preview.html
+/auth_*.html
+/model_config_presets_redesign_preview.html
 /.tmp-diff-review.txt
 /.labex-agent-focused-diff.txt
 
@@ -48,6 +52,7 @@ yarn-error.log*
 .labex*/*
 .superpowers/
 .claude/
+.workbuddy/
 
 # .labex-agent project configuration: only the non-secret project/ subtree is version-visible.
 # Ignore the contents first, then re-include exactly the allowed non-secret project config paths.
