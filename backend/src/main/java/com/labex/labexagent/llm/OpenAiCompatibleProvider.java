@@ -203,8 +203,12 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                         emitFailure(onChunk, failure);
                         return;
                     }
-                    conn.setReadTimeout(config.effectiveReadTimeoutMs());
-
+                    // 注意：JDK HttpURLConnection 在连接建立后调用 setReadTimeout 不会更新
+                    // 已打开 socket 的 SO_TIMEOUT（实测 Temurin 17 复现），因此流读取阶段的
+                    // read 超时恒为 L157 设置的 firstEventTimeoutMs(30s)。这里不依赖 SO_TIMEOUT
+                    // 表达流空闲预算，而是在读取循环里把每次 Read timed out 视为一个 tick：
+                    // 累计空闲时长，未到预算就继续读，到预算才真正失败（对齐 OpenCode 的
+                    // chunkTimeout 语义：块间空闲超预算才中断，服务端恢复推送则继续输出）。
                     StringBuilder contentBuf = new StringBuilder();
                     StringBuilder thinkingBuf = new StringBuilder();
                     boolean firstSseEvent = false;
@@ -228,8 +232,31 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     });
                     try (BufferedReader reader = new BufferedReader(
                             new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                        // 流空闲预算：首块前 = firstEventTimeoutMs（等响应头/首事件的快速失败），
+                        // 首块后 = effectiveReadTimeoutMs（整个生成过程的停滞容忍）。
+                        // SO_TIMEOUT 的实际生效值在部分 JDK 上不可变（恒为 30s），tick 累计步长
+                        // 以实际抛出的 Read timed out 为准，两种 JDK 行为下预算语义均正确。
+                        long idleBudgetMs = firstEventTimeoutMs;
+                        long streamIdleMs = 0;
                         String line;
-                        while ((line = reader.readLine()) != null) {
+                        while (true) {
+                            try {
+                                line = reader.readLine();
+                                streamIdleMs = 0;
+                            } catch (java.net.SocketTimeoutException idleTick) {
+                                streamIdleMs += Math.max(firstEventTimeoutMs, 1);
+                                if (token.isCancellationRequested()) {
+                                    emitCancelled(onChunk);
+                                    return;
+                                }
+                                if (streamIdleMs >= idleBudgetMs) {
+                                    log.warn("LLM_STREAM_IDLE_TIMEOUT model={} idleMs={} budgetMs={} emittedEvent={}",
+                                            config.modelName(), streamIdleMs, idleBudgetMs, emittedStreamEvent);
+                                    throw idleTick;
+                                }
+                                continue;
+                            }
+                            if (line == null) break;
                             if (token.isCancellationRequested()) {
                                 emitCancelled(onChunk);
                                 return;
@@ -241,6 +268,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                             if (!firstSseEvent) {
                                 firstSseEvent = true;
                                 streamDataReceived = true;
+                                idleBudgetMs = Math.max(idleBudgetMs, config.effectiveReadTimeoutMs());
                                 log.info("LLM_STREAM_FIRST_EVENT model={} elapsedMs={}", config.modelName(),
                                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStartedAt));
                             }
