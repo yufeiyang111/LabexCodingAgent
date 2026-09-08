@@ -59,13 +59,43 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession wsSession) throws Exception {
+        TerminalWorkspaceResolver.TerminalWorkspace workspace = null;
+        Integer studentId = null;
+        Integer projectId = null;
+
+        if (wsSession.getAttributes() != null) {
+            workspace = (TerminalWorkspaceResolver.TerminalWorkspace) wsSession.getAttributes()
+                    .get(TerminalHandshakeInterceptor.ATTR_WORKSPACE);
+            studentId = (Integer) wsSession.getAttributes()
+                    .get(TerminalHandshakeInterceptor.ATTR_STUDENT_ID);
+            projectId = (Integer) wsSession.getAttributes()
+                    .get(TerminalHandshakeInterceptor.ATTR_PROJECT_ID);
+        }
+
+        if (workspace == null) {
+            // 兜底回退：若未经过握手拦截器（如直连测试环境），执行兼容性参数解析
+            workspace = resolveWorkspaceFallback(wsSession);
+            if (workspace == null) {
+                return;
+            }
+            studentId = workspace.studentId();
+            projectId = workspace.projectId();
+        }
+
+        String sessionId = java.util.UUID.randomUUID().toString();
+        TerminalConnection connection = new TerminalConnection(sessionId, workspace);
+        connections.put(wsSession, connection);
+        log.info("Terminal WebSocket connected: student={}, project={}, session={}", studentId, projectId, sessionId);
+    }
+
+    private TerminalWorkspaceResolver.TerminalWorkspace resolveWorkspaceFallback(WebSocketSession wsSession) {
         Map<String, String> params = queryParameters(wsSession.getUri());
         String rawToken = params.get("token");
         String projectIdStr = params.get("projectId");
 
         if (rawToken == null || rawToken.isBlank() || projectIdStr == null || projectIdStr.isBlank()) {
             rejectConnection(wsSession, "Missing token or projectId");
-            return;
+            return null;
         }
 
         String token = rawToken.trim();
@@ -80,28 +110,22 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
 
         if (!jwtUtil.validateToken(token)) {
             rejectConnection(wsSession, "Invalid or expired token");
-            return;
+            return null;
         }
 
         Integer studentId = jwtUtil.getUserIdFromToken(token);
         Integer projectId = parsePositiveInteger(projectIdStr);
         if (studentId == null || projectId == null) {
             rejectConnection(wsSession, "Invalid credentials");
-            return;
+            return null;
         }
 
-        TerminalWorkspaceResolver.TerminalWorkspace workspace;
         try {
-            workspace = workspaceResolver.resolveWorkspace(studentId, projectId);
+            return workspaceResolver.resolveWorkspace(studentId, projectId);
         } catch (IllegalArgumentException e) {
             rejectConnection(wsSession, "Project not found or access denied");
-            return;
+            return null;
         }
-
-        String sessionId = java.util.UUID.randomUUID().toString();
-        TerminalConnection connection = new TerminalConnection(sessionId, workspace);
-        connections.put(wsSession, connection);
-        log.info("Terminal WebSocket connected: student={}, project={}, session={}", studentId, projectId, sessionId);
     }
 
     @Override

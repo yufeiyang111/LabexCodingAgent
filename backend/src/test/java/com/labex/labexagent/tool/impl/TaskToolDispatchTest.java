@@ -40,6 +40,20 @@ class TaskToolDispatchTest {
     }
 
     @Test
+    void inheritsParentModelConfigIdWhenAvailable() {
+        SubagentLaunchService launch = mock(SubagentLaunchService.class);
+        AgentSubagent row = row(8L, "queued");
+        when(launch.launch(any())).thenReturn(launch(row, conversation(), never()));
+        AgentContext ctx = context();
+        ctx.setModelConfigId(99);
+        var result = tool(launch).execute(ctx, args("Model Inheritor", "test model inheritance", true));
+        assertTrue(result.isSuccess());
+        ArgumentCaptor<SubagentLaunchService.LaunchSpec> spec = ArgumentCaptor.forClass(SubagentLaunchService.LaunchSpec.class);
+        verify(launch).launch(spec.capture());
+        assertTrue(spec.getValue().modelConfigId() != null && spec.getValue().modelConfigId() == 99);
+    }
+
+    @Test
     void blocksUntilTerminalAndProjectsCompletedSummary() {
         SubagentLaunchService launch = mock(SubagentLaunchService.class);
         AgentSubagent dispatched = row(5L, "running");

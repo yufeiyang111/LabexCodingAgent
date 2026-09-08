@@ -101,10 +101,11 @@ implements AgentTool {
         }
 
         try {
+            Integer modelConfigId = context.getModelConfigId();
             var dispatch = this.launchService.launch(new SubagentLaunchService.LaunchSpec(
                     context.getSessionId(), context.getStudentId(), context.getProject(),
                     context.getConversationId(), context.getTaskId(),
-                    name, description, prompt, subagentType, null, background,
+                    name, description, prompt, subagentType, modelConfigId, background,
                     AgentToolTurnExecutor.currentToolCallId()));
 
             if (background) {

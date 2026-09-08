@@ -135,6 +135,7 @@ public class AgentTaskEventController {
         response.put("conversationId", task.getConversationId());
         response.put("sessionId", task.getSessionId());
         response.put("mode", task.getMode());
+        response.put("modelConfigId", task.getModelConfigId());
         response.put("status", task.getStatus());
         response.put("currentStep", task.getCurrentStep());
         response.put("summary", task.getSummary());

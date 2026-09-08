@@ -73,4 +73,21 @@ class PreviewClaimPolicyTest {
 
         assertTrue(PreviewClaimPolicy.assess("预览启动失败：Worker 中不存在 python，请使用 python3。", failed).allowed());
     }
+
+    @Test
+    void permitsExternalDocumentationAndRepositoryUrlsWithoutAPreviewClaim() {
+        PreviewEvidence notRequested = new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", "");
+
+        String researchReport = """
+                ## Summary
+                API代理/中转解决方案已全面调研完毕。
+                ## Technical Findings & Details
+                1. 主流开源API代理项目
+                One API: https://github.com/songquanpeng/one-api
+                官方文档参考：https://ai.google.dev/pricing
+                """;
+
+        PreviewClaimPolicy.Assessment assessment = PreviewClaimPolicy.assess(researchReport, notRequested);
+        assertTrue(assessment.allowed(), "External reference URLs in research tasks must not trigger preview_not_ready");
+    }
 }

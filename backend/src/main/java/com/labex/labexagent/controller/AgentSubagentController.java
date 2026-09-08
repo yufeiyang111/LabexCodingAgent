@@ -1,12 +1,14 @@
 package com.labex.labexagent.controller;
 
 import com.labex.common.Result;
+import com.labex.entity.AgentModelConfig;
 import com.labex.entity.AgentSubagent;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.run.AgentSubagentEventService;
 import com.labex.labexagent.run.AgentSubagentService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.service.AgentModelConfigService;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,6 +34,9 @@ public class AgentSubagentController {
 
     @Autowired(required = false)
     private AgentTaskMapper taskMapper;
+
+    @Autowired(required = false)
+    private AgentModelConfigService modelConfigService;
 
     public AgentSubagentController(AgentTaskService taskService,
                                    AgentSubagentService subagentService,
@@ -94,6 +99,7 @@ public class AgentSubagentController {
         payload.put("taskId", row.getTaskId());
         payload.put("childTaskId", row.getChildTaskId());
         String conversationId = null;
+        Integer resolvedModelConfigId = row.getModelConfigId();
         if (row.getChildTaskId() != null) {
             AgentTask childTask = null;
             if (studentId != null && projectId != null) {
@@ -104,6 +110,9 @@ public class AgentSubagentController {
             }
             if (childTask != null) {
                 conversationId = childTask.getConversationId();
+                if (resolvedModelConfigId == null && childTask.getModelConfigId() != null) {
+                    resolvedModelConfigId = childTask.getModelConfigId();
+                }
             }
         }
         payload.put("conversationId", conversationId);
@@ -119,6 +128,15 @@ public class AgentSubagentController {
         payload.put("summary", row.getSummary() == null ? "" : row.getSummary());
         payload.put("createTime", row.getCreateTime());
         payload.put("updateTime", row.getUpdateTime());
+        payload.put("modelConfigId", resolvedModelConfigId);
+
+        if (resolvedModelConfigId != null && studentId != null && this.modelConfigService != null) {
+            AgentModelConfig config = this.modelConfigService.getOwned(studentId, resolvedModelConfigId);
+            if (config != null) {
+                payload.put("modelName", config.getModelName());
+                payload.put("configName", config.getConfigName());
+            }
+        }
         return payload;
     }
 }

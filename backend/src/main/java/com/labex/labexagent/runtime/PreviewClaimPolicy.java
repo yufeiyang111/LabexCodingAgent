@@ -25,8 +25,16 @@ public final class PreviewClaimPolicy {
         PreviewEvidence fact = evidence == null
                 ? new PreviewEvidence(PreviewEvidence.Status.NOT_REQUESTED, "", "", "")
                 : evidence;
-        List<String> urls = urls(text);
-        boolean claimsPreviewSuccess = !urls.isEmpty() || containsPreviewSuccessClaim(text);
+        List<String> allUrls = urls(text);
+        boolean containsClaimPhrase = containsPreviewSuccessClaim(text);
+
+        // 仅将本地服务地址或伴随明确服务启动声称的 URL 识别为预览声明候选，
+        // 绝不能将调研报告中引用的 GitHub 仓库、API 官方文档等外部 HTTP/HTTPS 链接误判为项目预览服务。
+        List<String> previewUrls = allUrls.stream()
+                .filter(url -> isLocalOrPreviewCandidate(url, fact.publicUrl(), containsClaimPhrase))
+                .toList();
+
+        boolean claimsPreviewSuccess = !previewUrls.isEmpty() || containsClaimPhrase;
         if (!claimsPreviewSuccess) {
             return Assessment.permitted();
         }
@@ -34,13 +42,36 @@ public final class PreviewClaimPolicy {
             return Assessment.rejected("preview_not_ready",
                     "preview is not ready; do not claim that the service is running or provide a preview URL");
         }
-        for (String url : urls) {
+        for (String url : previewUrls) {
             if (!fact.publicUrl().equals(url)) {
                 return Assessment.rejected("preview_url_mismatch",
                         "preview URL is not the durable ready URL; report only " + fact.publicUrl());
             }
         }
         return Assessment.permitted();
+    }
+
+    private static boolean isLocalOrPreviewCandidate(String url, String readyPublicUrl, boolean containsClaimPhrase) {
+        if (url == null || url.isBlank()) return false;
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String host = uri.getHost();
+            if (host == null) return false;
+            String normalizedHost = host.toLowerCase(Locale.ROOT);
+            if (normalizedHost.equals("localhost") || normalizedHost.equals("127.0.0.1")
+                    || normalizedHost.equals("0.0.0.0") || normalizedHost.equals("[::1]")) {
+                return true;
+            }
+            if (readyPublicUrl != null && !readyPublicUrl.isBlank()) {
+                java.net.URI readyUri = java.net.URI.create(readyPublicUrl);
+                if (normalizedHost.equalsIgnoreCase(readyUri.getHost())) {
+                    return true;
+                }
+            }
+            return containsClaimPhrase;
+        } catch (Exception ignored) {
+            return containsClaimPhrase;
+        }
     }
 
     private static List<String> urls(String text) {
