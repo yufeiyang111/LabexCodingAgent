@@ -200,6 +200,9 @@ labex-agent:
       image: ${LABEX_AGENT_WORKER_DOCKER_IMAGE:labex-agent-sandbox:smoke}
       max-concurrent-containers: ${LABEX_AGENT_DOCKER_MAX_CONCURRENT_CONTAINERS:8}
       wsl-workspace-mapping: ${LABEX_AGENT_DOCKER_WSL_WORKSPACE_MAPPING:false}
+      # 控制面容器化部署时（backend 容器 + 宿主 docker.sock），worker bind mount 的源路径
+      # 必须是 daemon 可见的宿主机路径：把 LABEX_AGENT_PROJECT_BASE_PATH 前缀改写到此根目录。
+      # 例：容器内 /srv/labex-agent/workspaces/1/<hash>/workspace -> 宿主 /srv/labex-agent/data/workspaces/1/<hash>/workspace
       host-workspace-base-path: ${LABEX_AGENT_DOCKER_HOST_WORKSPACE_BASE_PATH:}
     resources:
       cpu-millis: ${LABEX_AGENT_WORKER_CPU_MILLIS:1000}

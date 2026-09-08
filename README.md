@@ -143,6 +143,7 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 | `LABEX_AGENT_CONVERSATION_CACHE_DOUBLE_DELETE_DELAY_MS` | `500` | 数据库提交后的延迟二次删缓存时间 |
 | `LABEX_AGENT_CONVERSATION_CACHE_KEY_PREFIX` | `labex:conversation` | 会话热缓存键前缀，与认证 Redis key 隔离 |
 | `LABEX_AGENT_PROJECT_BASE_PATH` | `D:/LabexAgent/workspaces` | 用户工作区根路径 |
+| `LABEX_AGENT_DOCKER_HOST_WORKSPACE_BASE_PATH` | 空 | 控制面容器化部署（backend 容器 + 宿主 docker.sock）时必填：把容器内工作区前缀改写为 daemon 可见的宿主机目录，否则 worker 容器 bind mount 报 `bind source path does not exist`。Linux 生产 compose 填 `/srv/labex-agent/data/workspaces` |
 | `LABEX_AGENT_SUBAGENT_MAX_TURNS` | `16` | 子代理工具循环最大轮数 |
 | `LABEX_AGENT_SUBAGENT_TOKEN_BUDGET` | `65536` | 单个子代理默认生成 token 预算 |
 | `LABEX_AGENT_SUBAGENT_MAX_PARALLEL` | `4` | 同一父任务并行子代理上限 |

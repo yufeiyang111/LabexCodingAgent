@@ -102,6 +102,48 @@ class SandboxWorkerContractTest {
     }
 
     @Test
+    void dockerWorkerRewritesContainerWorkspacePrefixToHostPathForDaemonBindMount() {
+        // 模拟生产 compose：backend 容器内 workspace 位于 project-base-path 之下，
+        // daemon 只认识宿主机 /srv/labex-agent/data/workspaces 下的同内容目录。
+        // Windows 测试 JVM 会把 /srv/... 规范化到当前盘符，因此前后缀都按同一路径基解析。
+        Path containerWorkspace = containerPath("/srv/labex-agent/workspaces/1/abc123/workspace");
+        String hostBase = containerPath("/srv/labex-agent/data/workspaces").toString();
+        String containerBase = containerPath("/srv/labex-agent/workspaces").toString();
+        DockerSandboxWorker worker = new DockerSandboxWorker(
+                new LocalProcessExecutor(), "", 8, false, hostBase, containerBase, null);
+        WorkerRunSpec run = WorkerRunSpec.forWorkspace("docker-host-path", containerWorkspace);
+        ProcessExecutionRequest request = new ProcessExecutionRequest(
+                List.of("/bin/sh", "-lc", "echo ok"), containerWorkspace, Duration.ofSeconds(10), 10_000);
+
+        List<String> command = worker.buildDockerCommand(run, request);
+
+        assertContainsPair(command, "--mount",
+                "type=bind,src=" + containerPath("/srv/labex-agent/data/workspaces/1/abc123/workspace")
+                        + ",dst=/workspace");
+    }
+
+    @Test
+    void dockerWorkerLeavesNonWorkspacePrefixedPathsUntouchedUnderHostMapping() {
+        String hostBase = containerPath("/srv/labex-agent/data/workspaces").toString();
+        String containerBase = containerPath("/srv/labex-agent/workspaces").toString();
+        DockerSandboxWorker worker = new DockerSandboxWorker(
+                new LocalProcessExecutor(), "", 8, false, hostBase, containerBase, null);
+        Path outsideWorkspace = containerPath("/opt/other/projects/demo");
+        WorkerRunSpec run = WorkerRunSpec.forWorkspace("docker-outside", outsideWorkspace);
+        ProcessExecutionRequest request = new ProcessExecutionRequest(
+                List.of("/bin/sh", "-lc", "echo ok"), outsideWorkspace, Duration.ofSeconds(10), 10_000);
+
+        List<String> command = worker.buildDockerCommand(run, request);
+
+        assertContainsPair(command, "--mount", "type=bind,src=" + outsideWorkspace + ",dst=/workspace");
+    }
+
+    /** Linux 绝对路径原样使用；Windows 测试 JVM 映射到当前盘符保持前后缀一致。 */
+    private Path containerPath(String linuxPath) {
+        return Path.of(linuxPath).toAbsolutePath().normalize();
+    }
+
+    @Test
     void dockerWorkerBuildsAnInteractiveTerminalInsideTheSameRestrictedWorkspace() {
         DockerSandboxWorker worker = new DockerSandboxWorker(new LocalProcessExecutor());
         WorkerRunSpec run = WorkerRunSpec.forWorkspace("docker-terminal", workspace);

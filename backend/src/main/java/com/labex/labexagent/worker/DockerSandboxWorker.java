@@ -38,6 +38,8 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
     private final ProcessExecutor processExecutor;
     private final java.util.concurrent.Semaphore containerSlots;
     private final boolean wslWorkspaceMapping;
+    private final String hostWorkspaceBasePath;
+    private final String containerWorkspaceBasePath;
 
     @Autowired
     public DockerSandboxWorker(
@@ -45,6 +47,8 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
             @Value("${labex-agent.worker.docker.image:${LABEX_AGENT_WORKER_DOCKER_IMAGE:}}") String configuredImage,
             @Value("${labex-agent.worker.docker.max-concurrent-containers:8}") int maxConcurrentContainers,
             @Value("${labex-agent.worker.docker.wsl-workspace-mapping:false}") boolean wslWorkspaceMapping,
+            @Value("${labex-agent.worker.docker.host-workspace-base-path:${LABEX_AGENT_DOCKER_HOST_WORKSPACE_BASE_PATH:}}") String hostWorkspaceBasePath,
+            @Value("${labex-agent.project-base-path:${LABEX_AGENT_PROJECT_BASE_PATH:./workspaces}}") String containerWorkspaceBasePath,
             Environment environment) {
         super(processExecutor);
         this.processExecutor = processExecutor;
@@ -52,6 +56,8 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
         this.environment = environment;
         this.containerSlots = new java.util.concurrent.Semaphore(Math.max(1, maxConcurrentContainers));
         this.wslWorkspaceMapping = wslWorkspaceMapping;
+        this.hostWorkspaceBasePath = hostWorkspaceBasePath == null ? "" : hostWorkspaceBasePath.trim();
+        this.containerWorkspaceBasePath = containerWorkspaceBasePath == null ? "" : containerWorkspaceBasePath.trim();
     }
 
     public DockerSandboxWorker(ProcessExecutor processExecutor) {
@@ -61,11 +67,13 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
         this.environment = null;
         this.containerSlots = new java.util.concurrent.Semaphore(8);
         this.wslWorkspaceMapping = false;
+        this.hostWorkspaceBasePath = "";
+        this.containerWorkspaceBasePath = "";
     }
 
-    /** 兼容测试与旧调用方的三参构造器；Spring 通过五参 @Autowired 构造器注入。 */
+    /** 兼容测试与旧调用方的三参构造器；Spring 通过 @Autowired 构造器注入。 */
     public DockerSandboxWorker(ProcessExecutor processExecutor, String configuredImage, Environment environment) {
-        this(processExecutor, configuredImage, 8, false, environment);
+        this(processExecutor, configuredImage, 8, false, "", "", environment);
     }
 
     @PostConstruct
@@ -281,11 +289,33 @@ public class DockerSandboxWorker extends LocalDevelopmentWorker {
     }
 
     /**
-     * Windows 控制面把 docker daemon 运行在 WSL 里时，daemon 只认识 /mnt/&lt;drive&gt; 路径；
-     * 开启 wsl-workspace-mapping 后把 D:\foo 转成 /mnt/d/foo。Linux 控制面不受影响。
+     * docker daemon 只解析宿主机文件系统路径。控制面跑在容器里时（Linux 生产 compose：
+     * backend 挂载 /srv/labex-agent/data/workspaces 到 /srv/labex-agent/workspaces），
+     * 必须把容器内 workspace 前缀改写为 daemon 可见的宿主机路径，否则 bind source 不存在。
+     *
+     * <p>host-workspace-base-path 优先（Linux 控制面容器化部署）；未配置时回退 WSL 映射
+     * （Windows 控制面 + daemon 在 WSL 内）；两者都未配置时原样透传（控制面与 daemon 同
+     * 文件系统视图的本机部署）。
      */
     private String daemonWorkspacePath(Path workspaceRoot) {
         String path = workspaceRoot.toString();
+        if (!hostWorkspaceBasePath.isBlank()) {
+            String separator = workspaceRoot.getFileSystem().getSeparator();
+            String prefix = containerWorkspaceBasePath.isBlank()
+                    ? "/srv/labex-agent/workspaces"
+                    : containerWorkspaceBasePath;
+            if (!prefix.endsWith(separator)) {
+                prefix = prefix + separator;
+            }
+            if (path.startsWith(prefix)) {
+                String relative = path.substring(prefix.length());
+                String hostRoot = hostWorkspaceBasePath.endsWith(separator)
+                        ? hostWorkspaceBasePath.substring(0, hostWorkspaceBasePath.length() - 1)
+                        : hostWorkspaceBasePath;
+                return hostRoot + separator + relative;
+            }
+            return path;
+        }
         if (!wslWorkspaceMapping || path.length() < 2 || path.charAt(1) != ':') {
             return path;
         }

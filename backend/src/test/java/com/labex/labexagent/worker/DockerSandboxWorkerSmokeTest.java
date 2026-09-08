@@ -44,7 +44,7 @@ class DockerSandboxWorkerSmokeTest {
         DockerSandboxWorker worker = new DockerSandboxWorker(
                 new LocalProcessExecutor(),
                 System.getProperty("labex.docker.smoke.image"),
-                8, wslMapping, null);
+                8, wslMapping, "", "", null);
         WorkerRunSpec run = new WorkerRunSpec(
                 RUN_ID,
                 workspace,
