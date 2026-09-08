@@ -73,6 +73,7 @@ import com.labex.labexagent.service.AgentConversationService;
 import com.labex.labexagent.service.AgentContextOrchestrator;
 import com.labex.labexagent.service.AgentInteractionService;
 import com.labex.labexagent.service.AgentMetricsService;
+import com.labex.labexagent.service.AgentContextSnapshotService;
 import com.labex.labexagent.service.AgentPostEditHookService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.TokenTracker;
@@ -294,6 +295,7 @@ public class AgentLoopEngine {
     private AgentCompactionService compactionService;
     private AgentRequestTokenEstimator requestTokenEstimator;
     private AgentInputAttachmentService attachmentService;
+    private AgentContextSnapshotService contextSnapshotService = new AgentContextSnapshotService();
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private AgentRunPlanService runPlanService;
 
@@ -455,6 +457,18 @@ public class AgentLoopEngine {
     @Autowired
     void setAttachmentService(AgentInputAttachmentService attachmentService) {
         this.attachmentService = requireRuntimeDependency(attachmentService, "attachmentService");
+    }
+
+    @Autowired
+    void setContextSnapshotService(AgentContextSnapshotService contextSnapshotService) {
+        this.contextSnapshotService = requireRuntimeDependency(contextSnapshotService, "contextSnapshotService");
+    }
+
+    private AgentContextSnapshotService requireContextSnapshotService() {
+        if (this.contextSnapshotService == null) {
+            this.contextSnapshotService = new AgentContextSnapshotService();
+        }
+        return this.contextSnapshotService;
     }
     @Autowired
     void setRunInteractionService(AgentRunInteractionService runInteractionService) {
@@ -1234,6 +1248,14 @@ You are permitted to make file changes, run shell commands, and utilize your ars
                                                         modelEventPublisher.sendTransient(eventType, data);
                                                     }
                                                 });
+                                        int estTokens = this.requestTokenEstimator != null
+                                                ? this.requestTokenEstimator.estimateValue(sysPrompt) + this.requestTokenEstimator.estimateValue(modelTurnMessages)
+                                                : 0;
+                                        this.requireContextSnapshotService().captureAndPublish(
+                                                project, task.getTaskId(), modelIteration, conv.getConversationId(),
+                                                llmProvider == null ? "unknown" : llmProvider.getProviderId(),
+                                                llmConfig == null ? "unknown" : llmConfig.modelName(),
+                                                sysPrompt, modelTurnMessages, tools, estTokens, sse);
                                         this.projectModelStepStarted(sse, conv, ctx, i);
                                         Optional<AgentModelTurnExecutor.ModelTurnResult> admittedTurn;
                                         try {

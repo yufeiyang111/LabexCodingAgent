@@ -8,6 +8,7 @@ import { projectVisibleAgentError } from './agentErrorProjection.js'
 import { modelStepStatusForEvent, upsertModelStepState } from './agentRunPartState.js'
 import { mergeFinalizationBlockedEvidence } from './completionEvidenceProjection.js'
 import { applySubagentProgress, applySubagentSummary } from './agentHistoryReducer.js'
+import { printModelContextToConsole } from '../utils/modelContextConsole.js'
 
 function toolResultStatus(success, result) {
   if (success === false) return 'error'
@@ -134,11 +135,17 @@ export function useAgentEventTimeline(options) {
         applySubagentSummary(assistantMsg, data)
         scheduleAgentRender()
         break
+      case 'MODEL_CONTEXT_SNAPSHOT':
+        printModelContextToConsole(data)
+        break
       case 'MODEL_STEP_STARTED':
       case 'MODEL_STEP_COMPLETED':
       case 'MODEL_STEP_FAILED':
       case 'MODEL_STEP_BLOCKED':
       case 'MODEL_STEP_INTERRUPTED':
+        if (type === 'MODEL_STEP_STARTED' && data.contextSnapshot) {
+          printModelContextToConsole(data.contextSnapshot)
+        }
         upsertModelStepState(assistantMsg, {
           ...data,
           sequence: data.sequence ?? data.eventSequence ?? event.eventId,
