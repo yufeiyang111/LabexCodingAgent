@@ -4,14 +4,16 @@ FROM docker:29-cli AS docker-cli
 
 FROM eclipse-temurin:17-jre
 
-RUN useradd --system --uid 1000 --create-home --shell /usr/sbin/nologin labex
+RUN if ! id -u 1000 >/dev/null 2>&1; then \
+        useradd --system --uid 1000 --create-home --shell /usr/sbin/nologin labex; \
+    fi
 
 WORKDIR /app
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY *.jar /app/labex-agent.jar
 
-RUN chown -R labex:labex /app
-USER labex
+RUN chown -R 1000:1000 /app
+USER 1000:1000
 
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=65 -XX:InitialRAMPercentage=20 -Djava.io.tmpdir=/tmp"
 
