@@ -97,6 +97,10 @@ public class AgentModelConfigController {
             }
             config = configService.updateCapabilities(getStudentId(auth), config.getConfigId(),
                     req.reasoningEffort, req.imageInputEnabled);
+            if (req.requestOptionsJson != null) {
+                config = configService.updateRequestOptions(getStudentId(auth), config.getConfigId(),
+                        req.requestOptionsJson);
+            }
             return Result.success(sanitizeConfig(config));
         } catch (Exception e) {
             return Result.error(e.getMessage());
@@ -141,6 +145,10 @@ public class AgentModelConfigController {
             }
             config = configService.updateCapabilities(getStudentId(auth), config.getConfigId(),
                     req.reasoningEffort, req.imageInputEnabled);
+            if (req.requestOptionsJson != null) {
+                config = configService.updateRequestOptions(getStudentId(auth), config.getConfigId(),
+                        req.requestOptionsJson);
+            }
             return Result.success(sanitizeConfig(config));
         } catch (Exception e) {
             return Result.error(e.getMessage());
@@ -460,6 +468,7 @@ public class AgentModelConfigController {
         public Integer contextWindowTokens;
         public Boolean promptCacheKeyEnabled;
         public String reasoningEffort;
+        public String requestOptionsJson;
         public Boolean imageInputEnabled;
         public Boolean compactionAuto;
         public Boolean compactionPrune;
@@ -482,6 +491,7 @@ public class AgentModelConfigController {
         public Integer contextWindowTokens;
         public Boolean promptCacheKeyEnabled;
         public String reasoningEffort;
+        public String requestOptionsJson;
         public Boolean imageInputEnabled;
         public Boolean compactionAuto;
         public Boolean compactionPrune;

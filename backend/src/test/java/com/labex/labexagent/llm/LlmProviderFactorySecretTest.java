@@ -1,6 +1,7 @@
 package com.labex.labexagent.llm;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -50,6 +51,25 @@ class LlmProviderFactorySecretTest {
         config.setMaxTokens(12_345);
         assertEquals(12_345, factory.buildConfig(config).maxTokens());
     }
+    @Test
+    void propagatesRequestOptionsJsonFromEntityToRuntimeConfig() {
+        SecretStore secrets = new LocalEnvelopeSecretStore(masterKey(), false);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(provider.getProviderId()).thenReturn("openai_compatible");
+        LlmProviderFactory factory = new LlmProviderFactory(List.of(provider), new RagConfig(), secrets);
+        AgentModelConfig config = new AgentModelConfig();
+        config.setApiKey("sk-runtime-secret");
+        config.setRequestOptionsJson("{\"reasoning\":{\"path\":\"/extra_body/thinking\",\"defaultLevel\":\"high\"}}");
+
+        assertEquals("{\"reasoning\":{\"path\":\"/extra_body/thinking\",\"defaultLevel\":\"high\"}}",
+                factory.buildConfig(config).requestOptionsJson());
+
+        // 未配置时保持 null（adapter 走默认行为），而不是空串。
+        AgentModelConfig plain = new AgentModelConfig();
+        plain.setApiKey("sk-runtime-secret");
+        assertNull(factory.buildConfig(plain).requestOptionsJson());
+    }
+
     private String masterKey() {
         return Base64.getEncoder().encodeToString(
                 "01234567890123456789012345678901".getBytes(StandardCharsets.UTF_8));

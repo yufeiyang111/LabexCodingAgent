@@ -369,6 +369,41 @@ public class AgentModelConfigService extends ServiceImpl<AgentModelConfigMapper,
         return config;
     }
 
+    /**
+     * 更新请求选项 JSON（reasoning/thinking/budget/requestOverrides 等，由
+     * OpenAiCompatibleChatRequestAdapter 消费）。写入前校验必须是合法 JSON object，
+     * 坏 JSON 不允许入库——运行时 parseOptions 同样会拒绝，这里提前失败可避免
+     * 每次对话请求报错。
+     */
+    public AgentModelConfig updateRequestOptions(Integer studentId, Integer configId, String requestOptionsJson) {
+        AgentModelConfig config = this.getOwned(studentId, configId);
+        if (config == null) {
+            throw new IllegalArgumentException("Config not found");
+        }
+        String normalized = validateRequestOptionsJson(requestOptionsJson);
+        config.setRequestOptionsJson(normalized);
+        config.setUpdateTime(LocalDateTime.now());
+        this.updateById(config);
+        return config;
+    }
+
+    /** blank 输入清空配置（存 null）；非空输入必须是 JSON object，否则抛出 IllegalArgumentException。 */
+    static String validateRequestOptionsJson(String requestOptionsJson) {
+        if (requestOptionsJson == null || requestOptionsJson.isBlank()) {
+            return null;
+        }
+        com.google.gson.JsonElement parsed;
+        try {
+            parsed = com.google.gson.JsonParser.parseString(requestOptionsJson);
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("requestOptionsJson is not valid JSON", e);
+        }
+        if (!parsed.isJsonObject()) {
+            throw new IllegalArgumentException("requestOptionsJson must be a JSON object");
+        }
+        return requestOptionsJson;
+    }
+
     public void delete(Integer studentId, Integer configId) {
         AgentModelConfig config = this.getOwned(studentId, configId);
         if (config == null) throw new IllegalArgumentException("Config not found");

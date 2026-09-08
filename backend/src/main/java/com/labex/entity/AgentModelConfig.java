@@ -52,6 +52,9 @@ public class AgentModelConfig {
     @TableField(value = "reasoning_effort")
     private String reasoningEffort;
 
+    @TableField(value = "request_options_json")
+    private String requestOptionsJson;
+
     @TableField(value = "image_input_enabled")
     private Integer imageInputEnabled;
 
@@ -136,6 +139,9 @@ public class AgentModelConfig {
 
     public String getReasoningEffort() { return reasoningEffort; }
     public void setReasoningEffort(String reasoningEffort) { this.reasoningEffort = reasoningEffort; }
+
+    public String getRequestOptionsJson() { return requestOptionsJson; }
+    public void setRequestOptionsJson(String requestOptionsJson) { this.requestOptionsJson = requestOptionsJson; }
 
     public Integer getImageInputEnabled() { return imageInputEnabled; }
     public void setImageInputEnabled(Integer imageInputEnabled) { this.imageInputEnabled = imageInputEnabled; }

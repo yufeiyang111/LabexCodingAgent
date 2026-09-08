@@ -64,7 +64,8 @@ public class LlmProviderFactory {
                     config.getMaxTokens() != null ? config.getMaxTokens() : AgentModelConfigService.DEFAULT_MAX_TOKENS,
                     config.getTemperature(), null, null, null,
                     Integer.valueOf(1).equals(config.getPromptCacheKeyEnabled()), null
-            ).withReasoningEffort(ReasoningEffort.normalize(config.getReasoningEffort()));
+            ).withReasoningEffort(ReasoningEffort.normalize(config.getReasoningEffort()))
+             .withRequestOptionsJson(config.getRequestOptionsJson());
         }
         String key = ragConfig.getMiniMaxApiKey();
         if (key == null || key.isBlank()) key = "";
