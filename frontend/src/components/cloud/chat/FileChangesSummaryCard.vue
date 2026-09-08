@@ -138,26 +138,26 @@ function toggleCollapse() {
 
 <style scoped>
 .clean-changes-summary-card {
-  background: #ffffff;
-  border: 1px solid #e4e4e7;
+  background: var(--ai-bg, #ffffff);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  box-shadow: var(--ai-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.03));
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
   margin-top: 4px;
 }
 
 .clean-changes-summary-card:hover {
-  border-color: #d4d4d8;
-  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  border-color: var(--ai-border-focus, #d4d4d8);
+  box-shadow: var(--ai-shadow-md, 0 4px 16px -2px rgba(0, 0, 0, 0.08));
   transform: translateY(-1px);
 }
 
 .summary-card-header {
   padding: 8px 12px;
-  background: #fafafa;
-  border-bottom: 1px solid #e4e4e7;
+  background: var(--ai-bg-tertiary, #fafafa);
+  border-bottom: 1px solid var(--ai-border-strong, #e4e4e7);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -171,7 +171,7 @@ function toggleCollapse() {
 }
 
 .summary-chevron {
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -182,7 +182,7 @@ function toggleCollapse() {
 .summary-files-count {
   font-size: 12.5px;
   font-weight: 600;
-  color: #09090b;
+  color: var(--ai-text, #09090b);
 }
 
 .summary-diff-counts {
@@ -204,12 +204,12 @@ function toggleCollapse() {
 .btn-review-diff {
   height: 24px;
   padding: 0 9px;
-  background: #ffffff;
-  border: 1px solid #e4e4e7;
+  background: var(--ai-bg, #ffffff);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
   border-radius: 5px;
   font-size: 11.5px;
   font-weight: 500;
-  color: #3f3f46;
+  color: var(--ai-text-secondary, #3f3f46);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -219,9 +219,9 @@ function toggleCollapse() {
 }
 
 .btn-review-diff:hover {
-  background: #f4f4f5;
-  border-color: #d4d4d8;
-  color: #09090b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  border-color: var(--ai-border-focus, #d4d4d8);
+  color: var(--ai-text, #09090b);
 }
 
 /* 风琴动画 */
@@ -259,7 +259,7 @@ function toggleCollapse() {
 }
 
 .summary-file-row:hover {
-  background: #f4f4f5;
+  background: var(--ai-bg-tertiary, #f4f4f5);
 }
 
 .file-row-left {
@@ -278,12 +278,12 @@ function toggleCollapse() {
 }
 
 .file-name-text {
-  color: #09090b;
+  color: var(--ai-text, #09090b);
   font-weight: 500;
 }
 
 .file-dir-text {
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
@@ -300,8 +300,8 @@ function toggleCollapse() {
 }
 
 .clean-changes-summary-card.is-no-change {
-  background: #fafafa;
-  border-color: #e4e4e7;
+  background: var(--ai-bg-tertiary, #fafafa);
+  border-color: var(--ai-border-strong, #e4e4e7);
 }
 
 .clean-changes-summary-card.is-no-change .summary-card-header {
@@ -310,11 +310,11 @@ function toggleCollapse() {
 }
 
 .no-change-check {
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
 }
 
 .no-change-text {
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   font-weight: 500;
 }
 
@@ -323,5 +323,47 @@ function toggleCollapse() {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+/* 暗色主题增强 */
+:root[data-theme='dark'] .clean-changes-summary-card {
+  background: #1e1e2e;
+  border-color: #313244;
+}
+
+:root[data-theme='dark'] .summary-card-header {
+  background: #181825;
+  border-bottom-color: #313244;
+}
+
+:root[data-theme='dark'] .summary-files-count {
+  color: #cdd6f4;
+}
+
+:root[data-theme='dark'] .btn-review-diff {
+  background: #242538;
+  border-color: #3b3d54;
+  color: #cdd6f4;
+}
+
+:root[data-theme='dark'] .btn-review-diff:hover {
+  background: #313244;
+}
+
+:root[data-theme='dark'] .summary-file-row:hover {
+  background: #242538;
+}
+
+:root[data-theme='dark'] .file-name-text {
+  color: #cdd6f4;
+}
+
+:root[data-theme='dark'] .file-dir-text {
+  color: #a6adc8;
+}
+
+:root[data-theme='dark'] .clean-changes-summary-card.is-no-change {
+  background: #181825;
+  border-color: #313244;
 }
 </style>

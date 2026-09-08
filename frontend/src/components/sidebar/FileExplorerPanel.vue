@@ -11,8 +11,14 @@
         <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="$emit('create-file')" title="新建文件">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
         </button>
+        <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="$emit('create-dir')" title="新建文件夹">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+        </button>
         <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="$emit('refresh')" title="刷新">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+        <button class="ws-btn ws-btn-ghost ws-btn-sm" @click="handleCollapseAll" title="全部折叠">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/></svg>
         </button>
         <button class="ws-btn ws-btn-ghost ws-btn-sm btn-collapse-rail" @click="$emit('collapse-sidebar')" title="收起资源管理器">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
@@ -35,6 +41,7 @@
             :load-children="loadChildren"
             :show-actions="true"
             :refresh-key="refreshKey"
+            :collapse-key="collapseKey"
             :has-clipboard="hasClipboard"
             @select="p => $emit('select', p)"
             @new-item="(p, t) => $emit('new-item', p, t)"
@@ -103,6 +110,11 @@ function toggleTreeCollapse() {
   isTreeCollapsed.value = !isTreeCollapsed.value
 }
 
+const collapseKey = ref(0)
+function handleCollapseAll() {
+  collapseKey.value++
+}
+
 const newItemName = defineModel('newItemName', { type: String, default: '' })
 const renameItemValue = defineModel('renameValue', { type: String, default: '' })
 
@@ -148,27 +160,20 @@ function onTreeKeydown(event) {
   flex: 1;
   overflow: hidden;
   user-select: none;
-  background: #ffffff;
-}
-
-:global(.ws-dark) .ws-sidebar-panel,
-:global([data-theme="dark"]) .ws-sidebar-panel {
-  background: #18181b;
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text, #09090b);
 }
 
 .ws-sidebar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid #e4e4e7;
+  padding: 8px 10px 8px 12px;
+  background: var(--theme-surface-muted, #fafafa);
+  border-bottom: 1px solid var(--theme-border, #e4e4e7);
   flex-shrink: 0;
   min-height: 36px;
-}
-
-:global(.ws-dark) .ws-sidebar-header,
-:global([data-theme="dark"]) .ws-sidebar-header {
-  border-bottom-color: #27272a;
+  gap: 6px;
 }
 
 .header-title-group {
@@ -177,14 +182,17 @@ function onTreeKeydown(event) {
   gap: 6px;
   cursor: pointer;
   user-select: none;
+  min-width: 0;
+  flex-shrink: 0;
 }
 
 .chevron-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #71717a;
+  color: var(--theme-text-muted, #71717a);
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  flex-shrink: 0;
 }
 
 .chevron-icon.rotated {
@@ -194,12 +202,33 @@ function onTreeKeydown(event) {
 .header-title-text {
   font-weight: 600;
   font-size: 12px;
-  color: #09090b;
+  color: var(--theme-text, #09090b);
+  white-space: nowrap;
+  letter-spacing: -0.01em;
 }
 
-:global(.ws-dark) .header-title-text,
-:global([data-theme="dark"]) .header-title-text {
-  color: #f4f4f5;
+.ws-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.ws-sidebar-actions .ws-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--theme-text-muted, #6b7280);
+}
+
+.ws-sidebar-actions .ws-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--theme-text, #111827);
 }
 
 .ws-tree-container {
@@ -208,6 +237,7 @@ function onTreeKeydown(event) {
   overflow-x: hidden;
   min-height: 0;
   height: 100%;
+  background: var(--theme-surface, #ffffff);
 }
 
 .ws-tree-container::-webkit-scrollbar {
@@ -219,22 +249,29 @@ function onTreeKeydown(event) {
 }
 
 .ws-tree-container::-webkit-scrollbar-thumb {
-  background: #d4d4d8;
+  background: var(--theme-border, #d4d4d8);
   border-radius: 4px;
 }
 
 .ws-tree-container::-webkit-scrollbar-thumb:hover {
-  background: #a1a1aa;
+  background: var(--theme-text-muted, #a1a1aa);
 }
 
-:global(.ws-dark) .ws-tree-container::-webkit-scrollbar-thumb,
-:global([data-theme="dark"]) .ws-tree-container::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+:global(html[data-theme="dark"] .ws-sidebar-panel) {
+  background: #181b24;
 }
-
-:global(.ws-dark) .ws-tree-container::-webkit-scrollbar-thumb:hover,
-:global([data-theme="dark"]) .ws-tree-container::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+:global(html[data-theme="dark"] .ws-sidebar-header) {
+  background: #202430;
+  border-bottom-color: #2e3547;
+}
+:global(html[data-theme="dark"] .header-title-text) {
+  color: #edf1fb;
+}
+:global(html[data-theme="dark"] .ws-tree-container) {
+  background: #181b24;
+}
+:global(html[data-theme="dark"] .ws-tree-container::-webkit-scrollbar-thumb) {
+  background: #384158;
 }
 
 .panel-collapse-enter-active,

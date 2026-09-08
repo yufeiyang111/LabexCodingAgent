@@ -25,3 +25,59 @@
 .ws-tree-error button { margin-top: 6px; border: 0; border-radius: 4px; padding: 4px 7px; background: #fee2e2; color: inherit; font: inherit; cursor: pointer; }
 .ws-tree-load-more { display: block; width: calc(100% - 8px); margin: 6px 4px; padding: 7px 8px; border: 1px solid #dbe1f0; border-radius: 6px; background: #fff; color: #4f46e5; font: inherit; font-size: 12px; cursor: pointer; }
 .ws-tree-load-more:hover { background: #eef2ff; border-color: #c7d2fe; }
+
+/* 暗色主题深度增强 */
+html[data-theme='dark'] {
+  .ws-btn {
+    color: #bac2de;
+  }
+  .ws-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+  }
+  .ws-btn-outline {
+    background: #1e1e2e;
+    border-color: #313244;
+    color: #cdd6f4;
+  }
+  .ws-btn-outline:hover {
+    background: #242538;
+    color: #ffffff;
+  }
+  .ws-btn-ghost {
+    color: #a6adc8;
+  }
+  .ws-btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+  }
+  .ws-sidebar-header {
+    color: #a6adc8;
+    border-bottom-color: #272a37;
+  }
+  .ws-sidebar-actions {
+    color: #cdd6f4;
+  }
+  .ws-tree-empty {
+    color: #6c7086;
+  }
+  .ws-tree-error {
+    background: rgba(243, 139, 168, 0.12);
+    border-color: rgba(243, 139, 168, 0.3);
+    color: #f38ba8;
+  }
+  .ws-tree-error button {
+    background: rgba(243, 139, 168, 0.2);
+    color: #f38ba8;
+  }
+  .ws-tree-load-more {
+    background: #1e1e2e;
+    border-color: #313244;
+    color: #89b4fa;
+  }
+  .ws-tree-load-more:hover {
+    background: #242538;
+    color: #b4befe;
+    border-color: #89b4fa;
+  }
+}

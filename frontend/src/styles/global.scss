@@ -287,6 +287,58 @@ a {
   justify-content: center;
 }
 
+// 移动端响应式基础设施与通用工具类
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+// 触控设备全局体验优化（消除移动端点击闪烁与优化滚动惯性）
+@media (pointer: coarse) {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.touch-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+// 响应式显隐辅助类（严格按 768px 划分，保障桌面端零回归）
+.mobile-only {
+  display: none !important;
+}
+
+.desktop-only {
+  display: inherit !important;
+}
+
+@media (max-width: 768px) {
+  .mobile-only {
+    display: inherit !important;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  // 移动端弹窗与消息框宽度自适应
+  .el-message-box {
+    width: min(calc(100vw - 32px), 420px) !important;
+    max-width: calc(100vw - 32px) !important;
+  }
+
+  .el-dialog {
+    width: min(calc(100vw - 24px), 640px) !important;
+    max-width: calc(100vw - 24px) !important;
+    margin: 12px auto !important;
+  }
+}
+
+
 .flex-between {
   display: flex;
   align-items: center;

@@ -286,4 +286,104 @@ const fileName = computed(() => {
   justify-content: center;
   flex-shrink: 0;
 }
+
+/* 暗色主题深度增强 */
+:global(html[data-theme="dark"] .ws-topbar) {
+  background: #11131a;
+  border-bottom-color: #272a37;
+}
+
+:global(html[data-theme="dark"] .topbar-btn) {
+  background: #181b24;
+  border-color: #2e3547;
+  color: #cdd6f4;
+}
+
+:global(html[data-theme="dark"] .topbar-btn:hover) {
+  background: #222736;
+  border-color: #3e4760;
+  color: #ffffff;
+}
+
+:global(html[data-theme="dark"] .breadcrumb-pill) {
+  background: #181b24;
+  border-color: #2e3547;
+  color: #a6adc8;
+}
+
+:global(html[data-theme="dark"] .breadcrumb-slash) {
+  color: #6c7086;
+}
+
+:global(html[data-theme="dark"] .active-file-tag) {
+  color: #89b4fa;
+}
+
+:global(html[data-theme="dark"] .layout-toggle-group) {
+  background: #181b24;
+  border-color: #2e3547;
+}
+
+:global(html[data-theme="dark"] .layout-toggle-btn) {
+  color: #8c96a8;
+}
+
+:global(html[data-theme="dark"] .layout-toggle-btn:hover) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+:global(html[data-theme="dark"] .layout-toggle-btn.active) {
+  background: #202638;
+  border-color: #3b486d;
+  color: #818cf8;
+}
+
+:global(html[data-theme="dark"] .unsaved-badge) {
+  background: rgba(234, 88, 12, 0.15);
+  border-color: rgba(234, 88, 12, 0.35);
+  color: #fb923c;
+}
+
+@media (max-width: 768px) {
+  .ws-topbar {
+    padding: 0 8px;
+    gap: 4px;
+    height: 42px;
+    min-height: 42px;
+  }
+  .topbar-center {
+    display: none !important;
+  }
+  .topbar-left,
+  .topbar-right {
+    gap: 4px;
+  }
+  .breadcrumb-pill {
+    max-width: 130px;
+    padding: 2px 6px;
+    font-size: 11px;
+    overflow: hidden;
+  }
+  .breadcrumb-pill span:not(.icon):not(.active-file-tag) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .topbar-btn {
+    padding: 0 7px;
+    height: 28px;
+  }
+  .topbar-btn:not(.solid-black) span:not(.icon) {
+    display: none;
+  }
+  .topbar-btn.solid-black {
+    padding: 0 9px;
+    font-size: 11px;
+  }
+  .unsaved-badge {
+    padding: 1px 4px;
+    font-size: 10px;
+  }
+}
 </style>

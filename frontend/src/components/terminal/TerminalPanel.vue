@@ -124,7 +124,8 @@ import { normalizeManagedTerminalResult } from '@/composables/terminalProtocol'
 const props = defineProps({
   projectId: { type: [String, Number], required: true },
   projectPath: { type: String, default: '' },
-  isDark: { type: Boolean, default: true }
+  isDark: { type: Boolean, default: true },
+  visible: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['terminal-created', 'terminal-closed', 'toggle-theme', 'command-finished'])
@@ -505,12 +506,24 @@ onMounted(() => {
     resizeObserver.observe(terminalContainerRef.value)
   }
 
-  // 自动创建第一个终端
+  // 按需创建第一个终端（若面板处于可见状态）
   nextTick(() => {
-    if (terminals.value.length === 0) {
+    if (props.visible && terminals.value.length === 0) {
       createNewTerminal()
     }
   })
+})
+
+watch(() => props.visible, (val) => {
+  if (val) {
+    nextTick(() => {
+      if (terminals.value.length === 0) {
+        createNewTerminal()
+      } else {
+        fitAllTerminals()
+      }
+    })
+  }
 })
 
 onUnmounted(() => {

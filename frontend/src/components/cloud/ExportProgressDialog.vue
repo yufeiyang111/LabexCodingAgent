@@ -86,12 +86,12 @@ function onOverlayClick() {
 .epd-btn.primary { border: none; background: #4f46e5; color: #fff; }
 .epd-btn.primary:hover { background: #4338ca; }
 
-:global([data-theme="dark"]) .epd-dialog { background: #1f2033; }
-:global([data-theme="dark"]) .epd-dialog h3 { color: #c0caf5; }
-:global([data-theme="dark"]) .epd-hint { color: #787c99; }
-:global([data-theme="dark"]) .epd-option { color: #a9b1d6; }
-:global([data-theme="dark"]) .epd-bar-track { background: #282a3a; }
-:global([data-theme="dark"]) .epd-percent { color: #a9b1d6; }
+:global(html[data-theme="dark"] .epd-dialog) { background: #1f2033; }
+:global(html[data-theme="dark"] .epd-dialog h3) { color: #c0caf5; }
+:global(html[data-theme="dark"] .epd-hint) { color: #787c99; }
+:global(html[data-theme="dark"] .epd-option) { color: #a9b1d6; }
+:global(html[data-theme="dark"] .epd-bar-track) { background: #282a3a; }
+:global(html[data-theme="dark"] .epd-percent) { color: #a9b1d6; }
 
 .epd-enter-active, .epd-leave-active { transition: opacity 0.16s ease; }
 .epd-enter-from, .epd-leave-to { opacity: 0; }

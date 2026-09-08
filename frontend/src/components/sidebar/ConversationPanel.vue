@@ -248,55 +248,55 @@ function formatTime(isoStr) {
   text-align: center;
 }
 
-:global([data-theme="dark"]) .cp-panel {
-  background: #18181b;
-  border-right-color: #27272a;
+:global(html[data-theme="dark"] .cp-panel) {
+  background: #181b24;
+  border-right-color: #2e3547;
 }
-:global([data-theme="dark"]) .cp-header {
-  background: #18181b;
-  border-bottom-color: #27272a;
+:global(html[data-theme="dark"] .cp-header) {
+  background: #181b24;
+  border-bottom-color: #2e3547;
 }
-:global([data-theme="dark"]) .cp-header-title {
-  color: #a1a1aa;
+:global(html[data-theme="dark"] .cp-header-title) {
+  color: #cdd6f4;
 }
-:global([data-theme="dark"]) .cp-new-btn {
-  background: #27272a;
-  border-color: #3f3f46;
-  color: #e4e4e7;
+:global(html[data-theme="dark"] .cp-new-btn) {
+  background: #202432;
+  border-color: #3b486d;
+  color: #edf1fb;
 }
-:global([data-theme="dark"]) .cp-new-btn:hover {
-  background: #3f3f46;
+:global(html[data-theme="dark"] .cp-new-btn:hover) {
+  background: #2e364c;
   color: #ffffff;
 }
-:global([data-theme="dark"]) .cp-item:hover {
-  background: #27272a;
+:global(html[data-theme="dark"] .cp-item:hover) {
+  background: rgba(255, 255, 255, 0.06);
 }
-:global([data-theme="dark"]) .cp-item.active {
-  background: #27272a;
-  border-color: #3f3f46;
+:global(html[data-theme="dark"] .cp-item.active) {
+  background: rgba(99, 102, 241, 0.22);
+  border-color: rgba(99, 102, 241, 0.45);
 }
-:global([data-theme="dark"]) .cp-item-indicator {
-  background: #f4f4f5;
+:global(html[data-theme="dark"] .cp-item-indicator) {
+  background: #818cf8;
 }
-:global([data-theme="dark"]) .cp-item-title {
-  color: #e4e4e7;
+:global(html[data-theme="dark"] .cp-item-title) {
+  color: #edf1fb;
 }
-:global([data-theme="dark"]) .cp-item.active .cp-item-title {
+:global(html[data-theme="dark"] .cp-item.active .cp-item-title) {
   color: #ffffff;
 }
-:global([data-theme="dark"]) .cp-item-time {
-  color: #71717a;
+:global(html[data-theme="dark"] .cp-item-time) {
+  color: #8c96a8;
 }
-:global([data-theme="dark"]) .cp-act-btn {
-  background: #27272a;
-  border-color: #3f3f46;
-  color: #a1a1aa;
+:global(html[data-theme="dark"] .cp-act-btn) {
+  background: #202432;
+  border-color: #303747;
+  color: #a6adc8;
 }
-:global([data-theme="dark"]) .cp-act-btn:hover {
-  background: #3f3f46;
+:global(html[data-theme="dark"] .cp-act-btn:hover) {
+  background: #2e364c;
   color: #ffffff;
 }
-:global([data-theme="dark"]) .cp-act-btn.danger:hover {
+:global(html[data-theme="dark"] .cp-act-btn.danger:hover) {
   background: #ef4444;
   color: #ffffff;
 }

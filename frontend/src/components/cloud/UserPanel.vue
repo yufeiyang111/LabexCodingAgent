@@ -34,6 +34,8 @@ const displayName = computed(() => {
   border-top: 1px solid var(--theme-border);
   background: var(--theme-surface-muted);
   flex-shrink: 0;
+  min-width: 0;
+  gap: 8px;
 }
 
 .user-info {
@@ -41,6 +43,7 @@ const displayName = computed(() => {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex: 1;
 }
 
 .user-name {
@@ -48,9 +51,10 @@ const displayName = computed(() => {
   font-weight: 500;
   color: var(--theme-text);
   white-space: nowrap;
+  word-break: keep-all;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
+  max-width: 100%;
 }
 
 .user-actions {
@@ -58,5 +62,22 @@ const displayName = computed(() => {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+:global(html[data-theme="dark"] .user-panel) {
+  background: #181b24;
+  border-top-color: #2e3547;
+}
+
+:global(html[data-theme="dark"] .user-name) {
+  color: #edf1fb;
+}
+
+@media (max-width: 768px) {
+  .user-panel {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
 }
 </style>

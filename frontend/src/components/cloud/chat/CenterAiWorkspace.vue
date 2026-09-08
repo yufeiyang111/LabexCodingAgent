@@ -1,5 +1,5 @@
 <template>
-  <div class="center-ai-container">
+  <div class="center-ai-container" :class="{ 'is-dark': isDark }">
     <!-- 顶部状态栏与导航 Tab 栏 (复刻侧边栏导航: 对话, 用量, 审查, 扩展, 终端) -->
     <div class="center-ai-topbar">
       <div class="topbar-title-wrap">
@@ -138,6 +138,7 @@
                           @open-file="p => emit('open-file', p)"
                           @open-preview="u => emit('open-preview', u)"
                           @open-subagent="p => emit('open-subagent', p)"
+                          @markdown-click="e => emit('markdown-click', e)"
                         />
                       </template>
                     </template>
@@ -330,8 +331,8 @@
     <!-- 底部微状态指示条 -->
     <div class="center-status-strip">
       <div class="status-left">
-        <span class="status-dot online"></span>
-        <span>{{ currentModel }} {{ thinkingLevel ? `(${thinkingLevel})` : '' }}</span>
+        <span class="status-dot" :class="currentModel && currentModel !== '未配置模型' ? 'online' : 'warning'"></span>
+        <span>{{ currentModel || '未配置模型' }} {{ (thinkingLevel && currentModel && currentModel !== '未配置模型') ? `(${thinkingLevel})` : '' }}</span>
       </div>
       <div class="status-right" v-if="tokenUsage?.totalTokens">
         <span>{{ tokenUsage.totalTokens >= 1000 ? (tokenUsage.totalTokens / 1000).toFixed(1) + 'K' : tokenUsage.totalTokens }} Tokens</span>
@@ -421,7 +422,7 @@ const props = defineProps({
   },
   currentModel: {
     type: String,
-    default: 'Gemini 3.7 Flash',
+    default: '',
   },
   thinkingLevel: {
     type: String,
@@ -692,7 +693,8 @@ defineExpose({
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
+  background: var(--ai-bg-secondary, #ffffff);
+  color: var(--ai-text, #09090b);
   position: relative;
   overflow: hidden;
   height: 100%;
@@ -714,7 +716,7 @@ defineExpose({
   flex: 1;
   overflow-y: auto;
   padding: 16px;
-  background: #ffffff;
+  background: var(--ai-bg-secondary, #ffffff);
   height: calc(100% - 64px);
 }
 
@@ -726,8 +728,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #ffffff;
-  border-bottom: 1px solid #e4e4e7;
+  background: var(--ai-bg-secondary, #ffffff);
+  border-bottom: 1px solid var(--ai-border-strong, #e4e4e7);
   user-select: none;
   z-index: 10;
 }
@@ -739,13 +741,13 @@ defineExpose({
 }
 
 .agent-symbol-icon {
-  color: #09090b;
+  color: var(--ai-purple, #6366f1);
 }
 
 .topbar-title {
   font-size: 13px;
   font-weight: 600;
-  color: #09090b;
+  color: var(--ai-text, #09090b);
 }
 
 .topbar-session-badge {
@@ -753,8 +755,9 @@ defineExpose({
   font-weight: 500;
   padding: 1.5px 7px;
   border-radius: 4px;
-  background: #f4f4f5;
-  color: #52525b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  color: var(--ai-text-secondary, #52525b);
+  border: 1px solid var(--ai-border, transparent);
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -776,7 +779,7 @@ defineExpose({
   border-radius: 6px;
   border: 1px solid transparent;
   background: transparent;
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -784,14 +787,14 @@ defineExpose({
 }
 
 .center-ai-tab-btn:hover {
-  background: #f4f4f5;
-  color: #09090b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  color: var(--ai-text, #09090b);
 }
 
 .center-ai-tab-btn.active {
-  background: #f4f4f5;
-  border-color: #e4e4e7;
-  color: #09090b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  border-color: var(--ai-border-strong, #e4e4e7);
+  color: var(--ai-text, #09090b);
   font-weight: 600;
 }
 
@@ -807,9 +810,9 @@ defineExpose({
   gap: 5px;
   padding: 4px 10px;
   border-radius: 6px;
-  border: 1px solid #e4e4e7;
-  background: #ffffff;
-  color: #3f3f46;
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
+  background: var(--ai-bg, #ffffff);
+  color: var(--ai-text-secondary, #3f3f46);
   font-size: 11.5px;
   font-weight: 500;
   cursor: pointer;
@@ -817,9 +820,9 @@ defineExpose({
 }
 
 .btn-dockback:hover {
-  background: #09090b;
-  color: #ffffff;
-  border-color: #09090b;
+  background: var(--ai-bg-tertiary, #09090b);
+  color: var(--ai-text, #ffffff);
+  border-color: var(--ai-border-focus, #09090b);
 }
 
 /* 滚动区与内容 */
@@ -841,9 +844,9 @@ defineExpose({
   margin: 0 auto 16px;
   padding: 4px 12px;
   border-radius: 999px;
-  border: 1px solid #e4e4e7;
-  background: #ffffff;
-  color: #71717a;
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
+  background: var(--ai-bg, #ffffff);
+  color: var(--ai-text-muted, #71717a);
   font-size: 11.5px;
   font-weight: 500;
   cursor: pointer;
@@ -851,8 +854,8 @@ defineExpose({
 }
 
 .btn-load-older:hover:not(:disabled) {
-  background: #f4f4f5;
-  color: #09090b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  color: var(--ai-text, #09090b);
 }
 
 /* 空状态 */
@@ -869,25 +872,25 @@ defineExpose({
   width: 52px;
   height: 52px;
   border-radius: 14px;
-  background: #f4f4f5;
-  border: 1px solid #e4e4e7;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #09090b;
+  color: var(--ai-text, #09090b);
   margin-bottom: 16px;
 }
 
 .empty-greeting {
   font-size: 20px;
   font-weight: 600;
-  color: #09090b;
+  color: var(--ai-text, #09090b);
   margin-bottom: 8px;
 }
 
 .empty-subtext {
   font-size: 13px;
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   max-width: 500px;
   line-height: 1.6;
   margin-bottom: 24px;
@@ -907,9 +910,9 @@ defineExpose({
   gap: 6px;
   padding: 6px 12px;
   border-radius: 8px;
-  border: 1px solid #e4e4e7;
-  background: #ffffff;
-  color: #3f3f46;
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
+  background: var(--ai-bg, #ffffff);
+  color: var(--ai-text-secondary, #3f3f46);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -917,9 +920,9 @@ defineExpose({
 }
 
 .quick-chip-btn:hover {
-  border-color: #09090b;
-  color: #09090b;
-  background: #f4f4f5;
+  border-color: var(--ai-border-focus, #09090b);
+  color: var(--ai-text, #09090b);
+  background: var(--ai-bg-tertiary, #f4f4f5);
 }
 
 /* 消息列表 */
@@ -942,17 +945,17 @@ defineExpose({
 
 .user-msg-bubble {
   max-width: 80%;
-  background: #ffffff;
-  color: #09090b;
+  background: var(--ai-bg, #ffffff);
+  color: var(--ai-text, #09090b);
   padding: 10px 14px;
-  border: 1px solid #e4e4e7;
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
   border-radius: 12px 12px 2px 12px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .user-msg-bubble:hover {
-  border-color: #d4d4d8;
+  border-color: var(--ai-border-focus, #d4d4d8);
   box-shadow: 0 6px 18px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
   transform: translateY(-1px);
 }
@@ -977,7 +980,7 @@ defineExpose({
 }
 
 .user-msg-footer .msg-time {
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   font-size: 10.5px;
   font-family: 'Inter', -apple-system, sans-serif;
   font-weight: 500;
@@ -989,9 +992,9 @@ defineExpose({
   gap: 3px;
   padding: 1.5px 6px;
   border-radius: 4px;
-  background: #f4f4f5;
-  border: 1px solid #e4e4e7;
-  color: #52525b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
+  color: var(--ai-text-secondary, #52525b);
   font-size: 10.5px;
   font-weight: 500;
   cursor: pointer;
@@ -999,9 +1002,9 @@ defineExpose({
 }
 
 .user-msg-footer .msg-copy-btn:hover {
-  background: #e4e4e7;
-  color: #18181b;
-  border-color: #d4d4d8;
+  background: var(--ai-bg-secondary, #e4e4e7);
+  color: var(--ai-text, #18181b);
+  border-color: var(--ai-border-focus, #d4d4d8);
 }
 
 .assistant-msg-wrap {
@@ -1021,7 +1024,7 @@ defineExpose({
 .msg-content-box {
   font-size: 13.5px;
   line-height: 1.65;
-  color: #09090b;
+  color: var(--ai-text, #09090b);
 }
 
 .msg-actions-bar {
@@ -1042,7 +1045,7 @@ defineExpose({
 
 .msg-actions-bar .msg-time {
   font-size: 10px;
-  color: #a1a1aa;
+  color: var(--ai-text-faint, #a1a1aa);
   font-family: 'Inter', -apple-system, sans-serif;
   letter-spacing: -0.01em;
 }
@@ -1055,14 +1058,14 @@ defineExpose({
   border-radius: 4px;
   border: none;
   background: transparent;
-  color: #a1a1aa;
+  color: var(--ai-text-faint, #a1a1aa);
   cursor: pointer;
   transition: all 0.12s ease;
 }
 
 .msg-action-btn:hover {
-  background: #f4f4f5;
-  color: #18181b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  color: var(--ai-text, #18181b);
 }
 
 /* 浮动回顶/滚底与导航按钮 */
@@ -1080,21 +1083,21 @@ defineExpose({
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: #ffffff;
-  border: 1px solid #e4e4e7;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  background: var(--ai-bg, #ffffff);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
+  box-shadow: var(--ai-shadow-md, 0 4px 12px rgba(0, 0, 0, 0.08));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #18181b;
+  color: var(--ai-text, #18181b);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .center-scroll-fab-btn:hover {
-  background: #f4f4f5;
+  background: var(--ai-bg-tertiary, #f4f4f5);
   transform: translateY(-2px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--ai-shadow-lg, 0 6px 18px rgba(0, 0, 0, 0.12));
 }
 
 .center-msg-navigator {
@@ -1106,13 +1109,14 @@ defineExpose({
   gap: 4px;
   padding: 4px 8px;
   border-radius: 20px;
-  background: #ffffff;
-  border: 1px solid #e4e4e7;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  background: var(--ai-bg, #ffffff);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
+  box-shadow: var(--ai-shadow-md, 0 4px 14px rgba(0, 0, 0, 0.08));
   z-index: 55;
   font-size: 11px;
   font-family: 'JetBrains Mono', monospace;
   font-weight: 600;
+  color: var(--ai-text, #18181b);
 }
 
 .center-msg-navigator .nav-btn {
@@ -1125,13 +1129,13 @@ defineExpose({
   border: none;
   background: transparent;
   cursor: pointer;
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   transition: all 0.12s;
 }
 
 .center-msg-navigator .nav-btn:hover:not(.disabled) {
-  background: #f4f4f5;
-  color: #18181b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  color: var(--ai-text, #18181b);
 }
 
 .center-msg-navigator .nav-btn.disabled {
@@ -1140,7 +1144,7 @@ defineExpose({
 }
 
 .nav-indicator {
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   padding: 0 4px;
 }
 
@@ -1171,14 +1175,14 @@ defineExpose({
 .center-status-strip {
   height: 24px;
   padding: 0 16px;
-  background: #fafafa;
-  border-top: 1px solid #f4f4f5;
+  background: var(--ai-bg-secondary, #fafafa);
+  border-top: 1px solid var(--ai-border, #f4f4f5);
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
   font-weight: 500;
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   flex-shrink: 0;
   user-select: none;
 }
@@ -1197,12 +1201,44 @@ defineExpose({
 }
 
 .status-dot.online {
-  background: #10b981;
+  background: var(--ai-green, #10b981);
+}
+
+.status-dot.warning {
+  background: var(--ai-yellow, #f59e0b);
 }
 
 .icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+@media (max-width: 768px) {
+  .center-ai-topbar {
+    padding: 0 8px;
+    height: 38px;
+  }
+  .btn-dockback {
+    display: none !important;
+  }
+  .topbar-session-badge {
+    max-width: 100px;
+    font-size: 10px;
+  }
+  .center-chat-history {
+    padding: 8px 8px 110px 8px;
+  }
+  .center-msg-item {
+    max-width: 100%;
+    margin-bottom: 12px;
+  }
+  .center-composer-dock-pinned {
+    padding: 0 8px 4px 8px;
+  }
+  .center-status-strip {
+    padding: 0 8px;
+    font-size: 10px;
+  }
 }
 </style>

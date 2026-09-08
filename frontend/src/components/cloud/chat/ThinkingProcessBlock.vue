@@ -140,25 +140,24 @@ function toggleExpand() {
 
 <style scoped>
 .clean-thinking-card {
-  background: #ffffff;
-  border: 1px solid #e4e4e7;
+  background: var(--ai-bg, #ffffff);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
   border-radius: 8px;
   padding: 8px 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  box-shadow: var(--ai-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.03));
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
 }
 
 .clean-thinking-card:hover {
-  border-color: #d4d4d8;
-  background: #ffffff;
-  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  border-color: var(--ai-border-focus, #d4d4d8);
+  box-shadow: var(--ai-shadow-md, 0 4px 16px -2px rgba(0, 0, 0, 0.08));
   transform: translateY(-1px);
 }
 
 .clean-thinking-card.is-streaming {
-  border-color: #d4d4d8;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border-color: var(--ai-border-focus, #d4d4d8);
+  box-shadow: var(--ai-shadow-sm, 0 2px 8px rgba(0, 0, 0, 0.04));
 }
 
 .thinking-header-bar {
@@ -179,14 +178,14 @@ function toggleExpand() {
 .thinking-preview-title {
   font-size: 12px;
   font-weight: 500;
-  color: #3f3f46;
+  color: var(--ai-text-secondary, #3f3f46);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .thinking-chevron {
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -196,7 +195,7 @@ function toggleExpand() {
 
 .thinking-meta-time {
   font-size: 11px;
-  color: #a1a1aa;
+  color: var(--ai-text-faint, #a1a1aa);
   font-family: 'JetBrains Mono', monospace;
   margin-left: 8px;
   flex-shrink: 0;
@@ -240,7 +239,7 @@ function toggleExpand() {
   padding-top: 8px;
   font-size: 12.5px;
   line-height: 1.6;
-  color: #3f3f46;
+  color: var(--ai-text-secondary, #3f3f46);
   font-family: 'JetBrains Mono', monospace;
   user-select: text;
 }
@@ -250,5 +249,30 @@ function toggleExpand() {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+/* 暗色主题增强 */
+:root[data-theme='dark'] .clean-thinking-card {
+  background: #1e1e2e;
+  border-color: #313244;
+}
+
+:root[data-theme='dark'] .clean-thinking-card:hover {
+  border-color: #45475a;
+}
+
+:root[data-theme='dark'] .thinking-preview-title {
+  color: #cdd6f4;
+}
+
+:root[data-theme='dark'] .shimmer-text-stream {
+  background: linear-gradient(90deg, #cdd6f4 0%, #89b4fa 35%, #f5e0dc 50%, #89b4fa 65%, #cdd6f4 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+:root[data-theme='dark'] .thinking-content-body {
+  color: #bac2de;
 }
 </style>

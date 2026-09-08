@@ -18,7 +18,23 @@
         <div v-if="loading" class="ftn-loading"><span class="ftn-spinner"></span><span>加载中...</span></div>
         <template v-else>
           <TransitionGroup name="ftn-list" tag="div">
-            <FileTreeNode v-for="child in children" :key="child.path" :node="child" :depth="depth + 1" :selected-path="selectedPath" :load-children="loadChildren" :show-actions="showActions" :refresh-key="refreshKey" :has-clipboard="hasClipboard" @select="(p) => emit('select', p)" @newItem="(p, t) => emit('newItem', p, t)" @rename="(p, n) => emit('rename', p, n)" @delete="(p) => emit('delete', p)" @menu-action="(payload) => emit('menu-action', payload)"/>
+            <FileTreeNode
+              v-for="child in children"
+              :key="child.path"
+              :node="child"
+              :depth="depth + 1"
+              :selected-path="selectedPath"
+              :load-children="loadChildren"
+              :show-actions="showActions"
+              :refresh-key="refreshKey"
+              :collapse-key="collapseKey"
+              :has-clipboard="hasClipboard"
+              @select="(p) => emit('select', p)"
+              @newItem="(p, t) => emit('newItem', p, t)"
+              @rename="(p, n) => emit('rename', p, n)"
+              @delete="(p) => emit('delete', p)"
+              @menu-action="(payload) => emit('menu-action', payload)"
+            />
           </TransitionGroup>
           <button v-if="nextOffset !== null" class="ftn-load-more" type="button" @click.stop="loadMore">加载更多</button>
         </template>
@@ -56,6 +72,7 @@ const props = defineProps({
   loadChildren: { type: Function, default: null },
   showActions: { type: Boolean, default: false },
   refreshKey: { type: [Number, String], default: 0 },
+  collapseKey: { type: Number, default: 0 },
   hasClipboard: { type: Boolean, default: false }
 })
 const emit = defineEmits(['select', 'newItem', 'rename', 'delete', 'menu-action'])
@@ -95,6 +112,14 @@ watch(() => props.refreshKey, () => {
     loaded.value = false
     nextOffset.value = null
   }
+})
+
+watch(() => props.collapseKey, () => {
+  if (props.node.type !== 'directory') return
+  expanded.value = false
+  children.value = []
+  loaded.value = false
+  nextOffset.value = null
 })
 
 async function loadPage(offset = 0, append = false) {
@@ -151,27 +176,27 @@ function onMenuAction({ action, node }) {
 </script>
 <style scoped>
 .ftn { user-select: none; font-size: 13px; }
-.ftn-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; cursor: pointer; color: #3f3f46; transition: all 0.12s ease; margin: 2px 0; outline: none; border: 1px solid transparent; }
-.ftn-row:hover { background: #f4f4f5; color: #18181b; }
+.ftn-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; cursor: pointer; color: var(--theme-text, #3f3f46); transition: all 0.12s ease; margin: 2px 0; outline: none; border: 1px solid transparent; }
+.ftn-row:hover { background: var(--bg-hover, #f4f4f5); color: var(--text-primary, #18181b); }
 .ftn-row:focus, .ftn-row:focus-visible, .ftn-row:active { outline: none !important; }
-.ftn-row.selected { background: #f4f4f5; border-color: #e4e4e7; color: #09090b; font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
-.ftn-row.selected .ftn-name { color: #09090b; font-weight: 600; }
-.ftn-row.dir.selected { background: #f4f4f5; border-color: #e4e4e7; }
-.ftn-arrow { width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: #71717a; transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1); }
-.ftn-arrow.open { transform: rotate(90deg); color: #18181b; }
-.ftn-folder-icon { flex-shrink: 0; display: flex; align-items: center; transition: all 0.15s ease; }
+.ftn-row.selected { background: var(--theme-accent-soft, #f4f4f5); border-color: var(--border-light, #e4e4e7); color: var(--theme-text, #09090b); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+.ftn-row.selected .ftn-name { color: var(--theme-text, #09090b); font-weight: 600; }
+.ftn-row.dir.selected { background: var(--theme-accent-soft, #f4f4f5); border-color: var(--border-light, #e4e4e7); }
+.ftn-arrow { width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--theme-text-muted, #71717a); transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.ftn-arrow.open { transform: rotate(90deg); color: var(--theme-text, #18181b); }
+.ftn-folder-icon { flex-shrink: 0; display: flex; align-items: center; transition: all 0.15s ease; color: #d97706; }
 .ftn-file-icon { flex-shrink: 0; display: flex; align-items: center; }
-.ftn-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; }
-.ftn-count { font-size: 10px; color: #a1a1aa; background: #f4f4f5; padding: 1px 6px; border-radius: 8px; flex-shrink: 0; }
-.ftn-children { padding-left: 6px; margin-left: 8px; border-left: 1px solid #e4e4e7; }
-.ftn-loading { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: #71717a; font-size: 12px; }
-.ftn-load-more { width: calc(100% - 8px); margin: 5px 4px; padding: 5px 8px; border: 1px solid #e4e4e7; border-radius: 6px; background: #fff; color: #18181b; font: inherit; font-size: 12px; cursor: pointer; }
-.ftn-load-more:hover { background: #f4f4f5; border-color: #d4d4d8; }
-.ftn-spinner { width: 14px; height: 14px; border: 2px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: ftn-spin 0.6s linear infinite; }
+.ftn-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; color: var(--theme-text, #18181b); }
+.ftn-count { font-size: 10px; color: var(--theme-text-muted, #a1a1aa); background: var(--theme-surface-muted, #f4f4f5); padding: 1px 6px; border-radius: 8px; flex-shrink: 0; }
+.ftn-children { padding-left: 6px; margin-left: 8px; border-left: 1px solid var(--theme-border, #e4e4e7); }
+.ftn-loading { display: flex; align-items: center; gap: 8px; padding: 6px 8px; color: var(--theme-text-muted, #71717a); font-size: 12px; }
+.ftn-load-more { width: calc(100% - 8px); margin: 5px 4px; padding: 5px 8px; border: 1px solid var(--theme-border, #e4e4e7); border-radius: 6px; background: var(--theme-surface, #fff); color: var(--theme-text, #18181b); font: inherit; font-size: 12px; cursor: pointer; }
+.ftn-load-more:hover { background: var(--theme-surface-muted, #f4f4f5); border-color: var(--border-medium, #d4d4d8); }
+.ftn-spinner { width: 14px; height: 14px; border: 2px solid var(--theme-border, #e5e7eb); border-top-color: var(--theme-accent, #6366f1); border-radius: 50%; animation: ftn-spin 0.6s linear infinite; }
 @keyframes ftn-spin { to { transform: rotate(360deg); } }
-.ftn-action-btn { display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border: none; background: transparent; color: #9ca3af; cursor: pointer; border-radius: 4px; padding: 0; flex-shrink: 0; }
+.ftn-action-btn { display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border: none; background: transparent; color: var(--theme-text-muted, #9ca3af); cursor: pointer; border-radius: 4px; padding: 0; flex-shrink: 0; }
 .ftn-row:hover .ftn-action-btn { display: flex; }
-.ftn-action-btn:hover { background: #e5e7eb; color: #4b5563; }
+.ftn-action-btn:hover { background: rgba(0, 0, 0, 0.06); color: var(--theme-text, #4b5563); }
 .ftn-slide-enter-active { transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); overflow: hidden; }
 .ftn-slide-leave-active { transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1); overflow: hidden; }
 .ftn-slide-enter-from, .ftn-slide-leave-to { opacity: 0; max-height: 0; transform: translateY(-4px); }
@@ -182,19 +207,24 @@ function onMenuAction({ action, node }) {
 .ftn-list-leave-to { opacity: 0; transform: translateX(-4px); }
 .ftn-list-move { transition: transform 0.2s ease; }
 
-:global([data-theme="dark"]) .ftn-row { color: #a9b1d6; }
+:global([data-theme="dark"]) .ftn-row,
+:global(html[data-theme="dark"] .ftn-row) { color: #bac2de; }
 :global([data-theme="dark"]) .ftn-name { color: #c0caf5; }
-:global([data-theme="dark"]) .ftn-arrow { color: #a9b1d6; }
+:global(html[data-theme="dark"] .ftn-name) { color: #edf1fb; }
 :global([data-theme="dark"]) .ftn-folder-icon svg,
-:global([data-theme="dark"]) .ftn-file-icon svg { stroke: #a9b1d6 !important; }
-:global([data-theme="dark"]) .ftn-row:hover { background: #282a3a; }
-:global([data-theme="dark"]) .ftn-row.selected,
-:global([data-theme="dark"]) .ftn-row.dir.selected { background: #1a1d3a; border-color: #2e3a5e; }
-:global([data-theme="dark"]) .ftn-row.selected .ftn-name { color: #7aa2f7; }
-:global([data-theme="dark"]) .ftn-count { background: #282a3a; color: #787c99; }
-:global([data-theme="dark"]) .ftn-children { border-left-color: #383a50; }
-:global([data-theme="dark"]) .ftn-loading { color: #a9b1d6; }
-:global([data-theme="dark"]) .ftn-load-more { background: #1f2033; border-color: #383a50; color: #7aa2f7; }
-:global([data-theme="dark"]) .ftn-load-more:hover { background: #282a3a; }
-:global([data-theme="dark"]) .ftn-action-btn:hover { background: #383a50; color: #c0caf5; }
+:global([data-theme="dark"]) .ftn-file-icon svg { stroke: #a9b1d6; }
+:global(html[data-theme="dark"] .ftn-arrow) { color: #778195; }
+:global(html[data-theme="dark"] .ftn-arrow.open) { color: #cdd6f4; }
+:global(html[data-theme="dark"] .ftn-folder-icon) { color: #e5a93c; }
+:global(html[data-theme="dark"] .ftn-row:hover) { background: rgba(255, 255, 255, 0.06); color: #ffffff; }
+:global(html[data-theme="dark"] .ftn-row:hover .ftn-name) { color: #ffffff; }
+:global(html[data-theme="dark"] .ftn-row.selected),
+:global(html[data-theme="dark"] .ftn-row.dir.selected) { background: rgba(99, 102, 241, 0.25); border-color: rgba(99, 102, 241, 0.45); color: #ffffff; }
+:global(html[data-theme="dark"] .ftn-row.selected .ftn-name) { color: #ffffff; font-weight: 600; }
+:global(html[data-theme="dark"] .ftn-count) { background: #202432; color: #8c96a8; }
+:global(html[data-theme="dark"] .ftn-children) { border-left-color: rgba(255, 255, 255, 0.08); }
+:global(html[data-theme="dark"] .ftn-loading) { color: #8c96a8; }
+:global(html[data-theme="dark"] .ftn-load-more) { background: #181b24; border-color: #272a37; color: #818cf8; }
+:global(html[data-theme="dark"] .ftn-load-more:hover) { background: #202432; color: #a5b4fc; }
+:global(html[data-theme="dark"] .ftn-action-btn:hover) { background: #2e3448; color: #ffffff; }
 </style>

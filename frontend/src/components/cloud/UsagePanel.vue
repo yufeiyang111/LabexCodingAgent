@@ -262,14 +262,15 @@ function handleResize() {
 function initOrUpdatePieChart() {
   if (!pieRef.value) return
   if (!pieChart) pieChart = echarts.init(pieRef.value)
+  const isDarkTheme = props.isDark
   pieChart.setOption({
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
     series: [{
       type: 'pie',
       radius: ['45%', '72%'],
       center: ['50%', '50%'],
-      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
-      label: { show: true, fontSize: 11, color: '#71717a', formatter: '{b}\n{d}%' },
+      itemStyle: { borderRadius: 6, borderColor: isDarkTheme ? '#1e1e2e' : '#fff', borderWidth: 2 },
+      label: { show: true, fontSize: 11, color: isDarkTheme ? '#a6adc8' : '#71717a', formatter: '{b}\n{d}%' },
       data: [
         { value: computedPrompt.value, name: '输入 (Prompt)', itemStyle: { color: '#3b82f6' } },
         { value: computedCompletion.value, name: '输出 (Completion)', itemStyle: { color: '#10b981' } }
@@ -283,16 +284,17 @@ function initOrUpdateTimelineChart() {
     if (!timelineChart) timelineChart = echarts.init(timelineRef.value)
     const days = Object.keys(props.allTokenStats.byDay).sort()
     const totals = days.map(d => props.allTokenStats.byDay[d] || 0)
+    const isDarkTheme = props.isDark
     timelineChart.setOption({
       tooltip: { trigger: 'axis' },
       grid: { left: 45, right: 16, top: 16, bottom: 28 },
-      xAxis: { type: 'category', data: days.map(d => d.substring(5)), axisLabel: { fontSize: 10, color: '#71717a' }, axisLine: { lineStyle: { color: '#e4e4e7' } } },
-      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#71717a', formatter: v => formatTokens(v) }, splitLine: { lineStyle: { color: '#f4f4f5' } } },
+      xAxis: { type: 'category', data: days.map(d => d.substring(5)), axisLabel: { fontSize: 10, color: isDarkTheme ? '#a6adc8' : '#71717a' }, axisLine: { lineStyle: { color: isDarkTheme ? '#313244' : '#e4e4e7' } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: isDarkTheme ? '#a6adc8' : '#71717a', formatter: v => formatTokens(v) }, splitLine: { lineStyle: { color: isDarkTheme ? '#272a37' : '#f4f4f5' } } },
       series: [{
         type: 'bar',
         data: totals,
         barWidth: '40%',
-        itemStyle: { color: '#09090b', borderRadius: [4, 4, 0, 0] }
+        itemStyle: { color: isDarkTheme ? '#818cf8' : '#09090b', borderRadius: [4, 4, 0, 0] }
       }]
     })
   } else if (timelineChart) {
@@ -305,7 +307,10 @@ function initOrUpdateModelChart() {
   if (modelRef.value && hasModelData.value) {
     if (!modelChart) modelChart = echarts.init(modelRef.value)
     const models = Object.entries(props.allTokenStats.byModel).map(([name, val]) => ({ name, value: val }))
-    const colors = ['#09090b', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899']
+    const isDarkTheme = props.isDark
+    const colors = isDarkTheme
+      ? ['#818cf8', '#38bdf8', '#34d399', '#fbbf24', '#c084fc', '#f472b6']
+      : ['#09090b', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899']
     modelChart.setOption({
       tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
       series: [{
@@ -313,8 +318,8 @@ function initOrUpdateModelChart() {
         radius: ['35%', '65%'],
         center: ['50%', '50%'],
         roseType: 'area',
-        itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
-        label: { fontSize: 10, color: '#71717a' },
+        itemStyle: { borderRadius: 4, borderColor: isDarkTheme ? '#1e1e2e' : '#fff', borderWidth: 2 },
+        label: { fontSize: 10, color: isDarkTheme ? '#a6adc8' : '#71717a' },
         data: models.map((m, i) => ({ ...m, itemStyle: { color: colors[i % colors.length] } }))
       }]
     })
@@ -327,11 +332,12 @@ function initOrUpdateModelChart() {
 function initOrUpdateSessionChart() {
   if (sessionRef.value && props.sessionHistory?.length > 0) {
     if (!sessionChart) sessionChart = echarts.init(sessionRef.value)
+    const isDarkTheme = props.isDark
     sessionChart.setOption({
       tooltip: { trigger: 'axis' },
       grid: { left: 45, right: 16, top: 16, bottom: 28 },
-      xAxis: { type: 'category', data: props.sessionHistory.map((s, i) => s.title ? s.title.substring(0, 6) : `#${i + 1}`), axisLabel: { fontSize: 10, color: '#71717a' }, axisLine: { lineStyle: { color: '#e4e4e7' } } },
-      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#71717a', formatter: v => formatTokens(v) }, splitLine: { lineStyle: { color: '#f4f4f5' } } },
+      xAxis: { type: 'category', data: props.sessionHistory.map((s, i) => s.title ? s.title.substring(0, 6) : `#${i + 1}`), axisLabel: { fontSize: 10, color: isDarkTheme ? '#a6adc8' : '#71717a' }, axisLine: { lineStyle: { color: isDarkTheme ? '#313244' : '#e4e4e7' } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: isDarkTheme ? '#a6adc8' : '#71717a', formatter: v => formatTokens(v) }, splitLine: { lineStyle: { color: isDarkTheme ? '#272a37' : '#f4f4f5' } } },
       series: [
         { name: '输入', type: 'bar', stack: 'total', data: props.sessionHistory.map(s => s.promptTokens || 0), itemStyle: { color: '#3b82f6' } },
         { name: '输出', type: 'bar', stack: 'total', data: props.sessionHistory.map(s => s.completionTokens || 0), itemStyle: { color: '#10b981' } }
@@ -352,7 +358,7 @@ function updateAllCharts() {
   })
 }
 
-watch([() => props.allTokenStats, () => props.tokenUsage, () => props.sessionHistory], () => {
+watch([() => props.allTokenStats, () => props.tokenUsage, () => props.sessionHistory, () => props.isDark], () => {
   updateAllCharts()
 }, { deep: true })
 
@@ -637,5 +643,103 @@ onBeforeUnmount(() => {
   color: #047857;
   background: #ecfdf5;
   border-color: #a7f3d0;
+}
+
+/* 暗色主题深度增强 */
+:global(html[data-theme='dark'] .kpi-card) {
+  background: #1e1e2e;
+  border-color: #313244;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+:global(html[data-theme='dark'] .kpi-card.total-card) {
+  background: #1e1e2e;
+  border-color: #818cf8;
+}
+
+:global(html[data-theme='dark'] .kpi-label) {
+  color: #a6adc8;
+}
+
+:global(html[data-theme='dark'] .kpi-value) {
+  color: #edf1fb;
+}
+
+:global(html[data-theme='dark'] .kpi-sub) {
+  color: #778195;
+}
+
+:global(html[data-theme='dark'] .cache-telemetry-card) {
+  background: #181825;
+  border-color: #313244;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+:global(html[data-theme='dark'] .cache-title) {
+  color: #edf1fb;
+}
+
+:global(html[data-theme='dark'] .cache-badge) {
+  background: #242538;
+  border-color: #384158;
+  color: #a6adc8;
+}
+
+:global(html[data-theme='dark'] .cache-rate-tag) {
+  background: rgba(124, 58, 237, 0.2);
+  border-color: rgba(124, 58, 237, 0.4);
+  color: #c4b5fd;
+}
+
+:global(html[data-theme='dark'] .prefix-rate-tag) {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #6ee7b7;
+}
+
+:global(html[data-theme='dark'] .cache-model-select) {
+  background: #202430;
+  border-color: #384158;
+  color: #edf1fb;
+}
+
+:global(html[data-theme='dark'] .cache-desc) {
+  color: #a6adc8;
+}
+
+:global(html[data-theme='dark'] .cache-chip) {
+  background: #1e1e2e;
+  border-color: #313244;
+  color: #a6adc8;
+}
+
+:global(html[data-theme='dark'] .cache-chip strong) {
+  color: #edf1fb;
+}
+
+:global(html[data-theme='dark'] .chart-box) {
+  background: #1e1e2e;
+  border-color: #313244;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+:global(html[data-theme='dark'] .chart-header),
+:global(html[data-theme='dark'] .section-title) {
+  color: #edf1fb;
+}
+
+:global(html[data-theme='dark'] .session-card-item) {
+  background: #1e1e2e;
+  border-color: #313244;
+}
+
+:global(html[data-theme='dark'] .session-name),
+:global(html[data-theme='dark'] .session-tokens) {
+  color: #edf1fb;
+}
+
+:global(html[data-theme='dark'] .session-index),
+:global(html[data-theme='dark'] .session-io) {
+  color: #778195;
 }
 </style>

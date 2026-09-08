@@ -104,12 +104,12 @@ function finish(result) {
 .fcd-btn.primary { border: none; background: #4f46e5; color: #fff; }
 .fcd-btn.primary:hover { background: #4338ca; }
 
-:global([data-theme="dark"]) .fcd-dialog { background: #1f2033; }
-:global([data-theme="dark"]) .fcd-dialog h3 { color: #c0caf5; }
-:global([data-theme="dark"]) .fcd-target { background: #171827; border-color: #383a50; }
-:global([data-theme="dark"]) .fcd-name { color: #a9b1d6; }
-:global([data-theme="dark"]) .fcd-apply-rest { color: #a9b1d6; }
-:global([data-theme="dark"]) .fcd-btn.outline { background: #1f2033; border-color: #383a50; color: #a9b1d6; }
+:global(html[data-theme="dark"] .fcd-dialog) { background: #1f2033; }
+:global(html[data-theme="dark"] .fcd-dialog h3) { color: #c0caf5; }
+:global(html[data-theme="dark"] .fcd-target) { background: #171827; border-color: #383a50; }
+:global(html[data-theme="dark"] .fcd-name) { color: #a9b1d6; }
+:global(html[data-theme="dark"] .fcd-apply-rest) { color: #a9b1d6; }
+:global(html[data-theme="dark"] .fcd-btn.outline) { background: #1f2033; border-color: #383a50; color: #a9b1d6; }
 
 .fcd-enter-active, .fcd-leave-active { transition: opacity 0.15s ease; }
 .fcd-enter-from, .fcd-leave-to { opacity: 0; }

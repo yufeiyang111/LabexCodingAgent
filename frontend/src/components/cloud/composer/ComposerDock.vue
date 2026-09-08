@@ -504,10 +504,10 @@ defineExpose({
 }
 
 .composer-card {
-  background: #ffffff;
-  border: 1px solid #e4e4e7;
+  background: var(--ai-bg, #ffffff);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
   border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--ai-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.04));
   display: flex;
   flex-direction: column;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
@@ -516,13 +516,13 @@ defineExpose({
 }
 
 .composer-card:focus-within {
-  border-color: #a1a1aa;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+  border-color: var(--ai-border-focus, #a1a1aa);
+  box-shadow: var(--ai-shadow-md, 0 4px 14px rgba(0, 0, 0, 0.06));
 }
 
 .composer-card.is-image-dragover {
-  border-color: #09090b;
-  background: #fafafa;
+  border-color: var(--ai-accent, #09090b);
+  background: var(--ai-bg-tertiary, #fafafa);
 }
 
 /* 预设指令选择列表框 (从输入框向上延展) */
@@ -532,10 +532,10 @@ defineExpose({
   left: 0;
   width: min(340px, 100%);
   max-height: 280px;
-  background: #ffffff;
-  border: 1px solid #e4e4e7;
+  background: var(--ai-bg, #ffffff);
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
   border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--ai-shadow-lg, 0 12px 32px rgba(0, 0, 0, 0.12));
   z-index: 100000;
   display: flex;
   flex-direction: column;
@@ -544,8 +544,8 @@ defineExpose({
 
 .slash-menu-header {
   padding: 8px 12px;
-  background: #fafafa;
-  border-bottom: 1px solid #f4f4f5;
+  background: var(--ai-bg-tertiary, #fafafa);
+  border-bottom: 1px solid var(--ai-border, #f4f4f5);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -554,12 +554,12 @@ defineExpose({
 .slash-menu-title {
   font-size: 11.5px;
   font-weight: 600;
-  color: #09090b;
+  color: var(--ai-text, #09090b);
 }
 
 .slash-menu-tip {
   font-size: 10.5px;
-  color: #a1a1aa;
+  color: var(--ai-text-faint, #a1a1aa);
 }
 
 .slash-menu-list {
@@ -581,19 +581,19 @@ defineExpose({
 
 .slash-menu-item.active,
 .slash-menu-item:hover {
-  background: #f4f4f5;
+  background: var(--ai-bg-tertiary, #f4f4f5);
 }
 
 .slash-item-cmd {
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
   font-size: 12px;
-  color: #09090b;
+  color: var(--ai-text, #09090b);
 }
 
 .slash-item-desc {
   font-size: 11.5px;
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -603,18 +603,18 @@ defineExpose({
   padding: 12px;
   text-align: center;
   font-size: 11.5px;
-  color: #a1a1aa;
+  color: var(--ai-text-faint, #a1a1aa);
 }
 
 .composer-code-context {
   padding: 6px 12px;
-  background: #fafafa;
-  border-bottom: 1px solid #f4f4f5;
+  background: var(--ai-bg-tertiary, #fafafa);
+  border-bottom: 1px solid var(--ai-border, #f4f4f5);
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
-  color: #3f3f46;
+  color: var(--ai-text-secondary, #3f3f46);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -622,7 +622,7 @@ defineExpose({
   margin-left: auto;
   border: none;
   background: transparent;
-  color: #a1a1aa;
+  color: var(--ai-text-faint, #a1a1aa);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -630,7 +630,7 @@ defineExpose({
 }
 
 .btn-remove-code:hover {
-  color: #09090b;
+  color: var(--ai-text, #09090b);
 }
 
 .composer-text-pane {
@@ -648,7 +648,7 @@ defineExpose({
   font-family: inherit;
   font-size: 13px;
   line-height: 1.5;
-  color: #09090b;
+  color: var(--ai-text, #09090b);
   resize: none;
 }
 
@@ -676,7 +676,7 @@ defineExpose({
   border: 1px solid transparent;
   background: transparent;
   border-radius: 6px;
-  color: #71717a;
+  color: var(--ai-text-muted, #71717a);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -686,8 +686,8 @@ defineExpose({
 
 .icon-action-btn:hover,
 .icon-action-btn.active {
-  background: #f4f4f5;
-  color: #09090b;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  color: var(--ai-text, #09090b);
 }
 
 .icon-action-btn:disabled {
@@ -699,8 +699,8 @@ defineExpose({
   width: 26px;
   height: 26px;
   border: none;
-  background: #18181b;
-  color: #ffffff;
+  background: var(--ai-accent, #18181b);
+  color: var(--ai-bg, #ffffff);
   border-radius: 6px;
   display: flex;
   align-items: center;
@@ -711,22 +711,22 @@ defineExpose({
 }
 
 .btn-send:hover:not(:disabled) {
-  background: #27272a;
+  background: var(--ai-accent-hover, #27272a);
 }
 
 .btn-send:disabled {
-  background: #f4f4f5;
-  color: #d4d4d8;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  color: var(--ai-text-faint, #d4d4d8);
   cursor: not-allowed;
 }
 
 .btn-send.is-loading {
-  background: #fee2e2;
-  color: #dc2626;
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--ai-red, #dc2626);
 }
 
 .btn-send.is-loading:hover {
-  background: #fecaca;
+  background: rgba(239, 68, 68, 0.25);
 }
 
 /* Transitions */
@@ -739,5 +739,31 @@ defineExpose({
 .composer-slash-pop-leave-to {
   opacity: 0;
   transform: translateY(6px);
+}
+
+@media (max-width: 768px) {
+  .composer-card {
+    border-radius: 12px;
+  }
+  .composer-textarea {
+    font-size: 14px;
+    padding: 8px 10px;
+    min-height: 38px;
+  }
+  .icon-action-btn {
+    width: 32px;
+    height: 32px;
+  }
+  .btn-send {
+    width: 32px;
+    height: 32px;
+  }
+  .composer-slash-menu {
+    width: min(300px, calc(100vw - 20px));
+    max-height: 200px;
+  }
+  .composer-footer-bar {
+    padding: 4px 6px 6px;
+  }
 }
 </style>

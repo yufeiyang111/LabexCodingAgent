@@ -82,5 +82,12 @@ onBeforeUnmount(() => {
 .theme-drawer-transition-enter-active .theme-drawer, .theme-drawer-transition-leave-active .theme-drawer { transition: transform .24s ease; }
 .theme-drawer-transition-enter-from, .theme-drawer-transition-leave-to { opacity: 0; }
 .theme-drawer-transition-enter-from .theme-drawer, .theme-drawer-transition-leave-to .theme-drawer { transform: translateX(100%); }
-@media (max-width: 560px) { .theme-drawer { width: 100vw; } .theme-drawer__header, .theme-drawer__footer { padding-left: 24px; padding-right: 24px; } .theme-drawer__body { padding-left: 24px; padding-right: 24px; } }
+@media (max-width: 640px) {
+  .theme-drawer { width: 100vw; }
+  .theme-drawer__header { padding: 18px 20px; }
+  .theme-drawer__header h2 { font-size: 20px; }
+  .theme-drawer__header p { font-size: 13px; }
+  .theme-drawer__body { padding: 20px 16px 36px; }
+  .theme-drawer__footer { padding: 16px 20px; }
+}
 </style>

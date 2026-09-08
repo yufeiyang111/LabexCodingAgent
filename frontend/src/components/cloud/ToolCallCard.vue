@@ -41,10 +41,10 @@
       <div class="tc-header-right">
         <!-- 运行中/已完成均可一键打开子代理独立会话（拖出详情查看完整工作轨迹） -->
         <button
-          v-if="isTaskTool && call.subagentId"
+          v-if="isTaskTool && (call.subagentId || resolvedSubagentId)"
           type="button"
           class="tc-subagent-header-open"
-          @click.stop="emit('open-subagent', { subagentId: call.subagentId, name: subagentData?.name })"
+          @click.stop="emit('open-subagent', { subagentId: call.subagentId || resolvedSubagentId, name: subagentData?.name })"
           title="打开子代理独立会话，查看实时工作详情"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
@@ -65,101 +65,124 @@
       <div v-if="expanded" class="tc-body">
         <!-- 专有：子代理任务专属可视化面板 -->
         <div v-if="isTaskTool && subagentData" class="tc-subagent-card-body">
-          <!-- 任务诉求 -->
-          <div class="tc-subagent-section">
-            <div class="tc-subagent-section-title">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-              <span>探索目标</span>
+          <!-- 任务目标栏 (极简现代扁平条) -->
+          <div class="tc-subagent-target-bar">
+            <div class="tc-subagent-target-header">
+              <div class="tc-subagent-target-label">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+                <span>探索目标</span>
+              </div>
+              <span class="tc-subagent-mode-badge" :class="subagentData.subagentType">
+                {{ subagentData.subagentType === 'general' ? '读写执行' : '只读调研' }}
+              </span>
             </div>
-            <div class="tc-subagent-prompt-box">{{ subagentData.prompt || subagentData.description }}</div>
+            <div class="tc-subagent-target-text">{{ subagentData.prompt || subagentData.description }}</div>
           </div>
 
           <!-- 正在运行中动画 + 实时当前工具 -->
           <div v-if="call.status === 'running'" class="tc-subagent-running-pulse">
             <svg class="badge-icon-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-            <span>{{ call.subagentCurrentTool || '子代理正在独立调研代码库与依赖，请稍候...' }}</span>
+            <span>{{ call.subagentCurrentTool || '子代理正在独立调研中，请稍候...' }}</span>
           </div>
 
-          <!-- 打开子代理独立会话标签页 -->
-          <button
-            v-if="call.subagentId"
-            type="button"
-            class="tc-subagent-open-btn"
-            @click.stop="emit('open-subagent', { subagentId: call.subagentId, name: subagentData?.name })"
-            title="在新标签页打开该子代理的独立会话"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-            <span>打开子代理会话</span>
-          </button>
-
-          <div v-if="subagentTrace.length > 0" class="tc-subagent-trace">
-            <div class="tc-subagent-section-title">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-              <span>工作过程</span>
-              <span v-if="subagentData && subagentData.subagentType" class="tc-subagent-trace-meta">{{ subagentData.subagentType }}</span>
+          <!-- 工作过程（如果有工具调用轨迹，默认可折叠） -->
+          <div v-if="subagentTrace.length > 0" class="tc-subagent-trace-section">
+            <div class="tc-subagent-trace-header" @click="traceExpanded = !traceExpanded">
+              <div class="tc-subagent-trace-title">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                <span>执行过程轨迹 ({{ visibleSubagentTrace.length }} 步)</span>
+              </div>
+              <button type="button" class="tc-subagent-trace-toggle">
+                <span>{{ traceExpanded ? '收起' : '查看' }}</span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" :style="{ transform: traceExpanded ? 'rotate(180deg)' : 'none', transition: 'transform .18s' }"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
             </div>
-            <div class="tc-subagent-trace-list">
+            <div v-if="traceExpanded" class="tc-subagent-trace-list">
               <div v-for="entry in visibleSubagentTrace" :key="String(entry.sequence)" class="tc-subagent-trace-entry">
                 <span class="tc-subagent-trace-kind">{{ subagentEventLabel(entry.type) }}</span>
                 <code>{{ entry.payload }}</code>
               </div>
             </div>
-            <div v-if="subagentTrace.length > visibleSubagentTrace.length" class="tc-subagent-trace-more">
-              仅显示最近 {{ visibleSubagentTrace.length }} 条，完整轨迹在子代理会话中
-            </div>
-            <div v-if="call.subagentLiveOutput" class="tc-subagent-live-output">{{ subagentLiveOutputPreview }}</div>
           </div>
 
-          <div v-if="call.subagentError" class="tc-subagent-error">
-            <span class="tc-subagent-error-label">执行失败</span>
-            <div class="tc-subagent-markdown-box" v-html="renderSubagentReport(subagentErrorPreview)"></div>
-            <span v-if="call.subagentError.length > subagentErrorPreview.length" class="tc-subagent-truncated-hint">
-              内容已截断，完整报告在子代理会话中
-            </span>
+          <!-- 真正的系统级底层异常（仅当没有产出成果报告且确实存在故障时展示） -->
+          <div v-if="subagentSystemError" class="tc-subagent-system-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <div class="tc-subagent-error-msg">{{ subagentSystemError }}</div>
           </div>
 
-          <!-- 结构化结论 -->
-          <div v-if="call.status === 'completed' || call.result" class="tc-subagent-results">
-            <!-- 调研发现 -->
-            <div v-if="subagentData.findings" class="tc-subagent-section">
-              <div class="tc-subagent-section-title">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                <span>调研发现 (Findings)</span>
+          <!-- 核心：成果报告卡片 (全量对齐主界面 Markdown 呈现) -->
+          <div v-if="subagentReportContent" class="tc-subagent-deliverable-card">
+            <!-- 顶栏 -->
+            <div class="tc-subagent-deliverable-header">
+              <div class="tc-subagent-deliverable-title">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                <span>成果报告与结论</span>
+                <span class="tc-subagent-deliverable-pill">{{ subagentData.subagentType }}</span>
               </div>
-              <div class="tc-subagent-markdown-box" v-html="renderSubagentReport(findingsPreview)"></div>
-              <span v-if="subagentData.findings.length > findingsPreview.length" class="tc-subagent-truncated-hint">
-                内容已截断，完整报告在子代理会话中
-              </span>
-            </div>
-
-            <!-- 关联文件 (支持一键打开) -->
-            <div v-if="subagentData.relevantFiles.length > 0" class="tc-subagent-section">
-              <div class="tc-subagent-section-title">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                <span>关联文件 (点击在编辑器中打开)</span>
-              </div>
-              <div class="tc-subagent-files-grid">
+              <div class="tc-subagent-deliverable-tools">
                 <button
-                  v-for="(fpath, fIdx) in subagentData.relevantFiles"
-                  :key="fIdx"
                   type="button"
-                  class="tc-subagent-file-chip"
-                  @click.stop="emitOpenFile(fpath)"
-                  :title="'打开 ' + fpath"
+                  class="tc-subagent-tool-btn"
+                  @click.stop="copySubagentReport"
+                  title="复制完整 Markdown 报告"
                 >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
-                  <span class="tc-subagent-file-name">{{ fpath }}</span>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  <span>复制报告</span>
+                </button>
+                <button
+                  v-if="call.subagentId || resolvedSubagentId"
+                  type="button"
+                  class="tc-subagent-tool-btn"
+                  @click.stop="emit('open-subagent', { subagentId: call.subagentId || resolvedSubagentId, name: subagentData?.name })"
+                  title="在新标签页打开该子代理的独立会话"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                  <span>会话详情</span>
                 </button>
               </div>
             </div>
 
-            <!-- 后续建议 -->
-            <div v-if="subagentData.nextSteps" class="tc-subagent-section">
-              <div class="tc-subagent-section-title">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-                <span>后续建议 (Suggested Next Steps)</span>
-              </div>
-              <div class="tc-subagent-markdown-box" v-html="renderSubagentReport(nextStepsPreview)"></div>
+            <!-- 正文 Markdown 视窗 -->
+            <div
+              class="tc-subagent-markdown-body markdown-rendered"
+              :class="{ 'is-clamped': !reportExpanded && shouldClampReport }"
+              v-html="renderSubagentReport(subagentReportContent)"
+              @click="e => emit('markdown-click', e)"
+            ></div>
+
+            <!-- 超长折叠渐变条 -->
+            <div
+              v-if="shouldClampReport"
+              class="tc-subagent-expand-bar"
+              :class="{ 'is-expanded': reportExpanded }"
+              @click.stop="reportExpanded = !reportExpanded"
+            >
+              <button type="button" class="tc-subagent-toggle-report-btn">
+                <span>{{ reportExpanded ? '收起成果报告' : '展开完整成果报告' }}</span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" :style="{ transform: reportExpanded ? 'rotate(180deg)' : 'none', transition: 'transform .18s' }"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 关联文件 (支持一键打开) -->
+          <div v-if="subagentData.relevantFiles && subagentData.relevantFiles.length > 0" class="tc-subagent-files-section">
+            <div class="tc-subagent-files-title">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <span>关联文件 (点击在工作区打开)</span>
+            </div>
+            <div class="tc-subagent-files-chips">
+              <button
+                v-for="(fpath, fIdx) in subagentData.relevantFiles"
+                :key="fIdx"
+                type="button"
+                class="tc-subagent-file-chip"
+                @click.stop="emitOpenFile(fpath)"
+                :title="'打开 ' + fpath"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                <span class="tc-subagent-file-name">{{ fpath }}</span>
+              </button>
             </div>
           </div>
         </div>
@@ -405,11 +428,28 @@ function subagentEventLabel(type) {
   }
 }
 
-const emit = defineEmits(['permission', 'command-approval', 'question', 'open-file', 'open-preview', 'open-subagent'])
+const emit = defineEmits(['permission', 'command-approval', 'question', 'open-file', 'open-preview', 'open-subagent', 'markdown-click'])
 
 const expanded = ref(false)
+const traceExpanded = ref(false)
+const reportExpanded = ref(false)
 const answerDraft = ref('')
 const commandSubmitting = ref(false)
+
+function isReportLike(text) {
+  if (!text) return false
+  const s = String(text).trim()
+  if (s.includes('##') || s.includes('|---|') || s.includes('```')) return true
+  if (s.length > 80 && (s.includes('\n-') || s.includes('\n1.') || s.includes('\n*'))) return true
+  return false
+}
+
+function copySubagentReport() {
+  const text = subagentReportContent.value
+  if (!text) return
+  navigator.clipboard?.writeText(text)
+  ElMessage.success('成果报告已复制到剪贴板')
+}
 
 const isEditTool = computed(() => ['edit_file', 'write_file', 'apply_patch'].includes(props.call.name))
 const isShellTool = computed(() => ['shell', 'bash', 'run_command', 'execute_code', 'run_tests'].includes(props.call.name))
@@ -446,28 +486,43 @@ const subagentData = computed(() => {
   const description = args.description || name || prompt || ''
 
   let summary = description
-  let findings = ''
   const relevantFiles = []
   let nextSteps = ''
   const rawResult = props.call.result || ''
   const persistedSummary = props.call.subagentSummary || ''
+  const rawError = props.call.subagentError || ''
 
+  let body = ''
   if (rawResult && typeof rawResult === 'string') {
     const summaryMatch = rawResult.match(/<summary>([\s\S]*?)<\/summary>/i)
     if (summaryMatch) summary = summaryMatch[1].trim()
 
-    const nameMatch = rawResult.match(/<name>([\s\S]*?)<\/name>/i)
-    const effectiveName = name || (nameMatch ? nameMatch[1].trim() : '')
-
-    let body = rawResult
     const taskResultMatch = rawResult.match(/<task_result>([\s\S]*?)<\/task_result>/i)
-    if (taskResultMatch) body = taskResultMatch[1].trim()
-    else if (persistedSummary) body = persistedSummary
+    const taskErrorMatch = rawResult.match(/<task_error>([\s\S]*?)<\/task_error>/i)
+    if (taskResultMatch && taskResultMatch[1].trim()) {
+      body = taskResultMatch[1].trim()
+    } else if (taskErrorMatch && taskErrorMatch[1].trim() && isReportLike(taskErrorMatch[1])) {
+      body = taskErrorMatch[1].trim()
+    } else if (!rawResult.trim().startsWith('<task') && isReportLike(rawResult)) {
+      body = rawResult.trim()
+    }
+  }
 
-    const findingsMatch = body.match(/##\s*(?:Findings|调研发现)([\s\S]*?)(?=##|$)/i)
-    if (findingsMatch) findings = findingsMatch[1].trim()
+  if (!body && persistedSummary && isReportLike(persistedSummary)) {
+    body = persistedSummary.trim()
+  }
+  if (!body && rawError && isReportLike(rawError)) {
+    body = rawError.trim()
+  }
+  if (!body && persistedSummary) {
+    body = persistedSummary.trim()
+  }
 
-    const filesMatch = body.match(/##\s*(?:Relevant Files|关联文件)([\s\S]*?)(?=##|$)/i)
+  const nameMatch = rawResult && typeof rawResult === 'string' ? rawResult.match(/<name>([\s\S]*?)<\/name>/i) : null
+  const effectiveName = name || (nameMatch ? nameMatch[1].trim() : '')
+
+  if (body) {
+    const filesMatch = body.match(/##\s*(?:Relevant Files|关联文件|涉及文件)([\s\S]*?)(?=##|$)/i)
     if (filesMatch) {
       const filesText = filesMatch[1].trim()
       const lines = filesText.split('\n')
@@ -479,36 +534,49 @@ const subagentData = computed(() => {
       }
     }
 
-    const nextStepsMatch = body.match(/##\s*(?:Suggested Next Steps|后续建议)([\s\S]*?)(?=##|$)/i)
+    const nextStepsMatch = body.match(/##\s*(?:Suggested Next Steps|Next Steps|后续建议|建议下一步)([\s\S]*?)(?=##|$)/i)
     if (nextStepsMatch) nextSteps = nextStepsMatch[1].trim()
-
-    if (!findings && persistedSummary) findings = persistedSummary
-    if (!findings && !relevantFiles.length && !nextSteps) {
-      findings = body
-    }
-
-    return {
-      name: effectiveName || description || '代码调研子代理',
-      subagentType,
-      prompt,
-      description: summary,
-      findings,
-      relevantFiles,
-      nextSteps,
-      isBackground: Boolean(args.background)
-    }
   }
 
   return {
-    name: name || description || '代码调研子代理',
+    name: effectiveName || description || '代码调研子代理',
     subagentType,
     prompt,
-    description: props.call.subagentSummary || description,
-    findings: props.call.subagentSummary || '',
-    relevantFiles: [],
-    nextSteps: '',
+    description: summary,
+    fullReport: body,
+    relevantFiles,
+    nextSteps,
     isBackground: Boolean(args.background)
   }
+})
+
+// 判定子代理是否有实质性的成果报告
+const subagentReportContent = computed(() => {
+  if (!isTaskTool.value) return ''
+  return subagentData.value?.fullReport || ''
+})
+
+// 纯系统底层报错（当且仅当该错误不是报告正文时展示）
+const subagentSystemError = computed(() => {
+  const err = props.call.subagentError || ''
+  if (!err) return ''
+  if (isReportLike(err)) return ''
+  if (subagentReportContent.value && subagentReportContent.value.includes(err.trim())) return ''
+  return err.trim()
+})
+
+const shouldClampReport = computed(() => {
+  return (subagentReportContent.value || '').length > 900
+})
+
+const resolvedSubagentId = computed(() => {
+  if (props.call.subagentId) return props.call.subagentId
+  const res = props.call.result
+  if (typeof res === 'string') {
+    const match = res.match(/<task\b[^>]*\bid=["']([^"']+)["']/i)
+    if (match && match[1]) return match[1]
+  }
+  return ''
 })
 
 // Web 实时预览 URL 提取
@@ -1378,69 +1446,38 @@ function setQuestionAnswer(option) {
   padding-top: 4px;
 }
 
-.tc-subagent-section {
-  background: #fafafa;
-  border: 1px solid #f4f4f5;
-  border-radius: 6px;
-  padding: 8px 10px;
-}
-
-.tc-subagent-section-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #52525b;
-  margin-bottom: 6px;
-}
-
-.tc-subagent-section-title svg {
+/* ==================== 子代理专属高质感设计规范 ==================== */
+.tc-type-icon.subagent {
   color: #7c3aed;
+}
+
+.tc-tool-name.is-subagent {
+  color: #6d28d9;
+}
+
+.tc-subagent-type-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #f5f3ff;
+  color: #7c3aed;
+  border: 1px solid #ddd6fe;
   flex-shrink: 0;
 }
 
-.tc-subagent-prompt-box {
-  font-size: 12px;
-  color: #27272a;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.tc-subagent-running-pulse {
+.tc-subagent-card-body {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  color: #1d4ed8;
-  font-size: 12px;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 6px;
 }
 
-.tc-subagent-open-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  margin-top: 2px;
-  border-radius: 999px;
-  border: 1px solid #c7d2fe;
-  background: #eef2ff;
-  color: #4338ca;
-  font-size: 11.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all .18s cubic-bezier(.25,.1,.25,1);
-}
-
-.tc-subagent-open-btn:hover {
-  background: #e0e7ff;
-  border-color: #a5b4fc;
-}
-
-/* 头部常显的会话详情入口（运行中即可点击查看实时工作详情） */
+/* 头部常显的会话详情入口 */
 .tc-subagent-header-open {
   display: inline-flex;
   align-items: center;
@@ -1463,39 +1500,329 @@ function setQuestionAnswer(option) {
   border-color: #a5b4fc;
 }
 
-.tc-subagent-trace-more,
-.tc-subagent-truncated-hint {
-  display: block;
-  margin-top: 4px;
-  font-size: 11px;
-  color: #94a3b8;
+/* 任务目标栏 */
+.tc-subagent-target-bar {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  padding: 9px 12px;
 }
 
-.tc-subagent-markdown-box {
+.tc-subagent-target-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.tc-subagent-target-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.tc-subagent-target-label svg {
+  color: #7c3aed;
+}
+
+.tc-subagent-mode-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.tc-subagent-mode-badge.general {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
+}
+
+.tc-subagent-target-text {
   font-size: 12px;
   line-height: 1.55;
-  color: #3f3f46;
+  color: #334155;
+  word-break: break-word;
 }
 
-.tc-subagent-markdown-box p {
-  margin: 0 0 6px;
+/* 运行中脉冲条 */
+.tc-subagent-running-pulse {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  font-size: 12px;
 }
 
-.tc-subagent-markdown-box p:last-child {
-  margin-bottom: 0;
+/* 过程轨迹折叠区 */
+.tc-subagent-trace-section {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  overflow: hidden;
 }
 
-:deep(.tc-subagent-inline-code) {
-  font-family: 'JetBrains Mono', monospace;
+.tc-subagent-trace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  cursor: pointer;
+  background: #f8fafc;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.tc-subagent-trace-header:hover {
+  background: #f1f5f9;
+}
+
+.tc-subagent-trace-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
-  padding: 1px 4px;
-  background: #f4f4f5;
-  border: 1px solid #e4e4e7;
-  border-radius: 3px;
-  color: #09090b;
+  font-weight: 600;
+  color: #64748b;
 }
 
-.tc-subagent-files-grid {
+.tc-subagent-trace-title svg {
+  color: #7c3aed;
+}
+
+.tc-subagent-trace-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tc-subagent-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 12px;
+  border-top: 1px solid #e2e8f0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #ffffff;
+}
+
+.tc-subagent-trace-entry {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.tc-subagent-trace-kind {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.tc-subagent-trace-entry code {
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 系统底层真实报错 */
+.tc-subagent-system-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  font-size: 12px;
+}
+
+.tc-subagent-system-error svg {
+  flex-shrink: 0;
+}
+
+.tc-subagent-error-msg {
+  flex: 1;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* 核心成果交付卡片 (对齐主工作区 Markdown 美学) */
+.tc-subagent-deliverable-card {
+  position: relative;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s ease;
+}
+
+.tc-subagent-deliverable-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.tc-subagent-deliverable-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.tc-subagent-deliverable-title svg {
+  color: #7c3aed;
+}
+
+.tc-subagent-deliverable-pill {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #ede9fe;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.tc-subagent-deliverable-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tc-subagent-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tc-subagent-tool-btn:hover {
+  color: #7c3aed;
+  border-color: #7c3aed;
+  background: #f5f3ff;
+}
+
+/* Markdown 正文视窗 */
+.tc-subagent-markdown-body {
+  padding: 14px 18px;
+  font-size: 13px;
+  line-height: 1.72;
+  color: #1e293b;
+  overflow-x: auto;
+}
+
+.tc-subagent-markdown-body.is-clamped {
+  max-height: 480px;
+  overflow: hidden;
+}
+
+/* 超长展开/收起渐变栏 */
+.tc-subagent-expand-bar {
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.tc-subagent-expand-bar:not(.is-expanded) {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 90px;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.95) 60%, #ffffff 100%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 12px;
+}
+
+.tc-subagent-expand-bar.is-expanded {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 0;
+  border-top: 1px dashed #e2e8f0;
+  background: #f8fafc;
+}
+
+.tc-subagent-toggle-report-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #7c3aed;
+  color: #7c3aed;
+  font-size: 11.5px;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(124, 58, 237, 0.12);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tc-subagent-toggle-report-btn:hover {
+  background: #7c3aed;
+  color: #ffffff;
+}
+
+/* 关联文件区 */
+.tc-subagent-files-section {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  padding: 9px 12px;
+}
+
+.tc-subagent-files-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.tc-subagent-files-title svg {
+  color: #7c3aed;
+}
+
+.tc-subagent-files-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -1508,8 +1835,8 @@ function setQuestionAnswer(option) {
   padding: 3px 8px;
   border-radius: 4px;
   background: #ffffff;
-  border: 1px solid #e4e4e7;
-  color: #09090b;
+  border: 1px solid #e2e8f0;
+  color: #0f172a;
   font-size: 11.5px;
   font-family: 'JetBrains Mono', monospace;
   cursor: pointer;
@@ -1517,170 +1844,223 @@ function setQuestionAnswer(option) {
 }
 
 .tc-subagent-file-chip:hover {
-  background: #f4f4f5;
+  background: #f5f3ff;
   border-color: #7c3aed;
   color: #7c3aed;
 }
 
 .tc-subagent-file-chip svg {
-  color: #71717a;
+  color: #64748b;
 }
 
 .tc-subagent-file-chip:hover svg {
   color: #7c3aed;
 }
 
-/* 实时预览快捷操作条 */
-.tc-preview-action-box {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: #f0f9ff;
-  border: 1px solid #bae6fd;
-  margin-bottom: 8px;
+/* ==================== 暗色模式自适应 (Dark Theme) ==================== */
+:global(html[data-theme='dark'] .tc-card),
+:root[data-theme='dark'] .tc-card {
+  background: #1e1e2e;
+  border-color: #313244;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
-.tc-preview-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
+:global(html[data-theme='dark'] .tc-card:hover),
+:root[data-theme='dark'] .tc-card:hover {
+  border-color: #45475a;
 }
 
-.tc-preview-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
-  flex-shrink: 0;
+:global(html[data-theme='dark'] .tc-header),
+:root[data-theme='dark'] .tc-header {
+  background: #1e1e2e;
 }
 
-.tc-preview-url-text {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11.5px;
-  color: #0369a1;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+:global(html[data-theme='dark'] .tc-tool-name),
+:root[data-theme='dark'] .tc-tool-name {
+  color: #edf1fb;
 }
 
-.tc-preview-btns {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
+:global(html[data-theme='dark'] .tc-tool-arg-main),
+:root[data-theme='dark'] .tc-tool-arg-main {
+  color: #bac2de;
 }
 
-.tc-btn-open-preview {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 9px;
-  border-radius: 4px;
-  background: #0284c7;
-  border: 1px solid #0369a1;
+:global(html[data-theme='dark'] .tc-tool-sub-info),
+:root[data-theme='dark'] .tc-tool-sub-info {
+  color: #778195;
+}
+
+:global(html[data-theme='dark'] .tc-status-pill-badge),
+:root[data-theme='dark'] .tc-status-pill-badge {
+  background: #181825;
+  border-color: #313244;
+  color: #bac2de;
+}
+
+:global(html[data-theme='dark'] .tc-status-pill-badge.completed),
+:root[data-theme='dark'] .tc-status-pill-badge.completed {
+  color: #a6e3a1;
+}
+
+:global(html[data-theme='dark'] .tc-status-pill-badge.error),
+:root[data-theme='dark'] .tc-status-pill-badge.error {
+  background: rgba(243, 139, 168, 0.15);
+  border-color: rgba(243, 139, 168, 0.35);
+  color: #f38ba8;
+}
+
+:global(html[data-theme='dark'] .tc-subagent-header-open),
+:root[data-theme='dark'] .tc-subagent-header-open {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #c4b5fd;
+}
+
+:global(html[data-theme='dark'] .tc-subagent-header-open:hover),
+:root[data-theme='dark'] .tc-subagent-header-open:hover {
+  background: rgba(99, 102, 241, 0.35);
+  border-color: #818cf8;
   color: #ffffff;
-  font-size: 11.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
 }
 
-.tc-btn-open-preview:hover {
-  background: #0369a1;
+:global(html[data-theme='dark'] .tc-body),
+:root[data-theme='dark'] .tc-body {
+  background: #181825;
+  border-top-color: #313244;
 }
 
-.tc-btn-ext-preview {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 4px;
-  background: #ffffff;
-  border: 1px solid #bae6fd;
-  color: #0369a1;
-  text-decoration: none;
-  transition: all 0.15s ease;
+:global(html[data-theme='dark'] .tc-section-label),
+:root[data-theme='dark'] .tc-section-label {
+  color: #a6adc8;
 }
 
-.tc-btn-ext-preview:hover {
-  background: #e0f2fe;
+:global(html[data-theme='dark'] .tc-btn-copy-result),
+:root[data-theme='dark'] .tc-btn-copy-result {
+  color: #778195;
 }
 
-.tc-subagent-trace {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 8px 10px;
+:global(html[data-theme='dark'] .tc-btn-copy-result:hover),
+:root[data-theme='dark'] .tc-btn-copy-result:hover {
+  background: #242538;
+  color: #edf1fb;
 }
 
-.tc-subagent-trace-meta {
-  margin-left: auto;
-  color: #64748b;
-  font-size: 10px;
-  text-transform: uppercase;
+:root[data-theme='dark'] .tc-subagent-target-bar,
+:root[data-theme='dark'] .tc-subagent-trace-section,
+:root[data-theme='dark'] .tc-subagent-files-section {
+  background: #181825;
+  border-color: #313244;
 }
 
-.tc-subagent-trace-list {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-top: 7px;
-  max-height: 260px;
-  overflow: auto;
+:root[data-theme='dark'] .tc-subagent-target-label,
+:root[data-theme='dark'] .tc-subagent-trace-title,
+:root[data-theme='dark'] .tc-subagent-files-title {
+  color: #a6adc8;
 }
 
-.tc-subagent-trace-entry {
-  display: grid;
-  grid-template-columns: 62px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  font-size: 11px;
-  line-height: 1.45;
+:root[data-theme='dark'] .tc-subagent-target-text {
+  color: #cdd6f4;
 }
 
-.tc-subagent-trace-kind {
-  color: #475569;
-  font-weight: 600;
+:root[data-theme='dark'] .tc-subagent-mode-badge {
+  background: #1e1e2e;
+  border-color: #313244;
+  color: #a6adc8;
 }
 
-.tc-subagent-trace-entry code {
-  min-width: 0;
-  color: #334155;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+:root[data-theme='dark'] .tc-subagent-trace-header {
+  background: #181825;
 }
 
-.tc-subagent-live-output {
-  margin-top: 8px;
-  padding-top: 7px;
-  border-top: 1px solid #e2e8f0;
-  color: #334155;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 11px;
+:root[data-theme='dark'] .tc-subagent-trace-header:hover {
+  background: #1e1e2e;
 }
 
-.tc-subagent-error {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 8px 10px;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  background: #fff1f2;
-  color: #991b1b;
-  font-size: 11px;
-  line-height: 1.45;
+:root[data-theme='dark'] .tc-subagent-trace-list {
+  background: #1e1e2e;
+  border-top-color: #313244;
 }
 
-.tc-subagent-error-label {
-  font-weight: 700;
+:root[data-theme='dark'] .tc-subagent-trace-kind {
+  color: #a6adc8;
+}
+
+:root[data-theme='dark'] .tc-subagent-trace-entry code {
+  color: #bac2de;
+}
+
+:root[data-theme='dark'] .tc-subagent-system-error {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+
+:root[data-theme='dark'] .tc-subagent-deliverable-card {
+  background: #1e1e2e;
+  border-color: #313244;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+:root[data-theme='dark'] .tc-subagent-deliverable-header {
+  background: #181825;
+  border-bottom-color: #313244;
+}
+
+:root[data-theme='dark'] .tc-subagent-deliverable-title {
+  color: #cdd6f4;
+}
+
+:root[data-theme='dark'] .tc-subagent-deliverable-pill {
+  background: rgba(124, 58, 237, 0.2);
+  color: #c4b5fd;
+  border-color: rgba(124, 58, 237, 0.4);
+}
+
+:root[data-theme='dark'] .tc-subagent-tool-btn {
+  background: #242538;
+  border-color: #3b3d54;
+  color: #a6adc8;
+}
+
+:root[data-theme='dark'] .tc-subagent-tool-btn:hover {
+  background: #313244;
+  color: #c4b5fd;
+  border-color: #7c3aed;
+}
+
+:root[data-theme='dark'] .tc-subagent-markdown-body {
+  color: #cdd6f4;
+}
+
+:root[data-theme='dark'] .tc-subagent-expand-bar:not(.is-expanded) {
+  background: linear-gradient(to bottom, rgba(30, 30, 46, 0) 0%, rgba(30, 30, 46, 0.95) 60%, #1e1e2e 100%);
+}
+
+:root[data-theme='dark'] .tc-subagent-expand-bar.is-expanded {
+  background: #181825;
+  border-top-color: #313244;
+}
+
+:root[data-theme='dark'] .tc-subagent-toggle-report-btn {
+  background: #1e1e2e;
+  color: #c4b5fd;
+  border-color: #7c3aed;
+}
+
+:root[data-theme='dark'] .tc-subagent-toggle-report-btn:hover {
+  background: #7c3aed;
+  color: #ffffff;
+}
+
+:root[data-theme='dark'] .tc-subagent-file-chip {
+  background: #181825;
+  border-color: #313244;
+  color: #cdd6f4;
+}
+
+:root[data-theme='dark'] .tc-subagent-file-chip:hover {
+  background: #242538;
+  border-color: #7c3aed;
+  color: #c4b5fd;
 }
 </style>

@@ -172,17 +172,17 @@ const progressRatio = computed(() => checkableTotalCount.value > 0 ? completedCo
 <style scoped>
 .plan-display {
   margin: 10px 0;
-  border: 1px solid #e4e4e7;
+  border: 1px solid var(--ai-border-strong, #e4e4e7);
   border-radius: 10px;
   overflow: hidden;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  background: var(--ai-bg, #ffffff);
+  box-shadow: var(--ai-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.03));
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .plan-display:hover {
-  border-color: #d4d4d8;
-  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  border-color: var(--ai-border-focus, #d4d4d8);
+  box-shadow: var(--ai-shadow-md, 0 4px 16px -2px rgba(0, 0, 0, 0.08));
 }
 
 .plan-header {
@@ -192,8 +192,8 @@ const progressRatio = computed(() => checkableTotalCount.value > 0 ? completedCo
   padding: 8px 12px;
   cursor: pointer;
   user-select: none;
-  background: #fafafa;
-  border-bottom: 1px solid #f4f4f5;
+  background: var(--ai-bg-tertiary, #fafafa);
+  border-bottom: 1px solid var(--ai-border, #f4f4f5);
 }
 
 .plan-header-left {
@@ -202,14 +202,14 @@ const progressRatio = computed(() => checkableTotalCount.value > 0 ? completedCo
   gap: 7px;
   font-size: 13px;
   font-weight: 600;
-  color: #18181b;
+  color: var(--ai-text, #18181b);
 }
 
 .plan-header-icon-box {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #2563eb;
+  color: var(--ai-purple-deep, #2563eb);
 }
 
 .plan-title {
@@ -221,9 +221,9 @@ const progressRatio = computed(() => checkableTotalCount.value > 0 ? completedCo
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 999px;
-  background: #eff6ff;
-  color: #2563eb;
-  border: 1px solid #bfdbfe;
+  background: var(--ai-accent-bg, #eff6ff);
+  color: var(--ai-purple-deep, #2563eb);
+  border: 1px solid var(--ai-accent-border, #bfdbfe);
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -243,7 +243,7 @@ const progressRatio = computed(() => checkableTotalCount.value > 0 ? completedCo
 
 .plan-progress-bar {
   height: 4px;
-  background: #f4f4f5;
+  background: var(--ai-bg-tertiary, #f4f4f5);
   border-radius: 2px;
   margin-bottom: 10px;
   overflow: hidden;
@@ -295,14 +295,14 @@ const progressRatio = computed(() => checkableTotalCount.value > 0 ? completedCo
   padding: 5px 8px;
   border-radius: 6px;
   font-size: 12.5px;
-  color: #27272a;
+  color: var(--ai-text, #27272a);
   line-height: 1.45;
   transition: all 0.15s ease;
 }
 
 .plan-item.current {
-  background: #eff6ff;
-  border-left: 3px solid #3b82f6;
+  background: var(--ai-accent-bg, #eff6ff);
+  border-left: 3px solid var(--ai-border-focus, #3b82f6);
   padding-left: 7px;
 }
 
@@ -344,65 +344,64 @@ const progressRatio = computed(() => checkableTotalCount.value > 0 ? completedCo
 }
 
 .plan-text.done {
-  color: #9ca3af;
+  color: var(--ai-text-muted, #9ca3af);
   text-decoration: line-through;
 }
 
 .plan-text.active {
-  color: #1d4ed8;
+  color: var(--ai-purple-deep, #1d4ed8);
   font-weight: 600;
 }
 
-/* 暗色主题适配 */
-:global(.ws-dark) .plan-display,
-:global([data-theme="dark"]) .plan-display {
-  background: #18181b;
-  border-color: #27272a;
+/* 暗色主题深度增强 */
+:root[data-theme='dark'] .plan-display {
+  background: #1e1e2e;
+  border-color: #313244;
+}
 
-  .plan-header {
-    background: #27272a;
-    border-bottom-color: #3f3f46;
-  }
+:root[data-theme='dark'] .plan-header {
+  background: #181825;
+  border-bottom-color: #313244;
+}
 
-  .plan-header-left {
-    color: #f4f4f5;
-  }
+:root[data-theme='dark'] .plan-header-left {
+  color: #cdd6f4;
+}
 
-  .plan-count-badge {
-    background: #1e3a8a;
-    border-color: #1d4ed8;
-    color: #93c5fd;
-  }
+:root[data-theme='dark'] .plan-count-badge {
+  background: rgba(124, 58, 237, 0.2);
+  border-color: rgba(124, 58, 237, 0.4);
+  color: #c4b5fd;
+}
 
-  .plan-progress-bar {
-    background: #27272a;
-  }
+:root[data-theme='dark'] .plan-progress-bar {
+  background: #313244;
+}
 
-  .plan-section-header {
-    background: #451a03;
-    border-left-color: #d97706;
-  }
+:root[data-theme='dark'] .plan-section-header {
+  background: rgba(245, 158, 11, 0.15);
+  border-left-color: #f59e0b;
+}
 
-  .section-title {
-    color: #fde68a;
-  }
+:root[data-theme='dark'] .section-title {
+  color: #fbbf24;
+}
 
-  .plan-item {
-    color: #e4e4e7;
-  }
+:root[data-theme='dark'] .plan-item {
+  color: #cdd6f4;
+}
 
-  .plan-item.current {
-    background: #1e293b;
-    border-left-color: #3b82f6;
-  }
+:root[data-theme='dark'] .plan-item.current {
+  background: rgba(59, 130, 246, 0.15);
+  border-left-color: #60a5fa;
+}
 
-  .plan-text.done {
-    color: #71717a;
-  }
+:root[data-theme='dark'] .plan-text.done {
+  color: #6c7086;
+}
 
-  .plan-text.active {
-    color: #93c5fd;
-  }
+:root[data-theme='dark'] .plan-text.active {
+  color: #93c5fd;
 }
 </style>
 

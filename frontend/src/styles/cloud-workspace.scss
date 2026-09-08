@@ -39,17 +39,35 @@
 
   position: fixed;
   inset: 0;
-  background: rgba(17, 24, 39, 0.35);
+  background: rgba(17, 24, 39, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 2000;
+  z-index: 9998;
 }
-.ws-dialog { background: #fff; border-radius: 14px; padding: 28px; width: 420px; box-shadow: 0 24px 60px rgba(0,0,0,0.15); }
+.ws-dialog { background: #fff; border-radius: 14px; padding: 28px; width: 420px; box-shadow: 0 24px 60px rgba(0,0,0,0.15); border: 1px solid transparent; }
 .ws-dialog h3 { font-size: 17px; font-weight: 600; color: #111827; margin: 0 0 20px; }
 .ws-dialog-input { width: 100%; padding: 10px 14px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 14px; outline: none; box-sizing: border-box; font-family: inherit; transition: border-color 0.2s, box-shadow 0.2s; }
 .ws-dialog-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
 .ws-dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
+
+html[data-theme='dark'] .ws-dialog {
+  background: #181b24;
+  border-color: #303747;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+html[data-theme='dark'] .ws-dialog h3 {
+  color: #edf1fb;
+}
+html[data-theme='dark'] .ws-dialog-input {
+  background: #11131a;
+  border-color: #303747;
+  color: #edf1fb;
+}
+html[data-theme='dark'] .ws-dialog-input:focus {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.2);
+}
 .modal-enter-active { transition: all 0.25s ease; }
 .modal-leave-active { transition: all 0.2s ease; }
 .modal-enter-from { opacity: 0; }
@@ -910,8 +928,15 @@ html[data-theme='light']:has(body.ws-page-active),
 html[data-theme='light'] body.ws-page-active {
   background: #ffffff !important;
 }
-body.ws-page-active .ws-shell {
+html[data-theme='light'] body.ws-page-active .ws-shell {
   background: #ffffff !important;
+}
+html[data-theme='dark']:has(body.ws-page-active),
+html[data-theme='dark'] body.ws-page-active {
+  background: #11131a !important;
+}
+html[data-theme='dark'] body.ws-page-active .ws-shell {
+  background: #11131a !important;
 }
 body.ws-page-active .ws-body > * {
   margin: 0 !important;
@@ -925,6 +950,10 @@ body.ws-page-active .ws-body > .ai-panel {
 html[data-theme='light'] body.ws-page-active .ws-body > .ws-sidebar,
 html[data-theme='light'] body.ws-page-active .ws-body > .ws-center {
   background: #ffffff !important;
+}
+html[data-theme='dark'] body.ws-page-active .ws-body > .ws-sidebar,
+html[data-theme='dark'] body.ws-page-active .ws-body > .ws-center {
+  background: #181b24 !important;
 }
 
 /* ===== Chat: Quick Action Chips ===== */
@@ -1582,50 +1611,177 @@ html[data-theme='light'] body.ws-page-active .ws-body > .ws-center {
   overflow: hidden;
   border: 1px solid #e5e7eb;
 }
-:global([data-theme="dark"]) .settings-dialog { background: #1a1b26; border-color: #2e3044; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
-:global([data-theme="dark"]) .settings-header { border-bottom-color: #2e3044; }
-:global([data-theme="dark"]) .settings-header h3 { color: #c0caf5; }
-:global([data-theme="dark"]) .settings-label { color: #565f89; }
-:global([data-theme="dark"]) .settings-theme-btn, :global([data-theme="dark"]) .settings-opt-btn { background: #1f2033; border-color: #383a50; color: #787c99; }
-:global([data-theme="dark"]) .settings-theme-btn:hover, :global([data-theme="dark"]) .settings-opt-btn:hover { border-color: #7aa2f7; color: #a9b1d6; background: #1a1d3a; }
-:global([data-theme="dark"]) .settings-theme-btn.active, :global([data-theme="dark"]) .settings-opt-btn.active { border-color: #7aa2f7; background: #1a1d3a; color: #7aa2f7; box-shadow: 0 0 0 1px #7aa2f7; }
-:global([data-theme="dark"]) .settings-action-btn { background: #1f2033; border-color: #383a50; color: #a9b1d6; }
-:global([data-theme="dark"]) .settings-action-btn:hover { border-color: #7aa2f7; background: #1a1d3a; color: #7aa2f7; }
-:global([data-theme="dark"]) .ws-overlay {
-  --ai-bg: #1a1b26;
-  --ai-bg-secondary: #1f2033;
-  --ai-bg-tertiary: #282a3a;
-  --ai-bg-elevated: #24253a;
-  --ai-border: #2e3044;
-  --ai-border-strong: #383a50;
+html[data-theme="dark"] .settings-dialog { background: #1a1b26; border-color: #2e3044; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+html[data-theme="dark"] .settings-header { border-bottom-color: #2e3044; }
+html[data-theme="dark"] .settings-header h3 { color: #c0caf5; }
+html[data-theme="dark"] .settings-label { color: #565f89; }
+html[data-theme="dark"] .settings-theme-btn, html[data-theme="dark"] .settings-opt-btn { background: #1f2033; border-color: #383a50; color: #787c99; }
+html[data-theme="dark"] .settings-theme-btn:hover, html[data-theme="dark"] .settings-opt-btn:hover { border-color: #7aa2f7; color: #a9b1d6; background: #1a1d3a; }
+html[data-theme="dark"] .settings-theme-btn.active, html[data-theme="dark"] .settings-opt-btn.active { border-color: #7aa2f7; background: #1a1d3a; color: #7aa2f7; box-shadow: 0 0 0 1px #7aa2f7; }
+html[data-theme="dark"] .settings-action-btn { background: #1f2033; border-color: #383a50; color: #a9b1d6; }
+html[data-theme="dark"] .settings-action-btn:hover { border-color: #7aa2f7; background: #1a1d3a; color: #7aa2f7; }
+html[data-theme="dark"] .ws-overlay {
+  --ai-bg: #1e1e2e;
+  --ai-bg-secondary: #181825;
+  --ai-bg-tertiary: #242538;
+  --ai-bg-elevated: #282a3a;
+  --ai-border: rgba(255,255,255,0.08);
+  --ai-border-strong: #313244;
   --ai-border-focus: #7aa2f7;
-  --ai-text: #c0caf5;
-  --ai-text-secondary: #a9b1d6;
-  --ai-text-muted: #787c99;
-  --ai-text-faint: #565f89;
-  --ai-accent: #7aa2f7;
-  --ai-accent-hover: #5d87e0;
-  --ai-accent-bg: #1a1d3a;
-  --ai-accent-border: #2e3a5e;
-  --ai-purple: #bb9af7;
-  --ai-purple-text: #c0a8f7;
-  --ai-purple-bg: #1f1d30;
-  --ai-purple-border: #2d2a45;
-  --ai-purple-deep: #bb9af7;
-  --ai-green: #9ece6a;
-  --ai-red: #f7768e;
-  --ai-red-hover: #e05f75;
-  --ai-yellow: #e0af68;
-  --ai-shadow-sm: 0 1px 4px rgba(0,0,0,0.2);
-  --ai-shadow-md: 0 4px 16px rgba(0,0,0,0.3);
-  --ai-shadow-lg: 0 8px 24px rgba(0,0,0,0.4);
+  --ai-text: #cdd6f4;
+  --ai-text-secondary: #bac2de;
+  --ai-text-muted: #a6adc8;
+  --ai-text-faint: #778195;
+  --ai-accent: #cdd6f4;
+  --ai-accent-hover: #ffffff;
+  --ai-accent-bg: rgba(255,255,255,0.08);
+  --ai-accent-border: rgba(255,255,255,0.15);
+  --ai-purple: #c4b5fd;
+  --ai-purple-text: #ddd6fe;
+  --ai-purple-bg: rgba(124, 58, 237, 0.15);
+  --ai-purple-border: rgba(124, 58, 237, 0.3);
+  --ai-purple-deep: #a78bfa;
+  --ai-green: #a6e3a1;
+  --ai-red: #f38ba8;
+  --ai-red-hover: #eba0ac;
+  --ai-yellow: #f9e2af;
+  --ai-shadow-sm: 0 1px 4px rgba(0,0,0,0.3);
+  --ai-shadow-md: 0 4px 16px rgba(0,0,0,0.4);
+  --ai-shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
   --ai-code-bg: #13141c;
   --ai-code-text: #c0caf5;
-  --ai-inline-code-bg: #24253a;
-  --ai-inline-code-border: #383a50;
-  --ai-inline-code-text: #ff9e64;
+  --ai-inline-code-bg: #313244;
+  --ai-inline-code-border: transparent;
+  --ai-inline-code-text: #f38ba8;
 
   background: rgba(0,0,0,0.6);
+}
+
+/* 模型配置与选择模型模态框暗黑模式 */
+html[data-theme='dark'] .mc-dialog {
+  background: #181b24;
+  border: 1px solid #303747;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  color: #edf1fb;
+}
+html[data-theme='dark'] .mc-header {
+  border-bottom-color: #2e3547;
+  background: #202430;
+}
+html[data-theme='dark'] .mc-header h3 {
+  color: #edf1fb;
+}
+html[data-theme='dark'] .mc-close-btn {
+  color: #8c96a8;
+}
+html[data-theme='dark'] .mc-close-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+html[data-theme='dark'] .mc-template-card {
+  background: #1e1e2e;
+  border-color: #313244;
+  color: #edf1fb;
+}
+html[data-theme='dark'] .mc-template-card:hover {
+  background: #242538;
+  border-color: #818cf8;
+}
+html[data-theme='dark'] .mc-template-name {
+  color: #edf1fb;
+  font-weight: 700;
+}
+html[data-theme='dark'] .mc-template-vendor {
+  color: #bac2de;
+}
+html[data-theme='dark'] .mc-template-model {
+  color: #89b4fa;
+}
+html[data-theme='dark'] .mc-template-source {
+  background: rgba(99, 102, 241, 0.2);
+  color: #c4b5fd;
+}
+html[data-theme='dark'] .mc-config-card {
+  background: #1e1e2e;
+  border-color: #313244;
+}
+html[data-theme='dark'] .mc-config-card:hover {
+  background: #242538;
+  border-color: #45475a;
+}
+html[data-theme='dark'] .mc-config-card.active {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: #818cf8;
+}
+html[data-theme='dark'] .mc-config-card.default {
+  border-left: 3px solid #818cf8;
+}
+html[data-theme='dark'] .mc-card-name {
+  color: #edf1fb;
+  font-weight: 700;
+}
+html[data-theme='dark'] .mc-card-provider {
+  color: #bac2de;
+}
+html[data-theme='dark'] .mc-card-model {
+  color: #89b4fa;
+  font-weight: 600;
+}
+html[data-theme='dark'] .mc-card-url {
+  color: #a6adc8;
+}
+html[data-theme='dark'] .mc-badge-default {
+  background: rgba(99, 102, 241, 0.22);
+  color: #c4b5fd;
+}
+html[data-theme='dark'] .mc-add-btn {
+  border-color: #384158;
+  color: #89b4fa;
+}
+html[data-theme='dark'] .mc-add-btn:hover {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: #818cf8;
+  color: #ffffff;
+}
+html[data-theme='dark'] .mc-field label {
+  color: #edf1fb;
+  font-weight: 600;
+}
+html[data-theme='dark'] .mc-input,
+html[data-theme='dark'] .mc-select {
+  background: #11131a;
+  border-color: #303747;
+  color: #edf1fb;
+}
+html[data-theme='dark'] .mc-input:focus,
+html[data-theme='dark'] .mc-select:focus {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.2);
+}
+html[data-theme='dark'] .mc-hint {
+  color: #a6adc8;
+}
+html[data-theme='dark'] .mc-official-url {
+  background: #11131a;
+  border-color: #303747;
+  color: #bac2de;
+}
+html[data-theme='dark'] .mc-policy-preview {
+  background: #11131a;
+  border-color: #303747;
+  color: #edf1fb;
+}
+html[data-theme='dark'] .mc-policy-preview small {
+  color: #a6adc8;
+}
+html[data-theme='dark'] .mc-btn-outline {
+  background: #1e2230;
+  border-color: #384158;
+  color: #edf1fb;
+}
+html[data-theme='dark'] .mc-btn-outline:hover {
+  background: #252b3d;
+  color: #ffffff;
 }
 .settings-header {
   display: flex;
@@ -3063,6 +3219,49 @@ body > div[id*="mermaid"] {
   border-top: 1px solid #e2e8f0;
   text-align: right;
 }
+
+html[data-theme='dark'] .markdown-rendered .msg-table-wrap {
+  border-color: #313244;
+  background: #181825;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+html[data-theme='dark'] .markdown-rendered .msg-table-header {
+  background: #202430;
+  border-bottom-color: #313244;
+}
+html[data-theme='dark'] .markdown-rendered .msg-table-tag {
+  color: #a6adc8;
+}
+html[data-theme='dark'] .markdown-rendered .msg-table-tool {
+  background: #242538;
+  border-color: #3b486d;
+  color: #cdd6f4;
+}
+html[data-theme='dark'] .markdown-rendered .msg-table-tool:hover {
+  background: #313244;
+  color: #ffffff;
+}
+html[data-theme='dark'] .markdown-rendered .msg-table th {
+  background: #1e2230;
+  color: #edf1fb;
+  border-bottom-color: #313244;
+}
+html[data-theme='dark'] .markdown-rendered .msg-table th:not(:last-child),
+html[data-theme='dark'] .markdown-rendered .msg-table td:not(:last-child) {
+  border-right-color: #272a37;
+}
+html[data-theme='dark'] .markdown-rendered .msg-table td {
+  border-bottom-color: #272a37;
+  color: #cdd6f4;
+}
+html[data-theme='dark'] .markdown-rendered .msg-table tr:hover td {
+  background: rgba(255, 255, 255, 0.05);
+}
+html[data-theme='dark'] .markdown-rendered .msg-table-scroll-hint {
+  background: #1e2230;
+  color: #778195;
+  border-top-color: #272a37;
+}
 .markdown-rendered blockquote:not(.msg-callout) {
   margin: 12px 0;
   padding: 10px 14px 10px 16px;
@@ -3945,4 +4144,44 @@ body > div[id*="mermaid"] {
 .ai-msg.assistant .clean-changes-summary-card {
   margin-top: 6px;
   margin-bottom: 6px;
+}
+
+@media (max-width: 768px) {
+  .ai-panel {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    border-left: none !important;
+  }
+
+  .mc-dialog,
+  .settings-dialog,
+  .ws-dialog,
+  .command-palette-modal {
+    width: min(calc(100vw - 24px), 520px) !important;
+    max-width: calc(100vw - 24px) !important;
+    padding: 16px 14px !important;
+  }
+
+  .ai-composer-wrapper {
+    padding: 8px 8px 10px;
+  }
+
+  .ai-messages {
+    padding: 10px 10px 14px;
+  }
+
+  .ai-msg.assistant .tc-card,
+  .ai-msg.assistant .clean-changes-summary-card,
+  .ai-msg.assistant .clean-thinking-card {
+    max-width: 100%;
+  }
+
+  .ai-empty {
+    padding: 24px 12px 14px;
+  }
+
+  .ai-empty-greeting {
+    font-size: 15px;
+  }
 }

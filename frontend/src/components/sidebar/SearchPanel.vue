@@ -173,20 +173,12 @@ function projectApiSafe() {
 .sp-hit-line { color: #a1a1aa; min-width: 28px; text-align: right; flex-shrink: 0; }
 .sp-hit-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-:global(.ws-dark) .sp-input-wrap,
-:global([data-theme="dark"]) .sp-input-wrap { background: #171827; border-color: #383a50; color: #787c99; }
-:global(.ws-dark) .sp-input,
-:global([data-theme="dark"]) .sp-input { color: #c0caf5; }
-:global(.ws-dark) .sp-option,
-:global([data-theme="dark"]) .sp-option { color: #787c99; }
-:global(.ws-dark) .sp-include,
-:global([data-theme="dark"]) .sp-include { color: #a9b1d6; border-color: #383a50; }
-:global(.ws-dark) .sp-hit:hover,
-:global([data-theme="dark"]) .sp-hit:hover { background: #282a3a; }
-:global(.ws-dark) .sp-hit,
-:global([data-theme="dark"]) .sp-hit { color: #a9b1d6; }
-:global(.ws-dark) .sp-file-name,
-:global([data-theme="dark"]) .sp-file-name { color: #c0caf5; }
-:global(.ws-dark) .sp-file-count,
-:global([data-theme="dark"]) .sp-file-count { background: #2e3a5e; color: #7aa2f7; }
+:global(html[data-theme="dark"] .sp-input-wrap) { background: #171827; border-color: #383a50; color: #787c99; }
+:global(html[data-theme="dark"] .sp-input) { color: #c0caf5; }
+:global(html[data-theme="dark"] .sp-option) { color: #787c99; }
+:global(html[data-theme="dark"] .sp-include) { color: #a9b1d6; border-color: #383a50; }
+:global(html[data-theme="dark"] .sp-hit:hover) { background: #282a3a; }
+:global(html[data-theme="dark"] .sp-hit) { color: #a9b1d6; }
+:global(html[data-theme="dark"] .sp-file-name) { color: #c0caf5; }
+:global(html[data-theme="dark"] .sp-file-count) { background: #2e3a5e; color: #7aa2f7; }
 </style>

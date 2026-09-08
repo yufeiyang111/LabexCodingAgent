@@ -78,30 +78,62 @@ onBeforeUnmount(clearTimer)
   gap: 6px;
   margin: 0 0 8px;
   padding: 6px 10px;
-  border: 1px solid #bfdbfe;
+  border: 1px solid var(--ai-accent-border, #bfdbfe);
   border-radius: 8px;
-  color: #1d4ed8;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  color: var(--ai-purple-deep, #1d4ed8);
+  background: var(--ai-bg, #ffffff);
+  box-shadow: var(--ai-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.03));
   font-size: 11px;
   line-height: 1;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .agent-timer:hover {
-  border-color: #93c5fd;
-  box-shadow: 0 3px 10px -1px rgba(15, 23, 42, 0.08);
+  border-color: var(--ai-border-focus, #93c5fd);
+  box-shadow: var(--ai-shadow-md, 0 3px 10px -1px rgba(15, 23, 42, 0.08));
   transform: translateY(-1px);
 }
 .agent-timer.running svg { animation: agent-timer-spin 1.8s linear infinite; }
-.agent-timer-label { color: #64748b; }
-.agent-timer-value { color: #1e3a8a; font-variant-numeric: tabular-nums; }
-.agent-timer-status { color: #3b82f6; }
-.agent-timer:not(.running) { border-color: #e2e8f0; color: #64748b; background: #ffffff; }
-.agent-timer:not(.running) .agent-timer-value { color: #334155; }
-.agent-timer:not(.running) .agent-timer-status { color: #94a3b8; }
-.agent-timer:not(.running):hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 3px 10px -1px rgba(0, 0, 0, 0.06);
+.agent-timer-label { color: var(--ai-text-muted, #64748b); }
+.agent-timer-value { color: var(--ai-text, #1e3a8a); font-variant-numeric: tabular-nums; font-weight: 600; }
+.agent-timer-status { color: var(--ai-purple-text, #3b82f6); }
+.agent-timer:not(.running) {
+  border-color: var(--ai-border-strong, #e2e8f0);
+  color: var(--ai-text-muted, #64748b);
+  background: var(--ai-bg, #ffffff);
 }
+.agent-timer:not(.running) .agent-timer-value { color: var(--ai-text, #334155); }
+.agent-timer:not(.running) .agent-timer-status { color: var(--ai-text-faint, #94a3b8); }
+.agent-timer:not(.running):hover {
+  border-color: var(--ai-border-focus, #cbd5e1);
+  box-shadow: var(--ai-shadow-md, 0 3px 10px -1px rgba(0, 0, 0, 0.06));
+}
+
+/* 暗色主题增强 */
+:root[data-theme='dark'] .agent-timer {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+}
+:root[data-theme='dark'] .agent-timer-label {
+  color: #a6adc8;
+}
+:root[data-theme='dark'] .agent-timer-value {
+  color: #60a5fa;
+}
+:root[data-theme='dark'] .agent-timer-status {
+  color: #93c5fd;
+}
+:root[data-theme='dark'] .agent-timer:not(.running) {
+  background: #1e1e2e;
+  border-color: #313244;
+  color: #a6adc8;
+}
+:root[data-theme='dark'] .agent-timer:not(.running) .agent-timer-value {
+  color: #cdd6f4;
+}
+:root[data-theme='dark'] .agent-timer:not(.running) .agent-timer-status {
+  color: #6c7086;
+}
+
 @keyframes agent-timer-spin { to { transform: rotate(360deg); } }
 </style>

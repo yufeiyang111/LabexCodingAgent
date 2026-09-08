@@ -28,7 +28,7 @@
       </template>
     </WorkspaceTopBar>
 
-    <div class="ws-body">
+    <div class="ws-body" :class="{ 'is-mobile': isMobile, [`mobile-tab-${mobileActiveTab}`]: isMobile, 'mobile-ai-fallback': isMobile && mobileActiveTab === 'ai' && (isAgentInCenter || aiCollapsed) }">
       <!-- 左侧活动栏 (Activity Rail) 复刻图一 -->
       <nav class="ws-activity-rail" aria-label="活动栏">
         <div class="rail-top">
@@ -40,6 +40,15 @@
             @click="toggleActivityView('files')"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          </button>
+          <button
+            type="button"
+            class="rail-btn"
+            :class="{ active: explorerVisible && sidebarView === 'search' }"
+            title="全局搜索"
+            @click="toggleActivityView('search')"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg>
           </button>
           <button
             type="button"
@@ -261,6 +270,10 @@
             :initial-conversation-id="activeSubagentTab.conversationId"
             :name="activeSubagentTab.name"
             :is-dark="aiDarkTheme"
+            :available-models="modelConfigs"
+            :parent-model-config-id="selectedModelConfigId"
+            :parent-model-name="currentModelName"
+            :parent-thinking-level="thinkingLevel"
             @open-file="handleOpenFile"
             @open-file-diff="handleOpenFileDiff"
             @insert-editor="insertToEditor"
@@ -310,7 +323,15 @@
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>
-          <TerminalPanel ref="terminalPanelRef" :project-id="projectId" :project-path="projectPath" :is-dark="aiDarkTheme" @toggle-theme="toggleAiTheme" @command-finished="onTerminalCommandFinished" />
+          <TerminalPanel
+            ref="terminalPanelRef"
+            :project-id="projectId"
+            :project-path="projectPath"
+            :visible="terminalPanelVisible"
+            :is-dark="aiDarkTheme"
+            @toggle-theme="toggleAiTheme"
+            @command-finished="onTerminalCommandFinished"
+          />
         </section>
       </div>
 
@@ -362,7 +383,12 @@
             @dragend="onAiHeaderDragEnd"
             title="可拖拽此头部至中心区域放大"
           >
-            <button class="ai-topbar-btn" @click="aiCollapsed = true" title="折叠侧边栏">
+            <button
+              class="ai-topbar-btn"
+              :class="{ 'mobile-hide': isMobile }"
+              @click="!isMobile && (aiCollapsed = true)"
+              :title="isMobile ? '' : '折叠侧边栏'"
+            >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             </button>
             <div class="ai-topbar-title">
@@ -868,11 +894,11 @@
           <div class="ai-statusbar">
             <div class="ai-status-left">
               <span class="ai-model-badge">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><circle cx="12" cy="12" r="4"/></svg>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" :stroke="currentModelName !== '未配置模型' ? '#10b981' : '#f59e0b'" stroke-width="2.5"><circle cx="12" cy="12" r="4"/></svg>
                 {{ currentModelName }}
               </span>
-              <span class="ai-status-conn" :class="agentLoading ? 'generating' : 'online'">
-                {{ agentLoading ? '生成中...' : '在线' }}
+              <span class="ai-status-conn" :class="agentLoading ? 'generating' : (currentModelName !== '未配置模型' ? 'online' : 'offline')">
+                {{ agentLoading ? '生成中...' : (currentModelName !== '未配置模型' ? '在线' : '未就绪') }}
               </span>
               <span class="ai-token-badge" title="Token 消耗">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
@@ -929,6 +955,63 @@
       @cancel="projectExport.cancel"
     />
 
+    <!-- 移动端专属底栏导航条 -->
+    <nav v-if="isMobile" class="ws-mobile-nav" role="tablist" aria-label="移动端工作区导航">
+      <button
+        type="button"
+        class="ws-mobile-nav-btn"
+        :class="{ active: mobileActiveTab === 'ai' }"
+        role="tab"
+        :aria-selected="mobileActiveTab === 'ai'"
+        @click="onMobileSelectAi"
+      >
+        <span class="icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </span>
+        <span class="ws-mobile-nav-label">Agent</span>
+        <span v-if="messages.length > 0 && mobileActiveTab !== 'ai'" class="mobile-badge">{{ messages.length }}</span>
+      </button>
+      <button
+        type="button"
+        class="ws-mobile-nav-btn"
+        :class="{ active: mobileActiveTab === 'editor' }"
+        role="tab"
+        :aria-selected="mobileActiveTab === 'editor'"
+        @click="mobileActiveTab = 'editor'"
+      >
+        <span class="icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        </span>
+        <span class="ws-mobile-nav-label">代码</span>
+        <span v-if="fileContentDirty" class="mobile-dot"></span>
+      </button>
+      <button
+        type="button"
+        class="ws-mobile-nav-btn"
+        :class="{ active: mobileActiveTab === 'files' }"
+        role="tab"
+        :aria-selected="mobileActiveTab === 'files'"
+        @click="mobileActiveTab = 'files'"
+      >
+        <span class="icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </span>
+        <span class="ws-mobile-nav-label">文件</span>
+      </button>
+      <button
+        type="button"
+        class="ws-mobile-nav-btn"
+        :class="{ active: mobileActiveTab === 'terminal' }"
+        role="tab"
+        :aria-selected="mobileActiveTab === 'terminal'"
+        @click="onMobileSelectTerminal"
+      >
+        <span class="icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </span>
+        <span class="ws-mobile-nav-label">终端</span>
+      </button>
+    </nav>
   </div>
 </template>
 
@@ -936,6 +1019,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useResponsive } from '@/composables/useResponsive'
 import { projectApi, modelConfigApi, agentExtensionApi } from '@/api'
 import { DEFAULT_MAX_TOKENS, modelConfigPresets } from '@/constants/modelPresets'
 import { useAgentImageAttachments } from '@/composables/useAgentImageAttachments'
@@ -1028,6 +1112,32 @@ const ImageLightboxModal = defineAsyncComponent(() => import('@/components/cloud
 const WebPreviewPanel = defineAsyncComponent(() => import('@/components/cloud/preview/WebPreviewPanel.vue'))
 
 // Web 实时预览状态
+const { isMobile } = useResponsive()
+const mobileActiveTab = ref('ai')
+
+function onMobileSelectAi() {
+  // Agent 已拖到中心标签或面板被折叠时，侧栏 AI 面板不存在；
+  // 直接切 AI 视口会全黑，此时回退到中心区的 LabexAgent 标签。
+  if (isAgentInCenter.value) {
+    isAgentTabActive.value = true
+    activeSubagentTabId.value = null
+    mobileActiveTab.value = 'editor'
+    return
+  }
+  aiCollapsed.value = false
+  mobileActiveTab.value = 'ai'
+}
+
+function onMobileSelectTerminal() {
+  if (mobileActiveTab.value === 'terminal' && terminalPanelVisible.value) {
+    terminalPanelVisible.value = false
+    mobileActiveTab.value = 'editor'
+    return
+  }
+  terminalPanelVisible.value = true
+  mobileActiveTab.value = 'terminal'
+}
+
 const webPreviewVisible = ref(false)
 const webPreviewUrl = ref('http://localhost:3000')
 const webPreviewWidth = ref(520)
@@ -1038,11 +1148,13 @@ function handleOpenPreview(url) {
   if (url) {
     webPreviewUrl.value = url
     webPreviewVisible.value = true
+    if (isMobile.value) mobileActiveTab.value = 'terminal'
   }
 }
 
 function handleOpenFile(path) {
   if (path) {
+    if (isMobile.value) mobileActiveTab.value = 'editor'
     openFile(path)
   }
 }
@@ -1050,7 +1162,23 @@ function handleOpenFile(path) {
 // Core project state
 const projectId = ref(null)
 const projectName = ref('')
-const sidebarWidth = ref(240)
+const DEFAULT_SIDEBAR_WIDTH = 260
+const MIN_SIDEBAR_WIDTH = 200
+const MAX_SIDEBAR_WIDTH = 520
+
+function resolveInitialSidebarWidth() {
+  if (typeof window === 'undefined') return DEFAULT_SIDEBAR_WIDTH
+  try {
+    const saved = localStorage.getItem('labex_sidebar_width')
+    if (saved) {
+      const num = parseInt(saved, 10)
+      if (num >= MIN_SIDEBAR_WIDTH && num <= MAX_SIDEBAR_WIDTH) return num
+    }
+  } catch {}
+  return DEFAULT_SIDEBAR_WIDTH
+}
+
+const sidebarWidth = ref(resolveInitialSidebarWidth())
 const {
   fileTree,
   treeError,
@@ -1288,6 +1416,10 @@ const sidebarView = ref('files')
 function showConversationPanel() {
   loadConversations()
   sidebarView.value = 'conversations'
+  if (isMobile.value) {
+    explorerVisible.value = true
+    mobileActiveTab.value = 'files'
+  }
 }
 
 // AI Panel UI state
@@ -1307,21 +1439,30 @@ const imageLightboxSrc = ref('')
 const imageLightboxTitle = ref('')
 const thinkingLevel = ref('High')
 
+// 从桌面（可能处于折叠态）缩窗进入移动端时，强制展开 AI 面板，
+// 因为移动端 mobile-tab-ai 视口会隐藏折叠条，折叠态下会出现全黑无 UI。
+watch(isMobile, mobile => {
+  if (mobile && aiCollapsed.value) aiCollapsed.value = false
+})
+
 async function handleSelectTreeFile(path) {
   isAgentTabActive.value = false
   activeSubagentTabId.value = null
+  if (isMobile.value) mobileActiveTab.value = 'editor'
   await openFile(path)
 }
 
 function onSelectFileTab(idx) {
   isAgentTabActive.value = false
   activeSubagentTabId.value = null
+  if (isMobile.value) mobileActiveTab.value = 'editor'
   switchTab(idx)
 }
 
 function onSelectAgentTab() {
   isAgentTabActive.value = true
   activeSubagentTabId.value = null
+  if (isMobile.value) mobileActiveTab.value = 'ai'
 }
 
 function closeAgentTab() {
@@ -1548,6 +1689,9 @@ function moveAiToCenter() {
   isAgentInCenter.value = true
   isAgentTabActive.value = true
   aiCollapsed.value = true
+  if (isMobile.value) {
+    mobileActiveTab.value = 'editor'
+  }
   ElMessage.success('LabexAgent 已作为标签页在中心区域打开')
 }
 
@@ -1586,6 +1730,11 @@ function onCenterDrop(e) {
 }
 
 function toggleAiPanelLayout() {
+  // 移动端没有侧栏折叠概念：直接切到 AI 视图，绝不允许把面板折叠成空状态（防止黑屏）
+  if (isMobile.value) {
+    mobileActiveTab.value = 'ai'
+    return
+  }
   if (isAgentInCenter.value) {
     isAgentInCenter.value = false
     aiCollapsed.value = false
@@ -1607,6 +1756,9 @@ const activeSubagentTab = computed(() =>
 function onSelectSubagentTab(tabId) {
   isAgentTabActive.value = false
   activeSubagentTabId.value = tabId
+  if (isMobile.value) {
+    mobileActiveTab.value = 'editor'
+  }
 }
 
 function closeSubagentTab(tabId) {
@@ -1625,8 +1777,12 @@ async function openSubagentTab(payload) {
   if (!subagentId && !payload?.childTaskId) return
   const existing = subagentTabs.value.find(tab => String(tab.subagentId) === String(subagentId))
   if (existing) {
+    isAgentInCenter.value = false
     isAgentTabActive.value = false
     activeSubagentTabId.value = existing.id
+    if (isMobile.value) {
+      mobileActiveTab.value = 'editor'
+    }
     return
   }
   let name = payload?.name || ''
@@ -1651,8 +1807,12 @@ async function openSubagentTab(payload) {
     name: name || ('子代理 #' + subagentId)
   }
   subagentTabs.value.push(tab)
+  isAgentInCenter.value = false
   isAgentTabActive.value = false
   activeSubagentTabId.value = tab.id
+  if (isMobile.value) {
+    mobileActiveTab.value = 'editor'
+  }
   ElMessage.success(`子代理「${tab.name}」已在新标签页打开`)
 }
 
@@ -1797,6 +1957,7 @@ const mcForm = ref(emptyModelConfigForm())
 const mcCustomTemplate = {
   name: '自定义',
   vendor: 'OpenAI Compatible',
+  iconKey: 'custom',
   iconText: '+',
   accent: '#64748b',
   baseUrl: '',
@@ -1862,7 +2023,11 @@ const currentModelName = computed(() => {
     const cfg = modelConfigs.value.find(c => c.configId === selectedModelConfigId.value)
     if (cfg) return cfg.modelName || cfg.configName
   }
-  return 'MiniMax'
+  if (modelConfigs.value.length > 0) {
+    const def = modelConfigs.value.find(c => c.isDefault === 1) || modelConfigs.value[0]
+    return def.modelName || def.configName
+  }
+  return '未配置模型'
 })
 // 与后端 storeForRequest 的 fail-closed 校验一致：只有明确开启“支持图片理解”的模型才允许图片输入。
 const currentModelSupportsImages = computed(() => {
@@ -2132,6 +2297,13 @@ async function sendMessage() {
   const q = agentInput.value.trim()
   const imageAttachments = pendingImageAttachments.value.slice()
   if ((!q && imageAttachments.length === 0) || agentLoading.value) return
+
+  // 未配置任何可用模型时，拦截并提示用户自行配置
+  if (!selectedModelConfigId.value && modelConfigs.value.length === 0) {
+    ElMessage.warning('尚未配置 AI 模型，请先配置模型与 API Key')
+    showModelConfig.value = true
+    return
+  }
 
   // 图片二进制只走 multipart files 上传；文本绝不内嵌 data URL，
   // 否则 Base64 会随 request.message 进入持久化 transcript 并撑爆请求体。
@@ -2718,8 +2890,13 @@ async function loadModelConfigs() {
   try {
     const r = await modelConfigApi.list()
     modelConfigs.value = r.data || []
-    const def = modelConfigs.value.find(c => c.isDefault === 1)
-    if (def) selectedModelConfigId.value = def.configId
+    if (modelConfigs.value.length > 0) {
+      const def = modelConfigs.value.find(c => c.isDefault === 1)
+      const target = def || modelConfigs.value[0]
+      selectedModelConfigId.value = target.configId
+    } else {
+      selectedModelConfigId.value = null
+    }
   } catch (e) { /* ignore */ }
 }
 
@@ -2975,6 +3152,8 @@ async function toggleTerminalPanel() {
   if (terminalPanelVisible.value) {
     await nextTick()
     terminalPanelRef.value?.fitAllTerminals()
+  } else if (isMobile.value && mobileActiveTab.value === 'terminal') {
+    mobileActiveTab.value = 'editor'
   }
 }
 function resetRenderedConversation() {
@@ -4047,6 +4226,11 @@ function goBack() { router.push({ name: 'Projects' }) }
 function openTutorials() { router.push({ name: 'Tutorials' }) }
 async function optimizePrompt() {
   if (!agentInput.value.trim()) { ElMessage.warning('请先输入提示词'); return }
+  if (!selectedModelConfigId.value && modelConfigs.value.length === 0) {
+    ElMessage.warning('尚未配置 AI 模型，请先配置模型与 API Key')
+    showModelConfig.value = true
+    return
+  }
   const originalPrompt = agentInput.value.trim()
   const loadingMsg = ElMessage({ message: '正在优化提示词...', type: 'info', duration: 0, showClose: false })
   try {
@@ -4072,6 +4256,13 @@ function atFile() {
     agentInput.value += ` @${activePath.value} `
     nextTick(() => aiInputRef.value?.focus())
   } else { ElMessage.warning('请先选择一个文件') }
+}
+
+function showCommandMenu() {
+  if (!agentInput.value.startsWith('/')) {
+    agentInput.value = '/' + agentInput.value
+  }
+  nextTick(() => aiInputRef.value?.focus())
 }
 
 
@@ -4103,7 +4294,7 @@ function startSidebarResize(e) {
   const apply = () => {
     frame = null
     // Math.round 对齐设备像素网格：非整数宽度会触发亚像素重排，成本与模糊同时上升（旧实现漏了取整）
-    const width = Math.round(Math.max(180, Math.min(startWidth + latestX - startX, 520)))
+    const width = Math.round(Math.max(MIN_SIDEBAR_WIDTH, Math.min(startWidth + latestX - startX, MAX_SIDEBAR_WIDTH)))
     // 直写 CSS 变量而非响应式 ref：拖拽的 60Hz 高频路径上绕开 Vue 依赖收集/patch，仅保留浏览器一次样式计算
     sidebar.style.setProperty('--ws-sidebar-w', `${width}px`)
     latestApplied = width
@@ -4120,6 +4311,9 @@ function startSidebarResize(e) {
     }
     // 松手时同步回响应式状态，保证后续折叠/展开、持久化等逻辑读到正确宽度
     sidebarWidth.value = latestApplied
+    try {
+      localStorage.setItem('labex_sidebar_width', String(latestApplied))
+    } catch {}
     handle.removeEventListener('pointermove', move)
     handle.removeEventListener('pointerup', finish)
     handle.removeEventListener('pointercancel', finish)

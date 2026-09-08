@@ -115,16 +115,16 @@ onBeforeUnmount(() => {
 <style scoped>
 .token-chart {
   margin: 8px 0;
-  border: 1px solid #e9d5ff;
+  border: 1px solid var(--ai-purple-border, #e9d5ff);
   border-radius: 8px;
   overflow: hidden;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  background: var(--ai-bg, #ffffff);
+  box-shadow: var(--ai-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.03));
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .token-chart:hover {
-  border-color: #d8b4fe;
-  box-shadow: 0 4px 16px -2px rgba(15, 23, 42, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.05);
+  border-color: var(--ai-purple-deep, #d8b4fe);
+  box-shadow: var(--ai-shadow-md, 0 4px 16px -2px rgba(15, 23, 42, 0.08));
   transform: translateY(-1px);
 }
 .token-header {
@@ -135,13 +135,13 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
-  color: #6b21a8;
+  color: var(--ai-purple-text, #6b21a8);
   user-select: none;
 }
 .token-title { flex: 1; }
 .token-total {
   font-size: 11px;
-  color: #a855f7;
+  color: var(--ai-purple-deep, #a855f7);
   font-weight: 500;
 }
 .token-body {
@@ -159,7 +159,7 @@ onBeforeUnmount(() => {
 }
 .stat-label {
   font-size: 10px;
-  color: #9ca3af;
+  color: var(--ai-text-muted, #9ca3af);
 }
 .stat-value {
   font-size: 14px;
@@ -175,7 +175,7 @@ onBeforeUnmount(() => {
 }
 .token-bar {
   height: 6px;
-  background: #e5e7eb;
+  background: var(--ai-border-strong, #e5e7eb);
   border-radius: 3px;
   display: flex;
   overflow: hidden;
@@ -192,7 +192,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   font-size: 10px;
-  color: #6b7280;
+  color: var(--ai-text-muted, #6b7280);
 }
 .legend-dot {
   width: 6px;
@@ -201,4 +201,23 @@ onBeforeUnmount(() => {
 }
 .legend-dot.prompt { background: #3b82f6; }
 .legend-dot.completion { background: #10b981; }
+
+/* 暗色主题增强 */
+:root[data-theme='dark'] .token-chart {
+  background: #1e1e2e;
+  border-color: #313244;
+}
+:root[data-theme='dark'] .token-header {
+  color: #c4b5fd;
+}
+:root[data-theme='dark'] .token-total {
+  color: #a78bfa;
+}
+:root[data-theme='dark'] .stat-label,
+:root[data-theme='dark'] .legend-item {
+  color: #a6adc8;
+}
+:root[data-theme='dark'] .token-bar {
+  background: #313244;
+}
 </style>

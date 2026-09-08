@@ -32,3 +32,12 @@ test('SidebarNav switches between file explorer and conversation views', async (
   assert.match(source, /view === 'files'/)
   assert.match(source, /view === 'conversations'/)
 })
+
+test('SidebarNav prevents text breaking and adapts gracefully when sidebar is narrow', async () => {
+  const source = await readFile(new URL('../sidebar/SidebarNav.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /white-space:\s*nowrap/, 'Tab 按钮必须禁止换行，防止窄宽度下文字上下折叠挤压')
+  assert.match(source, /\.sn-btn svg\s*\{[^}]*flex-shrink:\s*0/, 'Tab 图标必须防止被 flex 挤压缩小')
+  assert.match(source, /\.sn-btn span\s*\{[^}]*text-overflow:\s*ellipsis/, 'Tab 文本必须配置省略与溢出保护')
+  assert.match(source, /container-type:\s*inline-size/, 'Tab 导航栏必须声明容器类型以支持超窄自适应')
+})
