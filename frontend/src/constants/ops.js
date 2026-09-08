@@ -73,3 +73,28 @@ export const OPS_ROLES = {
   OPS_ADMIN: { label: '管理员', type: 'danger' },
   AUDITOR: { label: '审计', type: 'info' }
 }
+
+export const USER_ROLES = {
+  STUDENT: { label: '学生', type: 'info' },
+  ADMIN: { label: '管理员', type: 'danger' }
+}
+
+export const USER_STATUSES = {
+  1: { label: '正常', type: 'success' },
+  0: { label: '冻结', type: 'danger' }
+}
+
+export const USER_ACTIVITY_CATEGORIES = [
+  { value: 'ALL', label: '全部事件' },
+  { value: 'HTTP', label: '接口访问' },
+  { value: 'TASK', label: 'Agent 任务' },
+  { value: 'SECURITY', label: '安全审批' }
+]
+
+export const ACTIVITY_STATUS_TYPES = {
+  SUCCESS: 'success',
+  WARNING: 'warning',
+  DANGER: 'danger',
+  INFO: 'info'
+}
+

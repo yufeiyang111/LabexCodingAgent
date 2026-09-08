@@ -557,6 +557,21 @@ export const monitorApi = {
     },
     resumeWorker(workerId, body = {}) {
       return monitorClient.post('/operations/workers/' + workerId + '/resume', body)
+    },
+    userOverview(range = '7d') {
+      return monitorClient.get('/users/overview', { params: { range } })
+    },
+    users(params = {}) {
+      return monitorClient.get('/users', { params })
+    },
+    userDetail(userId) {
+      return monitorClient.get('/users/' + userId)
+    },
+    userActivities(userId, params = {}) {
+      return monitorClient.get('/users/' + userId + '/activities', { params })
+    },
+    userAction(userId, action, body = {}) {
+      return monitorClient.post('/users/' + userId + '/actions/' + action, body)
     }
   }
 

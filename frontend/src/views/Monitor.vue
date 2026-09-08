@@ -276,6 +276,57 @@
             </div>
           </section>
         </div>
+
+        <div v-show="tab === 'users'">
+          <section>
+            <UserOverviewPanel
+              :overview="usersData.overview.value"
+              :loading="usersData.overviewLoading.value"
+              :error="usersData.overviewError.value"
+              :range="usersData.overviewRange.value"
+              @range-change="onUserRangeChange"
+              @refresh="onUserOverviewRefresh"
+            />
+          </section>
+          <section>
+            <UserTable
+              :users="usersData.users.value"
+              :loading="usersData.loading.value"
+              :error="usersData.error.value"
+              :page="usersData.page.value"
+              :total="usersData.total.value"
+              :page-size="usersData.pageSize.value"
+              :filters="usersData.filters.value"
+              @select="usersData.selectUser"
+              @filter="onUserFilter"
+              @reset="onUserReset"
+              @page-change="onUserPage"
+              @refresh="onUsersRefresh"
+            />
+          </section>
+          <UserDetailDrawer
+            :visible="usersData.detailVisible.value"
+            :detail="usersData.detail.value"
+            :loading="usersData.detailLoading.value"
+            :error="usersData.detailError.value"
+            :activities="usersData.activities.value"
+            :activities-loading="usersData.activitiesLoading.value"
+            :activities-error="usersData.activitiesError.value"
+            :activities-category="usersData.activitiesCategory.value"
+            :activities-only-errors="usersData.activitiesOnlyErrors.value"
+            :activities-page="usersData.activitiesPage.value"
+            :activities-total="usersData.activitiesTotal.value"
+            :activities-page-size="usersData.activitiesPageSize.value"
+            :acting="usersData.acting.value"
+            :action-error="usersData.actionError.value"
+            @close="usersData.closeDetail"
+            @action="onUserAction"
+            @activity-category-change="onActivityCategoryChange"
+            @activity-toggle-errors="onActivityToggleErrors"
+            @activity-page-change="onActivityPageChange"
+            @activity-refresh="onActivityRefresh"
+          />
+        </div>
       </main>
     </div>
   </div>
@@ -292,6 +343,7 @@ import { useMonitorAlerts } from '@/composables/ops/useMonitorAlerts'
 import { useMonitorIncidents } from '@/composables/ops/useMonitorIncidents'
 import { useMonitorAudit } from '@/composables/ops/useMonitorAudit'
 import { useMonitorEvents } from '@/composables/ops/useMonitorEvents'
+import { useMonitorUsers } from '@/composables/ops/useMonitorUsers'
 import HealthOverviewPanel from '@/components/ops/health/HealthOverviewPanel.vue'
 import DependencyHealthTable from '@/components/ops/health/DependencyHealthTable.vue'
 import RuntimeTaskTable from '@/components/ops/runtime/RuntimeTaskTable.vue'
@@ -305,6 +357,9 @@ import AlertRulePanel from '@/components/ops/alert/AlertRulePanel.vue'
 import IncidentPanel from '@/components/ops/incident/IncidentPanel.vue'
 import EventTable from '@/components/ops/event/EventTable.vue'
 import AuditTable from '@/components/ops/audit/AuditTable.vue'
+import UserOverviewPanel from '@/components/ops/user/UserOverviewPanel.vue'
+import UserTable from '@/components/ops/user/UserTable.vue'
+import UserDetailDrawer from '@/components/ops/user/UserDetailDrawer.vue'
 
 const {
   loading: healthLoading,
@@ -354,9 +409,11 @@ const alertsData = useMonitorAlerts()
 const incidentsData = useMonitorIncidents()
 const auditData = useMonitorAudit()
 const eventsData = useMonitorEvents()
+const usersData = useMonitorUsers()
 
 const tabs = [
   { key: 'overview', label: '总览' },
+  { key: 'users', label: '用户' },
   { key: 'alerts', label: '告警' },
   { key: 'incidents', label: '故障' },
   { key: 'runtime', label: '运行态' },
@@ -370,7 +427,10 @@ function setTab(key) {
 }
 
 watch(tab, (key) => {
-  if (key === 'alerts') {
+  if (key === 'users') {
+    usersData.loadOverview().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+    usersData.loadUsers().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+  } else if (key === 'alerts') {
     alertsData.load().catch((e) => { if (e?.status === 401) handleLoadError(e) })
     alertsData.loadRules().catch((e) => { if (e?.status === 401) handleLoadError(e) })
   } else if (key === 'incidents') {
@@ -387,6 +447,9 @@ watch(tab, (key) => {
 function onRefresh() {
   if (tab.value === 'overview') {
     void loadAll()
+  } else if (tab.value === 'users') {
+    onUserOverviewRefresh()
+    onUsersRefresh()
   } else if (tab.value === 'alerts') {
     onAlertsRefresh()
   } else if (tab.value === 'incidents') {
@@ -398,6 +461,50 @@ function onRefresh() {
   } else if (tab.value === 'runtime') {
     loadRuntimeSafe()
   }
+}
+
+function onUserRangeChange(newRange) {
+  usersData.loadOverview(newRange).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onUserOverviewRefresh() {
+  usersData.loadOverview().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onUserFilter() {
+  usersData.loadUsers({ page: 1 }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onUserReset() {
+  usersData.loadUsers({ page: 1 }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onUserPage(nextPage) {
+  usersData.loadUsers({ page: nextPage }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onUsersRefresh() {
+  usersData.loadUsers().catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onUserAction(action) {
+  usersData.executeAction(action).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onActivityCategoryChange(category) {
+  usersData.loadActivities(undefined, { category, page: 1 }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onActivityToggleErrors(onlyErrors) {
+  usersData.loadActivities(undefined, { onlyErrors, page: 1 }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onActivityPageChange(nextPage) {
+  usersData.loadActivities(undefined, { page: nextPage }).catch((e) => { if (e?.status === 401) handleLoadError(e) })
+}
+
+function onActivityRefresh() {
+  usersData.loadActivities().catch((e) => { if (e?.status === 401) handleLoadError(e) })
 }
 
 function onAlertsRefresh() {

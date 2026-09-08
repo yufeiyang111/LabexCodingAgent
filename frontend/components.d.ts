@@ -97,8 +97,13 @@ declare module 'vue' {
     TutorialsLauncher: typeof import('./src/components/tutorial/TutorialsLauncher.vue')['default']
     UsageHeatmap: typeof import('./src/components/cloud/UsageHeatmap.vue')['default']
     UsagePanel: typeof import('./src/components/cloud/UsagePanel.vue')['default']
+    UserActivityTimeline: typeof import('./src/components/ops/user/UserActivityTimeline.vue')['default']
     UserDetailButton: typeof import('./src/components/cloud/UserDetailButton.vue')['default']
+    UserDetailDrawer: typeof import('./src/components/ops/user/UserDetailDrawer.vue')['default']
+    UserOverviewPanel: typeof import('./src/components/ops/user/UserOverviewPanel.vue')['default']
     UserPanel: typeof import('./src/components/cloud/UserPanel.vue')['default']
+    UserTable: typeof import('./src/components/ops/user/UserTable.vue')['default']
+    UserTokenPieChart: typeof import('./src/components/ops/user/UserTokenPieChart.vue')['default']
     WebPreviewPanel: typeof import('./src/components/cloud/preview/WebPreviewPanel.vue')['default']
     WorkspaceTopBar: typeof import('./src/components/cloud/layout/WorkspaceTopBar.vue')['default']
   }
