@@ -14,7 +14,7 @@ const routes = [
   { path: '/workspace/:projectId', name: 'CloudWorkspace', component: CloudWorkspace, meta: { requiresAuth: true, title: '工作空间' } },
   { path: '/ops', name: 'Monitor', component: Monitor, meta: { requiresAuth: false, title: '运维监控' } },
   { path: '/tutorials', name: 'Tutorials', component: Tutorials, meta: { requiresAuth: false, title: '开发教程' } },
-  { path: '/tutorials/:id', name: 'TutorialDetail', component: Tutorials, meta: { requiresAuth: false, title: '教程详情' } },
+  { path: '/tutorials/:slug', name: 'TutorialDetail', component: Tutorials, meta: { requiresAuth: false, title: '教程详情' } },
   { path: '/', redirect: '/projects' },
   { path: '/:pathMatch(.*)*', redirect: '/projects' }
 ]

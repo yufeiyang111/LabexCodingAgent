@@ -1,14 +1,14 @@
-/* ===== 令牌：全站纯白底、细线分隔（MiniMax 文档风），强调色跟随全局主题 ===== */
+/* ===== 令牌：全站底色、细线分隔，强调色跟随全局主题 ===== */
 .tutorial-page {
-  --tut-accent: var(--theme-accent);
-  --tut-accent-strong: var(--theme-accent-strong);
-  --tut-accent-soft: var(--theme-accent-soft);
-  --tut-text: #172033;
-  --tut-text-secondary: #596579;
-  --tut-text-muted: #8c96a8;
-  --tut-line: #ececf0;
-  --tut-line-light: #f2f3f5;
-  --tut-card: #ffffff;
+  --tut-accent: var(--theme-accent, #4f46e5);
+  --tut-accent-strong: var(--theme-accent-strong, #4338ca);
+  --tut-accent-soft: var(--theme-accent-soft, #eef2ff);
+  --tut-text: var(--theme-text, #172033);
+  --tut-text-secondary: var(--theme-text-secondary, #596579);
+  --tut-text-muted: var(--theme-text-muted, #8c96a8);
+  --tut-line: var(--theme-border, #ececf0);
+  --tut-line-light: color-mix(in srgb, var(--theme-border, #ececf0) 65%, transparent);
+  --tut-card: var(--theme-surface, #ffffff);
   --tut-shadow-xs: 0 1px 2px rgba(23, 32, 55, .05);
   --tut-shadow-sm: 0 1px 3px rgba(23, 32, 55, .06), 0 3px 10px rgba(23, 32, 55, .05);
   --tut-ease: cubic-bezier(.21, .8, .35, 1);
@@ -20,8 +20,8 @@
 @keyframes tutorial-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 
 /* ===== 页面与顶栏 ===== */
-.tutorial-page { min-height: 100vh; background: #ffffff; color: var(--tut-text); animation: tutorial-fade-in .4s ease both; }
-.tutorial-page__topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; min-height: 56px; padding: 0 20px; border-bottom: 1px solid var(--tut-line); background: #ffffff; }
+.tutorial-page { min-height: 100vh; background: var(--theme-bg, #ffffff); color: var(--tut-text); animation: tutorial-fade-in .4s ease both; }
+.tutorial-page__topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; min-height: 56px; padding: 0 20px; border-bottom: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
 .tutorial-page__back { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; margin-left: -10px; border: 0; border-radius: 8px; background: transparent; color: var(--tut-text-secondary); font: inherit; font-size: 13px; cursor: pointer; transition: background-color .2s ease, color .2s ease, transform .2s ease; }
 .tutorial-page__back svg { width: 15px; height: 15px; transition: transform .25s var(--tut-ease); }
 .tutorial-page__back:hover { color: var(--tut-accent); background: var(--tut-accent-soft); }
@@ -29,18 +29,20 @@
 .tutorial-page__back:active { transform: scale(.97); }
 .tutorial-page__brand { display: flex; align-items: center; gap: 9px; padding-left: 14px; border-left: 1px solid var(--tut-line); color: var(--tut-text); font-weight: 700; font-size: 14px; letter-spacing: -.01em; }
 .tutorial-page__topbar-spacer { flex: 1; }
+.tutorial-page__theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--tut-line); border-radius: 8px; background: var(--theme-surface, #ffffff); color: var(--tut-text-secondary); cursor: pointer; transition: all 0.2s ease; }
+.tutorial-page__theme-btn:hover { background: var(--tut-accent-soft); color: var(--tut-accent); border-color: var(--tut-accent); }
 .tutorial-page__progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; pointer-events: none; }
 .tutorial-page__progress-bar { height: 100%; transform-origin: 0 50%; transform: scaleX(0); border-radius: 0 2px 2px 0; background: linear-gradient(90deg, var(--tut-accent), color-mix(in srgb, var(--tut-accent) 45%, white)); transition: transform .12s linear; }
 
 /* ===== 布局：三列贴合，1px 线条分隔 ===== */
-.tutorial-page__layout { display: grid; grid-template-columns: 248px minmax(0, 1fr) 224px; width: 100%; min-height: calc(100vh - 56px); }
+.tutorial-page__layout { display: grid; grid-template-columns: 260px minmax(0, 1fr) 280px; width: 100%; min-height: calc(100vh - 56px); }
 .tutorial-page__layout > * { animation: tutorial-rise .55s var(--tut-ease) both; }
 .tutorial-page__layout > .tutorial-sidebar { animation-delay: .04s; }
 .tutorial-page__layout > .tutorial-page__content { animation-delay: .12s; }
 .tutorial-page__layout > .tutorial-outline { animation-delay: .2s; }
 
 /* ===== 侧边栏 ===== */
-.tutorial-sidebar { position: sticky; top: 56px; align-self: start; height: calc(100vh - 56px); overflow-y: auto; padding: 20px 12px 24px 14px; border-right: 1px solid var(--tut-line); background: #ffffff; }
+.tutorial-sidebar { position: sticky; top: 56px; align-self: start; height: calc(100vh - 56px); overflow-y: auto; padding: 20px 12px 24px 14px; border-right: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
 .tutorial-sidebar__header { padding: 0 10px 14px; border-bottom: 1px solid var(--tut-line-light); }
 .tutorial-sidebar__eyebrow { color: var(--tut-accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; }
 .tutorial-sidebar h2 { margin: 6px 0 4px; color: var(--tut-text); font-size: 19px; letter-spacing: -.02em; }
@@ -56,11 +58,15 @@
 .tutorial-sidebar__loading, .tutorial-sidebar__error, .tutorial-sidebar__empty { padding: 14px 10px; color: var(--tut-text-muted); font-size: 12px; line-height: 1.6; }
 
 /* ===== 内容区：无卡片，直接排在白色画布上 ===== */
-.tutorial-page__content { min-width: 0; padding: 34px clamp(28px, 4.5vw, 76px) 96px; }
-.tutorial-article { max-width: 800px; margin: 0 auto; }
-.tutorial-article-state { display: grid; min-height: 340px; place-items: center; align-content: center; gap: 10px; max-width: 800px; margin: 0 auto; color: var(--tut-text-muted); text-align: center; }
-.tutorial-article__empty { display: grid; min-height: 320px; place-items: center; align-content: center; gap: 12px; max-width: 800px; margin: 0 auto; color: var(--tut-text-muted); text-align: center; border: 1px dashed var(--tut-line); border-radius: 12px; }
-.tutorial-article__empty-icon { width: 32px; height: 32px; color: var(--tut-text-muted); opacity: .65; animation: tutorial-float 3.2s ease-in-out infinite; }
+.tutorial-page__content { min-width: 0; display: flex; flex-direction: column; padding: 34px clamp(28px, 4.5vw, 76px) 96px; }
+.tutorial-article-slot { display: flex; flex-direction: column; flex: 1; width: 100%; }
+.tutorial-article { max-width: 800px; margin: 0 auto; width: 100%; }
+.tutorial-article-state { display: grid; min-height: 380px; place-items: center; align-content: center; gap: 12px; max-width: 800px; margin: auto; color: var(--tut-text-muted); text-align: center; }
+.tutorial-article__empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; width: 100%; max-width: 760px; min-height: 460px; margin: auto; padding: 56px 40px; color: var(--tut-text-muted); text-align: center; border: 2px dashed var(--tut-line); border-radius: 16px; background: color-mix(in srgb, var(--tut-card) 60%, transparent); box-shadow: var(--tut-shadow-xs); transition: border-color .2s ease, background-color .2s ease; }
+.tutorial-article__empty-icon-wrap { display: flex; align-items: center; justify-content: center; width: 84px; height: 84px; border-radius: 22px; background: var(--tut-accent-soft); color: var(--tut-accent); box-shadow: 0 4px 16px color-mix(in srgb, var(--tut-accent) 15%, transparent); }
+.tutorial-article__empty-icon { width: 44px; height: 44px; color: var(--tut-accent); opacity: .95; animation: tutorial-float 3.2s ease-in-out infinite; }
+.tutorial-article__empty-text { color: var(--tut-text); font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+.tutorial-article__empty-subtext { color: var(--tut-text-muted); font-size: 13px; line-height: 1.6; }
 
 /* 文章头部：标题区与正文用一条线分隔 */
 .tutorial-article__header { position: relative; padding-bottom: 22px; border-bottom: 1px solid var(--tut-line-light); animation: tutorial-rise .5s var(--tut-ease) both; }
@@ -112,6 +118,8 @@
 .tutorial-page .tutorial-article__body th:not(:last-child), .tutorial-page .tutorial-article__body td:not(:last-child) { border-right: 1px solid var(--tut-line-light); }
 .tutorial-page .tutorial-article__body tr:last-child td { border-bottom: 0; }
 .tutorial-page .tutorial-article__body th { background: #fafbfc; color: var(--tut-text); font-weight: 700; }
+.tutorial-page .tutorial-article__body img { max-width: 100%; height: auto; display: block; margin: 8px auto; border: 1px solid var(--tut-line-light); border-radius: 10px; }
+.tutorial-page .tutorial-article__body video, .tutorial-page .tutorial-article__body iframe { max-width: 100%; }
 
 /* 状态与骨架 */
 .tutorial-article-state__icon { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 50%; background: var(--tut-accent-soft); color: var(--tut-accent); }
@@ -128,19 +136,19 @@
 .tutorial-skeleton__line--half { width: 52%; }
 
 /* ===== 大纲 ===== */
-.tutorial-outline { position: sticky; top: 56px; align-self: start; max-height: calc(100vh - 56px); overflow-y: auto; padding: 34px 18px 20px 20px; border-left: 1px solid var(--tut-line); background: #ffffff; }
+.tutorial-outline { position: sticky; top: 56px; align-self: start; max-height: calc(100vh - 56px); overflow-y: auto; padding: 34px 18px 20px 20px; border-left: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
 .tutorial-outline__label { display: flex; align-items: center; gap: 6px; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--tut-line-light); color: var(--tut-text); font-size: 12px; font-weight: 700; }
 .tutorial-outline__label svg { width: 13px; height: 13px; color: var(--tut-accent); }
 .tutorial-outline__item { position: relative; display: block; padding: 4px 8px; margin: 0 -8px; border-radius: 6px; color: var(--tut-text-muted); font-size: 12px; line-height: 1.5; text-decoration: none; transition: color .4s ease, background-color .4s ease; }
-.tutorial-outline__item:hover { color: var(--tut-text); background: #f5f5f6; }
+.tutorial-outline__item:hover { color: var(--tut-text); background: var(--theme-surface-muted, #f5f5f6); }
 .tutorial-outline__item.is-active { color: var(--tut-text); font-weight: 600; }
-.tutorial-outline__item.is-active::before { content: ''; position: absolute; left: -13px; top: 22%; bottom: 22%; width: 2px; border-radius: 2px; background: #52525b; }
+.tutorial-outline__item.is-active::before { content: ''; position: absolute; left: -13px; top: 22%; bottom: 22%; width: 2px; border-radius: 2px; background: var(--tut-accent); }
 .tutorial-outline__item.level-2 { padding-left: 17px; }
 .tutorial-outline__item.level-3 { padding-left: 26px; }
 .tutorial-outline__empty { color: var(--tut-text-muted); font-size: 12px; }
 
 /* ===== 回到顶部 ===== */
-.tutorial-page__back-top { position: fixed; right: 24px; bottom: 28px; z-index: 30; display: grid; width: 40px; height: 40px; place-items: center; border: 1px solid var(--tut-line); border-radius: 10px; background: #ffffff; color: var(--tut-text-secondary); cursor: pointer; box-shadow: var(--tut-shadow-sm); transition: color .2s ease, border-color .2s ease, box-shadow .25s ease, transform .22s var(--tut-ease); }
+.tutorial-page__back-top { position: fixed; right: 24px; bottom: 28px; z-index: 30; display: grid; width: 40px; height: 40px; place-items: center; border: 1px solid var(--tut-line); border-radius: 10px; background: var(--theme-surface, #ffffff); color: var(--tut-text-secondary); cursor: pointer; box-shadow: var(--tut-shadow-sm); transition: color .2s ease, border-color .2s ease, box-shadow .25s ease, transform .22s var(--tut-ease); }
 .tutorial-page__back-top svg { width: 17px; height: 17px; }
 .tutorial-page__back-top:hover { color: var(--tut-accent); border-color: color-mix(in srgb, var(--tut-accent) 40%, var(--tut-line)); box-shadow: 0 4px 12px rgba(23, 32, 55, .1), 0 12px 28px rgba(23, 32, 55, .1); transform: translateY(-2px); }
 .totop-enter-active { transition: opacity .45s ease, transform .5s var(--tut-ease); }
@@ -153,9 +161,297 @@
 .article-swap-leave-active { transition: opacity .16s ease; }
 .article-swap-leave-to { opacity: 0; }
 
-/* ===== 响应式 ===== */
-@media (max-width: 1200px) { .tutorial-page__layout { grid-template-columns: 224px minmax(0, 1fr); } .tutorial-outline { display: none; } }
-@media (max-width: 700px) { .tutorial-page__topbar { padding: 0 14px; } .tutorial-page__layout { display: block; } .tutorial-sidebar { position: static; height: auto; max-height: 250px; border-right: 0; border-bottom: 1px solid var(--tut-line); } .tutorial-page__content { padding: 22px 16px 64px; } .tutorial-article h1 { font-size: 26px; } .tutorial-page__back-top { right: 14px; bottom: 18px; } }
+/* ===== 暗黑主题深度适配 ===== */
+html[data-theme='dark'] .tutorial-page {
+  --tut-text: #edf1fb;
+  --tut-text-secondary: #b5bfd1;
+  --tut-text-muted: #778195;
+  --tut-line: #303747;
+  --tut-line-light: #252a37;
+  --tut-card: #181b24;
+  background: #11131a;
+  color: #edf1fb;
+}
+
+html[data-theme='dark'] .tutorial-page__topbar {
+  background: #181b24;
+  border-bottom-color: #303747;
+}
+
+html[data-theme='dark'] .tutorial-page__brand {
+  border-left-color: #303747;
+  color: #edf1fb;
+}
+
+html[data-theme='dark'] .tutorial-sidebar {
+  background: #181b24;
+  border-right-color: #303747;
+}
+
+html[data-theme='dark'] .tutorial-sidebar h2 {
+  color: #edf1fb;
+}
+
+html[data-theme='dark'] .tutorial-sidebar__category {
+  color: #8c96a8;
+}
+
+html[data-theme='dark'] .tutorial-sidebar__item {
+  color: #b5bfd1;
+}
+
+html[data-theme='dark'] .tutorial-sidebar__item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+html[data-theme='dark'] .tutorial-outline {
+  background: #181b24;
+  border-left-color: #303747;
+}
+
+html[data-theme='dark'] .tutorial-outline__label {
+  color: #edf1fb;
+  border-bottom-color: #252a37;
+}
+
+html[data-theme='dark'] .tutorial-outline__item {
+  color: #8c96a8;
+}
+
+html[data-theme='dark'] .tutorial-outline__item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+html[data-theme='dark'] .tutorial-outline__item.is-active {
+  color: #ffffff;
+}
+
+html[data-theme='dark'] .tutorial-outline__close {
+  background: #181b24;
+  border-color: #303747;
+  color: #cdd6f4;
+}
+
+html[data-theme='dark'] .tutorial-outline.is-mobile-sheet {
+  background: #181b24;
+}
+
+html[data-theme='dark'] .tutorial-article h1,
+html[data-theme='dark'] .tutorial-page .tutorial-article__body h1,
+html[data-theme='dark'] .tutorial-page .tutorial-article__body h2,
+html[data-theme='dark'] .tutorial-page .tutorial-article__body h3,
+html[data-theme='dark'] .tutorial-page .tutorial-article__body strong {
+  color: #edf1fb;
+}
+
+html[data-theme='dark'] .tutorial-page .tutorial-article__body p,
+html[data-theme='dark'] .tutorial-article__summary {
+  color: #b5bfd1;
+}
+
+html[data-theme='dark'] .tutorial-page .tutorial-article__body blockquote {
+  background: #181b24;
+  border-color: #303747;
+  color: #b5bfd1;
+}
+
+html[data-theme='dark'] .tutorial-page .tutorial-article__body code {
+  background: #202430;
+  border-color: #303747;
+  color: #c4b5fd;
+}
+
+html[data-theme='dark'] .tutorial-page .tutorial-article__body table {
+  border-color: #303747;
+}
+
+html[data-theme='dark'] .tutorial-page .tutorial-article__body th {
+  background: #202430;
+  color: #edf1fb;
+  border-bottom-color: #303747;
+}
+
+html[data-theme='dark'] .tutorial-page .tutorial-article__body td {
+  border-bottom-color: #272a37;
+  color: #cdd6f4;
+}
+
+html[data-theme='dark'] .tutorial-page .tutorial-article__body th:not(:last-child),
+html[data-theme='dark'] .tutorial-page .tutorial-article__body td:not(:last-child) {
+  border-right-color: #272a37;
+}
+
+html[data-theme='dark'] .tutorial-article-state button {
+  background: #181b24;
+  border-color: #303747;
+  color: #edf1fb;
+}
+
+html[data-theme='dark'] .tutorial-page__back-top {
+  background: #181b24;
+  border-color: #303747;
+  color: #cdd6f4;
+}
+
+html[data-theme='dark'] .tutorial-page__theme-btn {
+  background: #181b24;
+  border-color: #303747;
+  color: #cdd6f4;
+}
+
+html[data-theme='dark'] .tutorial-page__theme-btn:hover {
+  background: #202638;
+  color: #ffffff;
+}
+
+html[data-theme='dark'] .tutorial-skeleton__line {
+  background: linear-gradient(90deg, #1e2230 25%, #282f42 37%, #1e2230 63%);
+  background-size: 400% 100%;
+}
+
+html[data-theme='dark'] .tutorial-article__empty {
+  border-color: #303747;
+  background: rgba(24, 27, 36, 0.45);
+}
+
+html[data-theme='dark'] .tutorial-article__empty-icon-wrap {
+  background: rgba(79, 70, 229, 0.2);
+  color: #818cf8;
+}
+
+html[data-theme='dark'] .tutorial-article__empty-icon {
+  color: #818cf8;
+}
+
+html[data-theme='dark'] .tutorial-article__empty-text {
+  color: #edf1fb;
+}
+
+html[data-theme='dark'] .tutorial-article__empty-subtext {
+  color: #778195;
+}
+
+.tutorial-page__menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  margin-right: 6px;
+  border: 1px solid var(--tut-line);
+  border-radius: 8px;
+  background: var(--theme-surface, #ffffff);
+  color: var(--tut-text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &.active {
+    background: var(--tut-accent-soft);
+    color: var(--tut-accent);
+    border-color: var(--tut-accent);
+  }
+}
+
+/* ===== 大纲：移动端关闭按钮与把手（桌面端不渲染） ===== */
+.tutorial-outline__grabber { width: 36px; height: 4px; margin: 0 auto 10px; border-radius: 999px; background: var(--tut-line); flex-shrink: 0; }
+.tutorial-outline__close { position: absolute; top: 14px; right: 12px; display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 1px solid var(--tut-line); border-radius: 8px; background: var(--theme-surface, #ffffff); color: var(--tut-text-secondary); cursor: pointer; transition: color .2s ease, border-color .2s ease, background-color .2s ease; }
+.tutorial-outline__close:hover { color: var(--tut-accent); border-color: var(--tut-accent); background: var(--tut-accent-soft); }
+
+@keyframes tutorial-sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+/* ===== 窄屏折叠抽屉（class 驱动，<1200px 由 Vue 挂载 is-mobile-drawer / drawer-mode） ===== */
+/* 窄屏下布局退化为单列正文流，目录侧边栏默认折叠为左侧抽屉，需要时从顶栏「目录」按钮唤出 */
+.tutorial-page__layout.drawer-mode { display: block; position: relative; }
+.tutorial-page__layout.drawer-mode .tutorial-page__content { padding: 24px clamp(16px, 4vw, 44px) 80px; }
+
+.tutorial-mobile-drawer-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+  z-index: 998;
+  animation: tutorial-fade-in 0.2s ease;
+}
+
+.tutorial-sidebar.is-mobile-drawer {
+  position: fixed;
+  top: 56px;
+  left: 0;
+  bottom: 0;
+  width: min(82vw, 300px);
+  height: calc(100dvh - 56px);
+  z-index: 999;
+  border-right: 1px solid var(--tut-line);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.26s;
+  background: var(--theme-surface, #ffffff);
+}
+
+.tutorial-page__layout.mobile-drawer-open .tutorial-sidebar.is-mobile-drawer {
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 大纲底部抽屉（bottom sheet）：窄屏下补齐查看文章大纲的能力 */
+.tutorial-outline.is-mobile-sheet {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: auto;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 62vh;
+  padding: 10px 18px calc(20px + env(safe-area-inset-bottom, 0px));
+  border: 0;
+  border-top: 1px solid var(--tut-line);
+  border-radius: 16px 16px 0 0;
+  background: var(--theme-surface, #ffffff);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.18);
+  z-index: 999;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  animation: tutorial-sheet-up .28s var(--tut-ease);
+}
+.tutorial-outline.is-mobile-sheet .tutorial-outline__label { padding-right: 40px; }
+
+/* ===== 手机端细节优化 ===== */
+@media (max-width: 768px) {
+  .tutorial-page__topbar { padding: 0 12px; gap: 8px; }
+
+  /* 顶栏紧凑化：去掉品牌分隔线，按钮更易触达 */
+  .tutorial-page__brand { padding-left: 2px; border-left: 0; font-size: 13px; gap: 7px; }
+  .tutorial-page__back { font-size: 12px; padding: 6px 6px; margin-left: -4px; gap: 5px; }
+  .tutorial-page__menu-btn { padding: 6px 8px; font-size: 11px; }
+
+  .tutorial-page__content { padding: 18px 14px 64px; }
+  .tutorial-article h1 { font-size: 22px; }
+  .tutorial-article__body table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    width: 100%;
+  }
+  /* 手机端代码块：字号与内边距收紧，减少横向滚动 */
+  .tutorial-page .tutorial-article__body .tut-code pre { font-size: 12px; padding: 11px 12px; line-height: 1.6; }
+  .tutorial-page .tutorial-article__body .tut-code__bar { padding: 4px 6px 4px 11px; }
+  .tutorial-page .tutorial-article__body ol > li { padding-left: 30px; }
+  .tutorial-page__back-top { right: 14px; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* 窄屏（<1200px）：桌面 sticky 大纲隐藏，由顶栏「大纲」按钮的底部抽屉接管 */
+@media (max-width: 1199.98px) {
+  .tutorial-outline:not(.is-mobile-sheet) { display: none; }
+}
+
+/* 抽屉/大纲打开时锁定背景滚动 */
+body.tutorial-scroll-locked { overflow: hidden; }
 
 /* ===== 无障碍：尊重系统减少动效偏好 ===== */
 @media (prefers-reduced-motion: reduce) {
