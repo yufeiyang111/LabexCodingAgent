@@ -9,8 +9,8 @@
       :key="mode.key"
       type="button"
       role="tab"
-      :aria-selected="modelValue === mode.key"
-      :class="['mode-slider-item', { active: modelValue === mode.key }]"
+      :aria-selected="currentActiveKey === mode.key"
+      :class="['mode-slider-item', { active: currentActiveKey === mode.key }]"
       :ref="el => setItemRef(el, index)"
       @click="selectMode(mode.key, index)"
     >
@@ -29,7 +29,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 
 const props = defineProps({
   modelValue: {
@@ -48,11 +48,19 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'change'])
 
+const MODE_ALIAS_MAP = {
+  scout: 'explore',
+  subagent: 'explore',
+  general: 'build',
+}
+
 const containerRef = ref(null)
 const itemRefs = ref([])
-const activeIndex = ref(0)
-const sliderWidth = ref(48)
+const activeIndex = ref(-1)
+const hasActive = ref(false)
+const sliderWidth = ref(0)
 const sliderOffset = ref(0)
+let resizeObserver = null
 
 function setItemRef(el, index) {
   if (el) {
@@ -60,19 +68,59 @@ function setItemRef(el, index) {
   }
 }
 
+function resolveActiveIndex(val) {
+  if (!val || !Array.isArray(props.modes)) return -1
+  let idx = props.modes.findIndex(m => m.key === val)
+  if (idx === -1 && MODE_ALIAS_MAP[val]) {
+    idx = props.modes.findIndex(m => m.key === MODE_ALIAS_MAP[val])
+  }
+  return idx
+}
+
+const currentActiveKey = computed(() => {
+  if (activeIndex.value >= 0 && props.modes[activeIndex.value]) {
+    return props.modes[activeIndex.value].key
+  }
+  const resolvedIdx = resolveActiveIndex(props.modelValue)
+  return resolvedIdx >= 0 ? props.modes[resolvedIdx].key : ''
+})
+
 const sliderStyle = computed(() => {
+  if (!hasActive.value || sliderWidth.value <= 0) {
+    return {
+      opacity: 0,
+      pointerEvents: 'none',
+    }
+  }
   return {
+    opacity: 1,
     width: `${sliderWidth.value}px`,
     transform: `translateX(${sliderOffset.value}px)`,
   }
 })
 
 function updateSliderPosition(index) {
+  if (index < 0) {
+    hasActive.value = false
+    return
+  }
   nextTick(() => {
     const target = itemRefs.value[index]
-    if (target && containerRef.value) {
-      sliderWidth.value = target.offsetWidth
-      sliderOffset.value = target.offsetLeft - 2
+    const container = containerRef.value
+    if (target && container) {
+      const cRect = container.getBoundingClientRect()
+      const tRect = target.getBoundingClientRect()
+      if (tRect.width > 0) {
+        sliderWidth.value = tRect.width
+        sliderOffset.value = tRect.left - cRect.left
+        hasActive.value = true
+      } else if (target.offsetWidth > 0) {
+        sliderWidth.value = target.offsetWidth
+        sliderOffset.value = target.offsetLeft
+        hasActive.value = true
+      }
+    } else {
+      hasActive.value = false
     }
   })
 }
@@ -84,23 +132,50 @@ function selectMode(key, index) {
   emit('change', key)
 }
 
+function syncPositionFromProp(newVal) {
+  const idx = resolveActiveIndex(newVal)
+  if (idx !== -1) {
+    activeIndex.value = idx
+    updateSliderPosition(idx)
+  } else {
+    activeIndex.value = -1
+    hasActive.value = false
+  }
+}
+
 watch(
   () => props.modelValue,
   newVal => {
-    const idx = props.modes.findIndex(m => m.key === newVal)
-    if (idx !== -1) {
-      activeIndex.value = idx
-      updateSliderPosition(idx)
-    }
+    syncPositionFromProp(newVal)
   },
   { immediate: true }
 )
 
+watch(
+  () => props.modes,
+  () => {
+    syncPositionFromProp(props.modelValue)
+  },
+  { deep: true }
+)
+
 onMounted(() => {
-  const idx = props.modes.findIndex(m => m.key === props.modelValue)
-  if (idx !== -1) {
-    activeIndex.value = idx
-    updateSliderPosition(idx)
+  syncPositionFromProp(props.modelValue)
+  if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      const idx = resolveActiveIndex(props.modelValue)
+      if (idx !== -1) {
+        updateSliderPosition(idx)
+      }
+    })
+    resizeObserver.observe(containerRef.value)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
   }
 })
 </script>
@@ -122,11 +197,12 @@ onMounted(() => {
   position: absolute;
   top: 2px;
   bottom: 2px;
-  left: 2px;
+  left: 0;
   background: #09090b;
   border-radius: 9999px;
   transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-              width 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+              width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.18s ease;
   z-index: 1;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
@@ -161,5 +237,29 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 暗色主题适配 */
+:root[data-theme='dark'] .mode-slider-container {
+  background: #181825;
+  border-color: #313244;
+}
+
+:root[data-theme='dark'] .mode-slider-pill-bg {
+  background: #313244;
+  border: 1px solid #45475a;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+:root[data-theme='dark'] .mode-slider-item {
+  color: #a6adc8;
+}
+
+:root[data-theme='dark'] .mode-slider-item:hover {
+  color: #cdd6f4;
+}
+
+:root[data-theme='dark'] .mode-slider-item.active {
+  color: #ffffff;
 }
 </style>

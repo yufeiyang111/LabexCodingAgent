@@ -19,8 +19,8 @@
       v-model:agent-input="agentInput"
       v-model:agent-mode="agentMode"
       :current-model="currentModelLabel"
-      :thinking-level="''"
-      :available-models="[]"
+      :thinking-level="currentThinkingLevel"
+      :available-models="availableModels"
       :agent-loading="agentLoading"
       :current-session-name="statusLabel"
       :has-older-messages="hasOlderMessages"
@@ -76,7 +76,7 @@
 // 运行时复用主线 composable 全家桶（useConversationState / useAgentTaskRuntime /
 // useAgentEventTimeline / useAgentInteraction / useChangeSetState / 共享 Markdown 渲染器），
 // 仅以“每标签一份实例”的方式隔离状态；本组件不实现任何专属 UI 或事件协议。
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { ElMessage } from 'element-plus'
 import { projectApi } from '@/api'
 import { useAgentStream } from '@/composables/useAgentStream'
@@ -104,7 +104,11 @@ const props = defineProps({
   childTaskId: { type: [Number, String], default: null },
   initialConversationId: { type: String, default: null },
   name: { type: String, default: '' },
-  isDark: { type: Boolean, default: false }
+  isDark: { type: Boolean, default: false },
+  availableModels: { type: Array, default: () => [] },
+  parentModelConfigId: { type: [Number, String], default: null },
+  parentModelName: { type: String, default: '' },
+  parentThinkingLevel: { type: String, default: '' }
 })
 
 const emit = defineEmits(['request-close', 'open-file', 'open-file-diff', 'insert-editor', 'open-preview'])
@@ -123,7 +127,20 @@ const loadError = ref('')
 const activeTab = ref('chat')
 const messages = ref([])
 const agentInput = ref('')
-const agentMode = ref('subagent')
+const effectiveSubagentMode = computed(() => {
+  const type = String(detail.value?.agentType || '').toLowerCase()
+  return type === 'general' ? 'build' : 'explore'
+})
+const agentMode = ref('explore')
+
+watch(
+  effectiveSubagentMode,
+  mode => {
+    agentMode.value = mode
+  },
+  { immediate: true }
+)
+
 const agentLoading = ref(false)
 const currentAgentSession = ref(null)
 const sessionChanges = ref([])
@@ -135,9 +152,44 @@ const showThinkingProcess = ref(true)
 const selectedCode = ref('')
 
 const displayName = computed(() => detail.value?.identity || props.name || ('子代理 #' + props.subagentId))
-const currentModelLabel = computed(() => detail.value?.agentType
-  ? `${detail.value.agentType} · 子代理`
-  : '子代理')
+
+const effectiveModelConfig = computed(() => {
+  const models = Array.isArray(props.availableModels) ? props.availableModels : []
+  const explicitId = detail.value?.modelConfigId
+  if (explicitId != null) {
+    const found = models.find(m => String(m.configId || m.id) === String(explicitId))
+    if (found) return found
+  }
+  if (props.parentModelConfigId != null) {
+    const foundParent = models.find(m => String(m.configId || m.id) === String(props.parentModelConfigId))
+    if (foundParent) return foundParent
+  }
+  if (models.length > 0) {
+    return models.find(m => m.isDefault === 1) || models[0]
+  }
+  return null
+})
+
+const effectiveModelConfigId = computed(() => {
+  return effectiveModelConfig.value?.configId || effectiveModelConfig.value?.id || detail.value?.modelConfigId || props.parentModelConfigId || null
+})
+
+const currentModelLabel = computed(() => {
+  if (effectiveModelConfig.value) {
+    return effectiveModelConfig.value.modelName || effectiveModelConfig.value.configName || effectiveModelConfig.value.name
+  }
+  if (detail.value?.modelName || detail.value?.configName) {
+    return detail.value.modelName || detail.value.configName
+  }
+  if (props.parentModelName && props.parentModelName !== '未配置模型') {
+    return props.parentModelName
+  }
+  return '未配置模型'
+})
+
+const currentThinkingLevel = computed(() => {
+  return props.parentThinkingLevel || 'High'
+})
 const statusLabel = computed(() => {
   const map = { completed: '已完成', failed: '失败', cancelled: '已取消', running: '运行中', queued: '排队中', waiting_user: '等待输入', waiting_approval: '等待批准' }
   const s = String(detail.value?.status || '').toLowerCase()
@@ -180,8 +232,11 @@ function notifyFixed(text) {
   ElMessage.info(text)
 }
 function lockSubagentMode() {
-  agentMode.value = 'subagent'
-  notifyFixed('子代理会话固定为 subagent 模式（能力边界由其类型决定）')
+  const current = effectiveSubagentMode.value
+  agentMode.value = current
+  const typeName = detail.value?.agentType || 'scout'
+  const modeLabel = current === 'build' ? '构建' : '探索'
+  notifyFixed(`当前子代理为 ${typeName}（${modeLabel}模式），能力边界已固定`)
 }
 function copyMessage(text) {
   if (!text) return
@@ -351,7 +406,7 @@ async function sendMessage() {
       conversationId: currentAgentSession.value?.conversationId,
       mode: 'subagent',
       message: text,
-      modelConfigId: null
+      modelConfigId: effectiveModelConfigId.value
     }, {
       onEvent: event => handleAgentEventRef.current(event, assistantMsg)
     })
