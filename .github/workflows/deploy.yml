@@ -44,8 +44,10 @@ jobs:
           cd frontend
           npm ci
           npm run build
-          # 将产物打成单文件压缩包，避免多文件 SCP 耗时
+          # 将产物打成单文件压缩包，并准备数据库增量升级文件
           tar -czf ../frontend-dist.tar.gz -C dist .
+          cd ..
+          cp deploy/linux/migrations/upgrade-20260908.sql ./upgrade-db.sql
 
       # --- 3. 登录腾讯云 TCR 并推送镜像 ---
       - name: Log in to Tencent Cloud TCR
@@ -65,14 +67,14 @@ jobs:
             ${{ env.REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             ${{ env.REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest
 
-      # --- 4. 上传前端产物压缩包到服务器 ---
-      - name: Upload Frontend Archive
+      # --- 4. 上传前端产物与数据库升级脚本到服务器 ---
+      - name: Upload Frontend & DB Upgrade Script
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          source: "frontend-dist.tar.gz"
+          source: "frontend-dist.tar.gz,upgrade-db.sql"
           target: "${{ env.DEPLOY_APP_PATH }}"
 
       # --- 5. 腾讯云服务器远程平滑发布 ---
@@ -85,6 +87,13 @@ jobs:
           script: |
             set -e
             cd ${{ env.DEPLOY_APP_PATH }}
+
+            echo "==> 检查并执行数据库增量迁移（幂等安全执行）..."
+            if [ -f "upgrade-db.sql" ]; then
+              docker compose --env-file .env.production exec -T mysql sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' < upgrade-db.sql
+              rm -f upgrade-db.sql
+              echo "==> 数据库增量迁移执行完成！"
+            fi
 
             echo "==> 解压更新前端静态资源..."
             mkdir -p frontend-dist
