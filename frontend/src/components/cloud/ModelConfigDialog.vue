@@ -13,20 +13,11 @@
 
             <!-- Template Selection View -->
             <div v-if="state.mcTemplateSelecting" class="mc-body">
-              <div class="mc-template-grid">
-                <button v-for="tpl in state.mcTemplateOptions" :key="tpl.name" class="mc-template-card" @click="actions.selectModelTemplate(tpl)">
-                  <span class="mc-template-icon" :style="{ background: tpl.accent }">{{ tpl.iconText }}</span>
-                  <span class="mc-template-main">
-                    <span class="mc-template-name">{{ tpl.name }}</span>
-                    <span class="mc-template-vendor">{{ tpl.vendor }}</span>
-                    <span class="mc-template-model">{{ tpl.modelName || '手动填写模型名称' }}</span>
-                  </span>
-                  <span v-if="tpl.modelsUrl" class="mc-template-source">官方列表</span>
-                </button>
-              </div>
-              <div class="mc-form-actions">
-                <button class="mc-btn mc-btn-outline" @click="state.mcTemplateSelecting = false">返回</button>
-              </div>
+              <ModelTemplateSelector
+                :templates="state.mcTemplateOptions"
+                @select="actions.selectModelTemplate"
+                @back="state.mcTemplateSelecting = false"
+              />
             </div>
 
             <!-- Config List View -->
@@ -229,6 +220,7 @@
 <script setup>
 import { computed } from 'vue'
 import { calculateContextWindowPolicy } from '@/composables/contextWindowPolicyView'
+import ModelTemplateSelector from './models/ModelTemplateSelector.vue'
 
 const props = defineProps({
   state: { type: Object, required: true },
