@@ -133,6 +133,18 @@ Provider 请求、预算、压缩选择和恢复必须以 `AgentRunMessage` / `A
 - 前端同理：先查 `components/`、`stores/`、`api/index.js` 和已有 composable 是否有等价物，再决定新增。
 - 禁止新增无人认领的 `utils` / `helper` 垃圾堆；复用归属按域划分。
 
+### 9. CI/CD 自动化流水线与生产发布纪律（强制执行）
+
+任何涉及**代码上线、版本发布、环境升级或数据库变更**的任务，AI Agent 必须严格查阅并遵循 [CI/CD 自动化流水线发布与数据库迁移规范手册 (deploy/linux/CI_CD_DEPLOYMENT_PLAYBOOK.md)](deploy/linux/CI_CD_DEPLOYMENT_PLAYBOOK.md)：
+
+- **禁止生产现编译**：生产机为 2GB 低内存环境，所有编译打包必须交由 GitHub Actions 云端隔离容器完成，严禁在生产机执行 `mvn package` 或 `npm run build`。
+- **发布前三道强制门禁**：
+  1. 后端单测/编译检查：`mvn -s settings-local.xml test-compile -DskipTests`；
+  2. 前端单元测试全绿：`npm run test`（330+ 自动化用例）；
+  3. 前端生产打包与预算：`npx vite build && node scripts/check-chunk-budget.mjs`。
+- **数据库增量迁移铁律**：严禁直接导入全量 `schema.sql`。涉及表结构或索引变更时，必须编写幂等脚本 `deploy/linux/migrations/upgrade-YYYYMMDD.sql`，使用存储过程与 `information_schema` 校验 `IF NOT EXISTS`，做到重复执行零破坏、零报错，同时对齐更新开发基线 `backend/src/main/resources/sql/schema.sql`。
+- **触发规范**：优先通过推送语义化版本标签 `v*`（如 `git tag -a v1.0.0` && `git push origin v1.0.0`）或在 GitHub Actions 页面手动运行流水线，保障容器拉取与服务重启的确定性。
+
 ## Build & run
 
 ### Backend (Spring Boot, Java 17, Maven)
