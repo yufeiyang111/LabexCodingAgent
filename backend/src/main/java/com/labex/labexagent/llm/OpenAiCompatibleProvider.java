@@ -556,11 +556,18 @@ public class OpenAiCompatibleProvider implements LlmProvider {
 
     private boolean shouldRetryWithoutReasoningEffortMessage(String errorBody) {
         String lower = errorBody == null ? "" : errorBody.toLowerCase();
+        // 兼容网关把 OpenAI 风格 reasoning 参数转译为 Anthropic 原生 thinking 后被上游
+        // 拒绝的形态（如 new-api："requires adaptive thinking and does not support
+        // native budget_tokens"）。此时请求里是 reasoning_effort，错误文案却只提
+        // thinking/budget_tokens，按字面匹配会漏掉这类可自愈的 400。
+        boolean adaptiveThinkingRejected = lower.contains("adaptive thinking")
+                || (lower.contains("budget_tokens") && lower.contains("does not support"));
         return lower.contains("reasoning_effort")
                 && (lower.contains("unknown field")
                 || lower.contains("unrecognized")
                 || lower.contains("unsupported parameter")
-                || lower.contains("extra inputs are not permitted"));
+                || lower.contains("extra inputs are not permitted"))
+                || adaptiveThinkingRejected;
     }
 
     private boolean shouldRetryWithoutPromptCacheKey(int statusCode, String errorBody) {
