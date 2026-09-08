@@ -910,4 +910,73 @@ onBeforeUnmount(() => {
 .m-sys-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 24px; font-size: 12px; color: #374151; }
 @media (max-width: 960px) { .m-sys-grid { grid-template-columns: repeat(2, 1fr); } }
 .m-sys-key { display: block; font-size: 11px; color: #9ca3af; margin-bottom: 2px; }
+
+@media (max-width: 768px) {
+  .m-gate-card {
+    width: min(360px, calc(100vw - 32px));
+    padding: 30px 20px 24px;
+  }
+  .m-topbar {
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .m-topbar-actions {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .m-range-group {
+    overflow-x: auto;
+  }
+  .m-range-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+  .m-tabs {
+    padding: 6px 12px 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .m-tab {
+    padding: 7px 12px;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .m-body {
+    padding: 12px 12px 32px;
+    gap: 12px;
+  }
+  .m-cards {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 8px;
+  }
+  .m-card {
+    padding: 10px 12px;
+  }
+  .m-card-value {
+    font-size: 18px;
+  }
+  .m-grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+  }
+  .m-panel {
+    padding: 12px;
+  }
+  .m-chart {
+    height: 220px;
+  }
+  .m-chart-lg {
+    height: 240px;
+  }
+  .m-recent-table {
+    -webkit-overflow-scrolling: touch;
+  }
+  .m-recent-table table {
+    min-width: 580px;
+  }
+}
 </style>

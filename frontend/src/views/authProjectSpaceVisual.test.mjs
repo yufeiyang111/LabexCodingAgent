@@ -53,3 +53,32 @@ test('Tailwind keeps the wabi-sabi material tokens and utilities above the legac
   assert.match(source, /@import "tailwindcss\/utilities\.css";/)
   assert.doesNotMatch(source, /layer\(utilities\)/)
 })
+
+test('CloudSpace project list sidebar supports smooth resizing and width persistence', async () => {
+  const cloudSpace = await readSource('views', 'CloudSpace.vue')
+
+  assert.match(cloudSpace, /class="cs-resize-handle"/, '项目列表页必须包含侧边栏拉伸手柄')
+  assert.match(cloudSpace, /@pointerdown="startSidebarResize"/, '手柄必须绑定指针事件启动拉伸')
+  assert.match(cloudSpace, /--cs-sidebar-w/, '侧边栏必须由 CSS变量驱动以实现高性能 60fps 跟手')
+  assert.match(cloudSpace, /labex_projects_sidebar_width/, '必须持久化用户偏好侧边栏宽度')
+  assert.match(cloudSpace, /requestAnimationFrame/, '必须使用 rAF 节流保证丝滑流畅')
+  assert.match(cloudSpace, /\.cs-left\.is-resizing[\s\S]*transition:\s*none\s*!important/, '拖拽时必须彻底禁用侧边栏过渡动画以保证跟手流畅')
+  assert.match(cloudSpace, /\.cs-right[\s\S]*contain:\s*layout paint/, '右侧面板必须开启 layout paint 隔离避免重排扩散')
+})
+
+test('CloudSpace sidebar elements prevent text breaking and adapt smoothly when squeezed', async () => {
+  const cloudSpace = await readSource('views', 'CloudSpace.vue')
+
+  assert.match(cloudSpace, /\.cs-panel-header h2\s*\{[^}]*white-space:\s*nowrap/, '项目列表标题必须禁止折行')
+  assert.match(cloudSpace, /\.cs-btn\s*\{[^}]*white-space:\s*nowrap/, '操作按钮必须禁止折行竖排')
+  assert.match(cloudSpace, /\.cs-item-meta\s*\{[^}]*white-space:\s*nowrap/, '项目文件数量 meta 必须禁止换行与竖排')
+  assert.match(cloudSpace, /container-type:\s*inline-size/, '侧边栏必须声明容器查询以响应窄宽度')
+  assert.match(cloudSpace, /@container\s*\(max-width:\s*225px\)/, '极窄侧边栏下按钮文字必须平滑降级自适应')
+})
+
+test('UserDetailButton account settings dialog appends to body and aligns to viewport center', async () => {
+  const userDetail = await readSource('components', 'cloud', 'UserDetailButton.vue')
+
+  assert.match(userDetail, /<el-dialog[\s\S]*?append-to-body/, '账号设置弹窗必须 append-to-body，脱离侧边栏 contain 限制以居中于屏幕')
+  assert.match(userDetail, /<el-dialog[\s\S]*?align-center/, '账号设置弹窗必须设置 align-center 垂直居中')
+})

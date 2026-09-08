@@ -31,19 +31,30 @@
   background: #fbf8f0;
 }
 
-@media (max-width: 900px), (pointer: coarse) and (hover: none) {
+@media (max-width: 900px) {
   .auth-module-layout {
     grid-template-columns: 1fr;
   }
 
   .auth-module-layout__brand {
-    min-height: 280px;
-    padding: 32px 24px 44px;
+    min-height: 200px;
+    padding: 32px 24px 32px;
   }
 
   .auth-module-layout__form {
     align-items: flex-start;
-    padding: 40px 24px 64px;
+    padding: 32px 24px 64px;
+  }
+}
+
+@media (max-width: 640px) {
+  .auth-module-layout__brand {
+    min-height: auto;
+    padding: 24px 16px 12px;
+  }
+
+  .auth-module-layout__form {
+    padding: 16px 14px 40px;
   }
 }
 </style>

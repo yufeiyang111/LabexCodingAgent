@@ -112,16 +112,46 @@ import Logo from '@/components/Logo.vue'
   background: #987562;
 }
 
-@media (max-width: 900px), (pointer: coarse) and (hover: none) {
+@media (max-width: 900px) {
   .auth-brand-panel__copy {
     padding-left: 18px;
   }
 
   .auth-brand-panel h1 {
-    font-size: clamp(40px, 10vw, 62px);
+    font-size: clamp(32px, 8vw, 54px);
   }
 
   .auth-brand-panel ol {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .auth-brand-panel {
+    gap: 16px;
+  }
+
+  .auth-brand-panel__copy {
+    border-left: none;
+    padding-left: 0;
+  }
+
+  .auth-brand-panel__eyebrow {
+    margin-bottom: 12px;
+  }
+
+  .auth-brand-panel h1 {
+    font-size: 24px;
+    line-height: 1.2;
+  }
+
+  .auth-brand-panel__copy > p:not(.auth-brand-panel__eyebrow) {
+    margin-top: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .auth-brand-panel__line {
     display: none;
   }
 }

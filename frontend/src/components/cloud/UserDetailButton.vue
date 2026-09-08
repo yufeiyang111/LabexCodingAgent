@@ -3,7 +3,14 @@
     <el-button class="user-detail-btn" :icon="User" link @click="showUserInfo">
       账号设置
     </el-button>
-    <el-dialog v-model="dialogVisible" title="账号设置" width="460px" destroy-on-close>
+    <el-dialog
+      v-model="dialogVisible"
+      title="账号设置"
+      :width="isMobile ? 'min(460px, calc(100vw - 24px))' : '460px'"
+      destroy-on-close
+      append-to-body
+      align-center
+    >
       <div class="user-detail-content">
         <div class="ud-row">
           <span class="ud-label">用户名</span>
@@ -72,8 +79,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { User } from '@element-plus/icons-vue'
 import { authApi } from '@/api'
 import { useUserStore } from '@/stores/user'
+import { useResponsive } from '@/composables/useResponsive'
 import OAuthProviderIcon from '@/components/auth/OAuthProviderIcon.vue'
 
+const { isMobile } = useResponsive()
 const userStore = useUserStore()
 const dialogVisible = ref(false)
 const loading = ref(false)
@@ -217,7 +226,7 @@ async function unbind(provider: string, label: string) {
   color: var(--theme-accent);
 }
 .user-detail-content {
-  color: #374151;
+  color: var(--theme-text, #374151);
 }
 .ud-row {
   display: flex;
@@ -231,21 +240,24 @@ async function unbind(provider: string, label: string) {
 .ud-row:nth-child(1) { animation-delay: 0ms; }
 .ud-row:nth-child(2) { animation-delay: 60ms; }
 .ud-label {
-  color: #6b7280;
+  color: var(--theme-text-muted, #6b7280);
   min-width: 40px;
 }
 .ud-value {
-  color: #111827;
+  color: var(--theme-text, #111827);
   flex: 1;
+  font-weight: 500;
 }
 .oauth-section {
   margin-top: 16px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--theme-border, #ebeef5);
   padding-top: 14px;
 }
 .oauth-section h4 {
   margin: 0 0 10px;
   font-size: 13px;
+  color: var(--theme-text, #111827);
+  font-weight: 600;
   opacity: 0;
   animation: ud-fade-up 0.3s ease forwards;
   animation-delay: 80ms;
@@ -254,7 +266,7 @@ async function unbind(provider: string, label: string) {
 .oauth-bound,
 .oauth-unbound {
   margin: 5px 0 0;
-  color: #909399;
+  color: var(--theme-text-muted, #909399);
   font-size: 12px;
 }
 .oauth-list {
@@ -265,10 +277,11 @@ async function unbind(provider: string, label: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--theme-border, #ebeef5);
   border-radius: 8px;
   padding: 10px 12px;
-  background: #ffffff;
+  background: var(--theme-surface-muted, #ffffff);
+  color: var(--theme-text, #111827);
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
               box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
               border-color 0.25s ease;
@@ -280,7 +293,7 @@ async function unbind(provider: string, label: string) {
 .oauth-item:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  border-color: #d1d5db;
+  border-color: var(--theme-accent, #d1d5db);
 }
 .oauth-item-left {
   display: flex;
@@ -303,6 +316,52 @@ async function unbind(provider: string, label: string) {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+:global(html[data-theme="dark"] .ud-value) {
+  color: #edf1fb;
+}
+:global(html[data-theme="dark"] .ud-label) {
+  color: #8c96a8;
+}
+:global(html[data-theme="dark"] .oauth-section h4) {
+  color: #edf1fb;
+}
+:global(html[data-theme="dark"] .oauth-item) {
+  background: #181b24;
+  border-color: #2e3547;
+  color: #edf1fb;
+}
+:global(html[data-theme="dark"] .oauth-item strong) {
+  color: #edf1fb;
+}
+:global(html[data-theme="dark"] .oauth-bound),
+:global(html[data-theme="dark"] .oauth-unbound) {
+  color: #8c96a8;
+}
+:global(html[data-theme="dark"] .oauth-item:hover) {
+  background: #202638;
+  border-color: #3b486d;
+}
+:global(html[data-theme="dark"] .el-dialog .el-button:not(.is-link)) {
+  background: #202430;
+  border-color: #384158;
+  color: #edf1fb;
+}
+:global(html[data-theme="dark"] .el-dialog .el-button:not(.is-link):hover) {
+  background: #2a3142;
+  border-color: #4f5d80;
+  color: #ffffff;
+}
+
+@media (max-width: 640px) {
+  .ud-row {
+    flex-wrap: wrap;
+    font-size: 12px;
+  }
+  .oauth-item {
+    padding: 8px 10px;
   }
 }
 </style>

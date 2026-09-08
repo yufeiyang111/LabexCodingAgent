@@ -1,16 +1,20 @@
 <template>
-  <div class="cs-shell">
-    <div class="cs-left">
+  <div class="cs-shell" :class="{ 'is-resizing': isResizingSidebar, 'is-mobile': isMobile, 'mobile-show-detail': isMobile && mobileActiveView === 'detail' }">
+    <div
+      class="cs-left"
+      :class="{ 'is-resizing': isResizingSidebar }"
+      :style="{ '--cs-sidebar-w': `${sidebarWidth}px` }"
+    >
       <div class="cs-panel-header">
         <h2>项目列表</h2>
         <div class="cs-header-actions">
-          <button class="cs-btn cs-btn-primary" @click="showCreate = true">
+          <button class="cs-btn cs-btn-primary" title="新建项目" @click="showCreate = true">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            <span>新建</span>
+            <span class="cs-btn-text">新建</span>
           </button>
-          <button class="cs-btn cs-btn-outline" @click="triggerUpload">
+          <button class="cs-btn cs-btn-outline" title="上传项目" @click="triggerUpload">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <span>上传</span>
+            <span class="cs-btn-text">上传</span>
           </button>
           <input ref="uploadInput" type="file" accept=".zip" hidden @change="handleUpload" />
         </div>
@@ -49,6 +53,7 @@
       </div>
       <UserPanel />
     </div>
+    <div class="cs-resize-handle" title="拖拽调整侧边栏宽度" @pointerdown="startSidebarResize"></div>
     <div class="cs-right">
       <div v-if="!selectedProject" class="cs-right-empty">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -57,12 +62,21 @@
       <div v-else class="cs-right-panel">
         <div class="cs-panel-header cs-right-header">
           <div class="cs-right-title">
+            <button
+              v-if="isMobile"
+              class="cs-btn cs-btn-ghost cs-btn-sm cs-mobile-back"
+              title="返回项目列表"
+              @click="mobileActiveView = 'list'"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+              <span>列表</span>
+            </button>
             <h3>{{ selectedProject.projectName }}</h3>
             <span class="cs-right-meta">{{ selectedProject.fileCount || 0 }} 个文件</span>
           </div>
           <button class="cs-btn cs-btn-primary" @click="enterWorkspace(selectedProject)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-            <span>打开工作空间</span>
+            <span class="cs-open-ws-text">打开工作空间</span>
           </button>
         </div>
         <div class="cs-tree-panel" v-loading="treeLoading" @scroll="handleTreeScroll">
@@ -138,9 +152,12 @@ import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
 import UserPanel from '@/components/cloud/UserPanel.vue'
 import ExportProgressDialog from '@/components/cloud/ExportProgressDialog.vue'
 import { useProjectExport } from '@/composables/useProjectExport'
+import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
 const router = useRouter()
+const { isMobile } = useResponsive()
+const mobileActiveView = ref('list')
 const projects = ref([])
 const selectedId = ref(null)
 const selectedProject = ref(null)
@@ -158,6 +175,91 @@ const selectedTemplate = ref(null)
 const showRename = ref(false)
 const renameValue = ref('')
 const renamingProject = ref(null)
+
+// ─── 侧边栏拖拽拉伸与持久化 ───
+const DEFAULT_CS_SIDEBAR_WIDTH = 300
+const MIN_CS_SIDEBAR_WIDTH = 220
+const MAX_CS_SIDEBAR_WIDTH = 640
+
+function resolveInitialSidebarWidth() {
+  if (typeof window === 'undefined') return DEFAULT_CS_SIDEBAR_WIDTH
+  try {
+    const saved = localStorage.getItem('labex_projects_sidebar_width')
+    if (saved) {
+      const num = parseInt(saved, 10)
+      if (num >= MIN_CS_SIDEBAR_WIDTH && num <= MAX_CS_SIDEBAR_WIDTH) return num
+    }
+  } catch {}
+  return DEFAULT_CS_SIDEBAR_WIDTH
+}
+
+const sidebarWidth = ref(resolveInitialSidebarWidth())
+const isResizingSidebar = ref(false)
+
+function startSidebarResize(e) {
+  e.preventDefault?.()
+  const handle = e.currentTarget
+  const sidebar = handle.previousElementSibling?.classList.contains('cs-left')
+    ? handle.previousElementSibling
+    : document.querySelector('.cs-left')
+  if (!sidebar) return
+  const startX = e.clientX
+  const startWidth = sidebarWidth.value
+  let latestX = startX
+  let frame = null
+  handle.setPointerCapture?.(e.pointerId)
+  document.body.classList.add('is-resizing-sidebar')
+  sidebar.classList.add('is-resizing')
+  handle.classList.add('is-active')
+  isResizingSidebar.value = true
+  let latestApplied = startWidth
+
+  const apply = () => {
+    frame = null
+    const width = Math.round(Math.max(MIN_CS_SIDEBAR_WIDTH, Math.min(startWidth + latestX - startX, MAX_CS_SIDEBAR_WIDTH)))
+    sidebar.style.setProperty('--cs-sidebar-w', `${width}px`)
+    latestApplied = width
+  }
+
+  const move = event => {
+    latestX = event.clientX
+    if (frame == null) frame = requestAnimationFrame(apply)
+  }
+
+  const finish = event => {
+    if (frame != null) {
+      cancelAnimationFrame(frame)
+      frame = null
+    }
+    apply()
+    document.body.classList.remove('is-resizing-sidebar')
+    sidebar.classList.remove('is-resizing')
+    handle.classList.remove('is-active')
+    isResizingSidebar.value = false
+    sidebarWidth.value = latestApplied
+    try {
+      localStorage.setItem('labex_projects_sidebar_width', String(latestApplied))
+    } catch {}
+    try {
+      if (event?.pointerId != null) {
+        handle.releasePointerCapture?.(event.pointerId)
+      }
+    } catch {}
+    handle.removeEventListener('pointermove', move)
+    handle.removeEventListener('pointerup', finish)
+    handle.removeEventListener('pointercancel', finish)
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', finish)
+    window.removeEventListener('pointercancel', finish)
+  }
+
+  handle.addEventListener('pointermove', move)
+  handle.addEventListener('pointerup', finish)
+  handle.addEventListener('pointercancel', finish)
+  window.addEventListener('pointermove', move, { passive: true })
+  window.addEventListener('pointerup', finish)
+  window.addEventListener('pointercancel', finish)
+}
 
 // 项目异步导出（列表页入口）：确认 → 后台打包 → 轮询进度 → 自动保存
 const projectExport = useProjectExport({ projectId: ref(null), projectName: ref(''), api: projectApi, notify: ElMessage })
@@ -190,6 +292,9 @@ async function selectProject(proj) {
   selectedId.value = proj.projectId
   selectedProject.value = proj
   selectedPath.value = ''
+  if (isMobile.value) {
+    mobileActiveView.value = 'detail'
+  }
   treeLoading.value = true
   treeError.value = ''
   treeNextOffset.value = null
@@ -309,6 +414,7 @@ async function deleteProject(proj) {
       selectedProject.value = null
       selectedId.value = null
       fileTree.value = []
+      mobileActiveView.value = 'list'
     }
     await loadProjects()
   } catch (e) {
@@ -367,17 +473,144 @@ onMounted(async () => {
 
 <style scoped>
 .cs-shell { display: flex; min-height: 100dvh; height: 100dvh; background: #fff; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-.cs-left { width: 300px; border-right: 1px solid #f0f0f0; display: flex; flex-direction: column; background: #ffffff; flex-shrink: 0; }
-.cs-right { flex: 1; display: flex; flex-direction: column; background: #fff; min-width: 0; }
-.cs-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #f0f0f0; }
-.cs-panel-header h2 { font-size: 14px; font-weight: 600; color: #111827; margin: 0; }
+.cs-shell.is-resizing,
+:global(body.is-resizing-sidebar) {
+  user-select: none !important;
+  cursor: col-resize !important;
+}
+
+.cs-left {
+  width: var(--cs-sidebar-w, 300px);
+  min-width: var(--cs-sidebar-w, 300px);
+  flex: 0 0 var(--cs-sidebar-w, 300px);
+  border-right: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  overflow: hidden;
+  contain: layout paint;
+  container-type: inline-size;
+  container-name: cs-sidebar;
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              min-width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              flex-basis 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.cs-left.is-resizing,
+.cs-shell.is-resizing .cs-left,
+:global(body.is-resizing-sidebar .cs-left) {
+  transition: none !important;
+  will-change: width, min-width, flex-basis;
+}
+
+.cs-left.is-resizing *,
+.cs-shell.is-resizing .cs-left * {
+  transition: none !important;
+}
+
+.cs-shell.is-resizing .cs-right,
+:global(body.is-resizing-sidebar .cs-right) {
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
+.cs-resize-handle {
+  width: 5px;
+  cursor: col-resize;
+  flex: 0 0 5px;
+  background: transparent;
+  touch-action: none;
+  position: relative;
+  z-index: 15;
+}
+
+.cs-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+  cursor: col-resize;
+}
+
+.cs-resize-handle:hover,
+.cs-resize-handle.is-active,
+.cs-shell.is-resizing .cs-resize-handle {
+  background: var(--theme-accent, #4f46e5);
+}
+
+:global(html[data-theme="dark"] .cs-resize-handle:hover),
+:global(html[data-theme="dark"] .cs-resize-handle.is-active),
+:global(html[data-theme="dark"] .cs-shell.is-resizing .cs-resize-handle) {
+  background: var(--theme-accent, #818cf8);
+}
+
+.cs-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  min-width: 0;
+  contain: layout paint;
+  overflow: hidden;
+}
+.cs-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  gap: 8px;
+  min-width: 0;
+}
+.cs-panel-header h2 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0;
+  white-space: nowrap;
+  word-break: keep-all;
+  flex-shrink: 0;
+  min-width: 0;
+}
 .cs-right-header { background: #ffffff; }
 .cs-right-title { display: flex; align-items: center; gap: 10px; }
 .cs-right-title h3 { font-size: 14px; font-weight: 600; color: #111827; margin: 0; }
 .cs-right-meta { font-size: 12px; color: #9ca3af; }
-.cs-header-actions { display: flex; gap: 6px; }
-.cs-btn { display: inline-flex; align-items: center; gap: 5px; border: none; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 500; padding: 7px 14px; transition: all 0.2s cubic-bezier(0.25, 0.1, 0.25, 1); font-family: inherit; line-height: 1; }
+.cs-header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.cs-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  white-space: nowrap;
+  word-break: keep-all;
+  flex-shrink: 0;
+  transition: background-color 0.2s cubic-bezier(0.25, 0.1, 0.25, 1),
+              border-color 0.2s cubic-bezier(0.25, 0.1, 0.25, 1),
+              color 0.2s cubic-bezier(0.25, 0.1, 0.25, 1),
+              box-shadow 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
+  font-family: inherit;
+  line-height: 1;
+}
 .cs-btn svg { flex-shrink: 0; }
+.cs-btn span {
+  white-space: nowrap;
+  word-break: keep-all;
+  line-height: 1;
+}
 .cs-btn-primary { background: #4f46e5; color: #fff; }
 .cs-btn-primary:hover { background: #4338ca; box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3); }
 .cs-btn-outline { background: #fff; color: #374151; border: 1px solid #e5e7eb; }
@@ -389,17 +622,81 @@ onMounted(async () => {
 .cs-list { flex: 1; overflow-y: auto; padding: 6px; }
 .cs-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 40px 16px; color: #9ca3af; font-size: 13px; }
 .cs-empty-hint { font-size: 12px; color: #d1d5db; margin: 0; }
-.cs-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; cursor: pointer; transition: all 0.15s ease; }
+.cs-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  min-width: 0;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
 .cs-item:hover { background: #f3f4f6; }
 .cs-item.active { background: #eef2ff; }
 .cs-item.active .cs-item-name { color: #4338ca; }
 .cs-item-icon { color: #6b7280; flex-shrink: 0; display: flex; transition: color 0.15s; }
 .cs-item.active .cs-item-icon { color: #6366f1; }
-.cs-item-body { flex: 1; min-width: 0; }
-.cs-item-name { font-size: 13px; font-weight: 500; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cs-item-meta { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+.cs-item-body {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.cs-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #111827;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+.cs-item-meta {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 2px;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
 .cs-item-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
 .cs-item:hover .cs-item-actions { opacity: 1; }
+
+@container (max-width: 270px) {
+  .cs-panel-header {
+    padding: 12px 10px;
+    gap: 4px;
+  }
+  .cs-header-actions {
+    gap: 4px;
+  }
+  .cs-btn {
+    padding: 6px 8px;
+    gap: 3px;
+  }
+  .cs-item {
+    padding: 8px 8px;
+    gap: 8px;
+  }
+}
+
+@container (max-width: 225px) {
+  .cs-panel-header {
+    padding: 10px 6px;
+    gap: 4px;
+  }
+  .cs-btn {
+    padding: 6px 6px;
+  }
+  .cs-btn-text {
+    display: none;
+  }
+}
 .proj-list-enter-active, .proj-list-leave-active { transition: all 0.3s ease; }
 .proj-list-enter-from { opacity: 0; transform: translateX(-16px); }
 .proj-list-leave-to { opacity: 0; transform: translateX(-8px); }
@@ -432,4 +729,125 @@ onMounted(async () => {
 .modal-enter-active, .modal-leave-active { transition: all 0.25s ease; }
 .modal-enter-from, .modal-leave-to { opacity: 0; }
 .modal-enter-from .cs-modal, .modal-leave-to .cs-modal { transform: scale(0.95) translateY(8px); }
+
+:global(html[data-theme="dark"] .cs-btn-primary) {
+  background: var(--theme-accent);
+  color: var(--theme-accent-contrast, #ffffff);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+:global(html[data-theme="dark"] .cs-btn-primary:hover) {
+  background: var(--theme-accent-strong);
+  color: var(--theme-accent-contrast, #ffffff);
+}
+:global(html[data-theme="dark"] .cs-btn-outline) {
+  background: #1e2230;
+  border-color: #384158;
+  color: #edf1fb;
+}
+:global(html[data-theme="dark"] .cs-btn-outline:hover) {
+  background: #252b3d;
+  border-color: #4b587a;
+  color: #ffffff;
+}
+
+:global(html[data-theme="dark"] .cs-left) {
+  background: #181b24;
+  border-right-color: #2e3547;
+}
+
+:global(html[data-theme="dark"] .cs-right) {
+  background: #11131a;
+}
+
+:global(html[data-theme="dark"] .cs-right-header) {
+  background: #181b24;
+}
+
+:global(html[data-theme="dark"] .cs-panel-header) {
+  border-bottom-color: #2e3547;
+}
+
+:global(html[data-theme="dark"] .cs-panel-header h2) {
+  color: #edf1fb;
+}
+
+:global(html[data-theme="dark"] .cs-right-title h3) {
+  color: #edf1fb;
+}
+
+:global(html[data-theme="dark"] .cs-item-name) {
+  color: #edf1fb;
+}
+
+:global(html[data-theme="dark"] .cs-item-meta) {
+  color: #8c96a8;
+}
+
+:global(html[data-theme="dark"] .cs-item:hover) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+:global(html[data-theme="dark"] .cs-item.active) {
+  background: rgba(99, 102, 241, 0.22);
+}
+
+:global(html[data-theme="dark"] .cs-item.active .cs-item-name) {
+  color: #c4b5fd;
+}
+
+@media (max-width: 768px) {
+  .cs-shell {
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 100dvh;
+  }
+  .cs-resize-handle {
+    display: none !important;
+  }
+  .cs-left {
+    width: 100% !important;
+    min-width: 100% !important;
+    flex: 1 1 100%;
+    border-right: none;
+    height: 100%;
+  }
+  .cs-right {
+    width: 100% !important;
+    flex: 1 1 100%;
+    height: 100%;
+    display: none;
+  }
+  .cs-shell.mobile-show-detail .cs-left {
+    display: none;
+  }
+  .cs-shell.mobile-show-detail .cs-right {
+    display: flex;
+  }
+  .cs-mobile-back {
+    margin-right: 6px;
+    padding: 5px 8px;
+    color: #4f46e5;
+    font-weight: 600;
+  }
+  .cs-item-actions {
+    opacity: 0.92 !important;
+  }
+  .cs-item-actions .cs-btn {
+    padding: 6px 7px;
+  }
+  .cs-modal {
+    width: min(420px, calc(100vw - 32px));
+    padding: 20px 16px;
+  }
+  .cs-right-header {
+    padding: 10px 12px;
+  }
+  .cs-open-ws-text {
+    font-size: 11px;
+  }
+}
+
+:global(html[data-theme="dark"] .cs-mobile-back) {
+  color: #818cf8;
+}
 </style>

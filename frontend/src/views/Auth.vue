@@ -267,7 +267,13 @@ function handleCardPointerLeave() {
 .auth-switch-line { margin: 22px 0 0; color: #76756d; font-size: 13px; text-align: center; }
 .auth-legal-note { margin: 17px 0 0; border-top: 1px solid #ded8cc; padding-top: 14px; color: #8b887e; font-size: 11px; line-height: 1.6; text-align: center; }
 .auth-form-column__footer { margin-top: 34px; color: #8b887e; font-size: 11px; text-align: center; }
-@media (max-width: 520px) { .auth-card { padding: 22px 18px; } .auth-form-column__topline { margin-bottom: 17px; } }
+@media (max-width: 640px) {
+  .auth-form-column { width: 100%; }
+  .auth-card { padding: 20px 16px; border-radius: 18px; transform: none !important; }
+  .auth-form-column__topline { margin-bottom: 14px; }
+  .auth-form-column__footer { margin-top: 20px; }
+}
+@media (max-width: 520px) { .auth-card { padding: 18px 14px; } .auth-form-column__topline { margin-bottom: 14px; } }
 @media (prefers-reduced-motion: reduce) { .auth-card, .auth-card::after { transition: none; } }
 </style>
 
