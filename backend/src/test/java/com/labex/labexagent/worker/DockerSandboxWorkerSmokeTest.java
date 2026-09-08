@@ -31,7 +31,7 @@ class DockerSandboxWorkerSmokeTest {
         Path workspace = workspace();
         Files.createDirectories(workspace);
         Files.deleteIfExists(workspace.resolve("smoke-result.txt"));
-        // 部署契约：workspace 目录必须对镜像内的 sandbox 用户（uid 1001）可写。
+        // 部署契约：workspace 目录必须对镜像内的 sandbox 用户（uid/gid 1000，与控制面对齐）可写。
         // 测试通常以其他身份创建目录，因此显式放开权限模拟部署时的 chown/chmod。
         try {
             Files.setPosixFilePermissions(workspace,

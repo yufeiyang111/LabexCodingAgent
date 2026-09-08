@@ -12,6 +12,7 @@ LABEL org.opencontainers.image.title="labex-agent-sandbox" \
 ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
@@ -57,7 +58,12 @@ RUN npm config set registry https://registry.npmmirror.com \
 
 # The worker runs as an unprivileged user; HOME is injected by the runtime
 # (WorkerPolicy.safeEnvironment) to a writable tmpfs-bound directory.
-RUN useradd --create-home --uid 1001 --shell /bin/bash sandbox \
+# uid/gid 1000 必须与控制面 backend 容器（compose user "1000:1000"）和宿主机
+# workspace 目录属主（init-host.sh chown 1000:1000）对齐，否则 backend 写入的
+# 目录/文件对沙箱执行用户只读，shell 内 sed -i/文件输出会 Permission denied。
+# node:20-slim 自带 node 用户占用 uid 1000，先删除再重建同名 uid 的 sandbox。
+RUN userdel -r node 2>/dev/null || true \
+    && useradd --create-home --uid 1000 --shell /bin/bash sandbox \
     && mkdir -p /workspace \
     && chown sandbox:sandbox /workspace
 

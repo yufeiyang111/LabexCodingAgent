@@ -6,7 +6,7 @@
 docker build -t labex-agent-sandbox:opencode-2026-08-14 -f docker/sandbox/Dockerfile .
 ```
 
-镜像包含：bash、curl、git、jq、zip/unzip、ripgrep、Node.js/npm（全局 typescript、typescript-language-server、@vue/language-server、pyright）、Java 17（JDK headless）、Maven、Python 3 + pip。以非 root `sandbox` 用户（uid 1001）运行，`WORKDIR /workspace`。
+镜像包含：bash、curl、git、jq、zip/unzip、ripgrep、Node.js/npm（全局 typescript、typescript-language-server、@vue/language-server、pyright）、Java 17（JDK headless）、Maven、Python 3 + pip。以非 root `sandbox` 用户（uid/gid 1000，与控制面 backend 容器及宿主机 workspace 属主对齐）运行，`WORKDIR /workspace`。`PIP_BREAK_SYSTEM_PACKAGES=1` 已内置，pip 直装不再被 Debian 的 externally-managed-environment 拦截。
 
 ## 运行时约束（由 DockerSandboxWorker 强制）
 
