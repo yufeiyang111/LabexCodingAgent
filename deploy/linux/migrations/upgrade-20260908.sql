@@ -91,6 +91,35 @@ BEGIN
         ALTER TABLE t_agent_subagent ADD INDEX idx_agent_subagent_child_task (child_task_id);
     END IF;
 
+    -- 7. 运维控制台用户分析与行为监控高频聚合索引
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.statistics 
+        WHERE table_schema = DATABASE() AND table_name = 't_access_log' AND index_name = 'idx_access_log_uid_time'
+    ) THEN
+        ALTER TABLE t_access_log ADD INDEX idx_access_log_uid_time (user_id, request_time);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.statistics 
+        WHERE table_schema = DATABASE() AND table_name = 't_agent_task' AND index_name = 'idx_agent_task_student_status'
+    ) THEN
+        ALTER TABLE t_agent_task ADD INDEX idx_agent_task_student_status (student_id, status);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.statistics 
+        WHERE table_schema = DATABASE() AND table_name = 't_agent_token_usage' AND index_name = 'idx_token_student_provider'
+    ) THEN
+        ALTER TABLE t_agent_token_usage ADD INDEX idx_token_student_provider (student_id, provider, model);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.statistics 
+        WHERE table_schema = DATABASE() AND table_name = 't_command_audit_event' AND index_name = 'idx_cmd_audit_student'
+    ) THEN
+        ALTER TABLE t_command_audit_event ADD INDEX idx_cmd_audit_student (student_id, create_time);
+    END IF;
+
 END //
 DELIMITER ;
 

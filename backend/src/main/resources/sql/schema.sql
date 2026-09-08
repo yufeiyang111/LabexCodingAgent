@@ -813,7 +813,8 @@ CREATE TABLE IF NOT EXISTS t_access_log (
     ip VARCHAR(64) DEFAULT NULL,
     user_id INT DEFAULT NULL,
     user_agent VARCHAR(512) DEFAULT NULL,
-    INDEX idx_access_log_time (request_time)
+    INDEX idx_access_log_time (request_time),
+    INDEX idx_access_log_uid_time (user_id, request_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_access_stats (

@@ -1,7 +1,7 @@
 <template>
   <button type="button" class="oc-btn" :class="[variant, { danger: danger, confirmed }]" :disabled="disabled || running" @click="onClick">
     <template v-if="confirmed && confirmText">确定{{ running ? '…' : '' }}</template>
-    <template v-else>{{ running ? '处理中…' : label }}</template>
+    <template v-else>{{ running ? '处理中…' : (label || text) }}</template>
   </button>
 </template>
 
@@ -9,7 +9,8 @@
 import { ref } from 'vue'
 
 const props = defineProps({
-  label: { type: String, required: true },
+  label: { type: String, default: '' },
+  text: { type: String, default: '' },
   confirmText: { type: String, default: '' },
   variant: { type: String, default: 'default' },
   danger: { type: Boolean, default: false },

@@ -41,25 +41,25 @@
               <div class="udd-actions-bar">
                 <OpsConfirmButton
                   v-if="detail.profile.status === 1"
-                  text="冻结用户"
+                  label="冻结用户"
                   confirm-text="确认冻结此用户？"
-                  type="danger"
-                  :loading="acting"
+                  danger
+                  :disabled="acting"
                   @confirm="onFreeze"
                 />
                 <OpsConfirmButton
                   v-else
-                  text="解冻用户"
+                  label="解冻用户"
                   confirm-text="确认解冻该用户？"
-                  type="primary"
-                  :loading="acting"
+                  variant="primary"
+                  :disabled="acting"
                   @confirm="onUnfreeze"
                 />
                 <OpsConfirmButton
-                  text="中断进行中任务"
+                  label="中断进行中任务"
                   confirm-text="确认终止该用户当前全部运行中任务？"
-                  type="danger"
-                  :loading="acting"
+                  danger
+                  :disabled="acting"
                   @confirm="onTerminateTasks"
                 />
               </div>
