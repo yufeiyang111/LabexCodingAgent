@@ -60,7 +60,7 @@ class MonitorUserControllerTest {
     private void allowAccess(String token, String role) {
         when(accessService.isEnabled()).thenReturn(true);
         when(accessService.isValidToken(token)).thenReturn(true);
-        when(accessService.roleForSession(token)).thenReturn(role);
+        when(accessService.sessionRole(token)).thenReturn(role);
     }
 
     @Test
