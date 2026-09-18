@@ -12,24 +12,27 @@
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │ 1. 开发者 / Agent 本地质量门禁 (Local Pre-Flight Checks)                │
-│    - 后端: mvn test-compile                                            │
-│    - 前端: npx vite build && check-chunk-budget && npm run test        │
-│    - 数据库: 幂等增量脚本 upgrade-YYYYMMDD.sql                          │
+│    一条命令：node scripts/preflight-release.mjs                        │
+│    - 后端: JDK 直启 maven test-compile（含测试源码编译）                │
+│    - 前端: npm run test && npm run build（内含体积预算检查）            │
+│    - 数据: 种子版本一致性 + 迁移脚本命名合规                            │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │ git push origin main / git push origin v*
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │ 2. GitHub Actions 云端构建矩阵 (Ubuntu-Latest, 7GB 内存隔离环境)         │
+│    [门禁] 种子版本一致性 → 前端单元测试 → 前端构建与体积预算             │
 │    - 后端编译: JDK 17 Temurin -> mvn clean package -> JAR 产物          │
 │    - 镜像发布: 打包 Docker 镜像 -> 推送至腾讯云 TCR (个人版内网加速)       │
 │    - 前端打包: Node 20 -> npm ci -> npm run build -> 打包成 tar.gz     │
-│    - 升级提取: 提取 deploy/linux/migrations/ 下最新增量 SQL 为 upgrade-db.sql │
+│    - 迁移收集: 打包 deploy/linux/migrations/ 整个目录为 migrations.tar.gz │
+│    - 产物归集: 统一放入 release-artifacts/ 后单次上传                    │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │ SCP 上传 (产物单文件秒传，避免小文件网络卡死)
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │ 3. 腾讯云生产服务器自动发布 (Debian, /srv/labex-agent/app)               │
-│    [Step A] 增量数据库迁移: 自动在 MySQL 容器内执行 upgrade-db.sql (幂等执行)│
+│    [Step A] 增量数据库迁移: apply-migrations.sh 按台账去重后顺序执行      │
 │    [Step B] 前端静态资源更新: 解压覆盖 frontend-dist/ 并清理临时包        │
 │    [Step C] 后端容器平滑拉取: docker compose pull backend (从 TCR 秒级拉取)│
 │    [Step D] 业务无损滚动重启: docker compose up -d --no-deps backend   │
@@ -41,7 +44,14 @@
 
 ## 二、 发布前强制质量门禁（Pre-Flight Checklist）
 
-在执行 `git push` 或触发任何发布流程前，Agent **必须在本地逐项执行并通过以下三道质量门禁**：
+**推荐做法**：一条命令跑完全部门禁，判据与 CI 完全一致（同一套脚本）：
+
+```bash
+node scripts/preflight-release.mjs          # 完整门禁（含构建，耗时较长）
+node scripts/preflight-release.mjs --fast   # 仅静态检查，提交前快速自查
+```
+
+单独执行各项门禁的命令如下。
 
 ### 1. 后端编译与语法检查
 确保新增实体、Service、Controller 或 Mapper 无语法错误、无缺失依赖：
@@ -51,6 +61,8 @@ cd backend
 mvn -s settings-local.xml test-compile -DskipTests
 ```
 * **通过标准**：`BUILD SUCCESS`，退出码为 `0`。若涉及核心业务逻辑变更，应追加执行对应单元测试（如 `mvn -s settings-local.xml test -Dtest=MonitorUserControllerTest`）。
+* **本机注意**：本机 `mvn` 在 MSYS 下会因 classworlds 缺失而崩，需用 JDK 直启 plexus launcher；
+  `preflight-release.mjs` 已封装该启动方式，直接用脚本即可。
 
 ### 2. 前端单元测试全量验证
 确保改动没有破坏既有组件契约与状态流：
@@ -59,15 +71,26 @@ mvn -s settings-local.xml test-compile -DskipTests
 cd frontend
 npm run test
 ```
-* **通过标准**：全部 330+ 项单元测试 100% 通过（PASS）。
+* **通过标准**：全部单元测试 100% 通过（PASS）。
 
 ### 3. 前端生产构建与分块体积预算检查
 确保生产环境 Rollup/Vite 正常打包，且产物体积未突破阈值：
 ```bash
 cd frontend
-npx vite build && node scripts/check-chunk-budget.mjs
+npm run build        # 等价于 vite build && node scripts/check-chunk-budget.mjs
 ```
 * **通过标准**：Vite 构建成功，且 `check-chunk-budget.mjs` 打印出的所有 JS 块大小均在预算安全线以内（如 `CloudWorkspace` < 1.5MB、主包 < 1.3MB）。
+
+### 4. 数据变更门禁
+
+```bash
+node scripts/verify-seed-version.mjs   # 教程种子：正文标记版本 ≡ 版本守卫版本
+```
+
+* **通过标准**：标记版本与全部版本守卫一致，守卫行数等于 upsert 块数 × 5。
+* **为什么需要**：守卫写成旧版本时，库中该版本的行会被判定为「保留」而永远不升级，
+  新内容静默不生效 —— 部署一切正常、页面上却还是旧文案（历史上真实发生过）。
+* **迁移脚本命名**：必须为 `deploy/linux/migrations/upgrade-YYYYMMDD.sql`，流水线自动收集全部此类文件。
 
 ---
 
@@ -77,7 +100,16 @@ npx vite build && node scripts/check-chunk-budget.mjs
 
 ### 1. 增量脚本存放与命名
 * 路径：`deploy/linux/migrations/upgrade-YYYYMMDD.sql`（如 `deploy/linux/migrations/upgrade-20260908.sql`）。
+* **自动收集**：流水线打包整个 `migrations/` 目录随发布上传，服务器端 `apply-migrations.sh`
+  按文件名（含日期）升序执行 —— **新增迁移只需放文件，无需改流水线**。
+  历史缺陷：流水线曾写死复制单个 `upgrade-20260908.sql`，之后新增的迁移根本不会被部署。
+* **台账去重**：每个迁移执行成功后写入 `t_schema_migration`（记录文件名、内容 SHA-256、
+  执行时间），已记录的直接跳过。因此重复触发流水线不会重复应用，也能随时回答
+  「这次发布跑了哪些变更」。
+* **快速失败**：任一迁移失败即中止发布，后续迁移不再执行，也不进入容器重启环节。
 * 同步更新基线：修改了增量脚本后，必须同步更新开发环境基线文件 `backend/src/main/resources/sql/schema.sql`，确保新部署环境与旧升级环境结构一致。
+* **校验幂等性**：迁移会在历史上已执行、但台账无记录的情况下被重跑一次，
+  所以每一处结构变更都必须带存在性判断（见下方模板）。
 
 ### 2. 标准幂等模板代码
 
@@ -185,8 +217,10 @@ git push origin v1.0.0
 |:---|:---|:---|
 | **1. 页面可访问性** | `curl -I https://labexagent.123845.xyz` | HTTP 状态码为 `200 OK`，证书有效。 |
 | **2. 后端核心存活** | `curl -s https://labexagent.123845.xyz/api/ops/summary` | 返回结构包含 `code` 字段，服务未宕机。 |
-| **3. 数据库迁移结果** | 进入 MySQL 容器或观察控制台日志 | `upgrade-db.sql` 成功执行无语法报错，索引与字段已注入。 |
+| **3. 数据库迁移结果** | 服务器执行 `docker compose --env-file .env.production exec -T mysql sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SELECT migration_name, applied_at FROM t_schema_migration ORDER BY migration_name"'` | 本次新增的迁移文件均出现在台账中，且流水线日志显示「本次应用 N 个」。 |
 | **4. 容器与磁盘水位** | 服务器命令 `docker compose ps` | 容器状态均为 `Up (healthy)`，`docker image prune` 已清理悬空镜像。 |
+
+> 迁移执行器会把自己的台账快照打进流水线日志，通常无需登录服务器即可确认第 3 项。
 
 ---
 
