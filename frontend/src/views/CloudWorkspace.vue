@@ -1060,7 +1060,7 @@ import { applyCommandExecutionResponseState, attachCommandApprovalState as attac
 import { attachDurableInteraction } from '@/composables/agentInteractionProjection'
 import { normalizeSpecialMarkdownBlocks, stripInternalReasoningBlocks, stripInternalReasoningTags } from '@/utils/agentMarkdown'
 import { resolveContextUsageStatus } from '@/composables/contextUsageStatus'
-import { applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
+import { applyTokenUsageEvent, createTokenUsageState, mergeConversationSummaries, resolveCacheTelemetryScope, resolveCacheTelemetryView } from '@/composables/cacheTelemetryStatus'
 import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
 import { enhanceFileLinks } from '@/utils/fileLinks'
 const loadEcharts = () => import('@/utils/echarts')
@@ -1437,7 +1437,21 @@ const draggedTabIdx = ref(null)
 const showImageLightbox = ref(false)
 const imageLightboxSrc = ref('')
 const imageLightboxTitle = ref('')
-const thinkingLevel = ref('High')
+
+// 思考程度的唯一事实源是选中的模型配置（后端 t_agent_model_config.reasoning_effort）。
+// 这里只做派生投影，禁止再维护第二份可写副本，否则界面会与真正发出去的档位脱节。
+const selectedModelConfigRow = computed(() => {
+  if (selectedModelConfigId.value) {
+    const hit = modelConfigs.value.find(c => c.configId === selectedModelConfigId.value)
+    if (hit) return hit
+  }
+  if (modelConfigs.value.length > 0) {
+    return modelConfigs.value.find(c => c.isDefault === 1) || modelConfigs.value[0]
+  }
+  return null
+})
+const thinkingLevel = computed(() =>
+  String(selectedModelConfigRow.value?.reasoningEffort || '').toLowerCase())
 
 // 从桌面（可能处于折叠态）缩窗进入移动端时，强制展开 AI 面板，
 // 因为移动端 mobile-tab-ai 视口会隐藏折叠条，折叠态下会出现全黑无 UI。
@@ -1898,11 +1912,52 @@ function handleSelectModelByName(name) {
   }
 }
 
-function handleChangeThinkingLevel(lvl) {
-  thinkingLevel.value = lvl
-  const effort = lvl === 'High' ? 'high' : (lvl === 'Low' ? 'low' : 'medium')
-  mcForm.value.reasoningEffort = effort
-  ElMessage.success(`思考程度已设置为: ${lvl}`)
+/**
+ * 思考程度选择：写入模型配置（唯一事实源），成功后用后端返回值刷新本地配置列表。
+ *
+ * <p>此前这里只改本地 ref + 弹「已设置」提示，既不落库也不进请求，属于假控件。
+ * 现在失败时不再宣称成功——请求拦截器已统一提示错误原因，这里只需保持状态不变。</p>
+ */
+async function handleChangeThinkingLevel(payload) {
+  const configId = payload?.configId
+  const modelName = payload?.modelName
+  const value = String(payload?.value || '').toLowerCase()
+  if (!value) return
+
+  const target = modelConfigs.value.find(c => c.configId === configId)
+    || modelConfigs.value.find(c => c.modelName === modelName || c.configName === modelName)
+  if (!target) {
+    ElMessage.error('未找到对应的模型配置，思考程度未变更')
+    return
+  }
+
+  if (String(target.reasoningEffort || '').toLowerCase() !== value) {
+    let saved = null
+    try {
+      const r = await modelConfigApi.update(target.configId, { reasoningEffort: value })
+      saved = r?.data || null
+    } catch (e) {
+      // 拦截器已展示后端返回的原因；这里不得回退成「已设置」。
+      return
+    }
+    if (!saved) {
+      ElMessage.error('思考程度保存失败：服务端未返回配置')
+      return
+    }
+    const idx = modelConfigs.value.findIndex(c => c.configId === target.configId)
+    if (idx >= 0) modelConfigs.value.splice(idx, 1, saved)
+  }
+
+  selectedModelConfigId.value = target.configId
+  const applied = labelOfReasoningEffort(
+    (saved || target).reasoningOptions, value)
+  ElMessage.success(`思考程度已保存：${applied}`)
+}
+
+/** 档位中文名由后端下发的 reasoningOptions 决定，避免前端再维护一份映射。 */
+function labelOfReasoningEffort(options, value) {
+  const hit = (Array.isArray(options) ? options : []).find(opt => opt.value === value)
+  return hit?.label || value
 }
 
 function insertToEditor(text) {
@@ -3073,17 +3128,48 @@ async function deleteConfig(cfg) {
     if (e !== 'cancel' && e !== 'close') ElMessage.error('删除失败')
   }
 }
+/**
+ * 「测试连接」失败但拿不到原因时的兜底文案。
+ *
+ * 后端本应给出具体原因（AgentModelConfigController.resolveTestFailureReason），
+ * 这条只用于「后端也没给出可用信息」的极端情况 —— 保证界面上
+ * 永远不会出现一个没有任何文字的错误提示条。
+ */
+const CONNECTION_TEST_FALLBACK_MESSAGE = '连接失败：未获取到具体原因，请检查 Base URL、API Key 与模型名称'
+
+/**
+ * 规范化「测试连接」的返回，保证失败态**永远带可读文案**。
+ *
+ * 历史缺陷：后端曾从 provider 响应里取恒为空串的 `content` 字段当错误信息，
+ * 于是接口返回 `{ success: false, error: "" }`，弹窗里只出现一个空红条，
+ * 用户完全不知道失败原因。后端已修，这里再加一道前端兜底。
+ */
+function normalizeTestResult(data) {
+  const raw = data && typeof data === 'object' ? data : {}
+  if (raw.success) {
+    return { success: true, latency: raw.latency }
+  }
+  const reason = typeof raw.error === 'string' ? raw.error.trim() : ''
+  return { success: false, latency: raw.latency, error: reason || CONNECTION_TEST_FALLBACK_MESSAGE }
+}
+
 async function testConfig(cfg) {
   mcTestingIds.value[cfg.configId] = true
   delete mcTestResults.value[cfg.configId]
   try {
     const r = await modelConfigApi.testConnection(cfg.configId)
-    mcTestResults.value[cfg.configId] = r.data
-    if (r.data?.success) {
-      ElMessage.success(cfg.configName + ' 连接成功 (' + r.data.latency + 'ms)')
+    const result = normalizeTestResult(r.data)
+    mcTestResults.value[cfg.configId] = result
+    if (result.success) {
+      ElMessage.success(cfg.configName + ' 连接成功 (' + result.latency + 'ms)')
+    } else {
+      // 失败必须显式提示：结果只在卡片里显示一行小字，容易漏看
+      ElMessage.warning(cfg.configName + ' ' + result.error)
     }
   } catch (e) {
-    mcTestResults.value[cfg.configId] = { success: false, error: e?.response?.data?.message || e?.message || '测试失败' }
+    const reason = e?.response?.data?.message || e?.message || '测试失败'
+    mcTestResults.value[cfg.configId] = { success: false, error: reason }
+    ElMessage.warning(cfg.configName + ' ' + reason)
   } finally {
     mcTestingIds.value[cfg.configId] = false
   }
@@ -3355,6 +3441,21 @@ async function loadAllTokenStats() {
     }
   } catch (e) {
     if (requestEpoch === tokenUsageProjectionEpoch) allTokenStats.value = null
+  }
+  await loadConversationSummaries(requestEpoch)
+}
+
+/**
+ * 会话明细以服务端聚合为权威基线（刷新后仍在），
+ * 与本次连接 SSE 累积的会话合并，避免窗口内事件被快照覆盖或历史累计被实时值拉低。
+ */
+async function loadConversationSummaries(requestEpoch = tokenUsageProjectionEpoch) {
+  try {
+    const r = await projectApi.agentConversationTokenSummaries(projectId.value)
+    if (requestEpoch !== tokenUsageProjectionEpoch) return
+    sessionHistory.value = mergeConversationSummaries(sessionHistory.value, r.data)
+  } catch (e) {
+    // 拉取失败时保留本地累积结果：面板仍可展示本次会话，不让明细整块消失。
   }
 }
 

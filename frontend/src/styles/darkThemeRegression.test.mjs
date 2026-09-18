@@ -61,7 +61,14 @@ test('Dark theme styling integrity for all requested components', async () => {
   const modelSelector = await readFile(new URL('../components/cloud/composer/ModelSelectorPopover.vue', import.meta.url), 'utf8')
   assert.match(modelSelector, /html\[data-theme="dark"\] \.model-popover-menu[\s\S]*background:\s*#181b24/, 'Model popover menu must have dark background')
   assert.match(modelSelector, /html\[data-theme="dark"\] \.thinking-levels-accordion[\s\S]*background:\s*#141720/, 'Thinking accordion must be dark')
-  assert.match(modelSelector, /html\[data-theme="dark"\] \.thinking-pill-btn[\s\S]*background:\s*#202430/, 'Thinking pill buttons must be dark')
+  // 档位已从「药丸按钮」改为单排分段控件；暗色需保证轨道、文字与选中态都有明确底色。
+  assert.match(modelSelector, /html\[data-theme="dark"\] \.thinking-segmented[\s\S]*background:\s*#141720/, 'Thinking segmented track must be dark')
+  assert.match(modelSelector, /html\[data-theme="dark"\] \.thinking-segment[\s\S]*color:\s*#cdd6f4/, 'Thinking segment text must have bright contrast')
+  // 选中态背景由滑动指示块承担（按钮只改文字色），因此暗色底色断言落在 .thinking-thumb 上。
+  assert.match(modelSelector, /html\[data-theme="dark"\] \.thinking-thumb[\s\S]*background:\s*#4f46e5/, 'Sliding thumb must have visible accent background')
+  // 折叠档弱化后仍须达 WCAG 正文 4.5:1（实测 #838ba0 vs #141720 = 5.26:1）
+  assert.match(modelSelector, /html\[data-theme="dark"\] \.thinking-segment\.folded:not\(\.active\)[\s\S]*color:\s*#838ba0/, 'Folded segment must stay readable in dark mode')
+  assert.match(modelSelector, /html\[data-theme="dark"\] \.thinking-footnote[\s\S]*color:\s*#7c8499/, 'Folding footnote must stay readable in dark mode')
   assert.match(globalScss, /html\[data-theme='dark'\] \.mc-template-card[\s\S]*background:\s*#1e1e2e/, 'Template card in dialog must have dark background')
   assert.match(globalScss, /html\[data-theme='dark'\] \.mc-template-model[\s\S]*color:\s*#89b4fa/, 'Template model name must have high contrast')
 

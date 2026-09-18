@@ -62,25 +62,46 @@
               </div>
             </div>
 
-            <!-- 思考程度展开区 (流畅手风琴下展，绝不越界被裁切) -->
+            <!-- 思考程度：单排分段控件。档位由后端按模型能力下发，折叠关系只在脚注里说一次 -->
             <div
               v-if="model.supportsThinking && expandedThinkingModel === model.name"
               class="thinking-levels-accordion"
             >
-              <div class="thinking-accordion-header">思考深度</div>
-              <div class="thinking-level-grid">
+              <div class="thinking-accordion-header">
+                <span>思考深度</span>
+                <span v-if="activeLevelEffectiveNote(model)" class="thinking-header-note">
+                  {{ activeLevelEffectiveNote(model) }}
+                </span>
+              </div>
+
+              <div class="thinking-segmented" role="radiogroup" aria-label="思考深度">
+                <!-- 滑动指示块：承载选中态背景，靠 transform 位移产生滑动动画。
+                     它与按钮分离，因此切换档位时高亮是"滑过去"而不是"闪一下"。 -->
+                <span
+                  v-if="thumbStyle(model)"
+                  class="thinking-thumb"
+                  :style="thumbStyle(model)"
+                  aria-hidden="true"
+                ></span>
                 <button
-                  v-for="lvl in ['Low', 'Medium', 'High']"
-                  :key="lvl"
+                  v-for="opt in model.reasoningOptions"
+                  :key="opt.value"
                   type="button"
-                  class="thinking-pill-btn"
-                  :class="{ active: currentModel === model.name && thinkingLevel === lvl }"
-                  @click.stop="selectThinkingLevel(model, lvl)"
+                  role="radio"
+                  :aria-checked="isSelectedLevel(model, opt.value)"
+                  class="thinking-segment"
+                  :class="{
+                    active: isSelectedLevel(model, opt.value),
+                    folded: opt.effective !== opt.value
+                  }"
+                  :title="levelTitle(opt)"
+                  @click.stop="selectThinkingLevel(model, opt)"
                 >
-                  <span>{{ lvl }}</span>
-                  <span v-if="currentModel === model.name && thinkingLevel === lvl" class="check-mark">✓</span>
+                  {{ opt.label }}
                 </button>
               </div>
+
+              <p v-if="foldedSummary(model)" class="thinking-footnote">{{ foldedSummary(model) }}</p>
             </div>
           </div>
         </div>
@@ -123,7 +144,7 @@ const props = defineProps({
   },
   thinkingLevel: {
     type: String,
-    default: 'High',
+    default: '',
   },
   models: {
     type: Array,
@@ -145,24 +166,101 @@ const modelList = computed(() => {
   }
   return props.models.map(m => ({
     id: m.configId || m.id,
+    // name 用于 emit 与后端交互；configName / modelName 单独保留，供识别当前选中行。
     name: m.configName || m.modelName || m.name || 'default',
+    configName: m.configName || '',
+    modelName: m.modelName || '',
     label: m.configName || m.modelName || m.label || m.name || 'default',
-    supportsThinking: m.supportsThinking ?? true,
+    // 档位与折叠关系由后端按 modelName + requestOptionsJson 判定，组件不得自行猜测。
+    reasoningOptions: Array.isArray(m.reasoningOptions) ? m.reasoningOptions : [],
+    supportsThinking: Array.isArray(m.reasoningOptions) && m.reasoningOptions.length > 0,
     badge: m.isDefault ? '默认' : (m.badge || '')
   }))
 })
 
+/**
+ * 当前选中的模型行。档位是该模型配置的属性，不属于组件自身状态。
+ *
+ * 父组件传入的 currentModel 是 modelName（如 deepseek-v4.1-flash），而列表标签优先用 configName
+ * （如 Deepseek go）。只比较单一字段会导致选中行识别不到，表现是档位没有选中态、胶囊不显示档位。
+ * 这里按 configName → modelName → 显示名逐级匹配。
+ */
+const activeModelRow = computed(() => {
+  const current = String(props.currentModel || '')
+  if (!current) return null
+  const rows = modelList.value
+  return rows.find(item => item.configName === current)
+    || rows.find(item => item.modelName === current)
+    || rows.find(item => item.name === current || item.label === current)
+    || null
+})
+
+function labelOf(model, value) {
+  const found = (model.reasoningOptions || []).find(opt => opt.value === value)
+  return found ? found.label : value
+}
+
+function isSelectedLevel(model, value) {
+  return activeModelRow.value === model && String(props.thinkingLevel || '').toLowerCase() === value
+}
+
+/**
+ * 滑动指示块的位置与宽度。
+ *
+ * 用 `width = 轨道内宽 / 档位数` + `translateX(index × 100%)` 表达位置：位移量以自身宽度为
+ * 单位，因此不需要在 JS 里测量像素，窗口缩放与档位数变化都能自动适配。
+ * 轨道左右各 2px 内边距、按钮之间无 gap —— 这两个前提必须与样式保持一致，否则会错位。
+ * 无选中项（例如展开的是非当前模型）时返回 null，由 v-if 隐藏指示块。
+ */
+function thumbStyle(model) {
+  const options = model.reasoningOptions || []
+  const index = options.findIndex(opt => isSelectedLevel(model, opt.value))
+  if (index < 0) return null
+  return {
+    width: `calc((100% - 4px) / ${options.length})`,
+    transform: `translateX(${index * 100}%)`
+  }
+}
+
+/**
+ * 当前选中档在上游的实际执行档；只在被折叠（与所选档位不同）时给出说明。
+ * 未折叠时不显示任何文字——档位名本身已经说明一切，多余的提示就是噪音。
+ */
+function activeLevelEffectiveNote(model) {
+  const level = String(props.thinkingLevel || '').toLowerCase()
+  if (!activeModelRow.value || activeModelRow.value !== model || !level) return ''
+  const hit = (model.reasoningOptions || []).find(opt => opt.value === level)
+  if (!hit || hit.effective === hit.value) return ''
+  return `按「${labelOf(model, hit.effective)}」执行`
+}
+
+/**
+ * 折叠关系摘要（如「中 → 高  超高 → 极致」）。整块只出现一次，
+ * 避免把同样的角标塞进每个按钮里造成视觉噪音。
+ */
+function foldedSummary(model) {
+  const folded = (model.reasoningOptions || []).filter(opt => opt.effective !== opt.value)
+  if (!folded.length) return ''
+  return folded.map(opt => `${opt.label} → ${labelOf(model, opt.effective)}`).join('　')
+}
+
+function levelTitle(opt) {
+  if (!opt || opt.effective === opt.value) return `${opt?.label || ''}：会原样写入请求`
+  return `${opt.label}：上游会按「${labelOf({ reasoningOptions: activeModelRow.value?.reasoningOptions || [] }, opt.effective)}」执行`
+}
+
 const displayLabel = computed(() => {
   if (!hasModels.value) {
     if (props.currentModel && props.currentModel !== '未配置模型') {
-      return props.thinkingLevel ? `${props.currentModel} (${props.thinkingLevel})` : props.currentModel
+      return props.currentModel
     }
     return '未配置模型'
   }
-  const m = modelList.value.find(item => item.name === props.currentModel || item.label === props.currentModel)
+  const m = activeModelRow.value
   const name = m ? (m.label || m.name) : (props.currentModel || '请选择模型')
-  if (m?.supportsThinking && props.thinkingLevel) {
-    return `${name} (${props.thinkingLevel})`
+  const level = String(props.thinkingLevel || '').toLowerCase()
+  if (m?.supportsThinking && level) {
+    return `${name} (${labelOf(m, level)})`
   }
   return name
 })
@@ -171,7 +269,7 @@ function togglePopover() {
   isOpen.value = !isOpen.value
   if (isOpen.value) {
     // 默认展开当前选中模型的思考级别
-    const curr = modelList.value.find(m => m.name === props.currentModel || m.label === props.currentModel)
+    const curr = activeModelRow.value
     if (curr?.supportsThinking) {
       expandedThinkingModel.value = curr.name
     }
@@ -198,11 +296,19 @@ function handleModelClick(model) {
   }
 }
 
-function selectThinkingLevel(model, level) {
-  emit('change-model', model.name)
-  emit('change-thinking', level)
-  isOpen.value = false
-  expandedThinkingModel.value = null
+/**
+ * 选择档位：交给父组件落库。
+ *
+ * 这里刻意**不关闭**浮层：保存是异步的，若立刻收起，滑块动画与结果都来不及被看见，
+ * 用户只会觉得"点了一下东西就没了"。保持展开可以让指示块滑到新位置作为确认；
+ * 若保存失败，指示块不动（拦截器会给出原因），界面不会宣称未发生的事。
+ */
+function selectThinkingLevel(model, option) {
+  emit('change-thinking', {
+    configId: model.id,
+    modelName: model.name,
+    value: option.value
+  })
 }
 
 function openConfigDialog() {
@@ -284,7 +390,10 @@ onBeforeUnmount(() => {
   position: absolute;
   bottom: calc(100% + 8px);
   right: 0;
-  width: 256px;
+  /* 288px：三列档位在最长文案「超高→极致 ✓」时仍能单行放下（实测 78px 单元格会换行） */
+  width: 288px;
+  /* 窄屏（320px）保护：靠右锚定，加宽只会向左展开，但要防止贴边 */
+  max-width: calc(100vw - 20px);
   background: var(--ai-bg, #ffffff);
   border: 1px solid var(--ai-border-strong, #e4e4e7);
   border-radius: 10px;
@@ -393,59 +502,118 @@ onBeforeUnmount(() => {
   transform: rotate(90deg);
 }
 
-/* 思考程度手风琴折叠区 */
+/* 思考程度折叠区：单排分段控件，不分行、不堆角标 */
 .thinking-levels-accordion {
   background: var(--ai-bg-secondary, #fafafa);
   border-top: 1px dashed var(--ai-border-strong, #e4e4e7);
   border-bottom: 1px dashed var(--ai-border-strong, #e4e4e7);
-  padding: 8px 12px;
+  padding: 9px 12px 10px 12px;
   margin: 2px 0 4px 0;
   animation: accordionIn 0.15s ease;
 }
 
 .thinking-accordion-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 10.5px;
   font-weight: 600;
   color: var(--ai-text-muted, #71717a);
-  margin-bottom: 6px;
+  margin-bottom: 7px;
 }
 
-.thinking-level-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
+/* 选中档被上游折叠时的即时说明。色值取可读下限而非最浅的令牌：
+   --ai-text-faint 在本底色上仅 2.46:1，达不到正文 4.5:1。 */
+.thinking-header-note {
+  font-size: 10px;
+  font-weight: 400;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.thinking-pill-btn {
-  padding: 4px 6px;
-  background: var(--ai-bg, #ffffff);
-  border: 1px solid var(--ai-border-strong, #e4e4e7);
+/* 轨道：左右各 2px 内边距、按钮之间不留 gap。
+   这两个数值与 thumbStyle() 的位移算式（(100% - 4px) / N）严格绑定，改任一处都必须同步。 */
+.thinking-segmented {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  padding: 2px;
+  background: var(--ai-bg-tertiary, #f4f4f5);
+  border: 1px solid var(--ai-border, #f4f4f5);
+  border-radius: 8px;
+}
+
+/* 滑动指示块：只负责背景，压在按钮之下 */
+.thinking-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  bottom: 2px;
+  z-index: 0;
+  border-radius: 6px;
+  background: var(--ai-accent, #18181b);
+  /* 平滑滑动：ease-out 缓出，末段收得干净，比 linear 更像"滑到位" */
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+              width 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-thumb { transition: none; }
+}
+
+.thinking-segment {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
   border-radius: 6px;
   font-size: 11.5px;
+  font-family: inherit;
   color: var(--ai-text-secondary, #3f3f46);
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  transition: all 0.12s;
+  white-space: nowrap;
+  transition: color 0.18s ease;
 }
 
-.thinking-pill-btn:hover {
-  border-color: var(--ai-border-focus, #d4d4d8);
-  background: var(--ai-bg-tertiary, #f4f4f5);
+.thinking-segment:hover:not(.active) {
   color: var(--ai-text, #09090b);
 }
 
-.thinking-pill-btn.active {
-  background: var(--ai-accent, #18181b);
-  border-color: var(--ai-accent, #18181b);
-  color: #ffffff;
-  font-weight: 600;
+/* 按下时轻微收一下，补足接口往返期间的手感（此处不宣称已保存，真实状态由指示块体现） */
+.thinking-segment:active {
+  transform: scale(0.97);
 }
 
-.thinking-pill-btn.active .check-mark {
+/* 折叠档位的文字更淡，暗示「与另一档等价」；实际生效档位由脚注说明。
+   这里直写色值而不用令牌：现有 --ai-text-faint 在本底色上只有 2.33:1、
+   --ai-text-muted 只有 4.33:1，都达不到正文 4.5:1；本值是该约束下的可辨识下限。
+   选中态必须排除，否则会与滑块上的白字互相覆盖。 */
+.thinking-segment.folded:not(.active) {
+  color: #5b6b80;
+}
+
+/* 选中档只改文字色 —— 背景由 .thinking-thumb 承担，切换时才能滑动 */
+.thinking-segment.active {
   color: #ffffff;
+  font-weight: 550;
+}
+
+/* 折叠关系脚注：整块只出现一次。这是「哪些档位等价」的唯一解释，必须可读，
+   因此同样取 4.5:1 的下限色值，而不是用更浅的装饰色。 */
+.thinking-footnote {
+  margin: 7px 0 0 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #64748b;
+  overflow-wrap: anywhere;
 }
 
 .model-menu-footer {
@@ -571,23 +739,27 @@ onBeforeUnmount(() => {
 :global(html[data-theme="dark"] .thinking-accordion-header) {
   color: #8c96a8;
 }
-:global(html[data-theme="dark"] .thinking-pill-btn) {
-  background: #202430;
-  border-color: #384158;
-  color: #edf1fb;
+:global(html[data-theme="dark"] .thinking-header-note) {
+  color: #7c8499;
 }
-:global(html[data-theme="dark"] .thinking-pill-btn:hover) {
-  background: #2a3142;
-  border-color: #4f5d80;
+:global(html[data-theme="dark"] .thinking-segmented) {
+  background: #141720;
+  border-color: #262c3a;
+}
+:global(html[data-theme="dark"] .thinking-segment) {
+  color: #cdd6f4;
+}
+:global(html[data-theme="dark"] .thinking-segment.folded:not(.active)) {
+  color: #838ba0;
+}
+:global(html[data-theme="dark"] .thinking-segment:hover:not(.active)) {
   color: #ffffff;
 }
-:global(html[data-theme="dark"] .thinking-pill-btn.active) {
+:global(html[data-theme="dark"] .thinking-thumb) {
   background: #4f46e5;
-  border-color: #4f46e5;
-  color: #ffffff;
 }
-:global(html[data-theme="dark"] .thinking-pill-btn.active .check-mark) {
-  color: #ffffff;
+:global(html[data-theme="dark"] .thinking-footnote) {
+  color: #7c8499;
 }
 :global(html[data-theme="dark"] .model-menu-footer) {
   border-top-color: #272a37;

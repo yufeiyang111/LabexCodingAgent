@@ -219,7 +219,7 @@ const props = defineProps({
   },
   thinkingLevel: {
     type: String,
-    default: 'Medium',
+    default: '',
   },
   availableModels: {
     type: Array,

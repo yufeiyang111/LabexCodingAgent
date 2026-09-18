@@ -188,7 +188,9 @@ const currentModelLabel = computed(() => {
 })
 
 const currentThinkingLevel = computed(() => {
-  return props.parentThinkingLevel || 'High'
+  // 档位取值由父级模型配置派生（如 medium/xhigh）；未继承到时不编造默认档位，
+  // 交由 ModelSelectorPopover 按后端下发的 reasoningOptions 决定展示内容。
+  return String(props.parentThinkingLevel || '').toLowerCase()
 })
 const statusLabel = computed(() => {
   const map = { completed: '已完成', failed: '失败', cancelled: '已取消', running: '运行中', queued: '排队中', waiting_user: '等待输入', waiting_approval: '等待批准' }

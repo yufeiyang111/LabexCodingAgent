@@ -40,12 +40,16 @@
                       <span class="mc-card-model">{{ cfg.modelName || 'gpt-4o-mini' }}</span>
                     </div>
                     <div class="mc-card-url" v-if="cfg.baseUrl">{{ cfg.baseUrl }}</div>
-                    <!-- Test Result -->
+                    <!--
+                      测试结果。失败原因已由 CloudWorkspace.testConfig 规范化，
+                      这里的 `|| '连接失败'` 只是最后一道防线：任何时候都不该
+                      出现「有红条但一个字都没有」的提示。
+                    -->
                     <div v-if="state.mcTestResults[cfg.configId]" class="mc-test-result" :class="state.mcTestResults[cfg.configId].success ? 'mc-test-ok' : 'mc-test-fail'">
                       <svg v-if="state.mcTestResults[cfg.configId].success" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                       <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                       <span v-if="state.mcTestResults[cfg.configId].success">连接成功 {{ state.mcTestResults[cfg.configId].latency }}ms</span>
-                      <span v-else>{{ state.mcTestResults[cfg.configId].error }}</span>
+                      <span v-else class="mc-test-reason">{{ state.mcTestResults[cfg.configId].error || '连接失败' }}</span>
                     </div>
                   </div>
                   <div class="mc-card-actions">
@@ -127,9 +131,10 @@
                       <option value="low">低（更快、更省）</option>
                       <option value="medium">中（推荐）</option>
                       <option value="high">高（更深入）</option>
-                      <option value="xhigh">超高（最深入、成本更高）</option>
+                      <option value="xhigh">超高（最深入的常规档）</option>
+                      <option value="max">极致（上游支持时才真正生效）</option>
                     </select>
-                    <div class="mc-hint">仅在服务端支持时发送 <code>reasoning_effort</code>；不支持会安全降级。</div>
+                    <div class="mc-hint">仅在服务端支持时发送 <code>reasoning_effort</code>；部分模型会把「中」折叠为「高」、「超高」折叠为「极致」，折叠关系在模型选择浮层里逐个标注。</div>
                   </div>
                   <div class="mc-field mc-field-half">
                     <label>多模态能力</label>

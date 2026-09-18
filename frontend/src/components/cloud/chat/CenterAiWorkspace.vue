@@ -332,7 +332,7 @@
     <div class="center-status-strip">
       <div class="status-left">
         <span class="status-dot" :class="currentModel && currentModel !== '未配置模型' ? 'online' : 'warning'"></span>
-        <span>{{ currentModel || '未配置模型' }} {{ (thinkingLevel && currentModel && currentModel !== '未配置模型') ? `(${thinkingLevel})` : '' }}</span>
+        <span>{{ currentModel || '未配置模型' }} {{ thinkingLevelText ? `(${thinkingLevelText})` : '' }}</span>
       </div>
       <div class="status-right" v-if="tokenUsage?.totalTokens">
         <span>{{ tokenUsage.totalTokens >= 1000 ? (tokenUsage.totalTokens / 1000).toFixed(1) + 'K' : tokenUsage.totalTokens }} Tokens</span>
@@ -426,7 +426,7 @@ const props = defineProps({
   },
   thinkingLevel: {
     type: String,
-    default: 'High',
+    default: '',
   },
   availableModels: {
     type: Array,
@@ -496,6 +496,15 @@ const props = defineProps({
     type: Function,
     default: m => m?.content || '',
   },
+})
+
+// 档位中文名从后端下发的 reasoningOptions 解析，前端不再维护第二份档位映射。
+const thinkingLevelText = computed(() => {
+  const level = String(props.thinkingLevel || '').toLowerCase()
+  if (!level) return ''
+  const row = props.availableModels.find(m => (m.modelName || m.configName) === props.currentModel)
+  const hit = (row?.reasoningOptions || []).find(opt => opt.value === level)
+  return hit?.label || ''
 })
 
 const emit = defineEmits([
