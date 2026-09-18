@@ -8,6 +8,7 @@ import com.labex.labexagent.commandsecurity.CommandApprovalOrchestrator;
 import com.labex.labexagent.commandsecurity.CommandRedactor;
 import com.labex.labexagent.execution.ProcessExecutionResult;
 import com.labex.entity.CommandApproval;
+import com.labex.entity.AgentConversation;
 import com.labex.entity.AgentRunEvent;
 import com.labex.service.StudentProjectService;
 import com.labex.labexagent.diff.DiffService;
@@ -31,6 +32,8 @@ import com.labex.labexagent.service.AgentInteractionService;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.service.ManualCompactionTaskRunner;
 import com.labex.labexagent.service.TokenTracker;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -494,14 +497,34 @@ public class StudentAgentController {
         }
     }
 
-    @GetMapping(value={"/tokens/{conversationId}"})
-    public Result<Map<String, Object>> tokenStats(@PathVariable Integer projectId, @PathVariable String conversationId, Authentication auth) {
+    /**
+     * 按会话聚合的用量摘要列表，供用量面板「会话明细统计」持久化展示。
+     *
+     * <p>聚合在 SQL 侧完成（{@code TokenTracker.getConversationSummaries}），标题由本层用会话实体补齐——
+     * 会话可能已被删除，此时 title 为 null，由前端回落展示占位名。
+     * 隔离性由查询条件保证：{@code student_id} 取自 JWT，因此即使传入他人 projectId 也只会得到空列表。
+     */
+    @GetMapping(value={"/tokens/conversations"})
+    public Result<List<Map<String, Object>>> conversationTokenSummaries(@PathVariable Integer projectId, Authentication auth) {
         try {
             Integer studentId = this.getStudentId(auth);
-            if (this.conversationService.getOwnedConversation(studentId, projectId, conversationId) == null) {
-                return Result.error("Conversation not found");
+            List<Map<String, Object>> summaries = this.tokenTracker.getConversationSummaries(studentId, projectId);
+            if (summaries.isEmpty()) {
+                return Result.success(List.of());
             }
-            return Result.success(this.tokenTracker.getConversationStats(conversationId, studentId, projectId));
+            Map<String, String> titlesByConversation = new HashMap<>();
+            for (AgentConversation conversation : this.conversationService.list(studentId, projectId)) {
+                if (conversation != null && conversation.getConversationId() != null) {
+                    titlesByConversation.put(conversation.getConversationId(), conversation.getTitle());
+                }
+            }
+            List<Map<String, Object>> payload = new ArrayList<>(summaries.size());
+            for (Map<String, Object> summary : summaries) {
+                Map<String, Object> item = new LinkedHashMap<>(summary);
+                item.put("title", titlesByConversation.get(String.valueOf(summary.get("conversationId"))));
+                payload.add(item);
+            }
+            return Result.success(payload);
         }
         catch (Exception e) {
             return Result.error((String)e.getMessage());

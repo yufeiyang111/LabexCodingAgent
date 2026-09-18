@@ -201,90 +201,69 @@ public class TokenTracker {
         }
     }
 
-    public int getTotalTokensByConversation(String conversationId) {
-        return getTotalTokensByConversation(conversationId, null, null);
-    }
-
-    public int getTotalTokensByConversation(String conversationId, Integer studentId, Integer projectId) {
-        QueryWrapper<AgentTokenUsage> qw = new QueryWrapper<>();
-        qw.eq("conversation_id", conversationId);
-        if (studentId != null) qw.eq("student_id", studentId);
-        if (projectId != null) qw.eq("project_id", projectId);
-        List<AgentTokenUsage> list = mapper.selectList(qw);
-        return list.stream().mapToInt(u -> value(u.getTotalTokens())).sum();
-    }
-
-    public int getTotalTokensBySession(String sessionId) {
-        QueryWrapper<AgentTokenUsage> qw = new QueryWrapper<>();
-        qw.eq("session_id", sessionId);
-        List<AgentTokenUsage> list = mapper.selectList(qw);
-        return list.stream().mapToInt(u -> value(u.getTotalTokens())).sum();
-    }
-
-    public Map<String, Object> getConversationStats(String conversationId) {
-        return getConversationStats(conversationId, null, null);
-    }
-
-    public Map<String, Object> getConversationStats(String conversationId, Integer studentId,
-                                                     Integer projectId) {
-        QueryWrapper<AgentTokenUsage> qw = new QueryWrapper<>();
-        qw.eq("conversation_id", conversationId);
-        if (studentId != null) qw.eq("student_id", studentId);
-        if (projectId != null) qw.eq("project_id", projectId);
-        List<AgentTokenUsage> list = mapper.selectList(qw);
-
-        int totalPrompt = list.stream().mapToInt(u -> value(u.getPromptTokens())).sum();
-        int totalCompletion = list.stream().mapToInt(u -> value(u.getCompletionTokens())).sum();
-        int totalTokens = list.stream().mapToInt(u -> value(u.getTotalTokens())).sum();
-        int totalCached = list.stream().mapToInt(u -> value(u.getCachedTokens())).sum();
-        int totalCacheWrite = list.stream().mapToInt(u -> value(u.getCacheWriteTokens())).sum();
-        int totalCacheHit = list.stream().mapToInt(u -> value(u.getCacheHitTokens())).sum();
-        int totalCacheMiss = list.stream().mapToInt(u -> value(u.getCacheMissTokens())).sum();
-        CacheAggregate cache = aggregateCache(list);
-
-        Map<String, Integer> byTool = list.stream()
-                .filter(u -> u.getToolName() != null)
-                .collect(Collectors.groupingBy(AgentTokenUsage::getToolName,
-                        Collectors.summingInt(u -> value(u.getTotalTokens()))));
-
-        List<Map<String, Object>> perIteration = list.stream()
-                .map(u -> {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("iteration", u.getIteration());
-                    m.put("promptTokens", value(u.getPromptTokens()));
-                    m.put("completionTokens", value(u.getCompletionTokens()));
-                    m.put("totalTokens", value(u.getTotalTokens()));
-                    m.put("cachedTokens", value(u.getCachedTokens()));
-                    m.put("cacheWriteTokens", value(u.getCacheWriteTokens()));
-                    m.put("cacheHitTokens", value(u.getCacheHitTokens()));
-                    m.put("cacheMissTokens", value(u.getCacheMissTokens()));
-                    m.put("cacheStatus", statusOf(u).value());
-                    m.put("toolName", u.getToolName());
-                    m.put("time", u.getCreateTime() != null ? u.getCreateTime().toString() : null);
-                    return m;
-                })
-                .collect(Collectors.toList());
-
-        Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("conversationId", conversationId);
-        stats.put("totalPromptTokens", totalPrompt);
-        stats.put("totalCompletionTokens", totalCompletion);
-        stats.put("totalTokens", totalTokens);
-        stats.put("totalCachedTokens", totalCached);
-        stats.put("totalCacheWriteTokens", totalCacheWrite);
-        stats.put("totalCacheHitTokens", totalCacheHit);
-        stats.put("totalCacheMissTokens", totalCacheMiss);
-        stats.put("cacheStatus", cache.status().value());
-        stats.put("cacheTelemetryCallCount", cache.reportedCallCount());
-        stats.put("cacheHitRate", cache.hitRate());
-        if (this.prefixEvidenceService != null) {
-            stats.putAll(this.prefixEvidenceService.prefixStatsForConversation(conversationId, studentId,
-                    projectId).toPayload());
+    /**
+     * 按会话聚合的用量摘要：用量面板「会话明细统计」的持久化读模型。
+     *
+     * <p>GROUP BY 下推到 SQL（见 {@code AgentTokenUsageMapper.selectConversationSummaries}），
+     * 本方法只做数值归一化——与 {@link #getStudentStats} 同口径：负数/缺列归零、忽略空会话 ID。
+     * 只读，不写入任何事实源。
+     *
+     * @return 按最近使用时间倒序的摘要；每项含 conversationId / promptTokens / completionTokens /
+     *         totalTokens / callCount / lastUsedAt（标题由调用方补齐，本层不查会话表）
+     */
+    public List<Map<String, Object>> getConversationSummaries(Integer studentId, Integer projectId) {
+        if (studentId == null || projectId == null) {
+            return List.of();
         }
-        stats.put("callCount", list.size());
-        stats.put("byTool", byTool);
-        stats.put("perIteration", perIteration);
-        return stats;
+        List<Map<String, Object>> rows = mapper.selectConversationSummaries(studentId, projectId);
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> summaries = new ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            String conversationId = textOf(row, "conversationId");
+            if (conversationId == null || conversationId.isBlank()) continue;
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("conversationId", conversationId);
+            summary.put("promptTokens", valueOf(row, "promptTokens"));
+            summary.put("completionTokens", valueOf(row, "completionTokens"));
+            summary.put("totalTokens", valueOf(row, "totalTokens"));
+            summary.put("callCount", valueOf(row, "callCount"));
+            summary.put("lastUsedAt", textOf(row, "lastUsedAt"));
+            summaries.add(summary);
+        }
+        return summaries;
+    }
+
+    /**
+     * 聚合结果的键名容错读取：驱动/别名大小写差异不应导致整列丢失。
+     * 这些是只读展示数据，缺列按 0 处理，绝不抛异常。
+     */
+    private Object rawValue(Map<String, Object> row, String key) {
+        if (row == null) return null;
+        if (row.containsKey(key)) return row.get(key);
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(key)) return entry.getValue();
+        }
+        return null;
+    }
+
+    private int valueOf(Map<String, Object> row, String key) {
+        Object raw = rawValue(row, key);
+        if (raw instanceof Number number) return Math.max(0, number.intValue());
+        if (raw instanceof String text) {
+            try {
+                return Math.max(0, (int) Double.parseDouble(text.trim()));
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    private String textOf(Map<String, Object> row, String key) {
+        Object raw = rawValue(row, key);
+        return raw == null ? null : String.valueOf(raw);
     }
 
     public Map<String, Object> getStudentStats(Integer studentId) {
@@ -372,6 +351,7 @@ public class TokenTracker {
     private CacheAggregate aggregateCache(List<AgentTokenUsage> usages) {
         int reportedPrompt = 0;
         int reportedCached = 0;
+        int reportedCacheTokens = 0;
         int reportedCalls = 0;
         boolean anyWriteOnly = false;
         boolean anyMiss = false;
@@ -383,6 +363,7 @@ public class TokenTracker {
             reportedCalls++;
             reportedPrompt += value(usage.getPromptTokens());
             reportedCached += value(usage.getCachedTokens());
+            reportedCacheTokens += value(usage.getCacheHitTokens()) + value(usage.getCacheMissTokens());
             anyWriteOnly |= status == CacheTelemetryStatus.WRITE_ONLY;
             anyMiss |= status == CacheTelemetryStatus.MISS;
         }
@@ -391,9 +372,13 @@ public class TokenTracker {
                 : anyMiss ? CacheTelemetryStatus.MISS
                 : allDisabled ? CacheTelemetryStatus.DISABLED
                 : CacheTelemetryStatus.NOT_REPORTED;
-        Double hitRate = (reportedPrompt <= 0 || reportedCached <= 0)
+        // 分母与逐次 CacheTelemetry.hitRate 保持同一规则：provider 明确上报 hit/miss 时用
+        // hit+miss（缓存口径），否则回落到全量 prompt。取 max 保证既有口径数字不变——
+        // 只有"显式 miss 使 hit+miss 大于 prompt"的场景会从原先偏高的比率被纠正。
+        int denominator = Math.max(reportedPrompt, reportedCacheTokens);
+        Double hitRate = (denominator <= 0 || reportedCached <= 0)
                 ? null
-                : Math.min(100.0, Math.round(reportedCached * 10000.0 / reportedPrompt) / 100.0);
+                : Math.min(100.0, Math.round(reportedCached * 10000.0 / denominator) / 100.0);
         return new CacheAggregate(status, reportedCalls, hitRate);
     }
 

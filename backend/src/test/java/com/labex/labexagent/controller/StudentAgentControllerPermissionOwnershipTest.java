@@ -40,20 +40,61 @@ class StudentAgentControllerPermissionOwnershipTest {
         verify(permissionService).reply(eq(12), eq(7), eq("request-71"), eq("allow_once"), eq(""));
     }
 
+    /**
+     * 会话用量摘要必须按 JWT 主体隔离：controller 只能把认证用户自己的 studentId 交给聚合查询，
+     * 不能使用请求体/路径里可能被伪造的身份。
+     */
     @Test
-    void refusesTokenStatsForAConversationOutsideTheAuthenticatedProjectScope() {
+    void scopesConversationTokenSummariesToTheAuthenticatedStudent() {
         AgentConversationService conversations = mock(AgentConversationService.class);
         TokenTracker tracker = mock(TokenTracker.class);
-        when(conversations.getOwnedConversation(7, 12, "conversation-foreign")).thenReturn(null);
+        when(tracker.getConversationSummaries(7, 12)).thenReturn(java.util.List.of());
         StudentAgentController controller = new StudentAgentController(
                 mock(AgentLoopEngine.class), mock(AgentCancellationRegistry.class), mock(DiffService.class),
                 mock(AgentCommandService.class), conversations, mock(AgentTaskService.class),
                 tracker, mock(PermissionService.class), mock(AgentInteractionService.class));
 
-        Result<Map<String, Object>> result = controller.tokenStats(12, "conversation-foreign", authentication(7));
+        Result<java.util.List<Map<String, Object>>> result =
+                controller.conversationTokenSummaries(12, authentication(7));
 
-        assertTrue(!result.isSuccess());
-        verify(tracker, never()).getConversationStats("conversation-foreign", 7, 12);
+        assertTrue(result.isSuccess());
+        verify(tracker).getConversationSummaries(7, 12);
+        // 列表为空时不必读取会话表（没有任何需要补标题的行）。
+        verify(conversations, never()).list(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * 有聚合行时必须补齐会话标题；会话可能已被删除，此时 title 为 null 由前端回落占位名。
+     */
+    @Test
+    void fillsConversationTitlesFromOwnedConversations() {
+        AgentConversationService conversations = mock(AgentConversationService.class);
+        TokenTracker tracker = mock(TokenTracker.class);
+        when(tracker.getConversationSummaries(7, 12)).thenReturn(java.util.List.of(
+                summary("conv-known"), summary("conv-deleted")));
+        com.labex.entity.AgentConversation owned = new com.labex.entity.AgentConversation();
+        owned.setConversationId("conv-known");
+        owned.setTitle("修复导出忽略规则");
+        when(conversations.list(7, 12)).thenReturn(java.util.List.of(owned));
+        StudentAgentController controller = new StudentAgentController(
+                mock(AgentLoopEngine.class), mock(AgentCancellationRegistry.class), mock(DiffService.class),
+                mock(AgentCommandService.class), conversations, mock(AgentTaskService.class),
+                tracker, mock(PermissionService.class), mock(AgentInteractionService.class));
+
+        Result<java.util.List<Map<String, Object>>> result =
+                controller.conversationTokenSummaries(12, authentication(7));
+
+        assertTrue(result.isSuccess());
+        assertTrue("修复导出忽略规则".equals(result.getData().get(0).get("title")));
+        // 已删除的会话保留用量行（成本是真实发生的），标题留空由前端回落。
+        assertTrue(result.getData().get(1).get("title") == null);
+    }
+
+    private static Map<String, Object> summary(String conversationId) {
+        Map<String, Object> summary = new java.util.LinkedHashMap<>();
+        summary.put("conversationId", conversationId);
+        summary.put("totalTokens", 120);
+        return summary;
     }
 
     private Authentication authentication(int studentId) {

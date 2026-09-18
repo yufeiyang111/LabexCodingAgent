@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   applyTokenUsageEvent,
   createTokenUsageState,
+  mergeConversationSummaries,
   resolveCacheTelemetryScope,
   resolveCacheTelemetryView
 } from './cacheTelemetryStatus.js'
@@ -32,7 +33,6 @@ test('applies durable token usage events without inventing a zero hit rate', () 
     promptTokens: 100,
     completionTokens: 20,
     totalTokens: 120,
-    conversationTotal: 120,
     cacheStatus: 'not_reported',
     cacheHitRate: null,
     cachedTokens: 0
@@ -187,4 +187,76 @@ test('resolves a selected model cache telemetry scope without changing the all-m
   assert.equal(selectedView.ledger.cacheWriteTokens, 20)
   assert.equal(selectedView.ledger.nonCachedInputTokens, 20)
   assert.equal(resolveCacheTelemetryView(resolveCacheTelemetryScope(stats, 'qwen-max')).showHitRate, false)
+})
+
+test('builds conversation detail from the persisted server aggregate when local history is empty', () => {
+  const merged = mergeConversationSummaries([], [
+    { conversationId: 'conv-a', title: '会话 A', promptTokens: 900, completionTokens: 100, totalTokens: 1000, callCount: 7 }
+  ])
+
+  assert.deepEqual(merged, [
+    { conversationId: 'conv-a', title: '会话 A', promptTokens: 900, completionTokens: 100, totalTokens: 1000, callCount: 7 }
+  ])
+})
+
+test('keeps the larger value per field so a snapshot never lowers live counters', () => {
+  // 快照来自后端聚合，SSE 累积来自本次连接；两者对同一会话取较大值，
+  // 既不让快照覆盖窗口内的新事件，也不让实时值回退掉历史累计。
+  const merged = mergeConversationSummaries(
+    [{ conversationId: 'conv-a', title: '本地标题', promptTokens: 1200, completionTokens: 300, totalTokens: 1500, callCount: 9 }],
+    [{ conversationId: 'conv-a', title: '服务端标题', promptTokens: 900, completionTokens: 100, totalTokens: 1000, callCount: 7 }]
+  )
+
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].promptTokens, 1200)
+  assert.equal(merged[0].totalTokens, 1500)
+  assert.equal(merged[0].callCount, 9)
+  // 服务端给了标题就优先用它（本地标题来自会话名快照，可能为空）。
+  assert.equal(merged[0].title, '服务端标题')
+})
+
+test('falls back to the local title when the persisted row has none', () => {
+  const merged = mergeConversationSummaries(
+    [{ conversationId: 'conv-a', title: '本地标题', totalTokens: 10, callCount: 1 }],
+    [{ conversationId: 'conv-a', title: null, totalTokens: 10, callCount: 1 }]
+  )
+
+  assert.equal(merged[0].title, '本地标题')
+})
+
+test('keeps conversations the server has not persisted yet', () => {
+  // 新建会话已产生 SSE 用量但聚合行尚未可见时，不能被快照抹掉。
+  const merged = mergeConversationSummaries(
+    [{ conversationId: 'conv-new', title: '新会话', totalTokens: 40, callCount: 2 }],
+    [{ conversationId: 'conv-old', title: '历史会话', totalTokens: 500, callCount: 5 }]
+  )
+
+  assert.deepEqual(merged.map(item => item.conversationId), ['conv-old', 'conv-new'])
+})
+
+test('keeps the local list untouched when the summary request fails or returns no data', () => {
+  const local = [{ conversationId: 'conv-a', totalTokens: 50, callCount: 1 }]
+
+  assert.equal(mergeConversationSummaries(local, null), local)
+  assert.equal(mergeConversationSummaries(local, undefined), local)
+  assert.equal(mergeConversationSummaries(local, 'not-an-array'), local)
+})
+
+test('drops rows without a conversation id and de-duplicates repeats', () => {
+  const merged = mergeConversationSummaries([], [
+    { conversationId: '', totalTokens: 1 },
+    { conversationId: null, totalTokens: 2 },
+    { conversationId: 'conv-a', totalTokens: 3, callCount: 1 },
+    { conversationId: 'conv-a', totalTokens: 3, callCount: 1 }
+  ])
+
+  assert.deepEqual(merged.map(item => item.conversationId), ['conv-a'])
+})
+
+test('normalizes missing numeric fields to zero instead of NaN', () => {
+  const merged = mergeConversationSummaries([], [{ conversationId: 'conv-a' }])
+
+  assert.deepEqual(merged, [
+    { conversationId: 'conv-a', title: null, promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0 }
+  ])
 })

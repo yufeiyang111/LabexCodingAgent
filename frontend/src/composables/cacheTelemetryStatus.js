@@ -46,7 +46,6 @@ export function createTokenUsageState() {
     completionTokens: 0,
     totalTokens: 0,
     callCount: 0,
-    conversationTotal: 0,
     cachedTokens: 0,
     cacheWriteTokens: 0,
     cacheHitTokens: 0,
@@ -88,9 +87,6 @@ export function applyTokenUsageEvent(target, data = {}, eventKey = null) {
   target.completionTokens = finiteNumber(target.completionTokens) + finiteNumber(data.completionTokens)
   target.totalTokens = finiteNumber(target.totalTokens) + finiteNumber(data.totalTokens)
   target.callCount = finiteNumber(target.callCount) + 1
-  target.conversationTotal = data.conversationTotal == null
-    ? target.totalTokens
-    : finiteNumber(data.conversationTotal, target.totalTokens)
   target.cachedTokens = finiteNumber(target.cachedTokens) + cachedTokens
   target.cacheWriteTokens = finiteNumber(target.cacheWriteTokens) + cacheWriteTokens
   target.cacheHitTokens = finiteNumber(target.cacheHitTokens) + cacheHitTokens
@@ -126,6 +122,63 @@ export function resolveCacheTelemetryScope(stats = null, model = '') {
   const cacheByModel = stats?.cacheByModel
   if (!cacheByModel || !Object.prototype.hasOwnProperty.call(cacheByModel, model)) return stats
   return cacheByModel[model]
+}
+
+function toSummary(conversationId, title, source) {
+  return {
+    conversationId,
+    title: title || null,
+    promptTokens: finiteNumber(source?.promptTokens),
+    completionTokens: finiteNumber(source?.completionTokens),
+    totalTokens: finiteNumber(source?.totalTokens),
+    callCount: finiteNumber(source?.callCount)
+  }
+}
+
+/**
+ * 合并「会话明细」的两路来源，供用量面板展示。
+ *
+ * <p>权威来源是后端按 conversation_id 聚合的持久化列表（刷新/换设备后仍在）；
+ * 实时来源是本次连接 SSE 累积的会话（后端聚合尚未落库的窗口内数据）。合并规则：
+ * 逐字段取较大值，既不让快照覆盖窗口内的新事件，也不让实时值回退掉历史累计。
+ * 后端未返回但本地已有的会话会保留（新建会话尚未产生持久化行的场景）。
+ *
+ * @param existing 本地已累积的会话列表（可为空）
+ * @param summaries 后端返回的聚合列表（可为空/null，此时保持 existing）
+ * @returns 新的会话列表，按后端给出的顺序（最近使用倒序）在前
+ */
+export function mergeConversationSummaries(existing = [], summaries = null) {
+  const current = Array.isArray(existing) ? existing : []
+  if (!Array.isArray(summaries)) return current
+  const existingById = new Map()
+  for (const item of current) {
+    if (item?.conversationId) existingById.set(item.conversationId, item)
+  }
+  const merged = []
+  const seen = new Set()
+  for (const summary of summaries) {
+    const conversationId = summary?.conversationId
+    if (!conversationId || seen.has(conversationId)) continue
+    seen.add(conversationId)
+    const local = existingById.get(conversationId)
+    if (!local) {
+      merged.push(toSummary(conversationId, summary.title, summary))
+      continue
+    }
+    const persisted = toSummary(conversationId, summary.title || local.title, summary)
+    merged.push({
+      ...persisted,
+      title: persisted.title || local.title || null,
+      promptTokens: Math.max(persisted.promptTokens, finiteNumber(local.promptTokens)),
+      completionTokens: Math.max(persisted.completionTokens, finiteNumber(local.completionTokens)),
+      totalTokens: Math.max(persisted.totalTokens, finiteNumber(local.totalTokens)),
+      callCount: Math.max(persisted.callCount, finiteNumber(local.callCount))
+    })
+  }
+  for (const item of current) {
+    if (item?.conversationId && !seen.has(item.conversationId)) merged.push(item)
+  }
+  return merged
 }
 
 export function resolveCacheTelemetryView(stats = null, live = null) {

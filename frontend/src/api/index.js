@@ -104,8 +104,8 @@ export const projectApi = {
   agentReplyQuestion(projectId, data) {
     return request.post('/student/projects/' + projectId + '/agent/question/reply', data)
   },
-  agentTokenStats(projectId, conversationId) {
-    return request.get('/student/projects/' + projectId + '/agent/tokens/' + conversationId)
+  agentConversationTokenSummaries(projectId) {
+    return request.get('/student/projects/' + projectId + '/agent/tokens/conversations')
   },
   agentTokenSummary(projectId) {
     return request.get('/student/projects/' + projectId + '/agent/tokens/student/summary')
