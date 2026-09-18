@@ -18,20 +18,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # --- 1. 后端构建 (Java 17 + Maven) ---
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: maven
+      # ============================================================================
+      # 阶段一：发布前质量门禁（与 deploy/linux/CI_CD_DEPLOYMENT_PLAYBOOK.md 第二章一致）
+      # 放在最前面：门禁不过就不进入昂贵的构建与镜像推送，避免把坏版本推到生产。
+      # ============================================================================
 
-      - name: Build Backend Jar
-        run: |
-          cd backend
-          mvn clean package -DskipTests
-
-      # --- 2. 前端构建 (Node 20 + Vite) ---
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -39,17 +30,61 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Build Frontend Dist
+      # 门禁 0：教程种子版本一致性。
+      # 正文标记与 ON DUPLICATE KEY UPDATE 守卫版本不一致时，新教程内容会被判定为「保留」、
+      # 静默不生效（历史真实故障）。这里前置拦截。
+      - name: Gate - Verify Tutorial Seed Version
+        run: node scripts/verify-seed-version.mjs
+
+      # 门禁 1：前端单元测试全量通过
+      - name: Gate - Frontend Unit Tests
         run: |
           cd frontend
           npm ci
-          npm run build
-          # 将产物打成单文件压缩包，并准备数据库增量升级文件
-          tar -czf ../frontend-dist.tar.gz -C dist .
-          cd ..
-          cp deploy/linux/migrations/upgrade-20260908.sql ./upgrade-db.sql
+          npm run test
 
-      # --- 3. 登录腾讯云 TCR 并推送镜像 ---
+      # 门禁 2：前端生产构建（npm run build 内含 check-chunk-budget 体积预算检查）
+      - name: Gate - Frontend Build & Chunk Budget
+        run: |
+          cd frontend
+          npm run build
+
+      # ============================================================================
+      # 阶段二：产物打包
+      # ============================================================================
+
+      - name: Package Frontend Dist
+        run: |
+          cd frontend
+          # 打成单文件压缩包再上传：避免大量小文件逐个 SCP 造成网络卡死
+          tar -czf ../frontend-dist.tar.gz -C dist .
+
+      # 收集全部增量迁移脚本（不再写死单个文件名）。
+      # 新增 deploy/linux/migrations/upgrade-YYYYMMDD.sql 即会被自动纳入发布，
+      # 由服务器端 apply-migrations.sh 按文件名顺序 + 台账去重执行。
+      - name: Package Database Migrations
+        run: |
+          tar -czf migrations.tar.gz -C deploy/linux migrations
+          echo "==> 本次将发布的迁移脚本："
+          tar -tzf migrations.tar.gz | grep '\.sql$' || echo "（无迁移脚本）"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # -DskipTests 只跳过执行，仍会编译测试源码，等价于 Playbook 门禁「后端编译与语法检查」
+      - name: Build Backend Jar
+        run: |
+          cd backend
+          mvn clean package -DskipTests
+
+      # ============================================================================
+      # 阶段三：镜像构建与推送
+      # ============================================================================
+
       - name: Log in to Tencent Cloud TCR
         run: |
           if [ -z "${{ secrets.TCR_USERNAME }}" ]; then
@@ -77,17 +112,35 @@ jobs:
             ${{ env.REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             ${{ env.REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest
 
-      # --- 4. 上传前端产物与数据库升级脚本到服务器 ---
-      - name: Upload Frontend & DB Upgrade Script
+      # 统一归集到 release-artifacts/ 再上传：scp-action 用 tar 传输，
+      # 目录结构可预期，配合 strip_components: 1 让文件恰好落在服务器部署目录根下。
+      - name: Stage Release Artifacts
+        run: |
+          mkdir -p release-artifacts
+          mv frontend-dist.tar.gz migrations.tar.gz release-artifacts/
+          cp deploy/linux/apply-migrations.sh release-artifacts/
+          chmod +x release-artifacts/apply-migrations.sh
+          echo "==> 本次发布产物："
+          ls -la release-artifacts
+
+      # ============================================================================
+      # 阶段四：上传产物到服务器
+      # ============================================================================
+
+      - name: Upload Release Artifacts
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          source: "frontend-dist.tar.gz,upgrade-db.sql"
+          source: "release-artifacts"
           target: "${{ env.DEPLOY_APP_PATH }}"
+          strip_components: 1
 
-      # --- 5. 腾讯云服务器远程平滑发布 ---
+      # ============================================================================
+      # 阶段五：服务器端发布（数据变更 → 前端 → 后端 → 回收）
+      # ============================================================================
+
       - name: Remote Deploy on Server
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -98,27 +151,39 @@ jobs:
             set -e
             cd ${{ env.DEPLOY_APP_PATH }}
 
-            echo "==> 检查并执行数据库增量迁移（幂等安全执行）..."
-            if [ -f "upgrade-db.sql" ]; then
-              docker compose --env-file .env.production exec -T mysql sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' < upgrade-db.sql
-              rm -f upgrade-db.sql
-              echo "==> 数据库增量迁移执行完成！"
+            echo "==> [1/5] 数据库增量迁移（台账去重，幂等执行）..."
+            # 迁移脚本随本次发布一起上传，解压后由 apply-migrations.sh 统一处理：
+            # 依据 t_schema_migration 台账跳过已应用项，按文件名顺序执行剩余项，失败即中止。
+            if [ -f "migrations.tar.gz" ]; then
+              chmod +x apply-migrations.sh
+              rm -rf migrations
+              tar -xzf migrations.tar.gz
+              rm -f migrations.tar.gz
+              ./apply-migrations.sh migrations docker-compose.yml
+            else
+              echo "    （本次没有携带迁移包，跳过）"
+            fi
+            rm -f apply-migrations.sh
+
+            echo "==> [2/5] 更新前端静态资源..."
+            mkdir -p frontend-dist
+            if [ -f "frontend-dist.tar.gz" ]; then
+              tar -xzf frontend-dist.tar.gz -C frontend-dist
+              rm -f frontend-dist.tar.gz
+            else
+              echo "::error::缺少 frontend-dist.tar.gz，前端资源未更新。"
+              exit 1
             fi
 
-            echo "==> 解压更新前端静态资源..."
-            mkdir -p frontend-dist
-            tar -xzf frontend-dist.tar.gz -C frontend-dist
-            rm -f frontend-dist.tar.gz
-
-            echo "==> 登录腾讯云 TCR 并拉取后端最新镜像..."
+            echo "==> [3/5] 登录 TCR 并拉取后端最新镜像..."
             echo "${{ secrets.TCR_PASSWORD }}" | docker login ${{ env.REGISTRY }} -u "${{ secrets.TCR_USERNAME }}" --password-stdin
             docker compose --env-file .env.production pull backend
 
-            echo "==> 平滑重启后端应用容器..."
+            echo "==> [4/5] 平滑重启后端容器..."
             docker compose --env-file .env.production up -d --no-deps backend
 
-            echo "==> 清理旧容器虚悬镜像，释放磁盘..."
+            echo "==> [5/5] 清理虚悬镜像并核对状态..."
             docker image prune -f
-
-            echo "==> 部署完成！检查运行状态："
             docker compose --env-file .env.production ps
+
+            echo "==> 发布完成。"

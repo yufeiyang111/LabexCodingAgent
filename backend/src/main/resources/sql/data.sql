@@ -1,6 +1,10 @@
 -- 教程种子数据：Spring Boot 启动时由 spring.sql.init 自动执行（幂等）。
--- 约定：每行正文以隐藏标记 <!-- labex-tutorial-seed:v3 --> 开头。
--- 首次启动插入；旧版无标记内容原地升级一次；带标记的内容（含运维后续编辑）永不覆盖。
+-- 约定：正文以隐藏标记 <!-- labex-tutorial-seed:v3 --> 开头。
+-- 语义：库中存的版本落后于当前版本（或无标记）→ 用本文件内容原地升级一次；
+--       已是当前版本 → 保留不动，因此在当前版本行上做的运维编辑不会被覆盖。
+-- ⚠️ 版本守卫必须与本文件的当前版本号（v3）一致。历史上守卫停留在 v2 而标记已是 v3，
+--    导致所有 v2 行被判为「保留」而永远无法升级，新内容静默不生效。
+--    每次升级种子版本时须同时改「标记」与「全部守卫」，校验脚本：scripts/verify-seed-version.mjs
 
 -- 1. 快速开始
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -78,11 +82,11 @@ Agent 修改文件后会生成差异（diff）。请在「改动」面板中逐�
 5. 权限与安全 —— 了解哪些操作需要你审批。',
  10, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 3. 配置模型与 API Key（手把手）
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -189,11 +193,11 @@ Max Tokens、Temperature、推理程度、上下文窗口、压缩策略等参�
 - 怀疑泄露时立即到服务商控制台吊销重发。',
  20, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 -- 4. 接口地址与模型名称
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
 VALUES ('provider-fields', '接口地址与模型名称', '接口根地址的书写规则、常见服务商示例与模型 ID 核对方法。', '模型配置', '<!-- labex-tutorial-seed:v3 -->
@@ -252,11 +256,11 @@ https://api.minimaxi.com/v1
 - 同一任务反复失败时，换一个稳定模型对比测试，排除模型侧问题。',
  30, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 模型参数与压缩策略详解（sort_order=35，归属模型配置分类）
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -295,12 +299,19 @@ VALUES ('model-params-reference', '模型参数与压缩策略详解', 'Max Toke
 ## 推理程度（思考深度）
 
 - **作用**：推理模型的思考档位，越深越聪明但更慢更贵。
-- **可选值**：`low` / `medium` / `high`（部分模型还支持 `xhigh`）。
+- **可选值**：`low`（低）/ `medium`（中）/ `high`（高）/ `xhigh`（超高）/ `max`（极致）。
 - **示例值**：留空等于 `medium`。
 - **怎么调**：
-  - 简单问答、小改动 → `low`，出结果快且省 token；
-  - 复杂调试、架构设计、疑难 Bug → `high`；
-  - 自定义档位名需配合下方「高级请求配置 JSON」中的 reasoning 路径一起设置。
+  - 简单问答、小改动 → `低`，出结果快且省 token；
+  - 常规开发 → `中`（推荐）；
+  - 复杂调试、架构设计、疑难 Bug → `高`；
+  - 只有在上游明确支持时，`超高` 与 `极致` 才有区别于 `高` 的效果。
+- **⚠️ 上游折叠**：部分模型并不区分全部五档。例如 DeepSeek V4 官方文档给出的直接档位是
+  `low` / `high` / `max`，`medium` 会被上游改写为 `high`、`xhigh` 改写为 `max`。选择浮层会在被折叠的
+  档位上直接标注它实际会按哪一档执行，**看到 `→高` 就说明该档与本模型的「高」等价**。
+- **写不写进请求**：若在下方「高级请求配置 JSON」里设置 `"reasoning": {"enabled": false}`，平台不会写入
+  任何档位，此时选择浮层不再提供思考深度入口。
+- **什么时候生效**：档位保存在模型配置里，**对下一次任务生效**；正在进行的任务沿用启动时的配置。
 
 ## 多模态能力（支持图片理解）
 
@@ -381,14 +392,16 @@ VALUES ('model-params-reference', '模型参数与压缩策略详解', 'Max Toke
 | 日常开发（默认） | 留空（medium） | 0.7 | 全部默认 |
 | 改 Bug 求稳 | low | 0.2 | 快且稳 |
 | 疑难杂症深挖 | high | 0.3 | 更慢更贵但更深 |
-| 长会话大项目 | medium | 0.7 | 开启自动压缩并清理旧工具结果',
+| 长会话大项目 | medium | 0.7 | 开启自动压缩并清理旧工具结果 |
+| 上游明确支持的超难任务 | max | 0.3 | 先确认选择浮层没有把它标成 `→高` |',
+
  35, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 -- 5. 完成第一次 Agent 任务
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
 VALUES ('first-task', '完成第一次 Agent 任务', '用目标、范围、约束、验收四要素写出高质量需求。', 'Agent 使用', '<!-- labex-tutorial-seed:v3 -->
@@ -441,11 +454,11 @@ Agent 执行删除文件、安装依赖、访问外网等敏感操作时会暂�
 发现问题不要重新描述整个任务，直接指出具体文件和现象让 Agent 修正即可。',
  40, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 6. 对话与上下文管理
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -487,11 +500,11 @@ VALUES ('conversation-and-context', '对话与上下文管理', '管理会话、
 4. 需要长期记忆的项目约定，写进项目里的说明文件比反复口头强调更可靠。',
  42, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 -- 2. 工作区界面导览
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
 VALUES ('interface-tour', '工作区界面导览', '认识工作区的每个区域：文件树、编辑器、终端与 AI 面板。', '开始使用', '<!-- labex-tutorial-seed:v3 -->
@@ -539,11 +552,11 @@ VALUES ('interface-tour', '工作区界面导览', '认识工作区的每个区�
 面板之间的分隔条可以拖动。觉得文件树太窄、对话区太宽时，直接拖到舒服的位置即可，布局会在本次会话内保持。',
  15, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 7. Agent 功能说明
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -589,11 +602,11 @@ Agent 的每一步都会实时显示在消息流里：
 - 不满意就直接说哪里不对，迭代比重来快。',
  45, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 8. 改动审查与应用
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -643,11 +656,11 @@ Agent 对文件的每次修改都不会直接覆盖你的项目，而是先以�
 拒绝改动时最好在对话里说明原因，例如「这个函数不要删，改成兼容旧参数」，Agent 会带着这个反馈修正方案，而不是盲目重试。',
  47, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 9. 项目、文件与编辑器
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -689,11 +702,11 @@ VALUES ('workspace-and-files', '项目、文件与编辑器', '文件树操作�
 - 文件打不开时先刷新页面确认路径与权限，不要急着清空工作区。',
  50, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 10. 项目上传与打包下载
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -729,11 +742,11 @@ VALUES ('project-upload', '项目上传与打包下载', '上传 zip 压缩包�
 | 解压后中文文件名乱码 | 使用系统自带压缩工具重新打包，避免老式编码工具',
  55, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 11. 终端与预览
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -788,11 +801,11 @@ mvn -version          # Maven 构建
 - 权限报错：确认当前目录正确，必要时联系管理员检查环境配置。',
  60, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 12. Token 用量与统计
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -829,11 +842,11 @@ token 是模型处理文本的基本单位。中文大约一个字对应一到�
 7. **上下文接近上限时主动新开会话**，并把关键结论粘贴过去。',
  62, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 13. 接入 MCP 服务
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -877,11 +890,11 @@ Agent 会自行判断何时调用哪个工具，调用过程同样显示在消�
 - 不再使用的服务建议及时停用。',
  65, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 14. 使用技能（Skills）
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -936,11 +949,11 @@ description: 当用户要求代码评审时使用
 提示词是一次性的，技能是可复用、可分享、可持续改进的团队资产。重复执行超过三次的流程，就值得沉淀成技能。',
  66, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 15. 联网搜索与图片理解
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -994,11 +1007,11 @@ Agent 可以实时搜索公开网页来回答时效性问题：
 - 涉及隐私的截图（含密钥、个人信息）请先打码再上传。',
  67, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 16. 权限与安全
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -1051,11 +1064,11 @@ Agent 的活动范围被限制在当前项目目录内。要求它访问工作�
 4. 必要时下载当前项目备份，联系管理员检查环境。',
  70, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 17. 常见问题
 INSERT INTO t_tutorial_document (slug, title, summary, category, content_markdown, sort_order, status, published_at)
@@ -1114,11 +1127,11 @@ VALUES ('common-issues', '常见问题', '按症状排查：模型报错、页�
 4. 服务崩溃就重启：`npm run dev`。',
  80, 1, NOW())
 ON DUPLICATE KEY UPDATE
-  title = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', title, VALUES(title)),
-  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', summary, VALUES(summary)),
-  category = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', category, VALUES(category)),
-  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', sort_order, VALUES(sort_order)),
-  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v2%', content_markdown, VALUES(content_markdown));
+  title = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', title, VALUES(title)),
+  summary = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', summary, VALUES(summary)),
+  category = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', category, VALUES(category)),
+  sort_order = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', sort_order, VALUES(sort_order)),
+  content_markdown = IF(content_markdown LIKE '%labex-tutorial-seed:v3%', content_markdown, VALUES(content_markdown));
 
 -- 停用历史遗留 slug 的旧教程（幂等）
 UPDATE t_tutorial_document
