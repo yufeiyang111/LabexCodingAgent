@@ -8,6 +8,8 @@ import com.labex.common.Result;
 import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.labexagent.llm.OpenCodeGoHeaderPolicy;
+import com.labex.labexagent.llm.ReasoningEffortCatalog;
 import com.labex.labexagent.network.OutboundUrlPolicy;
 import com.labex.service.AgentModelConfigService;
 import java.io.BufferedReader;
@@ -202,7 +204,7 @@ public class AgentModelConfigController {
         } catch (Exception e) {
             return Result.success(Map.of(
                     "success", false,
-                    "error", e.getMessage() != null ? e.getMessage() : "Failed to fetch models",
+                    "error", describeFailure(e, "Failed to fetch models"),
                     "models", List.of()));
         }
     }
@@ -228,7 +230,7 @@ public class AgentModelConfigController {
             if ("error".equals(type)) {
                 return Result.success(Map.of(
                         "success", false,
-                        "error", resp.getOrDefault("content", "Unknown error"),
+                        "error", resolveTestFailureReason(resp),
                         "latency", latency));
             }
             return Result.success(Map.of(
@@ -239,8 +241,47 @@ public class AgentModelConfigController {
         } catch (Exception e) {
             return Result.success(Map.of(
                     "success", false,
-                    "error", e.getMessage() != null ? e.getMessage() : "Connection failed"));
+                    "error", describeFailure(e, "连接失败：未获取到具体原因"),
+                    "latency", 0L));
         }
+    }
+
+    /*
+     * 「测试连接」的失败原因必须永远可读。
+     *
+     * 背景：provider 的错误响应结构是
+     *     { type: "error", message: "LLM error: …", content: "" }
+     * 真正的原因在 message 里，content 恒为空串。这里原先取的是 content，
+     * 于是接口返回 error="" —— 前端只渲染出一个不含任何文字的红条，
+     * 用户完全看不到失败原因（"测试网络出错但不显示任何报错"）。
+     *
+     * 两个要点：
+     *   1. 按候选键依次取第一个「有内容」的值，而不是只看某一个字段；
+     *   2. 判空用「非空白」而非 != null —— 空串与全空白同样不可用，
+     *      且 Map.of 不允许 null 值，所以返回的必然是非空字符串。
+     */
+    private static final List<String> TEST_FAILURE_REASON_KEYS = List.of("message", "error", "content");
+
+    private String resolveTestFailureReason(Map<String, Object> resp) {
+        for (String key : TEST_FAILURE_REASON_KEYS) {
+            String text = firstNonBlankText(resp.get(key));
+            if (text != null) return text;
+        }
+        return "连接失败：模型未返回可用的错误详情，请检查 Base URL、API Key 与模型名称";
+    }
+
+    private String describeFailure(Exception e, String fallback) {
+        String message = firstNonBlankText(e.getMessage());
+        if (message != null) return message;
+        // 部分异常（如 NullPointerException）message 为 null，用类型名兜底
+        String typeName = firstNonBlankText(e.getClass().getSimpleName());
+        return typeName != null ? typeName : fallback;
+    }
+
+    private String firstNonBlankText(Object value) {
+        if (value == null) return null;
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() || "null".equals(text) ? null : text;
     }
 
     @GetMapping("/default")
@@ -320,6 +361,11 @@ public class AgentModelConfigController {
     private AgentModelConfig sanitizeConfig(AgentModelConfig config) {
         if (config != null) {
             config.setApiKeyMasked(configService.hasStoredApiKey(config) ? "****" : "");
+            // 思考程度可选档位随配置一起下发：界面不得自行猜测哪些档位有效，
+            // 也不得对模型能力做 ?? true 之类的无依据兜底。
+            config.setReasoningOptions(ReasoningEffortCatalog.optionsFor(
+                    config.getModelName(), config.getRequestOptionsJson()));
+            config.setSupportsThinking(!config.getReasoningOptions().isEmpty());
         }
         return config;
     }
@@ -370,6 +416,8 @@ public class AgentModelConfigController {
 
     private void applyModelListAuth(HttpURLConnection conn, URI uri, String apiKey) {
         String host = uri.getHost();
+        // OpenCode Go 的元数据端点同样按会话校验；此处无会话上下文，走进程级稳定标识。
+        OpenCodeGoHeaderPolicy.apply(conn, uri.toString(), null);
         if (host != null && host.equalsIgnoreCase("generativelanguage.googleapis.com")) {
             conn.setRequestProperty("x-goog-api-key", apiKey);
             return;

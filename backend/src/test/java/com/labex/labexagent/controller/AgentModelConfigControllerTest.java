@@ -1,10 +1,13 @@
 package com.labex.labexagent.controller;
 
+import static org.hamcrest.Matchers.blankOrNullString;
+import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -13,12 +16,15 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.labex.config.AdditiveSchemaMigrator;
 import com.labex.entity.AgentModelConfig;
+import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
 import com.labex.labexagent.network.OutboundUrlPolicy;
 import com.labex.labexagent.secret.SecretStore;
@@ -27,6 +33,7 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
@@ -40,12 +47,72 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class AgentModelConfigControllerTest {
     private final AgentModelConfigService configService = mock(AgentModelConfigService.class);
+    private final LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
     private final OutboundUrlPolicy outboundUrlPolicy = mock(OutboundUrlPolicy.class);
     private final MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new AgentModelConfigController(
             configService,
-            mock(LlmProviderFactory.class),
+            providerFactory,
             outboundUrlPolicy
     )).build();
+
+    /*
+     * 「测试连接」失败时必须给出可读的原因。
+     *
+     * 历史缺陷：provider 的错误响应是
+     *     { type: "error", message: "LLM error: …", content: "" }
+     * —— 原因在 message 里，content 恒为空串；controller 原先取的是 content，
+     * 于是接口返回 error=""，前端只渲染出一个没有任何文字的红条，
+     * 用户完全看不到失败原因（"测试网络出错但不显示任何报错"）。
+     */
+    @Test
+    void testConnectionSurfacesProviderFailureMessage() throws Exception {
+        AgentModelConfig config = configWithId(7);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(configService.getOwned(42, 7)).thenReturn(config);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(mock(LlmProvider.LlmConfig.class));
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(Map.of(
+                        "type", "error",
+                        "message", "LLM error: Connection refused",
+                        "content", ""));
+
+        mockMvc.perform(post("/student/model-configs/7/test").with(authenticatedAs(42)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.success").value(false))
+                .andExpect(jsonPath("$.data.error").value("LLM error: Connection refused"));
+    }
+
+    @Test
+    void testConnectionNeverReturnsBlankFailureReason() throws Exception {
+        AgentModelConfig config = configWithId(7);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(configService.getOwned(42, 7)).thenReturn(config);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(mock(LlmProvider.LlmConfig.class));
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(Map.of(
+                        "type", "error",
+                        "message", "   ",
+                        "content", ""));
+
+        mockMvc.perform(post("/student/model-configs/7/test").with(authenticatedAs(42)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.success").value(false))
+                .andExpect(jsonPath("$.data.error").value(not(blankOrNullString())));
+    }
+
+    @Test
+    void testConnectionFallsBackToExceptionTypeWhenMessageIsBlank() throws Exception {
+        AgentModelConfig config = configWithId(7);
+        when(configService.getOwned(42, 7)).thenReturn(config);
+        when(providerFactory.resolveProvider(config)).thenThrow(new IllegalStateException(""));
+
+        mockMvc.perform(post("/student/model-configs/7/test").with(authenticatedAs(42)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.success").value(false))
+                .andExpect(jsonPath("$.data.error").value(not(blankOrNullString())));
+    }
 
     @Test
     void createForwardsContextWindowTokensFromJson() throws Exception {
@@ -325,6 +392,87 @@ class AgentModelConfigControllerTest {
         AgentModelConfig config = new AgentModelConfig();
         config.setMaxTokens(maxTokens);
         config.setContextWindowTokens(contextWindowTokens);
+        return config;
+    }
+
+    /*
+     * 思考程度必须"名副其实"：界面能看到的档位 = 真的会被写进请求的档位。
+     *
+     * 历史缺陷：前端把 ['Low','Medium','High'] 写死在模板里，并对模型能力做 `?? true` 兜底，
+     * 而后端从不返回 supportsThinking —— 于是任何模型都显示思考手风琴，且点选不落库、不进请求。
+     * 现在档位随配置下发，界面不得再自行猜测。
+     */
+    @Test
+    void listExposesReasoningOptionsAndUpstreamFolding() throws Exception {
+        AgentModelConfig config = new AgentModelConfig();
+        config.setConfigId(11);
+        config.setStudentId(42);
+        config.setModelName("deepseek-v4.1-flash");
+        config.setReasoningEffort("xhigh");
+        when(configService.listByStudent(42)).thenReturn(java.util.List.of(config));
+
+        mockMvc.perform(get("/student/model-configs").with(authenticatedAs(42)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].supportsThinking").value(true))
+                .andExpect(jsonPath("$.data[0].reasoningOptions.length()").value(5))
+                // 顺序固定为 低/中/高/超高/极致
+                .andExpect(jsonPath("$.data[0].reasoningOptions[0].value").value("low"))
+                .andExpect(jsonPath("$.data[0].reasoningOptions[1].label").value("中"))
+                // DeepSeek V4 官方文档：medium 会被上游改写为 high
+                .andExpect(jsonPath("$.data[0].reasoningOptions[1].effective").value("high"))
+                .andExpect(jsonPath("$.data[0].reasoningOptions[3].value").value("xhigh"))
+                .andExpect(jsonPath("$.data[0].reasoningOptions[3].effective").value("max"))
+                .andExpect(jsonPath("$.data[0].reasoningOptions[4].value").value("max"))
+                .andExpect(jsonPath("$.data[0].reasoningOptions[4].label").value("极致"));
+    }
+
+    @Test
+    void listHidesReasoningLevelsWhenRequestOptionsDisableThem() throws Exception {
+        AgentModelConfig config = new AgentModelConfig();
+        config.setConfigId(12);
+        config.setStudentId(42);
+        config.setModelName("deepseek-v4-flash");
+        config.setRequestOptionsJson("{\"reasoning\":{\"enabled\":false}}");
+        when(configService.listByStudent(42)).thenReturn(java.util.List.of(config));
+
+        mockMvc.perform(get("/student/model-configs").with(authenticatedAs(42)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].supportsThinking").value(false))
+                .andExpect(jsonPath("$.data[0].reasoningOptions.length()").value(0));
+    }
+
+    @Test
+    void updateAcceptsMaxEffortLevel() throws Exception {
+        AgentModelConfig existing = configWithId(13);
+        existing.setMaxTokens(2_048);
+        existing.setContextWindowTokens(16_384);
+        AgentModelConfig updated = configWithId(13);
+        updated.setModelName("deepseek-v4-pro");
+        updated.setReasoningEffort("max");
+        when(configService.getOwned(42, 13)).thenReturn(existing);
+        // PUT 只带 reasoningEffort 时其余字段为 null，控制器按 11 参重载回落到既有配置。
+        when(configService.update(
+                eq(42), eq(13), isNull(), isNull(), isNull(), isNull(), isNull(),
+                isNull(), isNull(), isNull(), isNull())).thenReturn(existing);
+        when(configService.updateCapabilities(42, 13, "max", null)).thenReturn(updated);
+
+        mockMvc.perform(put("/student/model-configs/13")
+                        .with(authenticatedAs(42))
+                        .contentType("application/json")
+                        .content("{\"reasoningEffort\":\"max\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.reasoningEffort").value("max"))
+                .andExpect(jsonPath("$.data.reasoningOptions[4].value").value("max"))
+                .andExpect(jsonPath("$.data.reasoningOptions[4].label").value("极致"));
+
+        verify(configService).updateCapabilities(42, 13, "max", null);
+    }
+
+    private AgentModelConfig configWithId(int configId) {
+        AgentModelConfig config = new AgentModelConfig();
+        config.setConfigId(configId);
+        config.setBaseUrl("https://api.example.test/v1");
         return config;
     }
 

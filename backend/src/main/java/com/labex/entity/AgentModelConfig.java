@@ -6,7 +6,9 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.labex.labexagent.llm.ReasoningEffortCatalog;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @TableName(value = "t_agent_model_config")
 public class AgentModelConfig {
@@ -51,6 +53,20 @@ public class AgentModelConfig {
 
     @TableField(value = "reasoning_effort")
     private String reasoningEffort;
+
+    /**
+     * 该配置下界面可选的思考程度档位（含上游折叠标注）。
+     *
+     * <p>只读派生字段，不落库：由 {@code AgentModelConfigController} 按 modelName 与
+     * requestOptionsJson 从 {@code ReasoningEffortCatalog} 填充，保证"界面能选的档位"与
+     * "真的会写进请求的档位"是同一套判定。</p>
+     */
+    @TableField(exist = false)
+    private List<ReasoningEffortCatalog.Option> reasoningOptions;
+
+    /** 是否存在会被真正写入请求的思考程度档位；false 时界面不展示该入口。 */
+    @TableField(exist = false)
+    private Boolean supportsThinking;
 
     @TableField(value = "request_options_json")
     private String requestOptionsJson;
@@ -139,6 +155,12 @@ public class AgentModelConfig {
 
     public String getReasoningEffort() { return reasoningEffort; }
     public void setReasoningEffort(String reasoningEffort) { this.reasoningEffort = reasoningEffort; }
+
+    public List<ReasoningEffortCatalog.Option> getReasoningOptions() { return reasoningOptions; }
+    public void setReasoningOptions(List<ReasoningEffortCatalog.Option> reasoningOptions) { this.reasoningOptions = reasoningOptions; }
+
+    public Boolean getSupportsThinking() { return supportsThinking; }
+    public void setSupportsThinking(Boolean supportsThinking) { this.supportsThinking = supportsThinking; }
 
     public String getRequestOptionsJson() { return requestOptionsJson; }
     public void setRequestOptionsJson(String requestOptionsJson) { this.requestOptionsJson = requestOptionsJson; }
