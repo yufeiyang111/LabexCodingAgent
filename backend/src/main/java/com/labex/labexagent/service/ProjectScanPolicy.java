@@ -13,7 +13,12 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * Agent-only workspace scan policy. This policy must not be used for the user-facing file browser.
+ * 工作区排除规则的唯一实现：解析 .labex-agentignore、内置目录硬底与默认规则内容。
+ *
+ * <p>使用边界：Agent 侧扫描/索引（WorkspaceScanner、Glob/Grep/ListFiles 等工具）与
+ * 项目导出/下载（com.labex.labexagent.workspace.ExportSelectionPolicy）共用本类的解析与 glob 实现；
+ * 用户侧文件浏览器（listProjectTree*）不得使用，它只按 SecureWorkspacePath 独立判定。
+ * 任何"工作区里有什么"的新判定都必须复用这里，禁止再写第二套 ignore 解析。
  */
 public final class ProjectScanPolicy {
     public static final String AGENT_IGNORE_FILE = ".labex-agentignore";
@@ -44,11 +49,32 @@ public final class ProjectScanPolicy {
         }
     }
 
+    /**
+     * 只加载 .labex-agentignore 原文声明的规则：不回落默认列表，也不叠加内置目录硬底。
+     *
+     * <p>供"以用户声明为准"的场景使用（项目导出/下载排除）；Agent 扫描请继续用
+     * {@link #loadIgnoreRules}。文件缺失、非普通文件（目录/符号链接）、越出工作区、
+     * 读取失败（含非 UTF-8 字节）时一律返回空规则，调用方据此退化为"无文件级排除"。
+     */
+    public static ScanIgnoreRules loadDeclaredIgnoreRules(SecureWorkspacePath paths) {
+        Path root = paths.workspaceRoot();
+        Path ignoreFile = root.resolve(AGENT_IGNORE_FILE);
+        if (!Files.isRegularFile(ignoreFile, LinkOption.NOFOLLOW_LINKS) || !isSafeWorkspaceEntry(paths, ignoreFile)) {
+            return new ScanIgnoreRules(root, List.of(), true);
+        }
+        try {
+            return new ScanIgnoreRules(root, Files.readAllLines(ignoreFile, StandardCharsets.UTF_8), true);
+        } catch (IOException ignored) {
+            return new ScanIgnoreRules(root, List.of(), true);
+        }
+    }
+
     public static String defaultIgnoreFileContent() {
         StringBuilder content = new StringBuilder();
         content.append("# Agent automatic scan exclusions for this workspace.\n");
-        content.append("# Edit this file to add or remove Agent scan paths; it never hides user files.\n");
-        content.append("# Agent never automatically reads files larger than 20 MiB.\n\n");
+        content.append("# Entries affect Agent scanning and project export; the file browser always shows them.\n");
+        content.append("# Agent never automatically reads files larger than 20 MiB.\n");
+        content.append("# Entries declared here are never included in project export/download packages.\n\n");
         for (String directory : ignoredDirectoryNames()) {
             content.append(directory).append("/\n");
         }
@@ -119,25 +145,40 @@ public final class ProjectScanPolicy {
     public static final class ScanIgnoreRules {
         private final Path root;
         private final List<IgnorePattern> patterns;
+        /** true = 只用文件里声明的规则，不叠加内置忽略目录硬底（导出/下载场景）。 */
+        private final boolean declaredOnly;
 
         private ScanIgnoreRules(Path root, List<String> lines) {
+            this(root, lines, false);
+        }
+
+        private ScanIgnoreRules(Path root, List<String> lines, boolean declaredOnly) {
             this.root = root;
             this.patterns = parse(lines);
+            this.declaredOnly = declaredOnly;
         }
 
         public boolean shouldSkipDirectory(Path directory) {
-            if (root.equals(directory) || ProjectScanPolicy.shouldSkipDirectory(root, directory)) {
-                return !root.equals(directory) && ProjectScanPolicy.shouldSkipDirectory(root, directory);
+            if (root.equals(directory)) {
+                return false;
+            }
+            if (!declaredOnly && ProjectScanPolicy.shouldSkipDirectory(root, directory)) {
+                return true;
             }
             return matches(directory);
         }
 
         public boolean shouldSkipFile(Path file) {
-            return isIgnoredRelativePath(relativePath(file)) || matches(file);
+            return (!declaredOnly && isIgnoredRelativePath(relativePath(file))) || matches(file);
         }
 
         public boolean shouldSkipEntry(Path entry, boolean directory) {
             return directory ? shouldSkipDirectory(entry) : shouldSkipFile(entry);
+        }
+
+        /** 是否解析出了至少一条有效规则（用于诊断"文件缺失"与"文件为空"）。 */
+        public boolean hasPatterns() {
+            return !patterns.isEmpty();
         }
 
         private boolean matches(Path entry) {
@@ -175,7 +216,11 @@ public final class ProjectScanPolicy {
         }
     }
 
-    private record IgnorePattern(String expression, boolean directoryOnly) {
+    private record IgnorePattern(String expression, boolean directoryOnly, Pattern compiled) {
+        IgnorePattern(String expression, boolean directoryOnly) {
+            this(expression, directoryOnly, Pattern.compile(globToRegex(expression)));
+        }
+
         boolean matches(String relativePath) {
             if (relativePath == null || relativePath.isBlank()) {
                 return false;
@@ -183,11 +228,11 @@ public final class ProjectScanPolicy {
             if (directoryOnly && (relativePath.equals(expression) || relativePath.startsWith(expression + "/"))) {
                 return true;
             }
-            String regex = globToRegex(expression);
-            if (Pattern.matches(regex, relativePath)) {
+            if (compiled.matcher(relativePath).matches()) {
                 return true;
             }
-            return !expression.contains("/") && Pattern.matches(regex, relativePath.substring(relativePath.lastIndexOf('/') + 1));
+            return !expression.contains("/")
+                    && compiled.matcher(relativePath.substring(relativePath.lastIndexOf('/') + 1)).matches();
         }
 
         private static String globToRegex(String glob) {

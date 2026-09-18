@@ -2,7 +2,7 @@ package com.labex.labexagent.workspace.files;
 
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.workspace.ProjectWorkspace;
-import com.labex.labexagent.workspace.ProtectedWorkspacePaths;
+import com.labex.labexagent.workspace.ExportSelectionPolicy;
 import com.labex.labexagent.workspace.WorkspaceFileOperationProperties;
 import com.labex.labexagent.workspace.WorkspaceOperationGuard;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
@@ -120,7 +120,8 @@ public class ProjectExportJobService {
         }
         purgeExpired();
         SecureWorkspacePath paths = ProjectWorkspace.paths(project);
-        Preflight preflight = preflight(paths, includeAll);
+        ExportSelectionPolicy selection = ExportSelectionPolicy.forWorkspace(paths, properties, includeAll);
+        Preflight preflight = preflight(paths, selection);
 
         WorkspaceOperationGuard.Slot slot = guard.acquireSlot(WorkspaceOperationGuard.FileOp.EXPORT);
         String jobId = UUID.randomUUID().toString().replace("-", "");
@@ -129,6 +130,8 @@ public class ProjectExportJobService {
         job.totalBytes = preflight.totalBytes();
         registerWithCap(job);
         job.slot = slot;
+        log.info("EXPORT_JOB_CREATED jobId={} projectId={} includeAll={} declaredIgnoreRules={} files={} bytes={}",
+                jobId, projectId, includeAll, selection.hasDeclaredRules(), preflight.fileCount(), preflight.totalBytes());
         executor.execute(() -> runJob(job, paths));
         return view(job);
     }
@@ -246,20 +249,20 @@ public class ProjectExportJobService {
     private void writeWorkspaceZip(SecureWorkspacePath paths, ExportJob job, ZipOutputStream zos)
             throws IOException {
         Path root = paths.workspaceRoot();
+        ExportSelectionPolicy selection = ExportSelectionPolicy.forWorkspace(paths, properties, job.includeAll);
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attrs) {
                 if (job.cancelRequested) throw new JobCancelledException();
-                if (attrs.isSymbolicLink() || attrs.isOther()
-                        || ProtectedWorkspacePaths.isProtectedEntry(root, directory)) {
+                if (attrs.isSymbolicLink() || attrs.isOther()) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                if (selection.shouldSkipEntry(directory, true)) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
                 String relative = root.relativize(directory).toString().replace('\\', '/');
                 if (relative.isEmpty()) {
                     return FileVisitResult.CONTINUE;
-                }
-                if (!job.includeAll && isExcludedDirectory(relative)) {
-                    return FileVisitResult.SKIP_SUBTREE;
                 }
                 return putEntry(zos, relative + "/");
             }
@@ -267,11 +270,10 @@ public class ProjectExportJobService {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 if (job.cancelRequested) throw new JobCancelledException();
-                if (attrs.isSymbolicLink() || attrs.isOther()
-                        || ProtectedWorkspacePaths.isProtectedEntry(root, file)) {
+                if (attrs.isSymbolicLink() || attrs.isOther()) {
                     return FileVisitResult.CONTINUE;
                 }
-                if (filesExcluded(job, file)) {
+                if (selection.shouldSkipEntry(file, false)) {
                     return FileVisitResult.CONTINUE;
                 }
                 String relative = root.relativize(file).toString().replace('\\', '/');
@@ -290,25 +292,6 @@ public class ProjectExportJobService {
         });
     }
 
-    private boolean filesExcluded(ExportJob job, Path file) {
-        if (job.includeAll) {
-            return false;
-        }
-        Path parent = file.getParent();
-        return parent != null && isExcludedDirectoryName(String.valueOf(parent.getFileName()));
-    }
-
-    private boolean isExcludedDirectory(String relative) {
-        int slash = relative.lastIndexOf('/');
-        String name = slash >= 0 ? relative.substring(slash + 1) : relative;
-        return isExcludedDirectoryName(name);
-    }
-
-    private boolean isExcludedDirectoryName(String name) {
-        return properties.getExportExcludedDirectoryNames().stream()
-                .anyMatch(candidate -> candidate.equalsIgnoreCase(name));
-    }
-
     private static FileVisitResult putEntry(ZipOutputStream zos, String entryName) {
         try {
             zos.putNextEntry(new ZipEntry(entryName));
@@ -325,7 +308,7 @@ public class ProjectExportJobService {
     }
 
     /** 创建前的预算预检：统计总字节并强制上限，超限直接拒绝，不产生半途而废的产物。 */
-    private Preflight preflight(SecureWorkspacePath paths, boolean includeAll) {
+    private Preflight preflight(SecureWorkspacePath paths, ExportSelectionPolicy selection) {
         long[] bytes = {0L};
         long[] files = {0L};
         Path root = paths.workspaceRoot();
@@ -333,24 +316,18 @@ public class ProjectExportJobService {
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attrs) {
-                    if (attrs.isSymbolicLink() || attrs.isOther()
-                            || ProtectedWorkspacePaths.isProtectedEntry(root, directory)) {
+                    if (attrs.isSymbolicLink() || attrs.isOther()) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
-                    if (!includeAll && !root.equals(directory)) {
-                        String name = String.valueOf(directory.getFileName());
-                        if (properties.getExportExcludedDirectoryNames().stream()
-                                .anyMatch(candidate -> candidate.equalsIgnoreCase(name))) {
-                            return FileVisitResult.SKIP_SUBTREE;
-                        }
-                    }
-                    return FileVisitResult.CONTINUE;
+                    return selection.shouldSkipEntry(directory, true)
+                            ? FileVisitResult.SKIP_SUBTREE
+                            : FileVisitResult.CONTINUE;
                 }
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     if (attrs.isSymbolicLink() || attrs.isOther()
-                            || ProtectedWorkspacePaths.isProtectedEntry(root, file)) {
+                            || selection.shouldSkipEntry(file, false)) {
                         return FileVisitResult.CONTINUE;
                     }
                     bytes[0] += attrs.size();

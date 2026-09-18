@@ -129,6 +129,118 @@ class ProjectExportJobServiceTest {
     }
 
     @Test
+    void skipsEntriesDeclaredInAgentIgnoreFile() throws Exception {
+        Files.writeString(workspace.resolve(".labex-agentignore"),
+                "# user rules\n\nlogs/\n*.secret\ngenerated/**\n");
+        Path logs = Files.createDirectories(workspace.resolve("logs"));
+        Files.writeString(logs.resolve("application.log"), "log line");
+        Path generated = Files.createDirectories(workspace.resolve("generated"));
+        Files.writeString(generated.resolve("client.js"), "generated()");
+        Path config = Files.createDirectories(workspace.resolve("config"));
+        Files.writeString(config.resolve("app.secret"), "token=1");
+
+        var view = service.createJob(7, 12, false);
+        var done = awaitTerminal(12, view.jobId());
+        assertEquals("SUCCESS", done.status());
+
+        Set<String> names = zipEntryNames(service.resolveDownload(7, 12, view.jobId()));
+        assertTrue(names.contains("src/main.js"));
+        assertTrue(names.contains("README.md"));
+        assertTrue(names.stream().noneMatch(name -> name.startsWith("logs/")), "logs/ 已被忽略");
+        assertTrue(names.stream().noneMatch(name -> name.equals("generated/client.js")), "generated/** 已被忽略");
+        assertTrue(names.stream().noneMatch(name -> name.equals("config/app.secret")), "*.secret 已被忽略");
+        // 忽略文件本身保留在包内，保证导出后再导入仍带同一套规则。
+        assertTrue(names.contains(".labex-agentignore"));
+    }
+
+    @Test
+    void missingAgentIgnoreFileMeansNoFileLevelExclusions() throws Exception {
+        Path logs = Files.createDirectories(workspace.resolve("logs"));
+        Files.writeString(logs.resolve("application.log"), "log line");
+
+        var view = service.createJob(7, 12, false);
+        var done = awaitTerminal(12, view.jobId());
+        assertEquals("SUCCESS", done.status());
+
+        Set<String> names = zipEntryNames(service.resolveDownload(7, 12, view.jobId()));
+        assertTrue(names.contains("logs/application.log"), "无忽略文件时不做文件级排除");
+        assertTrue(names.stream().noneMatch(name -> name.startsWith("node_modules/")));
+        assertTrue(names.stream().noneMatch(name -> name.startsWith(".labex/")));
+    }
+
+    @Test
+    void includeAllStillKeepsDeclaredIgnoreEntriesExcluded() throws Exception {
+        Files.writeString(workspace.resolve(".labex-agentignore"), "logs/\n");
+        Path logs = Files.createDirectories(workspace.resolve("logs"));
+        Files.writeString(logs.resolve("application.log"), "log line");
+
+        var view = service.createJob(7, 12, true);
+        var done = awaitTerminal(12, view.jobId());
+        assertEquals("SUCCESS", done.status());
+
+        Set<String> names = zipEntryNames(service.resolveDownload(7, 12, view.jobId()));
+        assertTrue(names.stream().anyMatch(name -> name.startsWith("node_modules/pkg/")),
+                "包含全部文件时放行依赖目录");
+        assertTrue(names.stream().noneMatch(name -> name.startsWith("logs/")),
+                ".labex-agentignore 在任何模式下都生效");
+        assertTrue(names.stream().noneMatch(name -> name.startsWith(".labex/")), "保护区不可绕过");
+    }
+
+    @Test
+    void malformedAgentIgnoreFileDegradesWithoutFailingExport() throws Exception {
+        Path logs = Files.createDirectories(workspace.resolve("logs"));
+        Files.writeString(logs.resolve("application.log"), "log line");
+        Path generated = Files.createDirectories(workspace.resolve("generated"));
+        Files.writeString(generated.resolve("client.js"), "generated()");
+        // 非 UTF-8 字节：整份文件解析失败，退化为"无文件级排除"，但不允许让导出失败。
+        Files.write(workspace.resolve(".labex-agentignore"), new byte[] {
+                'l', 'o', 'g', 's', '/', '\n', (byte) 0xC3, (byte) 0x28, '\n' });
+
+        var view = service.createJob(7, 12, false);
+        var done = awaitTerminal(12, view.jobId());
+        assertEquals("SUCCESS", done.status());
+        assertEquals(100, done.progressPercent());
+
+        Set<String> names = zipEntryNames(service.resolveDownload(7, 12, view.jobId()));
+        assertTrue(names.contains("src/main.js"));
+        assertTrue(names.contains("logs/application.log"), "异常文件退化为无文件级排除");
+        assertTrue(names.contains("generated/client.js"));
+    }
+
+    @Test
+    void ignoresUnsupportedNegationLinesWithoutFailingExport() throws Exception {
+        Files.writeString(workspace.resolve(".labex-agentignore"),
+                "!keep.log\ngenerated/client.js\n");
+        Path generated = Files.createDirectories(workspace.resolve("generated"));
+        Files.writeString(generated.resolve("client.js"), "generated()");
+        Path root = workspace.resolve("keep.log");
+        Files.writeString(root, "keep");
+
+        var view = service.createJob(7, 12, false);
+        var done = awaitTerminal(12, view.jobId());
+        assertEquals("SUCCESS", done.status());
+
+        Set<String> names = zipEntryNames(service.resolveDownload(7, 12, view.jobId()));
+        assertTrue(names.contains("keep.log"), "! 取反行被跳过，不影响其它规则");
+        assertTrue(names.stream().noneMatch(name -> name.equals("generated/client.js")));
+    }
+
+    @Test
+    void declaredExclusionsAreNotCountedInPreflightBudget() throws Exception {
+        Files.writeString(workspace.resolve(".labex-agentignore"), "logs/\n");
+        Path logs = Files.createDirectories(workspace.resolve("logs"));
+        // 被排除的大文件不得计入预算，否则预检会把本可导出的工作区误判为超限。
+        Files.write(logs.resolve("big.log"), new byte[10_000]);
+        properties.setExportMaxTotalBytes(30L);
+
+        var view = service.createJob(7, 12, false);
+        var done = awaitTerminal(12, view.jobId());
+        assertEquals("SUCCESS", done.status());
+        // README.md(6) + src/main.js(14) + .labex-agentignore(6)，被忽略的 10KB 与依赖目录均不计入。
+        assertEquals(26L, done.totalBytes());
+    }
+
+    @Test
     void rejectsForeignProjectsAndUnknownJobs() {
         assertThrows(IllegalArgumentException.class, () -> service.createJob(7, 99, false));
         assertThrows(IllegalArgumentException.class, () -> service.getJob(7, 12, "missing-job"));

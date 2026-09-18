@@ -5,10 +5,13 @@
         <div class="epd-dialog" role="dialog" aria-modal="true">
           <template v-if="phase === 'confirm'">
             <h3>导出项目压缩包</h3>
-            <p class="epd-hint">默认排除 node_modules、dist、target 等依赖与构建产物目录，仅打包源码与配置，速度最快。</p>
+            <p class="epd-hint">
+              默认排除 node_modules、dist、target 等依赖与构建产物目录，仅打包源码与配置，速度最快。
+              .labex-agentignore 中标记的文件和目录在任何情况下都不会打包。
+            </p>
             <label class="epd-option">
               <input v-model="includeAllModel" type="checkbox" />
-              <span>包含全部文件（含依赖目录，体积大、耗时长）</span>
+              <span>包含全部文件（含依赖目录，体积大、耗时长；.labex-agentignore 仍然生效）</span>
             </label>
             <div class="epd-actions">
               <button class="epd-btn ghost" @click="$emit('cancel')">取消</button>

@@ -11,7 +11,9 @@ import com.labex.rag.llm.MiniMaxChat;
 import com.labex.rag.llm.OllamaChat;
 import com.labex.labexagent.commandsecurity.AgentProjectMetadataRefreshScheduler;
 import com.labex.labexagent.service.ProjectScanPolicy;
+import com.labex.labexagent.workspace.ExportSelectionPolicy;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
+import com.labex.labexagent.workspace.WorkspaceFileOperationProperties;
 import com.labex.service.StudentProjectService;
 import java.io.File;
 import java.io.IOException;
@@ -72,6 +74,9 @@ implements StudentProjectService {
     private OllamaChat ollamaChat;
     @Autowired
     private RagConfig ragConfig;
+    /** 导出排除判定所需（依赖/构建产物目录名），与异步导出任务共用同一份配置。 */
+    @Autowired
+    private WorkspaceFileOperationProperties workspaceFileOperationProperties;
     @Lazy
     @Autowired(required = false)
     private AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
@@ -496,11 +501,15 @@ implements StudentProjectService {
         StudentProject project = this.requireOwnedProject(studentId, projectId);
         SecureWorkspacePath paths = this.workspacePaths(project);
         Path workspacePath = paths.workspaceRoot();
+        // 与异步导出任务共用同一排除判定（保护区 + .labex-agentignore + 依赖目录），避免两条导出路径语义漂移。
+        ExportSelectionPolicy selection =
+                ExportSelectionPolicy.forWorkspace(paths, this.workspaceFileOperationProperties, false);
         try (ZipOutputStream zos = new ZipOutputStream(outputStream);){
             Files.walkFileTree(workspacePath, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    if (!isSafeWorkspaceEntry(paths, file) || attrs.isSymbolicLink() || attrs.isOther()) {
+                    if (!isSafeWorkspaceEntry(paths, file) || attrs.isSymbolicLink() || attrs.isOther()
+                            || selection.shouldSkipEntry(file, false)) {
                         return FileVisitResult.CONTINUE;
                     }
                     String relative = workspacePath.relativize(file).toString().replace('\\', '/');
@@ -512,7 +521,8 @@ implements StudentProjectService {
                 }
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                    if (!isSafeWorkspaceEntry(paths, dir) || attrs.isSymbolicLink() || attrs.isOther()) {
+                    if (!isSafeWorkspaceEntry(paths, dir) || attrs.isSymbolicLink() || attrs.isOther()
+                            || selection.shouldSkipEntry(dir, true)) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
                     String relative = workspacePath.relativize(dir).toString().replace('\\', '/');
