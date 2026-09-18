@@ -36,11 +36,25 @@ jobs:
       - name: Gate - Verify Tutorial Seed Version
         run: node scripts/verify-seed-version.mjs
 
+      # 门禁 0.5：前端未定义引用（等价 ESLint no-undef）。
+      # 这类错误只在运行时抛 ReferenceError，而报错行之前的代码已经改完了状态，
+      # 界面看起来正常、只有控制台在刷错误 —— 构建与单测都发现不了（历史真实故障：
+      # 档位保存逻辑里 `let saved` 声明在块内、块外引用，部署后才暴露）。必须在安装依赖后、
+      # 跑测试前拦截。放在 npm ci 之后是因为它需要解析源码。
+      - name: Install Frontend Dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Gate - Frontend Undefined References
+        run: |
+          cd frontend
+          npm run check:undef
+
       # 门禁 1：前端单元测试全量通过
       - name: Gate - Frontend Unit Tests
         run: |
           cd frontend
-          npm ci
           npm run test
 
       # 门禁 2：前端生产构建（npm run build 内含 check-chunk-budget 体积预算检查）

@@ -68,6 +68,11 @@ const gates = [
     }
   },
   {
+    id: 'frontend-undef',
+    name: '前端未定义引用（作用域错误，等价 no-undef）',
+    cmd: 'node', cmdArgs: ['scripts/check-undefined-refs.mjs'], cwd: resolve(root, 'frontend')
+  },
+  {
     id: 'frontend-test',
     name: '前端单元测试全量',
     cmd: 'node', cmdArgs: ['scripts/run-tests.mjs'], cwd: resolve(root, 'frontend')
