@@ -2,6 +2,8 @@ package com.labex.labexagent.llm;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.Gson;
@@ -472,13 +474,89 @@ class OpenAiCompatibleProviderContractTest {
         }
     }
 
+    /**
+     * OpenCode Go 自 2026-09-05 起强制要求 x-opencode-session（缺失即 400）；
+     * 流式通道必须带上它，并用客户端自有 UA 而不是 JDK 默认的 Java-http-client。
+     */
+    @Test
+    void sendsOpenCodeGoSessionHeaderAndOwnUserAgentOnStreamingRequests() throws Exception {
+        AtomicReference<String> session = new AtomicReference<>();
+        AtomicReference<String> userAgent = new AtomicReference<>();
+        HttpServer server = startServerAt("/zen/go/v1/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            session.set(exchange.getRequestHeaders().getFirst("x-opencode-session"));
+            userAgent.set(exchange.getRequestHeaders().getFirst("User-Agent"));
+            sendSse(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n");
+        });
+        try {
+            LlmProvider.LlmConfig config = new LlmProvider.LlmConfig(
+                    "test-key", baseUrl(server) + "/zen/go/v1", "test-model", 32, 0.1, 1_000, 1_000, 0)
+                    .withSessionId("labex-session-42");
+
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config, chunks::add);
+
+            assertEquals("labex-session-42", session.get());
+            assertEquals(OpenCodeGoHeaderPolicy.CLIENT_USER_AGENT, userAgent.get());
+            assertTrue(chunks.stream().anyMatch(chunk -> "text_delta".equals(chunk.type())));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /** 非流式通道（连通性测试 / summary）同样要带会话头，否则一样 400。 */
+    @Test
+    void sendsOpenCodeGoSessionHeaderOnNonStreamingRequests() throws Exception {
+        AtomicReference<String> session = new AtomicReference<>();
+        HttpServer server = startServerAt("/zen/go/v1/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            session.set(exchange.getRequestHeaders().getFirst("x-opencode-session"));
+            sendJson(exchange, 200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+        });
+        try {
+            LlmProvider.LlmConfig config = new LlmProvider.LlmConfig(
+                    "test-key", baseUrl(server) + "/zen/go/v1", "test-model", 32, 0.1, 1_000, 1_000, 0)
+                    .withSessionId("labex-session-7");
+
+            Map<String, Object> result = providerForLocalServer()
+                    .chatWithTools("system", List.of(), List.of(), config);
+
+            assertEquals("text", result.get("type"));
+            assertEquals("labex-session-7", session.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /** 其他服务商端点必须完全不受影响：不发会话头，也不改写 UA。 */
+    @Test
+    void leavesOtherProviderEndpointsWithoutOpenCodeHeaders() throws Exception {
+        AtomicReference<String> session = new AtomicReference<>();
+        AtomicReference<String> userAgent = new AtomicReference<>();
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            session.set(exchange.getRequestHeaders().getFirst("x-opencode-session"));
+            userAgent.set(exchange.getRequestHeaders().getFirst("User-Agent"));
+            sendSse(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            assertNull(session.get());
+            assertNotEquals(OpenCodeGoHeaderPolicy.CLIENT_USER_AGENT, userAgent.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private static LlmProvider.LlmConfig config(HttpServer server) {
         return new LlmProvider.LlmConfig("test-key", baseUrl(server), "test-model", 32, 0.1, 1_000, 1_000, 0);
     }
 
     private static LlmProvider.LlmConfig configWithRequestOptions(HttpServer server, String optionsJson) {
         return new LlmProvider.LlmConfig("test-key", baseUrl(server), "test-model", 32, 0.1,
-                1_000, 1_000, 0, false, null, null, optionsJson, null, false);
+                1_000, 1_000, 0, false, null, null, optionsJson, null, false, null);
     }
 
     @Test
@@ -522,8 +600,12 @@ class OpenAiCompatibleProviderContractTest {
     }
 
     private static HttpServer startServer(ExchangeHandler handler) throws IOException {
+        return startServerAt("/chat/completions", handler);
+    }
+
+    private static HttpServer startServerAt(String path, ExchangeHandler handler) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/chat/completions", exchange -> {
+        server.createContext(path, exchange -> {
             try {
                 handler.handle(exchange);
             } finally {

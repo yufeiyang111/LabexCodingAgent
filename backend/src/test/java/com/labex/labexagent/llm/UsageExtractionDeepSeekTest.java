@@ -65,6 +65,40 @@ class UsageExtractionDeepSeekTest {
                 "cache_usage_reported", true)));
     }
 
+    /**
+     * Anthropic 原生形态下 input_tokens 不含缓存；若代理网关再补一个只含"新鲜前缀"的
+     * prompt_tokens，分母必须补回 read+write，否则命中率会被抬高并被 clamp 成 100%。
+     */
+    @Test
+    void anthropicShapeWithProxyAddedPromptTokensStillCountsTheFullPrompt() throws Exception {
+        Map<String, Object> usage = extractUsageFromJson(
+                "{\"prompt_tokens\":700,\"input_tokens\":700,\"output_tokens\":80,"
+                        + "\"cache_read_input_tokens\":300,\"cache_creation_input_tokens\":400}");
+
+        assertEquals(1400, usage.get("prompt_tokens"));
+        assertEquals(300, usage.get("cached_tokens"));
+        assertEquals(400, usage.get("cache_write_tokens"));
+        // 300 / 1400 = 21.43%
+        assertEquals(21.43, CacheTelemetry.hitRate(true, usage));
+    }
+
+    /**
+     * Vercel AI SDK 形态的 input_tokens 已包含缓存（opencode getUsage 注释明确说明并做减法），
+     * 不能再把 cache_read / cache_creation 加一次，否则分母虚高、命中率被低估。
+     */
+    @Test
+    void aiSdkShapeDoesNotDoubleCountCacheTokensInThePrompt() throws Exception {
+        Map<String, Object> usage = extractUsageFromJson(
+                "{\"input_tokens\":1000,\"output_tokens\":50,"
+                        + "\"input_token_details\":{\"cache_read\":300,\"cache_creation\":100}}");
+
+        assertEquals(1000, usage.get("prompt_tokens"));
+        assertEquals(300, usage.get("cached_tokens"));
+        assertEquals(100, usage.get("cache_write_tokens"));
+        // 300 / 1000 = 30%
+        assertEquals(30.0, CacheTelemetry.hitRate(true, usage));
+    }
+
     @Test
     void normalizesNegativeUsageToZero() throws Exception {
         String json = "{\"prompt_tokens\":-100,\"completion_tokens\":-5,\"total_tokens\":-105,"
@@ -101,7 +135,11 @@ class UsageExtractionDeepSeekTest {
     }
 
     private static Map<String, Object> extractUsageFromFixture(String fixture) throws Exception {
-        String json = new Gson().toJson(JsonParser.parseString(fixtureJson(fixture)));
+        return extractUsageFromJson(fixtureJson(fixture));
+    }
+
+    private static Map<String, Object> extractUsageFromJson(String rawUsageJson) throws Exception {
+        String json = new Gson().toJson(JsonParser.parseString(rawUsageJson));
         HttpServer server = startServer(exchange -> {
             exchange.getRequestBody().readAllBytes();
             sendSse(exchange,

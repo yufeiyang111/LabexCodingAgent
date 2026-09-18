@@ -45,17 +45,17 @@ public interface LlmProvider {
                      String promptCacheKey, String reasoningEffort,
                      String requestOptionsJson,
                      Consumer<OpenAiCompatibleChatRequestAdapter.RequestEvidence> requestEvidenceSink,
-                     boolean promptCacheKeyRejected) {
+                     boolean promptCacheKeyRejected, String sessionId) {
         public LlmConfig(String apiKey, String baseUrl, String modelName,
                          Integer maxTokens, Double temperature) {
-            this(apiKey, baseUrl, modelName, maxTokens, temperature, null, null, null, false, null, null, null, null, false);
+            this(apiKey, baseUrl, modelName, maxTokens, temperature, null, null, null, false, null, null, null, null, false, null);
         }
 
         public LlmConfig(String apiKey, String baseUrl, String modelName,
                          Integer maxTokens, Double temperature, Integer connectTimeoutMs,
                          Integer readTimeoutMs, Integer maxRetries) {
             this(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs, readTimeoutMs, maxRetries,
-                    false, null, null, null, null, false);
+                    false, null, null, null, null, false, null);
         }
 
         public LlmConfig(String apiKey, String baseUrl, String modelName,
@@ -63,7 +63,7 @@ public interface LlmProvider {
                          Integer readTimeoutMs, Integer maxRetries, boolean promptCacheKeyEnabled,
                          String promptCacheKey) {
             this(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs, readTimeoutMs, maxRetries,
-                    promptCacheKeyEnabled, promptCacheKey, null, null, null, false);
+                    promptCacheKeyEnabled, promptCacheKey, null, null, null, false, null);
         }
 
         public LlmConfig(String apiKey, String baseUrl, String modelName,
@@ -71,7 +71,7 @@ public interface LlmProvider {
                          Integer readTimeoutMs, Integer maxRetries, boolean promptCacheKeyEnabled,
                          String promptCacheKey, String reasoningEffort) {
             this(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs, readTimeoutMs, maxRetries,
-                    promptCacheKeyEnabled, promptCacheKey, reasoningEffort, null, null, false);
+                    promptCacheKeyEnabled, promptCacheKey, reasoningEffort, null, null, false, null);
         }
 
         public LlmConfig(String apiKey, String baseUrl, String modelName,
@@ -79,25 +79,25 @@ public interface LlmProvider {
                          Integer readTimeoutMs, Integer maxRetries, boolean promptCacheKeyEnabled,
                          String promptCacheKey, String reasoningEffort, String requestOptionsJson) {
             this(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs, readTimeoutMs, maxRetries,
-                    promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, null, false);
+                    promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, null, false, null);
         }
 
         public LlmConfig withPromptCacheKey(String value) {
             if (!promptCacheKeyEnabled || value == null || value.isBlank()) return this;
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, true, value, reasoningEffort, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected);
+                    readTimeoutMs, maxRetries, true, value, reasoningEffort, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected, sessionId);
         }
 
         public LlmConfig withoutPromptCacheKey() {
             if (!promptCacheKeyEnabled && (promptCacheKey == null || promptCacheKey.isBlank())) return this;
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, false, null, reasoningEffort, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected);
+                    readTimeoutMs, maxRetries, false, null, reasoningEffort, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected, sessionId);
         }
 
         public LlmConfig withReasoningEffort(String value) {
             if (java.util.Objects.equals(reasoningEffort, value)) return this;
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, value, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected);
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, value, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected, sessionId);
         }
 
         public LlmConfig withoutReasoningEffort() {
@@ -106,17 +106,28 @@ public interface LlmProvider {
 
         public LlmConfig withRequestOptionsJson(String value) {
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, value, requestEvidenceSink, promptCacheKeyRejected);
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, value, requestEvidenceSink, promptCacheKeyRejected, sessionId);
         }
 
         public LlmConfig withRequestEvidenceSink(Consumer<OpenAiCompatibleChatRequestAdapter.RequestEvidence> value) {
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, value, promptCacheKeyRejected);
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, value, promptCacheKeyRejected, sessionId);
         }
 
         public LlmConfig withPromptCacheKeyRejected(boolean value) {
             return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
-                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, requestEvidenceSink, value);
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, requestEvidenceSink, value, sessionId);
+        }
+
+        /**
+         * 会话级稳定标识：当前由 OpenCode Go 以 {@code x-opencode-session} 上报，用于网关路由与
+         * prompt cache 亲和。与 {@code promptCacheKey} 正交——不依赖 {@code promptCacheKeyEnabled}，
+         * 任何模式下都应携带；未设置时由 {@link OpenCodeGoHeaderPolicy} 退化为进程级稳定 ID。
+         */
+        public LlmConfig withSessionId(String value) {
+            if (java.util.Objects.equals(sessionId, value)) return this;
+            return new LlmConfig(apiKey, baseUrl, modelName, maxTokens, temperature, connectTimeoutMs,
+                    readTimeoutMs, maxRetries, promptCacheKeyEnabled, promptCacheKey, reasoningEffort, requestOptionsJson, requestEvidenceSink, promptCacheKeyRejected, value);
         }
 
         public boolean reasoningEffortDisabled() {

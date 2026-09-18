@@ -142,9 +142,11 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                 String body = buildRequestBody(sysPrompt, msgs, tools, requestConfig, true, includeUsage);
                 requestBytes = body.getBytes(StandardCharsets.UTF_8).length;
                 firstEventTimeoutMs = initialStreamResponseTimeoutMs(config);
-                log.info("LLM_STREAM_REQUEST model={} messages={} tools={} requestBytes={} maxTokens={} connectTimeoutMs={} firstEventTimeoutMs={}",
+                log.info("LLM_STREAM_REQUEST model={} messages={} tools={} requestBytes={} maxTokens={} connectTimeoutMs={} firstEventTimeoutMs={} opencodeSession={}",
                         config.modelName(), msgs == null ? 0 : msgs.size() + 1, tools == null ? 0 : tools.size(),
-                        requestBytes, config.maxTokens(), config.effectiveConnectTimeoutMs(), firstEventTimeoutMs);
+                        requestBytes, config.maxTokens(), config.effectiveConnectTimeoutMs(), firstEventTimeoutMs,
+                        // 同会话多轮必须打出同一个指纹；非 opencode 端点恒为 "-"。
+                        OpenCodeGoHeaderPolicy.sessionFingerprint(config.baseUrl(), config.sessionId()));
                 conn = openConnection(buildApiUrl(config.baseUrl(), "/chat/completions"));
                 try (CancellationToken.Registration ignored = token.onCancellation(conn::disconnect)) {
                     conn.setRequestMethod("POST");
@@ -152,6 +154,8 @@ public class OpenAiCompatibleProvider implements LlmProvider {
                     conn.setRequestProperty("Authorization", "Bearer " + config.apiKey());
                     conn.setRequestProperty("Accept", "text/event-stream");
                     conn.setRequestProperty("Connection", "keep-alive");
+                    // OpenCode Go 等托管网关要求的会话头与自有 UA；非该域端点不受影响。
+                    OpenCodeGoHeaderPolicy.apply(conn, config.baseUrl(), config.sessionId());
                     conn.setDoOutput(true);
                     conn.setConnectTimeout(config.effectiveConnectTimeoutMs());
                     conn.setReadTimeout(firstEventTimeoutMs);
@@ -547,13 +551,7 @@ public class OpenAiCompatibleProvider implements LlmProvider {
             );
             int deepSeekMiss = firstPositive(intValue(usage, "prompt_cache_miss_tokens"), 0);
             int cacheWrite = explicitCacheWrite > 0 ? explicitCacheWrite : deepSeekMiss;
-            int prompt = intValue(usage, "prompt_tokens");
-            if (prompt == 0) {
-                prompt = intValue(usage, "input_tokens") + cached + cacheWrite;
-            }
-            if (prompt == 0) {
-                prompt = intValue(usage, "promptTokenCount");
-            }
+            int prompt = resolveFullPromptTokens(usage, cached, cacheWrite);
             int completion = firstPositive(
                     intValue(usage, "completion_tokens"),
                     intValue(usage, "output_tokens"),
@@ -576,6 +574,52 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 归一化"全量 prompt token"（缓存命中率的分母来源）。
+     *
+     * <p>上游有三种口径，必须按<b>字段方言</b>区分，不能只看数字大小：
+     * <ol>
+     *   <li><b>Anthropic 原生</b>（{@code cache_read_input_tokens} / {@code cache_creation_input_tokens}）：
+     *       {@code input_tokens} 只含"新鲜前缀"，不含缓存部分，全量 = input + read + write；</li>
+     *   <li><b>Vercel AI SDK</b>（{@code input_token_details.cache_read}）：其 inputTokens 已包含缓存
+     *       （opencode getUsage 的注释明确说明并做减法），全量 = inputTokens，<b>不能再加一次</b>；</li>
+     *   <li><b>OpenAI / DeepSeek</b>（{@code prompt_tokens} / {@code promptTokenCount}）：
+     *       prompt_tokens 本身已含缓存部分。</li>
+     * </ol>
+     *
+     * <p>另加一层 {@code max(...)} 兜底：代理网关可能在 Anthropic 形态上再补一个只含"新鲜前缀"的
+     * {@code prompt_tokens}，此时取较小的那个会把分母压小、把命中率抬高到被 clamp 成 100%——
+     * 用 max 取全量口径，让错误暴露为真实比率而不是被钳制掩盖。
+     */
+    private int resolveFullPromptTokens(JsonObject usage, int cached, int cacheWrite) {
+        int promptTokens = intValue(usage, "prompt_tokens");
+        int inputTokens = intValue(usage, "input_tokens");
+        boolean anthropicNativeCache = hasField(usage, "cache_read_input_tokens")
+                || hasField(usage, "cache_creation_input_tokens")
+                || hasNestedField(usage, "cache_creation", "ephemeral_5m_input_tokens")
+                || hasNestedField(usage, "cache_creation", "ephemeral_1h_input_tokens");
+        boolean inputDetailsIncludeCache = hasNestedField(usage, "input_token_details", "cache_read")
+                || hasNestedField(usage, "input_token_details", "cache_creation");
+
+        int derived;
+        if (inputDetailsIncludeCache) {
+            derived = Math.max(promptTokens, inputTokens);
+        } else if (anthropicNativeCache) {
+            derived = inputTokens + cached + cacheWrite;
+        } else if (promptTokens > 0) {
+            derived = promptTokens;
+        } else if (inputTokens > 0) {
+            derived = inputTokens + cached + cacheWrite;
+        } else {
+            derived = intValue(usage, "promptTokenCount");
+        }
+        int resolved = Math.max(derived, promptTokens);
+        if (resolved == 0) {
+            resolved = intValue(usage, "promptTokenCount");
+        }
+        return resolved;
     }
 
     private boolean shouldRetryWithoutReasoningEffort(int statusCode, String errorBody) {
@@ -670,10 +714,14 @@ public class OpenAiCompatibleProvider implements LlmProvider {
         int retries = 0;
         while (true) {
             throwIfCancelled(token);
-            HttpRequest request = HttpRequest.newBuilder(uri)
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(uri)
                     .timeout(Duration.ofMillis(config.effectiveReadTimeoutMs()))
                     .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + apiKey)
+                    .header("Authorization", "Bearer " + apiKey);
+            // 非流式通道（连通性测试、summary 等）同样要带 OpenCode Go 的会话头与自有 UA。
+            OpenCodeGoHeaderPolicy.headers(config.baseUrl(), config.sessionId())
+                    .forEach(requestBuilder::header);
+            HttpRequest request = requestBuilder
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
             try {
