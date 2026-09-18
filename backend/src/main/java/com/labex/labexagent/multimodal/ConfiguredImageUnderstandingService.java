@@ -4,6 +4,7 @@ import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
 import com.labex.labexagent.llm.InternalReasoningBoundary;
+import com.labex.labexagent.llm.PromptCacheKeyFactory;
 import com.labex.labexagent.runtime.AgentContext;
 import com.labex.service.AgentModelConfigService;
 import java.util.LinkedHashMap;
@@ -46,7 +47,11 @@ public class ConfiguredImageUnderstandingService {
         try {
             String dataUrl = imageInputResolver.resolve(imageSource);
             LlmProvider provider = providerFactory.resolveProvider(config);
-            LlmProvider.LlmConfig llmConfig = providerFactory.buildConfig(config);
+            // 图像理解属于当前会话内的辅助请求：沿用同一 session 标识（OpenCode Go 的
+            // x-opencode-session 要求会话内恒定），避免它被网关当成另一个会话。
+            LlmProvider.LlmConfig llmConfig = providerFactory.buildConfig(config)
+                    .withSessionId(PromptCacheKeyFactory.sessionIdForConversation(
+                            context == null ? null : context.getConversationId()));
             List<Map<String, Object>> content = List.of(
                     Map.of("type", "text", "text", prompt == null || prompt.isBlank()
                             ? "Describe the image accurately." : prompt.trim()),
