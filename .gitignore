@@ -85,6 +85,10 @@ sandbox/windows-helper/**/*.lib
 .codex-tmp/
 vite.config.js.timestamp-*
 
+# 本机后端启动产物：由 scripts/capture_backend_cmdline.ps1 生成，含本机绝对路径与完整 classpath，
+# 换机器无意义；start_backend.ps1 依赖它复现原启动方式。
+backend/current_cmdline.txt
+
 # Deploy release archives
 deploy/linux/*.tar
 deploy/linux/*.tar.gz
