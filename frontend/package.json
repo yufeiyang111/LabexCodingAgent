@@ -8,6 +8,8 @@
     "preview": "vite preview",
     "test": "node scripts/run-tests.mjs",
     "check:chunks": "node scripts/check-chunk-budget.mjs",
+    "brand:assets": "node scripts/generate-brand-assets.mjs",
+    "icons:stacks": "node scripts/generate-stack-icons.mjs",
     "test:acceptance:unit": "node --test scripts/acceptance/agent-sse.test.mjs scripts/acceptance/browser-error-policy.test.mjs scripts/acceptance/browser-text.test.mjs scripts/acceptance/cdp-client.test.mjs scripts/acceptance/runtime-config.test.mjs scripts/acceptance/vite-config.test.mjs",
     "acceptance:browser": "node scripts/acceptance/agent-browser.mjs"
   },
@@ -33,6 +35,7 @@
     "vue-router": "^4.3.0"
   },
   "devDependencies": {
+    "@iconify-json/lucide": "^1.2.130",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-vue": "^5.0.4",
     "sass": "^1.71.1",

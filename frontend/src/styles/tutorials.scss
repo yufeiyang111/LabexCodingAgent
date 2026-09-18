@@ -20,8 +20,15 @@
 @keyframes tutorial-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 
 /* ===== 页面与顶栏 ===== */
-.tutorial-page { min-height: 100vh; background: var(--theme-bg, #ffffff); color: var(--tut-text); animation: tutorial-fade-in .4s ease both; }
-.tutorial-page__topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; min-height: 56px; padding: 0 20px; border-bottom: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
+/* 亮色下用纯白铺满整页：原先取 --theme-bg（#f7f8fb 灰蓝），
+   会与顶栏 / 侧栏 / 大纲的白色形成「中间灰、两侧白」的割裂观感。
+   暗色主题在下方 html[data-theme='dark'] 块以更高特异性覆盖回 #11131a，故此处硬编码安全。 */
+.tutorial-page { min-height: 100vh; background: #ffffff; color: var(--tut-text); animation: tutorial-fade-in .4s ease both; }
+/* 顶栏高度抽成变量：抽屉 / 侧栏 / 大纲都靠它做 sticky 对齐。
+   曾用 min-height + 各处硬编码 56px，一旦顶栏实际高度变化（窄屏按钮换行、
+   字体渲染差异）抽屉顶部就会与顶栏重叠，把「使用手册」压掉一截。 */
+.tutorial-page { --tut-topbar-h: 56px; }
+.tutorial-page__topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; height: var(--tut-topbar-h); padding: 0 20px; border-bottom: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
 .tutorial-page__back { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; margin-left: -10px; border: 0; border-radius: 8px; background: transparent; color: var(--tut-text-secondary); font: inherit; font-size: 13px; cursor: pointer; transition: background-color .2s ease, color .2s ease, transform .2s ease; }
 .tutorial-page__back svg { width: 15px; height: 15px; transition: transform .25s var(--tut-ease); }
 .tutorial-page__back:hover { color: var(--tut-accent); background: var(--tut-accent-soft); }
@@ -35,14 +42,14 @@
 .tutorial-page__progress-bar { height: 100%; transform-origin: 0 50%; transform: scaleX(0); border-radius: 0 2px 2px 0; background: linear-gradient(90deg, var(--tut-accent), color-mix(in srgb, var(--tut-accent) 45%, white)); transition: transform .12s linear; }
 
 /* ===== 布局：三列贴合，1px 线条分隔 ===== */
-.tutorial-page__layout { display: grid; grid-template-columns: 260px minmax(0, 1fr) 280px; width: 100%; min-height: calc(100vh - 56px); }
+.tutorial-page__layout { display: grid; grid-template-columns: 260px minmax(0, 1fr) 280px; width: 100%; min-height: calc(100vh - var(--tut-topbar-h)); }
 .tutorial-page__layout > * { animation: tutorial-rise .55s var(--tut-ease) both; }
 .tutorial-page__layout > .tutorial-sidebar { animation-delay: .04s; }
 .tutorial-page__layout > .tutorial-page__content { animation-delay: .12s; }
 .tutorial-page__layout > .tutorial-outline { animation-delay: .2s; }
 
 /* ===== 侧边栏 ===== */
-.tutorial-sidebar { position: sticky; top: 56px; align-self: start; height: calc(100vh - 56px); overflow-y: auto; padding: 20px 12px 24px 14px; border-right: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
+.tutorial-sidebar { position: sticky; top: var(--tut-topbar-h); align-self: start; height: calc(100vh - var(--tut-topbar-h)); overflow-y: auto; padding: 20px 12px 24px 14px; border-right: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
 .tutorial-sidebar__header { padding: 0 10px 14px; border-bottom: 1px solid var(--tut-line-light); }
 .tutorial-sidebar__eyebrow { color: var(--tut-accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; }
 .tutorial-sidebar h2 { margin: 6px 0 4px; color: var(--tut-text); font-size: 19px; letter-spacing: -.02em; }
@@ -136,7 +143,7 @@
 .tutorial-skeleton__line--half { width: 52%; }
 
 /* ===== 大纲 ===== */
-.tutorial-outline { position: sticky; top: 56px; align-self: start; max-height: calc(100vh - 56px); overflow-y: auto; padding: 34px 18px 20px 20px; border-left: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
+.tutorial-outline { position: sticky; top: var(--tut-topbar-h); align-self: start; max-height: calc(100vh - var(--tut-topbar-h)); overflow-y: auto; padding: 34px 18px 20px 20px; border-left: 1px solid var(--tut-line); background: var(--theme-surface, #ffffff); }
 .tutorial-outline__label { display: flex; align-items: center; gap: 6px; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--tut-line-light); color: var(--tut-text); font-size: 12px; font-weight: 700; }
 .tutorial-outline__label svg { width: 13px; height: 13px; color: var(--tut-accent); }
 .tutorial-outline__item { position: relative; display: block; padding: 4px 8px; margin: 0 -8px; border-radius: 6px; color: var(--tut-text-muted); font-size: 12px; line-height: 1.5; text-decoration: none; transition: color .4s ease, background-color .4s ease; }
@@ -378,14 +385,33 @@ html[data-theme='dark'] .tutorial-article__empty-subtext {
 
 .tutorial-sidebar.is-mobile-drawer {
   position: fixed;
-  top: 56px;
-  left: 0;
-  bottom: 0;
+  /*
+   * 浮动面板而非贴边通栏抽屉。
+   *
+   * 原先 top 紧贴顶栏、bottom: 0 且写死 height: calc(100dvh - 顶栏)，
+   * 结果是：① 占满顶栏以下的全部高度，在手机上压迫感很强；
+   * ② 顶部与顶栏之间没有呼吸空间，标题像被顶栏"压"着。
+   * 改为四周留白 + 圆角 + 投影，高度另由 max-height 约束（见下）。
+   *
+   * ⚠️ 这里只能用「top + max-height」，**不能用 top + bottom**。
+   *
+   * 实测（Chrome）：同时指定 top 与 bottom（且 height: auto）时，
+   * getComputedStyle 报告 top=70px / bottom=20px 看似正常，但
+   * getBoundingClientRect 实测 rect.top=0、height=内容高(1044px) ——
+   * 也就是 top 被静默忽略，抽屉反而比改动前更高。去掉 bottom 后
+   * rect.top=70 立刻恢复。所以高度只能交给 max-height 表达。
+   */
+  top: calc(var(--tut-topbar-h) + 14px);
+  left: 12px;
+  bottom: auto;
+  height: auto;
+  max-height: calc(100vh - var(--tut-topbar-h) - 34px);
+  max-height: calc(100dvh - var(--tut-topbar-h) - 34px);
   width: min(82vw, 300px);
-  height: calc(100dvh - 56px);
   z-index: 999;
-  border-right: 1px solid var(--tut-line);
-  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--tut-line);
+  border-radius: 16px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.22);
   transform: translateX(-100%);
   visibility: hidden;
   transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.26s;
@@ -453,6 +479,13 @@ html[data-theme='dark'] .tutorial-article__empty-subtext {
 /* 抽屉/大纲打开时锁定背景滚动 */
 body.tutorial-scroll-locked { overflow: hidden; }
 
+/* 抽屉 / 大纲打开时隐藏浮动球。
+   它们是 position:fixed + z-index:1200，而抽屉是 999 —— 球会盖在抽屉之上，
+   把顶部的「使用手册 / 使用教程」压住一截（用户实际看到的现象）。
+   抽屉本身是类模态浮层，浮动按钮不应浮在它上面。 */
+body.tutorial-scroll-locked .tutorials-launcher,
+body.tutorial-scroll-locked .theme-settings-launcher { display: none; }
+
 /* ===== 无障碍：尊重系统减少动效偏好 ===== */
 @media (prefers-reduced-motion: reduce) {
   .tutorial-page, .tutorial-page__layout > *, .tutorial-page .tutorial-article__header, .tutorial-page .tutorial-article__body > *, .tutorial-skeleton__line, .tutorial-article__empty-icon { animation: none !important; }
@@ -462,4 +495,36 @@ body.tutorial-scroll-locked { overflow: hidden; }
 /* 触屏设备：复制按钮常显（无 hover） */
 @media (hover: none) {
   .tutorial-page .tutorial-article__body .tut-code__copy { opacity: 1; }
+}
+
+/* ===== 极窄屏顶栏溢出修复 =====
+   实测（390px 视口）：文档宽 399px，溢出 9px。
+   顶栏装了 7 件事物：「返回 53 + 品牌图标 26 + 目录 60 + 大纲 60 + 登录/创建账号 128 + 主题 18」
+   + 间距与内距 ≈ 399px，超出视口 9px。
+   解法：按重要性让位 —— 品牌文字 → 次要登录入口（创建账号）→ 目录按钮文字。
+   主题与主登录按钮始终保留，它们都是核心操作。 */
+@media (max-width: 440px) {
+  .tutorial-page__topbar { padding: 0 8px; gap: 6px; }
+
+  /* 品牌只留图标：文字是装饰性信息 */
+  .tutorial-page__topbar .tutorial-page__brand > span:not(.app-icon) { display: none; }
+  .tutorial-page__brand { padding-left: 0; border-left: 0; gap: 0; }
+
+  /* 禁止按钮文字换行，避免被挤压成两行反而更宽 */
+  .tutorial-page__topbar button { white-space: nowrap; }
+
+  .tutorial-page__back { padding: 6px 5px; margin-left: -2px; font-size: 11.5px; }
+  .tutorial-page__theme-btn { width: 28px; height: 28px; }
+  .tutorial-page__topbar .auth-entry__btn { padding: 5px 9px; font-size: 11.5px; }
+
+  /* 「创建账号」是次级入口：登录按钮已能进入认证弹窗，窄屏下让位给主题切换 */
+  .tutorial-page__topbar .auth-entry__btn:not(.auth-entry__btn--primary) { display: none; }
+
+  .tutorial-page__menu-btn { padding: 6px 7px; font-size: 11.5px; }
+}
+
+/* 375px 及以下：菜单按钮只留图标位，进一步压缩 */
+@media (max-width: 380px) {
+  .tutorial-page__topbar .tutorial-page__brand { display: none; }
+  .tutorial-page__menu-btn { min-width: 0; padding: 6px 5px; }
 }

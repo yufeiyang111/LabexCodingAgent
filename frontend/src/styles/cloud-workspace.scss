@@ -2006,12 +2006,29 @@ html[data-theme='dark'] .mc-btn-outline:hover {
 .mc-spin { animation: mcSpin 1s linear infinite; }
 @keyframes mcSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .mc-test-result {
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: flex-start; gap: 5px;
   margin-top: 6px; padding: 4px 8px;
   border-radius: 6px; font-size: 11px;
 }
-.mc-test-ok { background: #ecfdf5; color: var(--ai-green); }
-.mc-test-fail { background: #fef2f2; color: var(--ai-red); }
+.mc-test-result > svg { flex-shrink: 0; margin-top: 1px; }
+/*
+ * 提示条配色：必须保证 11px 小字达到 WCAG AA（4.5:1）。
+ *
+ * 原实现用 var(--ai-red) / var(--ai-green) 当文字色 —— 它们是「图标/标记色」，
+ * 亮暗两态都偏浅，与各自的浅底叠加后实测：
+ *     亮色失败 3.44:1（不足）、暗色失败 2.12:1（几乎看不清，且浅底在暗色下没有覆盖）。
+ * 于是「测试连接失败」既没有文字、有了文字也看不清。
+ *
+ * 改为固定色阶：亮色 = 浅底 + 深字，暗色 = 深底 + 亮字。
+ * 实测对比度：亮色成功 5.2:1 / 失败 6.0:1；暗色成功 9.4:1 / 失败 8.1:1。
+ */
+.mc-test-ok { background: #ecfdf5; color: #047857; }
+.mc-test-fail { background: #fef2f2; color: #b91c1c; }
+html[data-theme='dark'] .mc-test-ok { background: #0f2f26; color: #6ee7b7; }
+html[data-theme='dark'] .mc-test-fail { background: #3a1d22; color: #fca5a5; }
+/* 失败原因可能很长（如带 URL 的 LLM error），必须能换行且不撑破卡片。
+   min-width: 0 是必需的：flex 子项默认 min-width: auto，长 URL/无空格串会溢出。 */
+.mc-test-reason { min-width: 0; line-height: 1.5; word-break: break-word; overflow-wrap: anywhere; }
 .mc-add-btn {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   width: 100%; padding: 10px; margin-top: 8px;

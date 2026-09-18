@@ -175,6 +175,57 @@ a {
   box-shadow: $shadow-xl !important;
   border: 1px solid $color-border-light !important;
   overflow: hidden;
+  /*
+   * 阻止面板被遮罩层的 flex 容器拉伸到满高。
+   *
+   * Element Plus 的 `.el-overlay-dialog` 是 display: flex，`.el-dialog` 作为
+   * flex 子项默认 `align-items: stretch` → 面板被拉满整个视口高度。内容只有
+   * 五六百像素时底部就会留出大片空白，手机上看起来像"弹窗占满整屏没做适配"。
+   * （实测：stretch 时账号设置弹窗高 536px/底部留白 71px，safe center 后
+   *   482px/17px。）
+   *
+   * 这里必须写两行 `align-self`：第一行给不认识 `safe` 关键字的旧浏览器，
+   * 第二行的 `safe center` 让内容高于视口时退化为 start 对齐 —— 否则 flex
+   * 居中会把溢出的部分顶到视口上方，那段内容永远滚不到。
+   */
+  align-self: center;
+  align-self: safe center;
+
+  /*
+   * 限高 + 内容区滚动（只作用于通用弹窗）。
+   *
+   * 解决什么问题：`.el-overlay-dialog` 是 flex（主轴为水平），而 **flex 交叉轴
+   * 方向的内容溢出不会计入可滚动区域** —— 弹窗比视口高时，遮罩层的
+   * `overflow: auto` 也滚不到，底部按钮永远够不着。实测 320×420 视口下
+   * 账号设置弹窗底部「关闭」按钮 bottom=461 而视口 420，触摸上滑无效。
+   *
+   * 所以改为让弹窗自己不超过视口，超高部分由 __body 内部滚动：
+   *   面板 → flex column，header/footer 固定，__body 占满剩余并可滚。
+   *   `min-height: 0` 是必需的：flex 子项默认 `min-height: auto` 会被内容
+   *   撑破，加了它 __body 才真正获得约束高度并产生滚动条。
+   * 实测：320×420 下弹窗收到 396px、__body 可滚 86px、底部按钮回到视口内；
+   * 390×844 与 1280×900 下高度与居中完全不变（未被限高误伤）。
+   *
+   * 排除 .auth-modal：它的关闭按钮在 __body 内且是 absolute，若 __body 变成
+   * 滚动容器，关闭按钮会随内容一起滚走。登录弹窗走遮罩层滚动（已验证可用）。
+   */
+  &:not(.auth-modal) {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+
+    > .el-dialog__header,
+    > .el-dialog__footer {
+      flex: 0 0 auto;
+    }
+
+    > .el-dialog__body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+    }
+  }
 
   .el-dialog__header {
     margin-bottom: 0;

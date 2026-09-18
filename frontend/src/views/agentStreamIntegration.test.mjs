@@ -166,7 +166,7 @@ test('CloudWorkspace preserves durable task recovery when the initial direct str
 })
 
 test('CloudWorkspace projects durable cache telemetry instead of treating absent data as a miss', () => {
-  assert.match(source, /import \{ applyTokenUsageEvent, createTokenUsageState, resolveCacheTelemetryScope, resolveCacheTelemetryView \} from '@\/composables\/cacheTelemetryStatus'/)
+  assert.match(source, /import \{ applyTokenUsageEvent, createTokenUsageState, mergeConversationSummaries, resolveCacheTelemetryScope, resolveCacheTelemetryView \} from '@\/composables\/cacheTelemetryStatus'/)
   assert.match(source, /const selectedCacheTelemetryStats = computed\(\(\) => resolveCacheTelemetryScope\([\s\S]*allTokenStats\.value,[\s\S]*selectedCacheTelemetryModel\.value/)
   assert.match(timelineSource, /case 'TOKEN_USAGE': \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, data, event\.eventId/)
   assert.match(source, /onTokenUsage: usage => \{[\s\S]*applyTokenUsageEvent\(tokenUsage\.value, usage\)/)
@@ -176,8 +176,15 @@ test('CloudWorkspace projects durable cache telemetry instead of treating absent
   assert.match(source, /const requestEpoch = tokenUsageProjectionEpoch[\s\S]*requestEpoch === tokenUsageProjectionEpoch/)
 })
 
-test('provider candidate final text stays provisional until the run finalizes', () => {
-  assert.match(timelineSource, /case 'FINAL_CANDIDATE_DELTA':[\s\S]*assistantMsg\.pendingFinalContent = \(assistantMsg\.pendingFinalContent \|\| ''\) \+ \(data\.delta \|\| ''\)[\s\S]*assistantMsg\.hasPendingFinalDraft = Boolean\(assistantMsg\.pendingFinalContent\)/)
+test('CloudWorkspace hydrates the session detail list from the persisted server aggregate', () => {
+  // 会话明细必须有持久化基线：仅靠 SSE 累积会在刷新后丢失。
+  assert.match(source, /await projectApi\.agentConversationTokenSummaries\(projectId\.value\)/)
+  assert.match(source, /sessionHistory\.value = mergeConversationSummaries\(sessionHistory\.value, r\.data\)/)
+  // 快照请求失败时保留本地累积结果，明细不整块消失。
+  assert.match(source, /await loadConversationSummaries\(requestEpoch\)/)
+})
+
+test('provider candidate final text stays provisional until the run finalizes', () => {  assert.match(timelineSource, /case 'FINAL_CANDIDATE_DELTA':[\s\S]*assistantMsg\.pendingFinalContent = \(assistantMsg\.pendingFinalContent \|\| ''\) \+ \(data\.delta \|\| ''\)[\s\S]*assistantMsg\.hasPendingFinalDraft = Boolean\(assistantMsg\.pendingFinalContent\)/)
   assert.match(timelineSource, /case 'COMPLETION_EVIDENCE':[\s\S]*data\.satisfied === true[\s\S]*assistantMsg\.completionBlockedEvidence = data[\s\S]*assistantMsg\.pendingFinalContent = ''/)
   assert.match(timelineSource, /case 'FINAL':[\s\S]*assistantMsg\.pendingFinalContent = ''[\s\S]*assistantMsg\.content = stripInternalReasoningBlocks\(data\.content\)/)
 })

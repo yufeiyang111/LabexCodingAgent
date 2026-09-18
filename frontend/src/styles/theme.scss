@@ -242,7 +242,7 @@ html[data-theme='dark'][data-color-preset='contrast'] .cs-btn-primary { border-c
 html[data-theme] .cs-btn-outline, html[data-theme] .cs-template-item, html[data-theme] .cs-input, html[data-theme] .cs-modal { background: var(--theme-surface); border-color: var(--theme-border); color: var(--theme-text); border-radius: var(--theme-radius); }
 html[data-theme] .cs-btn-outline:hover, html[data-theme] .cs-item:hover, html[data-theme] .cs-btn-ghost:hover { background: var(--theme-surface-muted); border-color: var(--theme-accent); color: var(--theme-text); }
 html[data-theme] .cs-item.active, html[data-theme] .cs-template-item.active { background: var(--theme-accent-soft); }
-html[data-theme] .cs-item.active .cs-item-name, html[data-theme] .cs-template-icon, html[data-theme] .cs-template-item.active .cs-template-name { color: var(--theme-accent); }
+html[data-theme] .cs-item.active .cs-item-name, html[data-theme] .cs-template-item.active .cs-template-name { color: var(--theme-accent); }
 html[data-theme] .cs-modal { box-shadow: var(--theme-shadow); }
 
 html[data-theme] .ws-topbar, html[data-theme] .ws-sidebar, html[data-theme] .ws-center, html[data-theme] .ws-editor, html[data-theme] .ws-terminal-dock { border-color: var(--theme-border); }

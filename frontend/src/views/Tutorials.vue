@@ -29,6 +29,7 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
         <span>大纲</span>
       </button>
+      <AuthEntryButton v-if="!userStore.isLoggedIn" primary show-register />
       <button
         type="button"
         class="tutorial-page__theme-btn"
@@ -80,6 +81,7 @@ import '@/styles/tutorials.scss'
 import { useRoute, useRouter } from 'vue-router'
 import { tutorialApi } from '@/api'
 import { useUserStore } from '@/stores/user'
+import { useAuthModalStore } from '@/stores/authModal'
 import { useThemeStore } from '@/stores/theme'
 import { useResponsive } from '@/composables/useResponsive'
 import TutorialArticle from '@/components/tutorial/TutorialArticle.vue'
@@ -88,11 +90,13 @@ import TutorialOutline from '@/components/tutorial/TutorialOutline.vue'
 import TutorialSidebar from '@/components/tutorial/TutorialSidebar.vue'
 import { headingId } from '@/components/tutorial/tutorialHeading'
 import AppIcon from '@/components/AppIcon.vue'
+import AuthEntryButton from '@/components/auth/AuthEntryButton.vue'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const themeStore = useThemeStore()
+const authModal = useAuthModalStore()
 const { windowWidth } = useResponsive()
 // 窄屏（手机 / 平板 / 窄桌面窗口 <1200px）：目录侧边栏默认折叠，顶栏按钮按需唤出
 const isNarrow = computed(() => windowWidth.value < 1200)
@@ -109,10 +113,15 @@ const activeHeadingId = ref('')
 const showBackTop = ref(false)
 const currentSlug = computed(() => String(route.params.slug || route.params.id || ''))
 const activeSlug = computed(() => currentSlug.value || items.value[0]?.slug || '')
-const backLabel = computed(() => userStore.isLoggedIn ? '返回项目' : '返回登录')
+const backLabel = computed(() => userStore.isLoggedIn ? '返回项目' : '登录')
 
 function goBack() {
-  router.push({ name: userStore.isLoggedIn ? 'Projects' : 'Login' })
+  // 未登录时不再整页跳转到 /login，改为按需唤起登录弹窗，保持当前阅读位置
+  if (userStore.isLoggedIn) {
+    router.push({ name: 'Projects' })
+    return
+  }
+  authModal.open('login')
 }
 
 const headings = computed(() => {
