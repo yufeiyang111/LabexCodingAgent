@@ -1,0 +1,122 @@
+/* ==========================================================================
+   修复层：对自动生成样式的定点修正
+   —— 与生成的 _*.css 分开维护，避免下次重新生成时被覆盖
+   ========================================================================== */
+
+/* ── hero 字符：hover 变色被入场动画压制 ──
+   根因：`.hero__char` 挂着入场闪烁动画 `color-flash`（改 color），
+        而 `.hero__char--interactive:hover` 也要改 color。
+        CSS 层叠中「动画声明优先于普通声明」，因此 hover 的颜色永远被动画压住
+        （实测：鼠标已确实命中 :hover，颜色仍保持入场后的值）。
+   解法：用 !important 提权 —— 规范中 !important 声明优先于动画，可稳定覆盖。
+        这也是唯一不改动入场动画本身、又不破坏其播放的纯 CSS 方案。 */
+.landing-scope .hero__char--interactive:hover,
+.landing-scope .hero__char--interactive:focus-visible {
+  color: var(--factory-accent) !important;
+  transform: translateY(-0.04em);
+}
+
+/* 触摸设备没有 hover：按下时给出同样的变色反馈，否则「触碰变色」在手机上完全缺失 */
+@media (hover: none) {
+  .landing-scope .hero__char--interactive:active {
+    color: var(--factory-accent) !important;
+    transform: translateY(-0.04em);
+  }
+}
+
+/* ==========================================================================
+   手机端页脚高度收敛
+   ── 实测问题（390px 视口）：页脚总高 893px，占视口 106%（比整屏还高）。
+      拆解：三栏单列堆叠 = 199 + 199 + 155 = 553px，加品牌区 84px、
+      栏间距 24px×3、底栏 83px，滚动空间被大量占用。
+   ── 解法：窄屏改两列网格（法律栏不跨列、自然落在第三格），
+      同时收紧链接行高与栏间距；链接最小高度保留 28px，仍高于
+      鼠标场景的 24px 下限，触屏可点性不受影响。
+   ========================================================================== */
+@media (max-width: 620px) {
+  .landing-scope .footer {
+    /* 上一区块已自带下内距，页脚不再叠加上边距 */
+    margin-top: 40px;
+  }
+
+  .landing-scope .footer__inner {
+    padding-top: 28px;
+    padding-bottom: 20px;
+  }
+
+  /* 三列而非两列：产品/资源/法律 正好排成一行，比「2+1」再省约 140px。
+     窄屏下每列约 100–115px，链接文案最长的是「MCP 与扩展」，
+     用 minmax(0, 1fr) 允许列收缩，配合下面的 nowrap + 省略避免撑破。 */
+  .landing-scope .footer__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px 14px;
+  }
+
+  /* 品牌区占满一行（标语与 logo 需要完整宽度才不折行） */
+  .landing-scope .footer__brand {
+    grid-column: 1 / -1;
+    gap: 8px;
+  }
+
+  .landing-scope .footer__tagline {
+    font-size: 12.5px;
+    line-height: 1.6;
+    /* 标语在手机上限制为两行以内，避免拉高品牌区 */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .landing-scope .footer__col {
+    gap: 6px;
+  }
+
+  .landing-scope .footer__col h4 {
+    margin-bottom: 2px;
+    font-size: 12.5px;
+  }
+
+  /* 触屏可点性下限 28px：比设计稿的 34px 紧凑，但仍高于鼠标场景的 24px */
+  .landing-scope .footer__col a {
+    min-height: 28px;
+    padding: 0;
+    font-size: 13px;
+  }
+
+  .landing-scope .footer__bottom {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 20px;
+    padding-top: 14px;
+  }
+
+  .landing-scope .footer__copy {
+    font-size: 12px;
+  }
+
+  .landing-scope .footer__links {
+    gap: 6px;
+  }
+
+  .landing-scope .footer__links a {
+    min-height: 28px;
+    padding: 0;
+    font-size: 12px;
+  }
+}
+
+/* 极窄屏：品牌标语进一步压缩，避免占满首屏 */
+@media (max-width: 380px) {
+  .landing-scope .footer__grid {
+    gap: 18px 14px;
+  }
+
+  .landing-scope .footer__tagline {
+    -webkit-line-clamp: 2;
+    font-size: 12px;
+  }
+}

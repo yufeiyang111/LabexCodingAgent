@@ -1,0 +1,235 @@
+/* ==========================================================================
+   内容区块：章节标签、运行演示、截图、改动审查卡。
+
+   由设计稿自动生成并做作用域限定（.landing-scope），请勿手工重排规则顺序：
+   规则顺序参与层叠优先级，重排会改变最终样式。
+   ========================================================================== */
+
+.landing-scope .section { padding-top: clamp(64px, 12.5vw, 118px); }
+
+.landing-scope .seclabel { border-top: 1px solid var(--sci-rule); padding: 25px 0 0; }
+
+.landing-scope .seclabel__title {
+  margin: 0;
+  color: var(--sci-rule);
+  font-size: clamp(27px, 2.75vw, 38px);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--type-h2-line);
+  letter-spacing: -.02em;
+  text-wrap: balance;
+}
+
+.landing-scope .seclabel--chapter { border-top: 0; padding-top: 0; }
+
+.landing-scope .seclabel--chapter .seclabel__title {
+  max-width: 1000px;
+  font-size: clamp(38px, 4.6vw, var(--factory-title-size));
+  line-height: 1.05;
+  letter-spacing: -.03em;
+}
+
+.landing-scope .seclabel__intro {
+  max-width: 720px;
+  margin: 18px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--type-p1-size);
+  line-height: var(--type-p1-line);
+}
+
+.landing-scope .runtime {
+  margin-top: clamp(72px, 10vw, 140px);
+  padding-block: clamp(56px, 8vw, 104px);
+  background: #000;
+  color: #fff;
+  color-scheme: dark;
+}
+
+.landing-scope .runtime .seclabel { border-top-color: color-mix(in srgb, #fff 26%, transparent); }
+
+.landing-scope .runtime .seclabel__title { color: #fff; }
+
+.landing-scope .runtime .seclabel__intro { color: oklab(100% 0 0 / .66); }
+
+.landing-scope .diffcard {
+  margin: 44px 0 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+}
+
+.landing-scope .diffcard__tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-tertiary);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.landing-scope .diffcard__tabs::-webkit-scrollbar { display: none; }
+
+.landing-scope .diffcard__tab {
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  padding: 10px 14px 12px;
+  background: transparent;
+  color: var(--sci-muted-mark);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--transition-duration-short) var(--ease-curve), border-color var(--transition-duration-short) var(--ease-curve);
+}
+
+.landing-scope .diffcard__tab:hover { color: var(--color-text-emphasis); }
+
+.landing-scope .diffcard__tab.is-active { border-bottom-color: var(--factory-accent); color: var(--color-text-emphasis); }
+
+.landing-scope .diffcard__pane { display: none; }
+
+.landing-scope .diffcard__pane.is-active { display: block; }
+
+.landing-scope .diffcard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.landing-scope .diffcard__path {
+  color: var(--color-text-emphasis);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.landing-scope .diffcard__stat { flex: 0 0 auto; font-family: var(--font-mono); font-size: 12.5px; }
+
+.landing-scope .diffcard__stat b { color: #1a7f37; font-weight: 600; }
+
+.landing-scope .diffcard__stat s { margin-left: 8px; color: #b42318; text-decoration: none; }
+
+.landing-scope .diffcard__code {
+  margin: 0;
+  padding: 10px 0;
+  max-height: 430px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+  tab-size: 4;
+}
+
+.landing-scope .diffcard__code::-webkit-scrollbar { width: 10px; height: 10px; }
+
+.landing-scope .diffcard__code::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 99px; background-clip: content-box; background-color: var(--color-border-strong); }
+
+.landing-scope .dl { display: block; padding-right: 18px; white-space: pre; color: var(--color-text-secondary); }
+
+.landing-scope .dl i { display: inline-block; width: 34px; padding-right: 12px; color: var(--sci-muted-mark); font-style: normal; text-align: right; user-select: none; }
+
+.landing-scope .dl.is-add { background: #e6f4ea; color: #0f4d24; }
+
+.landing-scope .dl.is-add i { color: #1a7f37; }
+
+.landing-scope .dl.is-del { background: #fdecea; color: #7a1c14; }
+
+.landing-scope .dl.is-del i { color: #b42318; }
+
+.landing-scope .dl.is-hunk { margin: 6px 0; color: var(--sci-muted-mark); background: var(--color-surface-tertiary); }
+
+.landing-scope .diffcard__foot {
+  padding: 14px 18px;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-tertiary);
+  color: var(--sci-muted-mark);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.landing-scope .diffcard__foot b { color: #1a7f37; }
+
+.landing-scope .diffcard__foot s { color: #b42318; text-decoration: none; }
+
+.landing-scope .shot--video { position: relative; }
+
+.landing-scope .shot__video {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid oklab(100% 0 0 / .16);
+  border-radius: var(--radius-lg);
+  background: #000;
+  box-shadow: var(--shadow-4);
+}
+
+.landing-scope .shot__play {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid oklab(100% 0 0 / .22);
+  border-radius: 50%;
+  background: oklab(0% 0 0 / .5);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-duration-short) var(--ease-curve), background-color var(--transition-duration-short) var(--ease-curve);
+}
+
+.landing-scope .shot--video:hover .shot__play,
+.landing-scope .shot__play:focus-visible { opacity: 1; }
+
+.landing-scope .shot__play:hover { background: oklab(0% 0 0 / .75); }
+
+.landing-scope .shot__play svg { width: 15px; height: 15px; }
+
+.landing-scope .shot__play-go { display: none; }
+
+.landing-scope .shot--paused .shot__play-pause { display: none; }
+
+.landing-scope .shot--paused .shot__play-go { display: block; }
+
+.landing-scope .shot { margin: 40px 0 0; }
+
+.landing-scope .shot__img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid oklab(100% 0 0 / .16);
+  border-radius: var(--radius-lg);
+  background: #000;
+  box-shadow: var(--shadow-4);
+}
+
+.landing-scope .shot__cap {
+  margin: 14px 0 0;
+  color: oklab(100% 0 0 / .62);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+
+.landing-scope .shot__tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--factory-accent) 46%, transparent);
+  border-radius: 999px;
+  color: #7cc0ff;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  vertical-align: 1px;
+}
+
+.landing-scope .runtime code { background: oklab(100% 0 0 / .1); color: #fff; }

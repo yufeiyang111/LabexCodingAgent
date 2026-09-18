@@ -1,0 +1,205 @@
+/* ==========================================================================
+   首屏：标题、副文、CTA、舞台与媒体光晕。
+
+   由设计稿自动生成并做作用域限定（.landing-scope），请勿手工重排规则顺序：
+   规则顺序参与层叠优先级，重排会改变最终样式。
+   ========================================================================== */
+
+.landing-scope .hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: clamp(56px, 11vh, 132px);
+  padding-bottom: clamp(24px, 4vh, 48px);
+  text-align: center;
+}
+
+.landing-scope .hero__kicker {
+  margin: 0 0 clamp(24px, 4.2vh, 60px);
+  color: var(--sci-muted-mark);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -.012em;
+  animation: fade-rise var(--intro-dur-block) var(--ease-settle) 0s backwards;
+}
+
+.landing-scope .hero__title {
+  max-width: min(100%, 1300px);
+  margin: 0;
+  font-size: clamp(47px, 8.8vw, 148px);
+  font-weight: var(--font-weight-normal);
+  line-height: 1.02;
+  letter-spacing: -.045em;
+  color: var(--color-text-emphasis);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+.landing-scope .hero__word {
+  display: inline-block;
+  animation: word-reveal var(--intro-dur-word) var(--ease-settle) var(--word-delay, 0s) backwards;
+}
+
+.landing-scope .hero__char {
+  display: inline-block;
+  animation: color-flash .2s step-end var(--char-delay, 0s);
+}
+
+.landing-scope .hero__char--interactive { cursor: default; }
+
+.landing-scope .hero__char--replay {
+  animation: none;
+}
+
+.landing-scope .hero__char--replay.is-flashing {
+  animation: color-flash .2s step-end;
+}
+
+.landing-scope .hero__sub {
+  max-width: 620px;
+  margin: clamp(28px, 4vh, 48px) 0 0;
+  color: var(--color-text-secondary);
+  font-size: clamp(15px, 1.28vw, 19px);
+  line-height: 1.65;
+  letter-spacing: -.015em;
+  text-wrap: pretty;   /* 避免中文孤字换行 */
+  animation: fade-rise var(--intro-dur-block) var(--ease-settle) var(--intro-handoff) backwards;
+  --rise-y: 0px;
+}
+
+.landing-scope .hero__cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 48px;
+  margin-top: 28px;
+}
+
+.landing-scope .hero__cta > * {
+  animation: fade-rise var(--intro-dur-block) var(--ease-settle) var(--intro-handoff-cta) backwards;
+  --rise-y: 18px;
+}
+
+.landing-scope .hero__cta > :nth-child(2) { animation-delay: calc(var(--intro-handoff-cta) + 90ms); }
+
+.landing-scope .hero__cta > :nth-child(3) { animation-delay: calc(var(--intro-handoff-cta) + .18s); }
+
+.landing-scope .hero__cta > :nth-child(4) { animation-delay: calc(var(--intro-handoff-cta) + .27s); }
+
+.landing-scope .hero__media {
+  --rise-y: 22px;
+  position: relative;
+  width: 100%;
+  margin-top: clamp(40px, 6vh, 76px);
+  animation: fade-rise var(--intro-dur-media) var(--ease-settle) var(--intro-handoff-media) backwards;
+}
+
+.landing-scope .hero__media .stage {
+  clip-path: inset(0 0 100% 0);
+}
+
+.landing-scope .hero__media.is-open .stage {
+  animation: reveal-complete .7s var(--ease-settle) both;
+}
+
+.landing-scope .hero__media.is-open .demo { animation: demo-in .62s var(--ease-settle) .06s both; }
+
+.landing-scope .stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: 1350px;
+  margin-inline: auto;
+  padding: clamp(18px, 2.2vw, 30px);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  background-color: var(--color-surface-secondary);
+  background-image:
+    radial-gradient(46% 40% at 6% 8%, color-mix(in srgb, var(--color-brand-blue-100) 62%, transparent) 0%, transparent 66%),
+    radial-gradient(40% 36% at 94% 12%, color-mix(in srgb, var(--factory-accent) 12%, transparent) 0%, transparent 64%),
+    radial-gradient(44% 40% at 88% 96%, color-mix(in srgb, var(--color-brand-blue-500) 10%, transparent) 0%, transparent 66%),
+    radial-gradient(38% 34% at 14% 92%, color-mix(in srgb, var(--color-brand-blue-800) 8%, transparent) 0%, transparent 66%);
+  overflow: hidden;
+}
+
+.landing-scope .stage::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(color-mix(in srgb, var(--diagram-ink) 8%, transparent) .7px, transparent .9px);
+  background-size: 6px 6px;
+  -webkit-mask-image: radial-gradient(ellipse 78% 70% at 50% 50%, #000 24%, transparent 100%);
+  mask-image: radial-gradient(ellipse 78% 70% at 50% 50%, #000 24%, transparent 100%);
+  pointer-events: none;
+}
+
+.landing-scope .demo--ide {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: #fff;
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+  text-align: left;
+}
+
+.landing-scope .demo--ide { position: relative; }
+
+.landing-scope .hero__media:hover .playback,
+.landing-scope .hero__media.is-open .playback,
+.landing-scope .playback:focus-visible { opacity: 1; }
+
+.landing-scope .hero__media.is-open:not(:hover) .playback { opacity: .72; }
+
+.landing-scope .panel__dots { display: inline-flex; gap: 5px; }
+
+.landing-scope .media-halo {
+  position: absolute;
+  z-index: 0;
+  top: 50%;
+  left: 50%;
+  width: min(46%, 460px);
+  aspect-ratio: 1 / 1.12;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(closest-side,
+    color-mix(in srgb, var(--factory-accent) 26%, transparent) 0%,
+    color-mix(in srgb, var(--color-brand-blue-100) 22%, transparent) 46%,
+    transparent 76%);
+  filter: blur(46px);
+  opacity: .5;
+  pointer-events: none;
+  animation: halo-breathe 9s var(--ease-curve) infinite;
+}
+
+.landing-scope .hero__media .stage { position: relative; z-index: 1; }
+
+.landing-scope .demo {
+  background-image: radial-gradient(300px circle at var(--mx) var(--my),
+    color-mix(in srgb, var(--factory-accent) calc(var(--spot) * 6%), transparent),
+    transparent 68%);
+  transition:
+    border-color var(--transition-duration-short) var(--ease-curve),
+    box-shadow var(--transition-duration-short) var(--ease-curve),
+    transform var(--transition-duration-short) var(--ease-settle),
+    --spot .36s var(--ease-curve);
+}
+
+.landing-scope .demo:hover {
+  box-shadow: var(--shadow-4);
+  border-color: color-mix(in srgb, var(--factory-accent) 24%, transparent);
+  transform: translateY(-3px);
+  --spot: 1;
+}
+
+.landing-scope .hero__char--interactive { transition: color .2s var(--ease-curve), transform .3s var(--ease-settle); }
+
+.landing-scope .hero__char--interactive:hover { color: var(--factory-accent); transform: translateY(-.04em); }
+
+.landing-scope .hero {
+  transform: translate3d(0, var(--hero-shift, 0px), 0);
+  opacity: var(--hero-fade, 1);
+}

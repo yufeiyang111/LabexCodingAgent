@@ -6,7 +6,29 @@
     <meta name="format-detection" content="telephone=no" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+
+    <!--
+      站点图标统一由 scripts/generate-brand-assets.mjs 从 src/assets/brand/labexMark.js 生成。
+      改品牌只需改那一个数据源再重跑脚本，避免「页面换了、标签页还是旧图标」。
+      SVG 在前、位图在后：支持的浏览器用矢量版，其余回退到 PNG。
+    -->
     <link rel="icon" type="image/svg+xml" href="/brand/labex-mark.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/brand/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/brand/apple-touch-icon.png" />
+    <link rel="manifest" href="/brand/manifest.webmanifest" />
+    <meta name="theme-color" content="#0F172A" />
+
+    <!-- 分享卡片：链接发到微信 / 群聊 / 社交平台时的缩略图与摘要 -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="LabexAgent" />
+    <meta property="og:title" content="LabexAgent · 浏览器里的编程 Agent" />
+    <meta property="og:description" content="读代码、改文件、跑测试，做完把结果留在对话里；过程可回看，改动可回退。" />
+    <meta property="og:image" content="/brand/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="LabexAgent · 浏览器里的编程 Agent" />
+    <meta name="twitter:description" content="读代码、改文件、跑测试，做完把结果留在对话里；过程可回看，改动可回退。" />
+    <meta name="twitter:image" content="/brand/og-image.png" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
