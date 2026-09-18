@@ -95,7 +95,7 @@ public class AgentConversationCompactionService {
             }
 
             String latestRequest = latestUserRequest(source);
-            CompactionAgent.Result modelResult = compactionAgent.compact(studentId, activeConfig,
+            CompactionAgent.Result modelResult = compactionAgent.compact(studentId, activeConfig, conversationId,
                     selection.compactedHead(), latestRequest, null, token);
             if (token.isCancellationRequested()
                     || modelResult != null && "Compaction cancelled".equalsIgnoreCase(modelResult.reason())) {

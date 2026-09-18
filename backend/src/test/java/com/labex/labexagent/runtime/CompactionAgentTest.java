@@ -1,5 +1,6 @@
 package com.labex.labexagent.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -13,6 +14,7 @@ import static org.mockito.Mockito.when;
 import com.labex.entity.AgentModelConfig;
 import com.labex.labexagent.llm.LlmProvider;
 import com.labex.labexagent.llm.LlmProviderFactory;
+import com.labex.labexagent.llm.PromptCacheKeyFactory;
 import com.labex.service.AgentModelConfigService;
 import java.util.List;
 import java.util.Map;
@@ -20,6 +22,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class CompactionAgentTest {
+
+    /** 会话标识：压缩属于同一会话内的辅助请求，必须沿用同一个 x-opencode-session。 */
+    private static final String CONVERSATION = "conv-compaction-session";
 
     @Test
     void usesOwnedDedicatedModelWithoutToolsAndBuildsValidatedCheckpoint() {
@@ -47,7 +52,7 @@ class CompactionAgentTest {
 
         CompactionAgent agent = new CompactionAgent(providerFactory, modelConfigService);
         CancellationToken cancellationToken = mock(CancellationToken.class);
-        CompactionAgent.Result result = agent.compact(7, primary, messages(), "Improve context management", null,
+        CompactionAgent.Result result = agent.compact(7, primary, CONVERSATION, messages(), "Improve context management", null,
                 cancellationToken);
 
         assertTrue(result.success());
@@ -61,6 +66,10 @@ class CompactionAgentTest {
         assertTrue(tools.getValue().isEmpty());
         assertTrue(usedConfig.getValue().temperature() == 0.0);
         assertFalse(usedConfig.getValue().promptCacheKeyEnabled());
+        // 压缩走 compaction 专用模型，但会话标识必须与主会话完全一致（只按会话推导，与模型路由无关）。
+        assertEquals(PromptCacheKeyFactory.sessionIdForConversation(CONVERSATION),
+                usedConfig.getValue().sessionId());
+        assertFalse(usedConfig.getValue().sessionId().isBlank());
     }
 
     @Test
@@ -75,7 +84,7 @@ class CompactionAgentTest {
         when(providerFactory.buildConfig(config)).thenReturn(llmConfig);
         CompactionAgent agent = new CompactionAgent(providerFactory, mock(AgentModelConfigService.class));
 
-        CompactionAgent.Result malformed = agent.compact(7, config, messages(), "task", null, CancellationToken.none());
+        CompactionAgent.Result malformed = agent.compact(7, config, CONVERSATION, messages(), "task", null, CancellationToken.none());
         assertFalse(malformed.success());
 
         when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class))).thenReturn(Map.of(
@@ -85,7 +94,7 @@ class CompactionAgentTest {
                          "facts":["token=sk-abcdefghijklmnopqrstuvwxyz"],
                          "nextActions":[],"openRisks":[],"files":[],"verification":[]}
                         """));
-        CompactionAgent.Result redacted = agent.compact(7, config, messages(), "task", null, CancellationToken.none());
+        CompactionAgent.Result redacted = agent.compact(7, config, CONVERSATION, messages(), "task", null, CancellationToken.none());
         assertTrue(redacted.success());
         assertFalse(redacted.checkpoint().contains("abcdefghijklmnopqrstuvwxyz"));
         assertTrue(redacted.checkpoint().contains("[REDACTED]"));
@@ -128,7 +137,7 @@ class CompactionAgentTest {
         when(providerFactory.buildConfig(config)).thenReturn(llmConfig);
 
         CompactionAgent.Result result = new CompactionAgent(providerFactory, mock(AgentModelConfigService.class))
-                .compact(7, config, messages(), "task", null, CancellationToken.none());
+                .compact(7, config, CONVERSATION, messages(), "task", null, CancellationToken.none());
 
         assertTrue(result.success());
         assertTrue(result.checkpoint().contains("Safe checkpoint."));
@@ -160,7 +169,7 @@ class CompactionAgentTest {
         when(providerFactory.buildConfig(config)).thenReturn(llmConfig);
 
         CompactionAgent.Result result = new CompactionAgent(providerFactory, mock(AgentModelConfigService.class))
-                .compact(7, config, messages(), "task", null, CancellationToken.none());
+                .compact(7, config, CONVERSATION, messages(), "task", null, CancellationToken.none());
 
         assertTrue(result.success());
         assertTrue(result.checkpoint().contains("## Goal"));
@@ -191,10 +200,75 @@ class CompactionAgentTest {
         when(providerFactory.buildConfig(config)).thenReturn(llmConfig);
 
         CompactionAgent.Result result = new CompactionAgent(providerFactory, mock(AgentModelConfigService.class))
-                .compact(7, config, messages(), "task", null, CancellationToken.none());
+                .compact(7, config, CONVERSATION, messages(), "task", null, CancellationToken.none());
 
         assertTrue(result.success());
         assertTrue(result.checkpoint().contains("Completed milestone implementation."));
         assertTrue(result.checkpoint().contains("Spring Boot 3.0 configured."));
+    }
+
+    @Test
+    void systemPromptKeepsTheFullOpenCodeAnchorSectionSetInOrder() {
+        AgentModelConfig config = modelConfig(1, "primary", 1);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class)))
+                .thenReturn(Map.of("type", "text", "content", """
+                        ## Goal
+                        - Align compaction with OpenCode.
+                        """));
+        LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(configFor(config));
+
+        new CompactionAgent(providerFactory, mock(AgentModelConfigService.class))
+                .compact(7, config, CONVERSATION, messages(), "task", null, CancellationToken.none());
+
+        ArgumentCaptor<String> systemPrompt = ArgumentCaptor.forClass(String.class);
+        verify(provider).chatWithTools(systemPrompt.capture(), anyList(), anyList(),
+                any(LlmProvider.LlmConfig.class), any(CancellationToken.class));
+        String prompt = systemPrompt.getValue();
+        assertTrue(prompt.contains("## Constraints & Preferences"));
+        assertTrue(prompt.contains("### Blocked"));
+        assertTrue(prompt.contains("Preserve exact file paths, commands, error strings, and identifiers when known."));
+        // 段落顺序必须与上游 SUMMARY_TEMPLATE 一致，否则模型可能合并或漏掉中间段落。
+        assertTrue(prompt.indexOf("## Goal") < prompt.indexOf("## Constraints & Preferences"));
+        assertTrue(prompt.indexOf("### In Progress") < prompt.indexOf("### Blocked"));
+        assertTrue(prompt.indexOf("### Blocked") < prompt.indexOf("## Key Decisions"));
+        assertTrue(prompt.indexOf("## Key Decisions") < prompt.indexOf("## Next Steps"));
+    }
+
+    @Test
+    void acceptsMarkdownSummaryUsingTheFullOpenCodeSectionSet() {
+        AgentModelConfig config = modelConfig(1, "primary", 1);
+        LlmProvider provider = mock(LlmProvider.class);
+        when(provider.chatWithTools(anyString(), anyList(), anyList(), any(LlmProvider.LlmConfig.class), any(CancellationToken.class)))
+                .thenReturn(Map.of("type", "text", "content", """
+                        ## Goal
+                        - Align compaction with OpenCode.
+
+                        ## Constraints & Preferences
+                        - No new runtime dependencies.
+
+                        ## Progress
+                        ### Done
+                        - Added the prune protect budget.
+
+                        ### Blocked
+                        - Waiting for a live smoke run.
+
+                        ## Next Steps
+                        - Run the compaction suite.
+                        """));
+        LlmProviderFactory providerFactory = mock(LlmProviderFactory.class);
+        when(providerFactory.resolveProvider(config)).thenReturn(provider);
+        when(providerFactory.buildConfig(config)).thenReturn(configFor(config));
+
+        CompactionAgent.Result result = new CompactionAgent(providerFactory, mock(AgentModelConfigService.class))
+                .compact(7, config, CONVERSATION, messages(), "task", null, CancellationToken.none());
+
+        assertTrue(result.success());
+        assertTrue(result.checkpoint().contains("## Constraints & Preferences"));
+        assertTrue(result.checkpoint().contains("### Blocked"));
+        assertTrue(result.checkpoint().contains("Added the prune protect budget."));
     }
 }

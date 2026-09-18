@@ -41,7 +41,7 @@ class AgentLoopEngineCompactionTerminalityTest {
         AgentLoopEngine engine = configuredEngine(compactionAgent, compactionService);
         AgentCompactionRecord record = runningRecord();
         when(compactionService.start(any())).thenReturn(record);
-        when(compactionAgent.compact(any(), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.failure("Compaction cancelled"));
         CancellationToken cancellationToken = () -> true;
 
@@ -61,7 +61,7 @@ class AgentLoopEngineCompactionTerminalityTest {
         AgentLoopEngine engine = configuredEngine(compactionAgent, compactionService);
         AgentCompactionRecord record = runningRecord();
         when(compactionService.start(any())).thenReturn(record);
-        when(compactionAgent.compact(any(), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(any(), any(), any(), any(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("provider exploded"));
 
         AgentSsePublisher sse = mock(AgentSsePublisher.class);
@@ -82,7 +82,7 @@ class AgentLoopEngineCompactionTerminalityTest {
         AgentLoopEngine engine = configuredEngine(compactionAgent, compactionService);
         AgentCompactionRecord record = runningRecord();
         when(compactionService.start(any())).thenReturn(record);
-        when(compactionAgent.compact(any(), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(any(), any(), any(), any(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("provider exploded"));
         org.mockito.Mockito.doThrow(new IllegalArgumentException("database unavailable"))
                 .when(compactionService).fail(eq(record), any());
@@ -105,7 +105,7 @@ class AgentLoopEngineCompactionTerminalityTest {
         AgentLoopEngine engine = configuredEngine(compactionAgent, compactionService);
         AgentCompactionRecord record = runningRecord();
         when(compactionService.start(any())).thenReturn(record);
-        when(compactionAgent.compact(any(), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.success("compact checkpoint", 9, "acceptance", false));
         doAnswer(invocation -> {
             record.setStatus("completed");

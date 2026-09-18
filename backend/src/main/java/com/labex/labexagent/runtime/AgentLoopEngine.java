@@ -1308,9 +1308,6 @@ You are permitted to make file changes, run shell commands, and utilize your ars
                                                          final int usageTotalTokens = totalTokens;
                                                       final Long usageTaskId = task.getTaskId();
                                                       final long usageEpoch = activeExecutionEpoch;
-                                                      final Integer usageStudentId = studentId;
-                                                      final Integer usageProjectId = projectId;
-                                                      final String usageConversationId = conv.getConversationId();
                                                       AgentRunEvent usageEvent = this.tokenTracker.recordFromMapWithFenceAndEvent(
                                                               executionFence, conv.getConversationId(), request.getSessionId(),
                                                               studentId, projectId, llmProvider.getProviderId(), llmConfig.modelName(),
@@ -1318,8 +1315,7 @@ You are permitted to make file changes, run shell commands, and utilize your ars
                                                               () -> this.tokenUsagePayload(
                                                                       usageForEvent, cacheStatusForEvent,
                                                                       CacheTelemetry.hitRate(configForUsage.promptCacheKeyEnabled(), usageForEvent),
-                                                                      usageIteration, usageTotalTokens, usageConversationId, usageTaskId,
-                                                                      usageEpoch, usageStudentId, usageProjectId, false,
+                                                                      usageIteration, usageTotalTokens, false,
                                                                       this.prefixTelemetry(usageTaskId, usageEpoch, usageIteration)),
                                                               this.tokenUsageEventKey(usageTaskId, usageEpoch, usageIteration));
                                                       log.info("Iteration {}: sending TOKEN_USAGE, totalTokens={}, cacheStatus={}",
@@ -1358,17 +1354,13 @@ You are permitted to make file changes, run shell commands, and utilize your ars
                                                  final int usageTotalTokens = estimatedTotal;
                                                  final Long usageTaskId = task.getTaskId();
                                                  final long usageEpoch = activeExecutionEpoch;
-                                                 final Integer usageStudentId = studentId;
-                                                 final Integer usageProjectId = projectId;
-                                                 final String usageConversationId = conv.getConversationId();
                                                  AgentRunEvent usageEvent = this.tokenTracker.recordFromMapWithFenceAndEvent(
                                                              executionFence, conv.getConversationId(), request.getSessionId(),
                                                              studentId, projectId, llmProvider.getProviderId(), llmConfig.modelName(),
                                                              usageForEvent, cacheStatusForEvent, i, null,
                                                              () -> this.tokenUsagePayload(
                                                                      usageForEvent, cacheStatusForEvent, null, usageIteration, usageTotalTokens,
-                                                                      usageConversationId, usageTaskId, usageEpoch,
-                                                                     usageStudentId, usageProjectId, true,
+                                                                     true,
                                                                      this.prefixTelemetry(usageTaskId, usageEpoch, usageIteration)),
                                                              this.tokenUsageEventKey(usageTaskId, usageEpoch, usageIteration));
                                                      this.sendPersistedEvent(sse, conv, usageEvent);
@@ -3774,7 +3766,10 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         List<Map<String, Object>> tools = new ArrayList<>(this.buildToolsList(selectedTools));
         LlmProvider.LlmConfig configured = baseLlmConfig == null ? null : baseLlmConfig.withPromptCacheKey(
                 PromptCacheKeyFactory.forConversation(studentId, modelConfig.getConfigId(),
-                        baseLlmConfig.baseUrl(), baseLlmConfig.modelName(), conversationId));
+                        baseLlmConfig.baseUrl(), baseLlmConfig.modelName(), conversationId))
+                // 会话级 session 标识只按会话身份推导（不含模型路由）：OpenCode Go 的
+                // x-opencode-session 要求同一会话内跨模型恒定，且不依赖 promptCacheKeyEnabled 开关。
+                .withSessionId(PromptCacheKeyFactory.sessionIdForConversation(conversationId));
         String modePolicy = this.buildModePolicy(mode)
                 + (subagent == null ? "" : this.subagentRuntimeDirective(subagent));
         return new RunRuntimeProjection(mode, selectedTools, toolDefinitions, systemPrompt, tools,
@@ -4329,18 +4324,23 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         }
     }
 
+    /**
+     * TOKEN_USAGE 事件载荷。
+     *
+     * <p>本方法在<b>每个 iteration</b> 于持久化事务内执行，因此这里只允许廉价操作：
+     * 过去这里会计算 {@code conversationTotal}（"本会话累计消耗"），代价是
+     * {@code TokenTracker.getTotalTokensByConversation} 把整个会话的用量行拉回 JVM 求和，
+     * 会话 N 轮累计 O(N²)；该字段既无任何消费者，前端也已自行增量累计
+     * （{@code cacheTelemetryStatus.js} 的 {@code totalTokens += ...}），故整体移除。
+     * <b>不要在这里再加任何查库或全量遍历。</b>
+     */
     private Map<String, Object> tokenUsagePayload(Map<String, Object> usageMap,
-                                                    CacheTelemetryStatus cacheStatus,
-                                                    Double cacheHitRate,
-                                                    int iteration,
-                                                    int totalTokens,
-                                                    String conversationId,
-                                                    Long taskId,
-                                                    long executionEpoch,
-                                                    Integer studentId,
-                                                    Integer projectId,
-                                                    boolean estimated,
-                                                    AgentRunConfigSnapshotService.PrefixTelemetry prefixTelemetry) {
+                                                  CacheTelemetryStatus cacheStatus,
+                                                  Double cacheHitRate,
+                                                  int iteration,
+                                                  int totalTokens,
+                                                  boolean estimated,
+                                                  AgentRunConfigSnapshotService.PrefixTelemetry prefixTelemetry) {
         Map<String, Object> payload = new LinkedHashMap<>();
         CacheTelemetryStatus effectiveStatus = cacheStatus == null
                 ? CacheTelemetryStatus.NOT_REPORTED
@@ -4349,8 +4349,6 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         payload.put("promptTokens", intUsage(usageMap, "prompt_tokens"));
         payload.put("completionTokens", intUsage(usageMap, "completion_tokens"));
         payload.put("totalTokens", totalTokens);
-        payload.put("conversationTotal", this.tokenTracker.getTotalTokensByConversation(
-                conversationId, studentId, projectId));
         payload.put("cachedTokens", intUsage(usageMap, "cached_tokens"));
         payload.put("cacheWriteTokens", intUsage(usageMap, "cache_write_tokens"));
         payload.put("cacheHitTokens", intUsage(usageMap, "cache_hit_tokens"));
@@ -4392,6 +4390,18 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         }
     }
 
+    /**
+     * 构造一次性的上下文裁剪器。尾部保护式 prune 的两个门槛来自 {@link AgentLoopProperties}
+     * （默认对齐 OpenCode 的 PRUNE_PROTECT / PRUNE_MINIMUM），此处不做内联魔法数字。
+     */
+    private TurnAwareContextPruner contextPruner() {
+        int protectTokens = loopProperties == null
+                ? TurnAwareContextPruner.DEFAULT_PRUNE_PROTECT_TOKENS : loopProperties.getPruneProtectTokens();
+        int minimumTokens = loopProperties == null
+                ? TurnAwareContextPruner.DEFAULT_PRUNE_MINIMUM_TOKENS : loopProperties.getPruneMinimumTokens();
+        return new TurnAwareContextPruner(this.requestTokenEstimator::estimateValue, protectTokens, minimumTokens);
+    }
+
     private ContextManagementResult manageContextBeforeModel(String sysPrompt,
                                                              List<Map<String, Object>> tools,
                                                              ContextWindowPolicy policy,
@@ -4413,7 +4423,7 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         // 只在 durable transcript 的安全尾部之外寻找可裁剪工具结果；真正的压缩仍通过
         // CompactionSelection/AgentCompactionService 持久化，避免在内存中另造一份 transcript。
         boolean hasPrunableToolResult = policy.pruningEnabled()
-                && new TurnAwareContextPruner(this.requestTokenEstimator::estimateValue)
+                && contextPruner()
                 .hasPrunableHistoricalToolResult(budgetMessages, policy.tailTurns(), policy.preserveRecentTokens());
         ContextWindowSupervisor.Decision decision = new ContextWindowSupervisor().decide(
                 policy, estimatedTokens, hasPrunableToolResult);
@@ -4457,7 +4467,7 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         // 轻量裁剪 head 中的旧工具结果（native role=tool 与 legacy 文本统一占位化，协议字段保留），
         // 让 LLM 摘要与确定性 checkpoint 的输入体积缩小，提高压缩成功率并降低摘要成本。
         // 只影响本次摘要输入与 checkpoint 文本，不回写 durable transcript。
-        TurnAwareContextPruner.Result headPrune = new TurnAwareContextPruner(this.requestTokenEstimator::estimateValue)
+        TurnAwareContextPruner.Result headPrune = contextPruner()
                 .pruneAllEligible(headForSummary);
         if (headPrune.changed()) {
             log.info("COMPACTION_HEAD_PRUNED taskId={} trigger={} prunedToolResults={} tokensBefore={} tokensAfter={}",
@@ -4482,8 +4492,10 @@ You are permitted to make file changes, run shell commands, and utilize your ars
             this.sendEvent(sse, conversation, "COMPACTION_STARTED",
                     contextEvent(trigger, tokensBefore, tokensBefore, startDetails));
 
+            // 会话实体是会话身份的权威来源；无会话实体时留空，由 Header 策略退化为进程级稳定 ID。
+            String compactionConversationId = conversation == null ? null : conversation.getConversationId();
             CompactionAgent.Result modelResult = this.compactionAgent.compact(studentId, activeModelConfig,
-                    headForSummary, userRequest, context, cancellationToken);
+                    compactionConversationId, headForSummary, userRequest, context, cancellationToken);
             if (this.isCompactionCancelled(modelResult, cancellationToken)) {
                 compactionService.fail(compactionRecord, "Compaction cancelled");
                 compactionTerminalized = true;

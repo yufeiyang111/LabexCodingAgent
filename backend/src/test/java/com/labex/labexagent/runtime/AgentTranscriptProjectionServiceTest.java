@@ -8,15 +8,18 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.labex.entity.AgentConversation;
+import com.labex.entity.AgentModelConfig;
 import com.labex.entity.AgentTask;
 import com.labex.labexagent.attachment.AgentInputAttachmentService;
 import com.labex.labexagent.context.AgentCompactionService;
+import com.labex.labexagent.context.AgentRequestTokenEstimator;
 import com.labex.labexagent.run.AgentConversationMessageGraphVersion;
 import com.labex.labexagent.run.AgentRunTranscriptService;
 import com.labex.labexagent.runtime.profile.AgentRuntimeProfile;
 import com.labex.labexagent.service.AgentConversationMemoryProjectionService;
 import com.labex.mapper.AgentConversationMapper;
 import com.labex.mapper.AgentTaskMapper;
+import com.labex.service.AgentModelConfigService;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -315,5 +318,156 @@ class AgentTranscriptProjectionServiceTest {
     private AgentTranscriptProjectionService service(AgentRunTranscriptService transcript) {
         return new AgentTranscriptProjectionService(transcript, new AgentProviderMessageProjector(),
                 mock(AgentCompactionService.class));
+    }
+
+    /**
+     * characterization：占位化默认关闭时，Provider 投影必须与历史行为逐字一致。
+     * 这条锁住"新增能力默认零影响"，避免默认值漂移导致线上请求悄悄变短。
+     */
+    @Test
+    void leavesHistoricalToolOutputUntouchedWhenCompactionIsDisabledByDefault() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        List<Map<String, Object>> messages = toolHistory();
+        when(transcript.loadProjectableTranscript(7L)).thenReturn(messages);
+
+        assertThat(service(transcript).loadProviderMessages(7L)).isEqualTo(messages);
+    }
+
+    /** 开启后：安全尾部之外的旧工具结果被占位化，协议字段与原始顺序保持不变。 */
+    @Test
+    void compactsOnlyHistoricalToolOutputBeyondTheProtectedTail() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        List<Map<String, Object>> messages = toolHistory();
+        when(transcript.loadProjectableTranscript(7L)).thenReturn(messages);
+
+        List<Map<String, Object>> projected =
+                serviceWithToolOutputCompaction(transcript, true).loadProviderMessages(7L);
+
+        assertThat(projected).hasSize(messages.size());
+        // 最旧的 grep 结果超出门槛，被占位化；tool_call_id 与 name 必须原样保留以维持协议配对。
+        Map<String, Object> compacted = projected.get(2);
+        assertThat(compacted).containsEntry("role", "tool")
+                .containsEntry("tool_call_id", "call-grep")
+                .containsEntry("name", "grep");
+        assertThat(String.valueOf(compacted.get("content"))).contains("[Old tool result content cleared.");
+        // 落在最近 tailTurns 轮内的结果不受影响。
+        assertThat(projected.get(6)).containsEntry("content", messages.get(6).get("content"));
+        // read_file 属于受保护工具白名单之外的普通读取，但在 tail 内，同样不动。
+        assertThat(projected.get(8)).containsEntry("content", messages.get(8).get("content"));
+        // 输入列表本身不被就地修改。
+        assertThat(messages.get(2)).containsEntry("content", tool("grep", "match\n" + "g".repeat(900)));
+    }
+
+    /** 受保护工具（skill 输出无法重建）即使超出保护区也不得占位化。 */
+    @Test
+    void neverCompactsProtectedToolOutput() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        List<Map<String, Object>> messages = List.of(
+                Map.of("role", "user", "content", "turn-1"),
+                Map.of("role", "assistant", "content", ""),
+                Map.of("role", "tool", "tool_call_id", "call-skill", "name", "skill",
+                        "content", tool("skill", "manual\n" + "s".repeat(900))),
+                Map.of("role", "assistant", "content", ""),
+                Map.of("role", "user", "content", "turn-2"),
+                Map.of("role", "assistant", "content", ""),
+                Map.of("role", "user", "content", "turn-3"));
+        when(transcript.loadProjectableTranscript(7L)).thenReturn(messages);
+
+        List<Map<String, Object>> projected =
+                serviceWithToolOutputCompaction(transcript, true).loadProviderMessages(7L);
+
+        assertThat(projected.get(2)).containsEntry("content", tool("skill", "manual\n" + "s".repeat(900)));
+    }
+
+    /**
+     * 压缩选材视图必须保留完整工具输出：摘要要读到原文，且选材结果会整体序列化进压缩记录，
+     * 绝不能把占位文本写进去。
+     */
+    @Test
+    void keepsFullToolOutputInTheCompactionSelectionView() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        List<Map<String, Object>> messages = toolHistory();
+        when(transcript.loadProjectableTranscript(7L)).thenReturn(messages);
+
+        AgentTranscriptProjectionService service =
+                serviceWithToolOutputCompaction(transcript, true);
+
+        assertThat(service.loadDurableCompactionView(7L).messages()).isEqualTo(messages);
+    }
+
+    /**
+     * 开关的唯一权威是模型级 {@code compactionPrune}：置 0 时即使存在远超保护额度的历史工具输出，
+     * Provider 投影也必须逐字保留原文。这条锁住"唯一的关闭路径真的能关"。
+     */
+    @Test
+    void respectsTheModelLevelPruneSwitchWhenItIsTurnedOff() {
+        AgentRunTranscriptService transcript = mock(AgentRunTranscriptService.class);
+        List<Map<String, Object>> messages = toolHistory();
+        when(transcript.loadProjectableTranscript(7L)).thenReturn(messages);
+
+        assertThat(serviceWithToolOutputCompaction(transcript, false).loadProviderMessages(7L))
+                .isEqualTo(messages);
+    }
+
+    private AgentLoopProperties compactionTuning() {
+        AgentLoopProperties properties = new AgentLoopProperties();
+        // 用小阈值锁定机制本身：默认 40k/20k 需要极长会话才会触发，不适合作为单测输入。
+        properties.setPruneProtectTokens(10);
+        properties.setPruneMinimumTokens(1);
+        return properties;
+    }
+
+    /**
+     * 占位化的开关权威是模型级 {@code compactionPrune}，因此测试必须通过模型配置驱动，
+     * 不能靠第二个全局开关绕开——否则就回到了"两个开关管一件事"。
+     */
+    private AgentTranscriptProjectionService serviceWithToolOutputCompaction(
+            AgentRunTranscriptService transcript, boolean pruningEnabled) {
+        AgentTaskMapper tasks = mock(AgentTaskMapper.class);
+        AgentConversationMemoryProjectionService conversationMemory =
+                mock(AgentConversationMemoryProjectionService.class);
+        // task 不带 native profile，因此不会走到 conversation graph 分支；两个 graph 依赖仅为满足
+        // 生产构造器的非空校验。
+        AgentTask currentTask = task(7L, 279, 88, "conv-compaction");
+        currentTask.setModelConfigId(42);
+        when(tasks.selectById(7L)).thenReturn(currentTask);
+        when(conversationMemory.project(279, 88, "conv-compaction", 7L))
+                .thenReturn(new AgentConversationMemoryProjectionService.Projection(List.of(), 6L, 0));
+
+        AgentModelConfig modelConfig = new AgentModelConfig();
+        modelConfig.setConfigId(42);
+        modelConfig.setModelName("primary");
+        modelConfig.setStatus(1);
+        modelConfig.setMaxTokens(4096);
+        modelConfig.setContextWindowTokens(32768);
+        modelConfig.setCompactionPrune(pruningEnabled ? 1 : 0);
+        AgentModelConfigService modelConfigService = mock(AgentModelConfigService.class);
+        when(modelConfigService.getOwned(279, 42)).thenReturn(modelConfig);
+
+        AgentTranscriptProjectionService service = new AgentTranscriptProjectionService(
+                transcript, new AgentProviderMessageProjector(), mock(AgentCompactionService.class), null,
+                tasks, conversationMemory, mock(AgentConversationMapper.class),
+                mock(AgentConversationMessageGraphProjector.class), compactionTuning(),
+                new AgentRequestTokenEstimator(), modelConfigService);
+        return service;
+    }
+
+    private List<Map<String, Object>> toolHistory() {
+        return List.of(
+                Map.of("role", "user", "content", "turn-1"),
+                Map.of("role", "assistant", "content", ""),
+                Map.of("role", "tool", "tool_call_id", "call-grep", "name", "grep",
+                        "content", tool("grep", "match\n" + "g".repeat(900))),
+                Map.of("role", "assistant", "content", ""),
+                Map.of("role", "user", "content", "turn-2"),
+                Map.of("role", "assistant", "content", ""),
+                Map.of("role", "tool", "tool_call_id", "call-read", "name", "read_file",
+                        "content", tool("read_file", "body\n" + "r".repeat(900))),
+                Map.of("role", "assistant", "content", ""),
+                Map.of("role", "user", "content", "turn-3"));
+    }
+
+    private String tool(String name, String output) {
+        return "[Tool " + name + " result]\n" + output;
     }
 }

@@ -9,25 +9,19 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 判据测试。生产占位化走 {@code AgentTranscriptProjectionService} 的投影边界，它调用
+ * {@link TurnAwareContextPruner#selectPrunableIndexes}；压缩 head 预处理调用
+ * {@link TurnAwareContextPruner#pruneAllEligible}。因此这里只针对这两个有生产调用方的入口断言，
+ * 不再存在"测试保护一个无人调用的方法"的情况。
+ */
 class TurnAwareContextPrunerTest {
 
-    private final TurnAwareContextPruner pruner = new TurnAwareContextPruner(String::length);
+    /** 机制类用例用显式小阈值；生产默认值 40k/20k 会把测试里的候选全部挡在保护区内。 */
+    private static final int PROTECT = 2_000;
+    private static final int MINIMUM = 1_000;
 
-    @Test
-    void clearsOnlyEligibleHistoricalToolResultsAndPreservesProtectedAndRecentTurns() {
-        List<Map<String, Object>> messages = messages();
-        String protectedWrite = content(messages.get(2));
-        List<Map<String, Object>> retainedTail = List.copyOf(messages.subList(5, messages.size()));
-
-        TurnAwareContextPruner.Result result = pruner.prune(messages, 2, 4_000);
-
-        assertTrue(result.changed());
-        assertEquals(1, result.prunedToolResults());
-        assertTrue(content(messages.get(4)).contains("[Old tool result content cleared."));
-        assertEquals(protectedWrite, content(messages.get(2)));
-        assertEquals(retainedTail, messages.subList(5, messages.size()));
-        assertTrue(result.tokensAfter() < result.tokensBefore());
-    }
+    private final TurnAwareContextPruner pruner = new TurnAwareContextPruner(String::length, PROTECT, MINIMUM);
 
     @Test
     void calculateTailTokenBudgetAdaptsDynamicallyToContextWindow() {
@@ -49,6 +43,55 @@ class TurnAwareContextPrunerTest {
     }
 
     @Test
+    void selectsOnlyEligibleHistoricalToolResultsAndProtectsTheRecentTurns() {
+        List<Map<String, Object>> messages = messages();
+        List<Map<String, Object>> untouchedSnapshot = List.copyOf(messages);
+
+        List<Integer> selected = pruner.selectPrunableIndexes(messages, 2, 4_000);
+
+        // 只有最旧的 grep 结果超出门槛：write_file / run_tests 属受保护工具，最近的 read_file 落在安全尾部。
+        assertEquals(List.of(4), selected);
+        // 判据入口必须只读：入参一个字节都不能被改动，否则"选谁"与"怎么写"就耦合了。
+        assertEquals(untouchedSnapshot, messages);
+    }
+
+    @Test
+    void hasPrunableHistoricalToolResultIgnoresTheProtectAndMinimumThresholds() {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(message("user", "initial"));
+        messages.add(message("assistant", ""));
+        messages.add(message("user", tool("grep", "match\n" + "g".repeat(400))));
+        messages.add(message("assistant", ""));
+        messages.add(message("user", "recent"));
+
+        // 探测只回答"有没有候选"，所以为真……
+        assertTrue(pruner.hasPrunableHistoricalToolResult(messages, 1, 500));
+        // ……而净可回收量远低于门槛时，真正的占位化决策会放弃动手。
+        assertTrue(new TurnAwareContextPruner(String::length, 0, 10_000)
+                .selectPrunableIndexes(messages, 1, 500).isEmpty());
+    }
+
+    @Test
+    void pruneAllEligibleReplacesEveryEligibleToolResultIncludingLegacyText() {
+        List<Map<String, Object>> head = new ArrayList<>();
+        head.add(nativeToolMessage("call-read", "read_file", "file body\n" + "r".repeat(3_000)));
+        head.add(message("assistant", ""));
+        head.add(message("user", "[Tool grep result]\nmatch\n" + "g".repeat(3_000)));
+        head.add(message("assistant", ""));
+
+        TurnAwareContextPruner.Result result = pruner.pruneAllEligible(head);
+
+        assertTrue(result.changed());
+        assertEquals(2, result.prunedToolResults());
+        assertTrue(result.tokensAfter() < result.tokensBefore());
+        assertTrue(content(head.get(0)).contains("[Old tool result content cleared."));
+        assertEquals("tool", head.get(0).get("role"));
+        assertEquals("call-read", head.get(0).get("tool_call_id"));
+        assertTrue(content(head.get(2)).contains("[Old tool result content cleared."));
+        assertEquals("user", head.get(2).get("role"));
+    }
+
+    @Test
     void clearsNativeToolMessagesWithoutDisguisedPrefixAndPreservesProtocolFields() {
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(message("user", "initial"));
@@ -59,11 +102,12 @@ class TurnAwareContextPrunerTest {
 
         assertTrue(pruner.hasPrunableHistoricalToolResult(messages, 1, 2_000));
 
-        TurnAwareContextPruner.Result result = pruner.prune(messages, 1, 500);
+        TurnAwareContextPruner.Result result = pruner.pruneAllEligible(messages);
 
         assertTrue(result.changed());
         assertEquals(1, result.prunedToolResults());
         Map<String, Object> cleared = messages.get(2);
+        // 协议字段必须原样保留、只替换 content，否则 assistant tool_calls 与 tool result 会失配。
         assertEquals("tool", cleared.get("role"));
         assertEquals("call-grep", cleared.get("tool_call_id"));
         assertEquals("grep", cleared.get("name"));
@@ -88,23 +132,38 @@ class TurnAwareContextPrunerTest {
     }
 
     @Test
-    void pruneAllEligibleReplacesEveryEligibleToolResultIncludingLegacyText() {
-        List<Map<String, Object>> head = new ArrayList<>();
-        head.add(nativeToolMessage("call-read", "read_file", "file body\n" + "r".repeat(3_000)));
-        head.add(message("assistant", ""));
-        head.add(message("user", "[Tool grep result]\nmatch\n" + "g".repeat(3_000)));
-        head.add(message("assistant", ""));
+    void neverSelectsProtectedToolResultBecauseItCannotBeReconstructed() {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(message("user", "initial"));
+        messages.add(nativeToolMessage("call-skill", "skill", "SKILL manual\n" + "s".repeat(6_000)));
+        messages.add(message("assistant", ""));
+        messages.add(message("user", tool("skill", "another manual\n" + "k".repeat(6_000))));
+        messages.add(message("assistant", ""));
 
-        TurnAwareContextPruner.Result result = pruner.pruneAllEligible(head);
+        assertFalse(pruner.hasPrunableHistoricalToolResult(messages, 0, 0));
+        assertTrue(pruner.selectPrunableIndexes(messages, 0, 0).isEmpty());
+        assertFalse(pruner.pruneAllEligible(messages).changed());
+        assertTrue(content(messages.get(1)).contains("SKILL manual"));
+        assertTrue(content(messages.get(3)).contains("another manual"));
+    }
 
-        assertTrue(result.changed());
-        assertEquals(2, result.prunedToolResults());
-        assertTrue(result.tokensAfter() < result.tokensBefore());
-        assertTrue(content(head.get(0)).contains("[Old tool result content cleared."));
-        assertEquals("tool", head.get(0).get("role"));
-        assertEquals("call-read", head.get(0).get("tool_call_id"));
-        assertTrue(content(head.get(2)).contains("[Old tool result content cleared."));
-        assertEquals("user", head.get(2).get("role"));
+    @Test
+    void protectsTheMostRecentEligibleToolOutputsWithinTheProtectBudget() {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(message("user", "initial"));
+        messages.add(message("assistant", ""));
+        messages.add(message("user", tool("grep", "match\n" + "g".repeat(5_000))));
+        messages.add(message("assistant", ""));
+        messages.add(message("user", tool("read_file", "file body\n" + "r".repeat(5_000))));
+        messages.add(message("assistant", ""));
+        messages.add(message("user", "recent"));
+
+        List<Integer> selected = new TurnAwareContextPruner(String::length, 6_000, 1_000)
+                .selectPrunableIndexes(messages, 1, 500);
+
+        // 最新的 read_file 输出落在 6k 保护区里，必须原样保留；更早的 grep 才允许占位化。
+        assertEquals(List.of(2), selected);
+        assertEquals(tool("read_file", "file body\n" + "r".repeat(5_000)), content(messages.get(4)));
     }
 
     @Test
@@ -125,28 +184,6 @@ class TurnAwareContextPrunerTest {
     }
 
     @Test
-    void preservesProtocolMetadataWhenClearingHistoricalContent() {
-        List<Map<String, Object>> messages = new ArrayList<>();
-        messages.add(message("user", "initial"));
-        messages.add(message("assistant", ""));
-        Map<String, Object> historical = new java.util.LinkedHashMap<>();
-        historical.put("role", "tool");
-        historical.put("tool_call_id", "call-grep");
-        historical.put("name", "grep");
-        historical.put("content", tool("grep", "match\n" + "g".repeat(4_000)));
-        historical.put("metadata", Map.of("turn", 1));
-        messages.add(historical);
-        messages.add(message("assistant", ""));
-        messages.add(message("user", "recent"));
-
-        pruner.prune(messages, 1, 500);
-
-        assertEquals("call-grep", messages.get(2).get("tool_call_id"));
-        assertEquals("grep", messages.get(2).get("name"));
-        assertEquals(Map.of("turn", 1), messages.get(2).get("metadata"));
-    }
-
-    @Test
     void reportsNoEligibleHistoricalResultWhenOnlyProtectedOutputExists() {
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(message("user", "initial"));
@@ -156,7 +193,8 @@ class TurnAwareContextPrunerTest {
         messages.add(message("user", tool("run_tests", "BUILD SUCCESS\n" + "y".repeat(5_000))));
 
         assertFalse(pruner.hasPrunableHistoricalToolResult(messages, 1, 2_000));
-        assertFalse(pruner.prune(messages, 1, 2_000).changed());
+        assertTrue(pruner.selectPrunableIndexes(messages, 1, 2_000).isEmpty());
+        assertFalse(pruner.pruneAllEligible(messages).changed());
     }
 
     private List<Map<String, Object>> messages() {

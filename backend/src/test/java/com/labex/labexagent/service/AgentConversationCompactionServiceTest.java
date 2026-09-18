@@ -42,7 +42,7 @@ class AgentConversationCompactionServiceTest {
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
         when(memory.project(7, 3, "conversation", 44L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
-        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.success(
                         "<conversation-checkpoint version=\"3\">durable model summary</conversation-checkpoint>",
                         17, "summary-model", false));
@@ -74,7 +74,7 @@ class AgentConversationCompactionServiceTest {
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
         when(memory.project(7, 3, "conversation", 45L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
-        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.failure("scripted provider failure"));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
                 conversations, memory, compactions, compactionAgent, modelConfigs);
@@ -104,7 +104,7 @@ class AgentConversationCompactionServiceTest {
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
         when(memory.project(7, 3, "conversation", 46L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
-        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.success(
                         "<conversation-checkpoint version=\"3\">durable summary</conversation-checkpoint>",
                         17, "summary-model", false));
@@ -135,7 +135,7 @@ class AgentConversationCompactionServiceTest {
         when(memory.project(7, 3, "conversation", 47L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
         String structuredSummary = "## Goal\n- Refactor authentication\n\n## Progress\n### Done\n- Implemented JWT";
-        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.success(structuredSummary, 17, "summary-model", false));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
                 conversations, memory, compactions, compactionAgent, modelConfigs);
@@ -161,7 +161,7 @@ class AgentConversationCompactionServiceTest {
         when(compactions.latestCompletedConversation(7, 3, "conversation")).thenReturn(Optional.empty());
         when(memory.project(7, 3, "conversation", 48L)).thenReturn(projection());
         when(compactions.startConversation(any())).thenReturn(running);
-        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any()))
+        when(compactionAgent.compact(eq(7), any(), any(), any(), any(), any(), any()))
                 .thenReturn(CompactionAgent.Result.failure("network error"));
         AgentConversationCompactionService service = new AgentConversationCompactionService(
                 conversations, memory, compactions, compactionAgent, modelConfigs);

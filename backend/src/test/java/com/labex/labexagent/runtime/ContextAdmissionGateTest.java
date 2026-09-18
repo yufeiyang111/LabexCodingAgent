@@ -11,9 +11,9 @@ class ContextAdmissionGateTest {
     @Test
     void staticOverflowNeverInvokesProviderCallback() throws Exception {
         AtomicInteger invocations = new AtomicInteger();
-        ContextAdmissionDecision blocked = new ContextAdmissionService().decide(
+        ContextAdmissionDecision blocked = new ContextAdmissionService().decideAfterContextManagement(
                 new ContextBudgetBreakdown(1000, 800, 200,
-                        Map.of("systemPrompt", 500, "toolDefinitions", 350), Map.of()));
+                        Map.of("systemPrompt", 500, "toolDefinitions", 350), Map.of()), true);
 
         var result = new ContextAdmissionGate().invokeIfAllowed(blocked, () -> {
             invocations.incrementAndGet();
@@ -29,7 +29,7 @@ class ContextAdmissionGateTest {
         AtomicInteger invocations = new AtomicInteger();
         ContextBudgetBreakdown breakdown = new ContextBudgetBreakdown(
                 1000, 800, 200, Map.of("systemPrompt", 300), Map.of("conversationMessages", 100));
-        ContextAdmissionDecision admitted = new ContextAdmissionService().decide(breakdown);
+        ContextAdmissionDecision admitted = new ContextAdmissionService().decideAfterContextManagement(breakdown, true);
 
         var result = new ContextAdmissionGate().invokeIfAllowed(admitted, () -> {
             invocations.incrementAndGet();

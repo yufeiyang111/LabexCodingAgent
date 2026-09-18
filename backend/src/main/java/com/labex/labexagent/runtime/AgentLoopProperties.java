@@ -23,6 +23,10 @@ public class AgentLoopProperties {
     private int minPreserveRecentTokens = 2000;
     /** 尾部保护 Token 预算上限 (对齐 OpenCode MAX_PRESERVE_RECENT_TOKENS = 8_000)。 */
     private int maxPreserveRecentTokens = 8000;
+    /** 尾部保护式 prune 中受保护的最近工具输出 Token 预算 (对齐 OpenCode PRUNE_PROTECT = 40_000)。 */
+    private int pruneProtectTokens = TurnAwareContextPruner.DEFAULT_PRUNE_PROTECT_TOKENS;
+    /** 尾部保护式 prune 的净回收门槛 (对齐 OpenCode PRUNE_MINIMUM = 20_000)；低于门槛不动手。 */
+    private int pruneMinimumTokens = TurnAwareContextPruner.DEFAULT_PRUNE_MINIMUM_TOKENS;
 
     public int getTailTurns() {
         return tailTurns;
@@ -46,6 +50,22 @@ public class AgentLoopProperties {
 
     public void setMaxPreserveRecentTokens(int value) {
         maxPreserveRecentTokens = Math.max(minPreserveRecentTokens, Math.min(100_000, value));
+    }
+
+    public int getPruneProtectTokens() {
+        return pruneProtectTokens;
+    }
+
+    public void setPruneProtectTokens(int value) {
+        pruneProtectTokens = Math.max(0, Math.min(200_000, value));
+    }
+
+    public int getPruneMinimumTokens() {
+        return pruneMinimumTokens;
+    }
+
+    public void setPruneMinimumTokens(int value) {
+        pruneMinimumTokens = Math.max(0, Math.min(100_000, value));
     }
 
     public int getHardMaxIterations() {

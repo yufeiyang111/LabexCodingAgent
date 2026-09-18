@@ -160,6 +160,10 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 
 **Agent 临时产物清理**：后台单一调度者按保留期清理 workspace 内可再生的诊断文件——`.labex/agent-logs/` 运行日志（默认 7 天）、`.labex-agent/artifacts/task-N/` 工具输出与 `.labex-agent/artifacts/preview/` 预览日志（默认 7 / 3 天）、`.labex-agent/{worker-tmp,terminal-tmp,runtime}/` 执行临时目录（默认 6 小时）。只处理终态（completed/failed/cancelled）任务的产物：归属会话存在 `waiting_*` 等非终态 task 或活跃 preview 时一律跳过，checkpoint、git snapshot/worktree、workspace memory、会话历史与 token 明细等恢复类数据永不触碰；删除失败（Windows 文件锁）留待下一轮重试。单轮项目数 / 条目数 / 字节数有硬预算，完整清单见 `.env.example` 的 `LABEX_AGENT_CLEANUP_*`。
 
+**上下文压缩调优**：压缩链路的可调参数集中在 `labex-agent.loop.*`（`prune-protect-tokens` / `prune-minimum-tokens`）与 `labex-agent.compaction.*`（摘要输出 token、checkpoint 字符上限、摘要输入历史预算与各段落裁剪边界），默认值对齐 OpenCode `session/compaction.ts` 的 `PRUNE_PROTECT`(40000) / `PRUNE_MINIMUM`(20000)，压缩 agent 的 system prompt 段落顺序与上游 `SUMMARY_TEMPLATE` 一致（Goal / Constraints & Preferences / Progress: Done、In Progress、Blocked / Key Decisions / Next Steps / Critical Context / Relevant Files）。完整变量清单与默认值见 `.env.example` 的 `LABEX_AGENT_PRUNE_*` / `LABEX_AGENT_COMPACTION_*`。压缩后的 provider 请求由持久化 transcript 投影重建，原始消息永不删除。
+
+**历史工具输出占位化（prune）**：在「模型配置」中开启 `compactionPrune` 后，Provider 投影会对**安全尾部之外、且超出最近 40000 token 保护额度**的历史工具结果做语义占位化（净可回收不足 20000 token 时整次不动手，`skill` 与变更/计划类工具永不占位化）。它同时作用于 Provider 请求与预算估算，因此能降低压缩触发频率；占位化仅发生在**投影边界**，`t_agent_run_part.output_text` 与 `t_agent_run_message.content` 原文完整保留，`read_tool_output` 仍可按键分页回读全部内容。开关的唯一权威是模型级 `compactionPrune`（默认关闭）。
+
 **认证模块**：注册 / 登录 / 图形验证码（按风险阈值按需生成）/ GitHub、Google OAuth（可选，未配置时登录页隐藏按钮）/ 邀请注册。第三方登录不会自动建号，需先在账号设置中绑定。
 
 **模型配置**：主 Agent 使用用户在前端「模型配置」中创建的 OpenAI-Compatible 模型（API Key / Base URL / 模型名 / 推理程度），凭证加密存储。RAG 图片理解等辅助能力可选配 `MINIMAX_API_KEY`、`TAVILY_API_KEY`。

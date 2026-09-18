@@ -13,28 +13,33 @@ class ContextAdmissionServiceTest {
 
     @Test
     void proceedsWhenInputFitsSoftLimit() {
-        ContextAdmissionDecision decision = service.decide(breakdown(300, 200, 1000, 900));
+        ContextAdmissionDecision decision = service.decideAfterContextManagement(breakdown(300, 200, 1000, 900), true);
         assertEquals(ContextAdmissionDecision.Action.PROCEED, decision.action());
         assertTrue(decision.providerInvocationAllowed());
     }
 
     @Test
-    void prunesReducibleHistoryBeforeCompaction() {
-        ContextBudgetBreakdown breakdown = breakdown(500, 450, 1000, 800);
-        ContextAdmissionDecision decision = service.decide(breakdown, true, true);
-        assertEquals(ContextAdmissionDecision.Action.PRUNE, decision.action());
+    void blocksReducibleOverflowWithAutoCompactionReasonWhenManagementFailed() {
+        // 上下文管理（占位化 + compaction）已运行，仍未降到输入容量内 → 必须阻断，且原因指向压缩。
+        ContextAdmissionDecision decision = service.decideAfterContextManagement(
+                new ContextBudgetBreakdown(1000, 800, 200,
+                        Map.of("systemPrompt", 400), Map.of("conversationMessages", 500), 700), true);
+
+        assertEquals(ContextAdmissionDecision.Action.BLOCK_REDUCIBLE_OVERFLOW, decision.action());
         assertFalse(decision.providerInvocationAllowed());
+        assertEquals("reducible_context_exceeds_input_capacity_after_auto_compaction", decision.reasonCode());
     }
 
     @Test
-    void compactsWhenPruningCannotAddressTheReducibleBudget() {
-        ContextBudgetBreakdown breakdown = new ContextBudgetBreakdown(
-                1000, 900, 100,
-                Map.of("systemPrompt", 400, "toolDefinitions", 250),
-                Map.of("projectContext", 250), 800);
-        ContextAdmissionDecision decision = service.decide(breakdown, false, true);
-        assertEquals(ContextAdmissionDecision.Action.COMPACT, decision.action());
+    void blocksReducibleOverflowWithConfigReasonWhenAutoCompactionIsDisabled() {
+        // 同一份超限预算，自动压缩关闭时不能把"压缩没生效"当成原因——那是配置禁用。
+        ContextAdmissionDecision decision = service.decideAfterContextManagement(
+                new ContextBudgetBreakdown(1000, 800, 200,
+                        Map.of("systemPrompt", 400), Map.of("conversationMessages", 500), 700), false);
+
+        assertEquals(ContextAdmissionDecision.Action.BLOCK_REDUCIBLE_OVERFLOW, decision.action());
         assertFalse(decision.providerInvocationAllowed());
+        assertEquals("reducible_context_exceeds_input_capacity", decision.reasonCode());
     }
 
     @Test
@@ -43,12 +48,23 @@ class ContextAdmissionServiceTest {
                 1000, 900, 100,
                 Map.of("systemPrompt", 500, "toolDefinitions", 450),
                 Map.of("conversationMessages", 20));
-        ContextAdmissionDecision decision = service.decide(breakdown, true, true);
+        ContextAdmissionDecision decision = service.decideAfterContextManagement(breakdown, true);
 
         assertEquals(ContextAdmissionDecision.Action.BLOCK_STATIC_OVERFLOW, decision.action());
         assertFalse(decision.providerInvocationAllowed());
         assertEquals(950, decision.breakdown().staticTokens());
         assertTrue(decision.remediation().stream().anyMatch(item -> item.contains("工具")));
+    }
+
+    @Test
+    void blocksWhenStaticContextAloneExceedsSoftLimitWithoutReducibleHistory() {
+        // 静态上下文本身没超输入容量，但已越过软限且没有任何可约减历史 → 无从下手，结构化阻断。
+        ContextBudgetBreakdown breakdown = new ContextBudgetBreakdown(
+                1000, 900, 100, Map.of("systemPrompt", 850), Map.of(), 700);
+        ContextAdmissionDecision decision = service.decideAfterContextManagement(breakdown, true);
+
+        assertEquals(ContextAdmissionDecision.Action.BLOCK_STATIC_OVERFLOW, decision.action());
+        assertEquals("static_context_exceeds_soft_limit", decision.reasonCode());
     }
 
     @Test
