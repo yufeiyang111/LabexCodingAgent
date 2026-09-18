@@ -28,13 +28,23 @@ test('选择思考程度必须落库，且成功提示只能在接口成功之�
   const end = workspace.indexOf('\nfunction ', start)
   const body = workspace.slice(start, end === -1 ? undefined : end)
 
-  assert.match(body, /modelConfigApi\.update\(/, '必须调用后端接口保存档位')
-  assert.match(body, /reasoningEffort/, '保存内容必须包含 reasoningEffort')
+  // 落库逻辑在 composables/thinkingLevelChange.js（有真正执行它的行为测试）；
+  // 组件只负责 UI 反馈，这里断言它确实委托出去、且顺序正确。
+  assert.match(body, /await persistThinkingLevel\(/, '必须委托给 persistThinkingLevel 完成落库')
+  assert.match(body, /modelConfigApi\.update/, '必须把保存接口注入进去')
 
-  const apiIndex = body.indexOf('modelConfigApi.update(')
+  const apiIndex = body.indexOf('await persistThinkingLevel(')
   const successIndex = body.indexOf('ElMessage.success')
   assert.notEqual(successIndex, -1, '成功时应有明确反馈')
-  assert.ok(apiIndex < successIndex, '成功提示必须在接口调用之后，不能在调用前就宣称已生效')
+  assert.ok(apiIndex < successIndex, '成功提示必须在落库成功之后，不能在调用前就宣称已生效')
+
+  // 只有 ok 为真才提示成功：失败分支必须先 return
+  assert.match(body, /if \(!outcome\.ok\)[\s\S]*?return[\s\S]*?ElMessage\.success/, '失败必须先返回，不能落到成功提示')
+  assert.doesNotMatch(body, /thinkingLevel\.value\s*=/, '不得再维护可写副本')
+
+  // 落库细节（调用接口、失败不谎报）由行为测试覆盖，这里只确认它确实被注入
+  const logic = await read('../../../composables/thinkingLevelChange.js')
+  assert.match(logic, /reasoningEffort: value/, '保存内容必须包含归一后的 reasoningEffort')
 })
 
 test('思考程度的展示值来自所选模型配置，而不是独立的本地副本', async () => {

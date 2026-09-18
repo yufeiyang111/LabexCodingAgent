@@ -1065,7 +1065,12 @@ import { renderMermaidDiagram } from '@/utils/mermaidRenderer'
 import { enhanceFileLinks } from '@/utils/fileLinks'
 const loadEcharts = () => import('@/utils/echarts')
 import { normalizeWorkspacePath, languageForPath } from '@/utils/pathUtils'
+import { labelOfReasoningEffort, persistThinkingLevel } from '@/composables/thinkingLevelChange'
 import { resolveEffectiveChanges, resolveMessageChanges, resolveMessageStats } from '@/composables/useEffectiveChanges'
+// 与 utils/agentMarkdownRenderer.js 保持一致：只引 common 子集，控制体积。
+// 此前本文件只引了样式、漏了模块本身，导致 hljs 未定义 —— 而调用点包在 try/catch 里，
+// ReferenceError 被吞掉后回落到「不高亮」的原文，表现为代码块一直没高亮却没有任何报错。
+import hljs from 'highlight.js/lib/common'
 import 'highlight.js/styles/github-dark.css'
 
 function getMessageChanges(msg) {
@@ -1919,45 +1924,34 @@ function handleSelectModelByName(name) {
  * 现在失败时不再宣称成功——请求拦截器已统一提示错误原因，这里只需保持状态不变。</p>
  */
 async function handleChangeThinkingLevel(payload) {
-  const configId = payload?.configId
-  const modelName = payload?.modelName
-  const value = String(payload?.value || '').toLowerCase()
-  if (!value) return
-
-  const target = modelConfigs.value.find(c => c.configId === configId)
-    || modelConfigs.value.find(c => c.modelName === modelName || c.configName === modelName)
-  if (!target) {
-    ElMessage.error('未找到对应的模型配置，思考程度未变更')
+  // 落库逻辑在 composables/thinkingLevelChange.js 中实现并可被真正执行验证；
+  // 之前内联在这里时，因变量声明在块内、块外引用而抛 ReferenceError，
+  // 且因包在 try/catch 里而在控制台静默存活。此处只负责 UI 反馈。
+  let outcome
+  try {
+    outcome = await persistThinkingLevel({
+      payload,
+      configs: modelConfigs.value,
+      update: (configId, body) => modelConfigApi.update(configId, body)
+    })
+  } catch (e) {
+    // 拦截器已展示后端返回的原因；这里不得回退成「已设置」。
     return
   }
 
-  if (String(target.reasoningEffort || '').toLowerCase() !== value) {
-    let saved = null
-    try {
-      const r = await modelConfigApi.update(target.configId, { reasoningEffort: value })
-      saved = r?.data || null
-    } catch (e) {
-      // 拦截器已展示后端返回的原因；这里不得回退成「已设置」。
-      return
-    }
-    if (!saved) {
+  if (!outcome.ok) {
+    if (outcome.reason === 'target-not-found') {
+      ElMessage.error('未找到对应的模型配置，思考程度未变更')
+    } else if (outcome.reason === 'empty-response') {
       ElMessage.error('思考程度保存失败：服务端未返回配置')
-      return
     }
-    const idx = modelConfigs.value.findIndex(c => c.configId === target.configId)
-    if (idx >= 0) modelConfigs.value.splice(idx, 1, saved)
+    return
   }
 
-  selectedModelConfigId.value = target.configId
-  const applied = labelOfReasoningEffort(
-    (saved || target).reasoningOptions, value)
-  ElMessage.success(`思考程度已保存：${applied}`)
-}
-
-/** 档位中文名由后端下发的 reasoningOptions 决定，避免前端再维护一份映射。 */
-function labelOfReasoningEffort(options, value) {
-  const hit = (Array.isArray(options) ? options : []).find(opt => opt.value === value)
-  return hit?.label || value
+  const idx = modelConfigs.value.findIndex(c => c.configId === outcome.target.configId)
+  if (idx >= 0) modelConfigs.value.splice(idx, 1, outcome.config)
+  selectedModelConfigId.value = outcome.target.configId
+  ElMessage.success(`思考程度已保存：${labelOfReasoningEffort(outcome.config.reasoningOptions, outcome.value)}`)
 }
 
 function insertToEditor(text) {
@@ -4318,7 +4312,10 @@ function enhanceCallouts(root) {
 }
 function autoResize(e) { const t = e.target; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px' }
 function copyCommand(cmd) { navigator.clipboard?.writeText(cmd); ElMessage.success('命令已复制') }
-function runCommand(cmd) { if (activeTermIdx.value < 0) { createTerminalSession().then(() => { termInput.value = cmd; executeTerminalCommand() }) } else { termInput.value = cmd; executeTerminalCommand() } }
+// 这里原有一个 function runCommand(cmd)，引用了 activeTermIdx / createTerminalSession / termInput /
+// executeTerminalCommand 四个全文均不存在的标识符（终端逻辑重构后遗留），因此一旦被调用必然抛
+// ReferenceError。它本身又没有任何调用点（模板与其他函数都未引用），属死代码，已移除；
+// 终端命令执行请走终端面板自身的实现。
 function generateCommand() { ElMessage.info('请使用终端标签页直接输入命令') }
 function goToIssue(issue) { ElMessage.info('跳转到 ' + issue.file + ':' + issue.line) }
 function autoFix(issue) { ElMessage.success('自动修复: ' + issue.message) }
