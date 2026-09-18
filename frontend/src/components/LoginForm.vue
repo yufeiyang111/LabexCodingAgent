@@ -11,7 +11,7 @@
         autocomplete="off"
         :error="errors.inviteCode"
       />
-      <!-- 焦点边框沿用 focus:border-[#5D675B] 视觉契约。 -->
+      <!-- 焦点边框沿用 var(--theme-accent) 视觉契约。 -->
       <AuthField v-model="form.username" label="用户名" placeholder="3-32 位字母、数字或 ._-" autocomplete="username" :error="errors.username" />
       <AuthField v-if="mode === 'register' && !inviteCodeEnabled" v-model="form.email" type="email" label="邮箱" optional placeholder="用于账号资料和第三方冲突提示" autocomplete="email" :error="errors.email" />
       <AuthField v-if="mode === 'register'" v-model="form.displayName" label="显示名称" optional placeholder="为工作间留下名字" autocomplete="name" maxlength="100" :error="errors.displayName" />
@@ -98,7 +98,13 @@ function submitForm() {
 <style scoped>
 .login-form-module { width: 100%; }
 .auth-form { display: grid; gap: 17px; }
-.auth-submit-button { min-height: 48px; margin-top: 2px; border: 1px solid #4e584d; border-radius: 14px 12px 15px 11px; background: #4e584d; color: #fbf8f0; cursor: pointer; font: inherit; font-size: 15px; font-weight: 600; transition: background-color 180ms ease, border-color 180ms ease, opacity 180ms ease; }
-.auth-submit-button:hover:not(:disabled) { border-color: #596557; background: #596557; }
+/*
+ * 主按钮文字色必须用 --theme-accent-contrast，不能用 --theme-surface。
+ * --theme-surface 是「表面背景色」：亮色下恰好是 #ffffff 看着正常，
+ * 暗色下变成 #181b24，深色文字压在靛蓝底上对比度只有 2.75:1（AA 要求 4.5:1）。
+ * --theme-accent-contrast 在亮暗两套主题下都是 #ffffff。
+ */
+.auth-submit-button { min-height: 48px; margin-top: 2px; border: 1px solid var(--theme-accent); border-radius: 14px 12px 15px 11px; background: var(--theme-accent); color: var(--theme-accent-contrast, #ffffff); cursor: pointer; font: inherit; font-size: 15px; font-weight: 600; transition: background-color 180ms ease, border-color 180ms ease, opacity 180ms ease; }
+.auth-submit-button:hover:not(:disabled) { border-color: var(--theme-accent-strong); background: var(--theme-accent-strong); color: var(--theme-accent-contrast, #ffffff); }
 .auth-submit-button:disabled { cursor: wait; opacity: .6; }
 </style>

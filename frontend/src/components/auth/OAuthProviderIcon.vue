@@ -12,6 +12,20 @@
 </template>
 
 <script setup>
+/**
+ * 第三方登录提供方标识。
+ *
+ * 来源与权利声明（均为各公司官方品牌标识，非通用图标库素材）：
+ * - GitHub Octocat 标记：GitHub, Inc. 官方 logo（https://github.com/logos）。
+ *   官方许可将该标记用于「链接/登录到 GitHub」场景，这正是本组件的用途；
+ *   GitHub 商标使用条款见 https://github.com/logos。
+ * - Google「G」四色标记：Google LLC 官方品牌资源
+ *   （https://about.google/brand-resource-center/）。Google 品牌规范要求
+ *   「使用 Google 账号登录」按钮必须使用四色 G，故此处不使用单色开源替代版本。
+ *
+ * 维护约束：这两个标识不得替换为配色或造型不同的近似版本，否则违反提供方品牌规范。
+ * 如需引入新的第三方登录，请同样使用该提供方发布的官方标识并在此登记来源。
+ */
 defineProps({
   provider: { type: String, required: true }
 })
@@ -24,8 +38,8 @@ defineProps({
   width: 18px;
   height: 18px;
   border-radius: 4px;
-  background: #4e584d;
-  color: #fbf8f0;
+  background: var(--theme-accent);
+  color: #fff;
   font-size: 9px;
   font-weight: 700;
 }

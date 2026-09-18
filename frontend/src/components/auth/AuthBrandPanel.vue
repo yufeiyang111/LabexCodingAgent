@@ -29,7 +29,7 @@ import Logo from '@/components/Logo.vue'
   flex-direction: column;
   justify-content: space-between;
   gap: 40px;
-  color: #34352f;
+  color: var(--theme-text);
 }
 
 .auth-brand-panel__top {
@@ -41,24 +41,24 @@ import Logo from '@/components/Logo.vue'
 
 .auth-brand-panel__tag {
   padding-top: 5px;
-  color: #76756d;
+  color: var(--theme-text-secondary);
   font-size: 11px;
   letter-spacing: .08em;
 }
 
 .auth-brand-panel__copy {
   max-width: 620px;
-  border-left: 1px solid #cfc8ba;
+  border-left: 1px solid var(--theme-border);
   padding-left: clamp(20px, 3vw, 44px);
 }
 
 .auth-brand-panel__eyebrow {
   display: inline-flex;
   margin: 0 0 26px;
-  border: 1px solid #b7b8ab;
-  border-radius: 10px 13px 11px 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
   padding: 6px 10px;
-  color: #5d675b;
+  color: var(--theme-accent);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: .18em;
@@ -66,7 +66,7 @@ import Logo from '@/components/Logo.vue'
 
 .auth-brand-panel h1 {
   margin: 0;
-  font-family: var(--font-auth-serif);
+  font-family: var(--font-auth-sans);
   font-size: clamp(42px, 5vw, 76px);
   font-weight: 400;
   line-height: 1.02;
@@ -76,7 +76,7 @@ import Logo from '@/components/Logo.vue'
 .auth-brand-panel__copy > p:not(.auth-brand-panel__eyebrow) {
   max-width: 430px;
   margin: 28px 0 0;
-  color: #76756d;
+  color: var(--theme-text-secondary);
   font-size: 15px;
   line-height: 1.9;
 }
@@ -86,10 +86,10 @@ import Logo from '@/components/Logo.vue'
   gap: 14px;
   max-width: 430px;
   margin: 48px 0 0;
-  border-top: 1px solid #cfc8ba;
+  border-top: 1px solid var(--theme-border);
   padding: 22px 0 0;
   list-style: none;
-  color: #4c4e47;
+  color: var(--theme-text);
   font-size: 14px;
 }
 
@@ -100,16 +100,18 @@ import Logo from '@/components/Logo.vue'
 }
 
 .auth-brand-panel li span {
-  color: #987562;
-  font-family: var(--font-auth-serif);
-  font-size: 18px;
+  color: var(--theme-accent);
+  font-family: var(--font-auth-sans);
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .auth-brand-panel__line {
   width: 62px;
   height: 4px;
   border-radius: 2px;
-  background: #987562;
+  background: var(--theme-accent);
 }
 
 @media (max-width: 900px) {

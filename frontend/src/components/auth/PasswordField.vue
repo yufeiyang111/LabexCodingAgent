@@ -40,7 +40,7 @@ const inputId = computed(() => `auth-password-${props.label.replace(/[^a-zA-Z0-9
 .password-field {
   display: grid;
   gap: 8px;
-  color: #4b4c45;
+  color: var(--theme-text);
 }
 
 .password-field__label {
@@ -52,16 +52,16 @@ const inputId = computed(() => `auth-password-${props.label.replace(/[^a-zA-Z0-9
   display: flex;
   align-items: center;
   height: 46px;
-  border: 1px solid #cfc8ba;
-  border-radius: 13px 11px 14px 12px;
-  background: #f7f4ec;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-surface);
   transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
 }
 
 .password-field__control:focus-within {
-  border-color: #5d675b;
-  background: #fcfaf4;
-  box-shadow: 0 0 0 4px rgb(93 103 91 / 10%);
+  border-color: var(--theme-accent);
+  background: transparent;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent) 18%, transparent);
 }
 
 .password-field input {
@@ -72,12 +72,12 @@ const inputId = computed(() => `auth-password-${props.label.replace(/[^a-zA-Z0-9
   outline: 0;
   padding: 0 14px;
   background: transparent;
-  color: #34352f;
+  color: var(--theme-text);
   font: inherit;
 }
 
 .password-field input::placeholder {
-  color: #9b978c;
+  color: #6b7280;
 }
 
 .password-field button {
@@ -85,17 +85,17 @@ const inputId = computed(() => `auth-password-${props.label.replace(/[^a-zA-Z0-9
   border: 0;
   padding: 0 13px;
   background: transparent;
-  color: #5d675b;
+  color: var(--theme-accent);
   cursor: pointer;
   font-size: 12px;
 }
 
 .password-field--error .password-field__control {
-  border-color: #b96c5c;
+  border-color: var(--theme-danger);
 }
 
 .password-field__error {
-  color: #a24e42;
+  color: var(--theme-danger);
   font-size: 12px;
 }
 </style>

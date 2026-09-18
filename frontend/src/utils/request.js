@@ -59,7 +59,16 @@ service.interceptors.response.use(
       if (!error.config?.silent) {
         ElMessage.error('登录已失效，请重新登录')
       }
-      router.push('/login')
+      /*
+       * 仅在「当前页本身需要登录」时回落到首页。
+       *
+       * 反例（曾真实发生）：教程页是公开页，但它调用的内容接口在未登录时返回 403，
+       * 旧逻辑会把正在阅读的用户直接踢到首页，看起来就像「教程页点了没反应」。
+       * 公开页遇到单个接口的权限错误，应保持用户当前位置，只清掉失效会话。
+       */
+      if (router.currentRoute.value.meta?.requiresAuth) {
+        router.push('/')
+      }
     } else if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')) {
       if (!error.config?.silent) {
         ElMessage.error(error.config?.timeoutMessage || '请求超时')

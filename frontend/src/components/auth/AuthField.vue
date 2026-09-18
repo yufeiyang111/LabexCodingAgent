@@ -40,7 +40,7 @@ const id = computed(() => `auth-field-${props.label.replace(/[^a-zA-Z0-9\u4e00-\
 .auth-field {
   display: grid;
   gap: 8px;
-  color: #4b4c45;
+  color: var(--theme-text);
 }
 
 .auth-field__label {
@@ -49,7 +49,7 @@ const id = computed(() => `auth-field-${props.label.replace(/[^a-zA-Z0-9\u4e00-\
 }
 
 .auth-field__label small {
-  color: #8b887e;
+  color: #5f6b7c;
   font-size: 12px;
   font-weight: 400;
 }
@@ -58,32 +58,32 @@ const id = computed(() => `auth-field-${props.label.replace(/[^a-zA-Z0-9\u4e00-\
   box-sizing: border-box;
   width: 100%;
   height: 46px;
-  border: 1px solid #cfc8ba;
-  border-radius: 13px 11px 14px 12px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
   padding: 0 14px;
   outline: none;
-  background: #f7f4ec;
-  color: #34352f;
+  background: var(--theme-surface);
+  color: var(--theme-text);
   font: inherit;
   transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
 }
 
 .auth-field input::placeholder {
-  color: #9b978c;
+  color: #6b7280;
 }
 
 .auth-field input:focus {
-  border-color: #5d675b;
-  background: #fcfaf4;
-  box-shadow: 0 0 0 4px rgb(93 103 91 / 10%);
+  border-color: var(--theme-accent);
+  background: transparent;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent) 18%, transparent);
 }
 
 .auth-field--error input {
-  border-color: #b96c5c;
+  border-color: var(--theme-danger);
 }
 
 .auth-field__error {
-  color: #a24e42;
+  color: var(--theme-danger);
   font-size: 12px;
   line-height: 1.4;
 }

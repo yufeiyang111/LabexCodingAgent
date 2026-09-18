@@ -104,7 +104,7 @@
               <p class="cs-template-label">选择模板（可选）</p>
               <div class="cs-template-list">
                 <button v-for="tpl in templates" :key="tpl.key" class="cs-template-item" :class="{ active: selectedTemplate === tpl.key }" @click="selectedTemplate = selectedTemplate === tpl.key ? null : tpl.key">
-                  <span class="cs-template-icon">{{ tpl.icon }}</span>
+                  <ProjectStackIcon :stack-key="tpl.key" :label="tpl.name" :size="30" />
                   <span class="cs-template-name">{{ tpl.name }}</span>
                 </button>
               </div>
@@ -151,6 +151,7 @@ import { projectApi } from '@/api'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
 import UserPanel from '@/components/cloud/UserPanel.vue'
 import ExportProgressDialog from '@/components/cloud/ExportProgressDialog.vue'
+import ProjectStackIcon from '@/components/cloud/projects/ProjectStackIcon.vue'
 import { useProjectExport } from '@/composables/useProjectExport'
 import { useResponsive } from '@/composables/useResponsive'
 
@@ -269,11 +270,11 @@ const exportIncludeAll = computed({
 })
 
 const templates = [
-  { key: 'vue', name: 'Vue', icon: 'V' },
-  { key: 'react', name: 'React', icon: 'R' },
-  { key: 'springboot', name: 'Spring Boot', icon: 'S' },
-  { key: 'flask', name: 'Flask', icon: 'F' },
-  { key: 'empty', name: '空项目', icon: 'E' },
+  { key: 'vue', name: 'Vue' },
+  { key: 'react', name: 'React' },
+  { key: 'springboot', name: 'Spring Boot' },
+  { key: 'flask', name: 'Flask' },
+  { key: 'empty', name: '空项目' },
 ]
 
 async function loadProjects() {
@@ -720,10 +721,9 @@ onMounted(async () => {
 .cs-template-section { margin-top: 16px; }
 .cs-template-label { font-size: 13px; color: #6b7280; margin: 0 0 8px; }
 .cs-template-list { display: flex; gap: 8px; flex-wrap: wrap; }
-.cs-template-item { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; transition: all 0.2s; font-family: inherit; min-width: 64px; }
+.cs-template-item { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 14px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; transition: all 0.2s; font-family: inherit; min-width: 66px; }
 .cs-template-item:hover { border-color: #6366f1; background: #f5f5ff; }
 .cs-template-item.active { border-color: #6366f1; background: #eef2ff; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15); }
-.cs-template-icon { font-size: 18px; font-weight: 700; color: #6366f1; }
 .cs-template-name { font-size: 12px; color: #374151; }
 .cs-modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
 .modal-enter-active, .modal-leave-active { transition: all 0.25s ease; }

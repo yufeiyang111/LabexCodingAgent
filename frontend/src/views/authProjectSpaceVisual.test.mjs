@@ -30,26 +30,37 @@ test('Auth uses a crisp split wabi-sabi AI coding-agent layout', async () => {
 })
 
 test('authentication uses typed Chinese brand and form components', async () => {
-  const [logo, loginForm, loginWrapper] = await Promise.all([
+  const [logo, loginForm, loginWrapper, authField] = await Promise.all([
     readSource('components', 'Logo.vue'),
     readSource('components', 'LoginForm.vue'),
     readSource('views', 'Login.vue'),
+    readSource('components', 'auth', 'AuthField.vue'),
   ])
 
   assert.match(logo, /<script setup lang="ts">/)
   assert.match(logo, /\u667a\u80fd\u4ee3\u7801\u5de5\u4f5c\u95f4/)
   assert.match(loginForm, /<script setup lang="ts">/)
   assert.match(loginForm, /\u7528\u6237\u540d/)
-  assert.match(loginForm, /focus:border-\[#5D675B\]/)
   assert.match(loginWrapper, /<Auth \/>/)
+
+  // 焦点边框的品牌色契约：换肤后从苔绿硬编码改为跟随主题令牌，
+  // 断言真实的焦点样式而非注释文案 —— 注释改了不影响行为，样式改了才是真回归。
+  assert.match(authField, /input:focus\s*\{[^}]*border-color:\s*var\(--theme-accent\)/,
+    '输入框聚焦必须使用主题强调色，且用变量以适配暗色主题')
+  assert.doesNotMatch(authField, /#5D675B|rgba?\(\s*93\s*,\s*103\s*,\s*91/,
+    '不得残留暖纸色时代的苔绿聚焦色')
 })
 
-test('Tailwind keeps the wabi-sabi material tokens and utilities above the legacy reset', async () => {
+test('Tailwind keeps the auth design tokens and utilities above the legacy reset', async () => {
   const source = await readSource('styles', 'tailwind.css')
 
-  assert.match(source, /--color-auth-background: #EEE9DE;/)
+  // 换肤：登录页从暖纸色（wabi-sabi）改为冷色石板 + 靛蓝，令牌随之更新。
+  // 断言仍然锁定「主题令牌存在且值为冷色」，防止未来被误改回暖纸色。
+  assert.match(source, /--color-auth-background: #f7f8fb;/)
+  assert.match(source, /--color-auth-accent: #4f46e5;/)
   assert.match(source, /auth-paper-grain/)
-  assert.match(source, /--color-auth-moss: #5D675B;/)
+  assert.doesNotMatch(source, /#EEE9DE|#FBF8F0|#5D675B|#CFC8BA|#987562/i,
+    '不得残留暖纸色调色板')
   assert.match(source, /@import "tailwindcss\/utilities\.css";/)
   assert.doesNotMatch(source, /layer\(utilities\)/)
 })
