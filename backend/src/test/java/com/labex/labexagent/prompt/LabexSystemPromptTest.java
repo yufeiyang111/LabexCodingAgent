@@ -180,6 +180,36 @@ class LabexSystemPromptTest {
                 .contains("Observe & Reflect (Feedback Loop & Debugging)");
     }
 
+    @Test
+    void systemPromptOrientsTowardExhaustiveExplorationAndMandatoryVerification() {
+        String prompt = LabexSystemPrompt.buildSystemPrompt(project("PromptWorkspace", "D:/workspaces/prompt", "{}"), "tools");
+
+        assertThat(prompt)
+                // 探索导向：对齐 opencode「先广泛搜索理解代码库，再动手」
+                .contains("understand the codebase before you change it")
+                .contains("use the search tools extensively, both in parallel and sequentially")
+                .contains("Skipping exploration is not a shortcut")
+                .contains("investigate the workspace first so you act on real facts")
+                // 强制验证：对齐 opencode「完成后必须跑 lint/typecheck」，且不得猜测命令
+                .contains("NEVER assume a specific test framework, lint command or test script exists")
+                .contains("run the project's lint, typecheck, build and test commands")
+                .contains("say so explicitly instead of implying the change was verified")
+                // 探索要高效：广度搜索交给 subagent，独立查询合并成一次
+                .contains("prefer the subagent (task) tool so the search work stays out of your main context")
+                .contains("batch the tool calls into a single response")
+                .contains("not just the first plausible match")
+                // 探索变主动之后，git 写操作必须显式授权（防止越权提交）
+                .contains("Never run `git commit`, `git push`, or rewrite git history")
+                // 旧的「最小充分」取向必须不再出现 —— 它会与上面的要求互相抵消，
+                // 导致模型退回「选最轻的路径、做完就收工、不做验证」。
+                .doesNotContain("lightest correct workflow")
+                .doesNotContain("lightest relevant operation")
+                .doesNotContain("Do not invent workflow steps")
+                .doesNotContain("merely as ceremony")
+                .doesNotContain("finish instead of searching")
+                .doesNotContain("answer directly without tools or a todo list");
+    }
+
     private static StudentProject project(String name, String workspacePath, String structureJson) {
         StudentProject project = new StudentProject();
         project.setProjectName(name);

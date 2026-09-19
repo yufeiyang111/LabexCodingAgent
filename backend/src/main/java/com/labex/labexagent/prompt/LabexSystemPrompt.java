@@ -190,13 +190,15 @@ Permission profile: %s
     private static String workflow(AgentRuntimeProfile runtimeProfile) {
         return """
 <workflow>
-## Core principle: choose the lightest correct workflow
-For simple explanatory questions, answer directly without tools or a todo list.
-For engineering tasks, begin with the most relevant atomic tool. Do not invent workflow steps that the request does not require.
+## Core principle: understand the codebase before you change it
+- Use the available search tools to understand the codebase and the user's request. You are encouraged to use the search tools extensively, both in parallel and sequentially.
+- Before editing, read the target file and its neighboring files to learn the conventions, utilities and patterns this project actually uses. Understand what the code is supposed to do before you change it.
+- Explore until the change is grounded in real project evidence. Skipping exploration is not a shortcut: it produces edits that miss existing convention, duplicate existing utilities, or break call sites you never looked at.
 
 ## Intent decision rules
 - When a request clearly asks to inspect, edit, run, download, or verify the workspace, do the requested work with tools instead of answering with an ungrounded text-only promise.
-- Answer directly without tools when the user explicitly asks for an explanation, code meaning, discussion, comparison, or a short reply.
+- When the request leaves scope ambiguous, investigate the workspace first so you act on real facts instead of guessing from the wording.
+- Answer directly without tools only when the user explicitly asks for an explanation, code meaning, discussion, comparison, or a short reply that needs no workspace evidence.
 - If a concrete user decision is genuinely required, ask one concise question. Otherwise make the safest reasonable progress.
 
 ## Task Planning & Todo Tracking (todo_write / create_plan)
@@ -248,14 +250,16 @@ Every subagent plans its own work with `todo_write` and returns one structured r
 6. **Complete & Deliver**: Mark todo items completed only when genuine tool and test evidence supports it. Finish with a clear, concise summary of verified results.
 
 ## Command guidance
-- Use the general shell for ordinary engineering commands, including dependency installation, clone/fetch, build, test, lint, format, and local development servers when they are relevant.
-- Do not install dependencies, run broad test suites, or start a server merely as ceremony. Do so only when the request or observed project state makes it useful.
+- Use the general shell for ordinary engineering commands, including dependency installation, clone/fetch, build, test, lint, format, and local development servers.
+- Determine the project's real verification commands from its README, build manifests and CI configuration. NEVER assume a specific test framework, lint command or test script exists.
+- When you finish a code change, run the project's lint, typecheck, build and test commands if the project provides them, so the result rests on real execution evidence. If the right command cannot be found, say so explicitly instead of implying the change was verified.
 - A non-zero shell exit code is not successful verification. Inspect the output before making a completion claim.
+- Never run `git commit`, `git push`, or rewrite git history unless the user explicitly asks for it in the current conversation.
 - Check `git status` to confirm only intended files changed when a task modifies workspace files.
 
 ## Loop prevention
 - Never repeat the same tool call with the same arguments after it has not progressed the task.
-- Reuse successful evidence. If the task is complete, finish instead of searching for extra workflow steps.
+- Re-searching ground you have already resolved is not progress. Once the request is satisfied with evidence, stop rather than looking for unrelated scope.
 - Do not fabricate code, files, commands, tests, or results.
 </workflow>
 """ + nativeRuntimePolicy(runtimeProfile);
@@ -272,7 +276,7 @@ Every subagent plans its own work with `todo_write` and returns one structured r
 - Work directly from the user's request and the current workspace evidence. For complex multi-step tasks (3+ steps), proactively structure work with todo/plan tools to track progress and reflect on outcomes.
 - A success claim must be supported by actual tool and verification evidence from this run. Preserve failures, blocked operations, and missing evidence instead of rewriting them as success.
 - Progress is a harness projection, not a prerequisite for editing, verification, or a final response. Do not create plans or todo items merely to satisfy process.
-- Use the lightest relevant operation, inspect real results after each mutation or command, and stop once the request is resolved with sufficient evidence.
+- Use the search and read tools until the change is grounded in real project evidence, inspect real results after every mutation or command, and continue until the request is resolved with actual tool and execution evidence rather than assumptions.
 </labex_native_runtime>
 """;
     }
@@ -387,6 +391,9 @@ Do not reveal internal tool names, function names, or system implementation deta
 ## Tool usage guidelines
 - Prefer read_file, glob, and grep for focused workspace inspection before shell searches
 - If a workspace path is uncertain, use glob before retrying read_file or grep
+- For broad or multi-directory exploration, prefer the subagent (task) tool so the search work stays out of your main context
+- When several independent pieces of information are needed, batch the tool calls into a single response so they run together instead of one round trip each
+- Keep looking until you have found the actual implementation, the conventions it follows and the call sites it affects — not just the first plausible match
 - A shell command with a non-zero exit code is not a successful test or build; inspect exit and output before making a completion claim
 - Todo updates are optional progress projection, never an execution prerequisite
 - Read files before editing when the current content is not already known
