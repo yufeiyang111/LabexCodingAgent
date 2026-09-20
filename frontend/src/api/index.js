@@ -362,6 +362,10 @@ export const agentExtensionApi = {
   listSkills() {
     return request.get('/student/agent/extensions/skills')
   },
+  /** 合并视图：项目级（工作区 .skill/）+ 用户级，含 source 与 location。 */
+  getSkillCatalog(projectId) {
+    return request.get('/student/agent/extensions/skills/catalog', { params: { projectId } })
+  },
   createSkill(data) {
     return request.post('/student/agent/extensions/skills', data)
   },

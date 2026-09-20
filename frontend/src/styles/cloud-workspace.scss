@@ -2410,9 +2410,55 @@ html[data-theme='dark'] .mc-test-fail { background: #3a1d22; color: #fca5a5; }
 .ext-transport-badge.sse { background: #fce7f3; color: #be185d; }
 .ext-transport-badge.stdio { background: #d1fae5; color: #047857; }
 
+/* 直写深色而非 --ai-text-faint：后者仅 2.33:1，达不到 4.5:1 可读性门槛 */
 .ext-source {
-  color: var(--ai-text-faint);
-  font-style: italic;
+  color: #5b6b80;
+  font-family: monospace;
+}
+
+/* 技能分区：项目级（只读，来自工作区 .skill/）与用户级（可增删改） */
+.ext-section {
+  margin-bottom: 14px;
+}
+
+.ext-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.ext-section-head h5 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ai-text);
+}
+
+.ext-section-note {
+  font-size: 11px;
+  color: #5b6b80;
+}
+
+.ext-section-hint {
+  font-size: 12px;
+  color: #5b6b80;
+  padding: 8px 10px;
+  background: var(--ai-bg-secondary);
+  border-radius: 6px;
+}
+
+.ext-section-hint.warn {
+  color: #a32d2d;
+}
+
+.ext-panel code {
+  font-family: monospace;
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--ai-bg-secondary);
+  color: var(--ai-text);
 }
 
 .ext-import-section {
@@ -2431,7 +2477,7 @@ html[data-theme='dark'] .mc-test-fail { background: #3a1d22; color: #fca5a5; }
 
 .ext-hint {
   font-size: 12px;
-  color: var(--ai-text-muted);
+  color: #5b6b80;
   margin: 0 0 8px 0;
 }
 

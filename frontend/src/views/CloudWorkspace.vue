@@ -743,8 +743,8 @@
             <div class="ext-panel" v-loading="extensionLoading">
               <div class="ext-header">
                 <div>
-                  <h4>全局扩展</h4>
-                  <p>当前学生账号下的 Skill 和 MCP 配置会在所有云代码空间中复用。</p>
+                  <h4>技能与扩展</h4>
+                  <p>用户级配置在所有云代码空间中复用；项目级 Skill 直接放进工作区的 <code>.skill/</code> 目录即可被读取。</p>
                 </div>
                 <div class="ext-switch">
                   <button :class="{ active: activeExtensionTab === 'skills' }" @click="activeExtensionTab = 'skills'">Skills</button>
@@ -754,36 +754,70 @@
 
               <!-- ========== Skills Tab ========== -->
               <div v-if="activeExtensionTab === 'skills'" class="ext-body">
-                <div class="ext-list">
-                  <div v-if="agentSkills.length === 0" class="ext-empty">
-                    还没有 Skill。添加后 Agent 会自动读取启用项。
-                    <br><small>支持 SKILL.md 格式，包含 YAML frontmatter (name, description)。</small>
+                <!-- 项目级 Skill：来自当前工作区的 .skill/ 目录，只读展示 -->
+                <div v-if="projectSkillState !== 'unsupported'" class="ext-section">
+                  <div class="ext-section-head">
+                    <h5>项目级 Skill</h5>
+                    <span class="ext-section-note">来自当前项目工作区 <code>.skill/</code>，在文件树中直接编辑</span>
                   </div>
-                  <div v-for="skill in agentSkills" :key="skill.skillId" class="ext-item">
-                    <div class="ext-item-main">
-                      <strong>{{ skill.title }}</strong>
-                      <span class="ext-badge">{{ skill.skillKey }}</span>
-                      <p>{{ skill.description || '暂无描述' }}</p>
-                      <small v-if="skill.source" class="ext-source">来源: {{ skill.source }}</small>
+                  <div v-if="projectSkillState === 'loading'" class="ext-section-hint">正在读取项目 Skill…</div>
+                  <div v-else-if="projectSkillState === 'error'" class="ext-section-hint warn">
+                    项目 Skill 读取失败，当前显示的可能不完整。
+                  </div>
+                  <div v-else-if="projectSkills.length === 0" class="ext-section-hint">
+                    暂无项目级 Skill。在工作区新建 <code>.skill/&lt;名称&gt;/SKILL.md</code> 即可被 Agent 读取。
+                  </div>
+                  <div v-else class="ext-list">
+                    <div v-for="skill in projectSkills" :key="skill.skillKey" class="ext-item readonly">
+                      <div class="ext-item-main">
+                        <strong>{{ skill.title }}</strong>
+                        <span class="ext-badge">{{ skill.skillKey }}</span>
+                        <p>{{ skill.description || '暂无描述' }}</p>
+                        <small class="ext-source">{{ skill.relativePath }}</small>
+                      </div>
                     </div>
-                    <div class="ext-item-actions">
-                      <button class="ext-mini-btn" :class="{ active: skill.isEnabled === 1 }" @click="toggleSkill(skill)">
-                        {{ skill.isEnabled === 1 ? '启用' : '停用' }}
-                      </button>
-                      <button class="ext-icon-btn" title="编辑" @click="editSkill(skill)">
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                      </button>
-                      <button class="ext-icon-btn danger" title="删除" @click="deleteSkill(skill)">
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
-                      </button>
+                  </div>
+                </div>
+
+                <div class="ext-section">
+                  <div class="ext-section-head">
+                    <h5>用户级 Skill</h5>
+                    <span class="ext-section-note">跟随账号，在所有项目中复用；同名时会被项目级覆盖</span>
+                  </div>
+                  <div class="ext-list">
+                    <div v-if="agentSkills.length === 0" class="ext-empty">
+                      还没有用户级 Skill。添加后 Agent 会自动读取启用项。
+                      <br><small>支持 SKILL.md 格式，包含 YAML frontmatter (name, description)。</small>
+                    </div>
+                    <div v-for="skill in agentSkills" :key="skill.skillId" class="ext-item">
+                      <div class="ext-item-main">
+                        <strong>{{ skill.title }}</strong>
+                        <span class="ext-badge">{{ skill.skillKey }}</span>
+                        <p>{{ skill.description || '暂无描述' }}</p>
+                      </div>
+                      <div class="ext-item-actions">
+                        <button class="ext-mini-btn" :class="{ active: skill.isEnabled === 1 }" @click="toggleSkill(skill)">
+                          {{ skill.isEnabled === 1 ? '启用' : '停用' }}
+                        </button>
+                        <button class="ext-icon-btn" title="编辑" @click="editSkill(skill)">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                        </button>
+                        <button class="ext-icon-btn danger" title="删除" @click="deleteSkill(skill)">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
 
                 <!-- Skill 导入区域 -->
                 <div class="ext-import-section">
-                  <h5>导入 Skill 文件夹</h5>
-                  <p class="ext-hint">上传包含 SKILL.md 文件的文件夹，系统会自动解析 frontmatter 并注册。</p>
+                  <h5>导入 Skill</h5>
+                  <p class="ext-hint">
+                    通过文件夹导入会把每个 <code>SKILL.md</code> 注册为一条<strong>用户级</strong> Skill。
+                    当前只保存 SKILL.md 的正文，同目录的 references / scripts / data 等文件不会被保存。
+                    需要连附属文件一起用，请改用项目级 Skill（放进工作区 <code>.skill/</code>）。
+                  </p>
                   <div class="ext-import-actions">
                     <input type="file" ref="skillFolderInput" webkitdirectory multiple style="display:none" @change="handleSkillFolderUpload" />
                     <button class="ext-btn secondary" @click="$refs.skillFolderInput?.click()">
@@ -818,7 +852,7 @@
                 <div class="ext-list">
                   <div v-if="mcpServers.length === 0" class="ext-empty">
                     还没有 MCP 服务。
-                    <br><small>支持 HTTP、SSE、stdio 三种传输协议。Agent 会自动发现并使用 MCP 工具。</small>
+                    <br><small>当前后端仅支持 HTTP 传输；配置后 Agent 会在连接时自动发现工具。</small>
                   </div>
                   <div v-for="server in mcpServers" :key="server.serverId" class="ext-item">
                     <div class="ext-item-main">
@@ -828,7 +862,6 @@
                       <p>{{ server.endpoint }}</p>
                       <small>
                         {{ server.authConfigured ? '✓ 已配置鉴权' : '✗ 未配置鉴权' }}
-                        · {{ server.toolsJson ? '已配置工具清单' : '自动发现工具' }}
                         · {{ server.isEnabled === 1 ? '已启用' : '已停用' }}
                       </small>
                     </div>
@@ -853,32 +886,11 @@
                   <h5>{{ editingMcpId ? '编辑 MCP' : '新增 MCP 服务' }}</h5>
                   <input v-model.trim="mcpForm.serverName" class="ext-input" placeholder="名称，例如 Docs Search" />
                   <input v-model.trim="mcpForm.serverKey" class="ext-input" placeholder="Key，例如 docs-search" />
-
-                  <!-- 传输协议选择 -->
-                  <div class="ext-transport-select">
-                    <label>传输协议:</label>
-                    <div class="ext-radio-group">
-                      <label class="ext-radio" :class="{ active: mcpForm.transport === 'http' }">
-                        <input type="radio" v-model="mcpForm.transport" value="http" /> HTTP
-                      </label>
-                      <label class="ext-radio" :class="{ active: mcpForm.transport === 'sse' }">
-                        <input type="radio" v-model="mcpForm.transport" value="sse" /> SSE
-                      </label>
-                      <label class="ext-radio" :class="{ active: mcpForm.transport === 'stdio' }">
-                        <input type="radio" v-model="mcpForm.transport" value="stdio" /> stdio
-                      </label>
-                    </div>
-                  </div>
-
-                  <input v-model.trim="mcpForm.endpoint" class="ext-input"
-                    :placeholder="mcpForm.transport === 'stdio' ? '命令，例如 npx @modelcontextprotocol/server-filesystem' : 'HTTPS JSON-RPC Endpoint'" />
+                  <p class="ext-hint">
+                    传输协议：HTTP。工具清单由 Agent 在连接时自动发现，无需手工声明。
+                  </p>
+                  <input v-model.trim="mcpForm.endpoint" class="ext-input" placeholder="HTTPS JSON-RPC Endpoint" />
                   <input v-model.trim="mcpForm.authHeader" class="ext-input" type="password" :placeholder="editingMcpId ? '留空保持原鉴权头' : 'Authorization header，可选'" />
-
-                  <!-- 工具清单（可选） -->
-                  <details class="ext-details">
-                    <summary>工具清单 (可选，留空则自动发现)</summary>
-                    <textarea v-model="mcpForm.toolsJson" class="ext-textarea" rows="5" placeholder='[{"name":"search","description":"search docs"}]'></textarea>
-                  </details>
 
                   <label class="ext-check"><input type="checkbox" v-model="mcpForm.isEnabled" /> 启用</label>
                   <div class="ext-form-actions">
@@ -2032,11 +2044,14 @@ const {
   extensionLoading,
   agentSkills,
   mcpServers,
+  projectSkills,
+  projectSkillState,
   editingSkillId,
   editingMcpId,
   skillForm,
   mcpForm,
   loadAgentExtensions,
+  loadProjectSkills,
   resetSkillForm,
   editSkill,
   saveSkill,
@@ -2053,8 +2068,12 @@ const {
 } = useAgentExtensions({
   api: agentExtensionApi,
   notify: ElMessage,
-  confirmAction: (...args) => ElMessageBox.confirm(...args)
+  confirmAction: (...args) => ElMessageBox.confirm(...args),
+  projectId
 })
+
+// 项目级 Skill 属于具体工作区，切换项目后必须重新读取，否则展示的是上一个项目的技能。
+watch(projectId, () => { void loadProjectSkills() })
 
 // Review tab state (ChangesPanel 组件已替代硬编码数据)
 

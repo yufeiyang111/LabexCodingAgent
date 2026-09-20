@@ -3,8 +3,11 @@ package com.labex.labexagent.controller;
 import com.labex.common.Result;
 import com.labex.entity.AgentMcpServer;
 import com.labex.entity.AgentSkill;
+import com.labex.entity.StudentProject;
+import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.service.AgentMcpServerService;
 import com.labex.service.AgentSkillService;
+import com.labex.service.StudentProjectService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +19,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -23,15 +27,39 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentExtensionController {
     private final AgentSkillService skillService;
     private final AgentMcpServerService mcpServerService;
+    private final StudentProjectService studentProjectService;
 
-    public AgentExtensionController(AgentSkillService skillService, AgentMcpServerService mcpServerService) {
+    public AgentExtensionController(AgentSkillService skillService, AgentMcpServerService mcpServerService,
+                                    StudentProjectService studentProjectService) {
         this.skillService = skillService;
         this.mcpServerService = mcpServerService;
+        this.studentProjectService = studentProjectService;
     }
 
     @GetMapping("/skills")
     public Result<List<AgentSkill>> listSkills(Authentication auth) {
         return Result.success(skillService.listByStudent(getStudentId(auth)));
+    }
+
+    /**
+     * 合并视图：该项目工作区 {@code .skill/} 下的项目级 Skill + 该账号的用户级 Skill。
+     *
+     * <p>与 {@code /skills} 的区别：那个只返回用户级（可增删改的数据库记录），这里额外暴露
+     * 项目级技能的名称/描述/来源，供界面展示"这个项目里放了哪些技能"。项目级只读 ——
+     * 它是工作区里的普通文件，用户在文件树中直接编辑。
+     *
+     * <p>同名时项目级覆盖用户级，与 Agent 运行时的解析规则保持一致。
+     */
+    @GetMapping("/skills/catalog")
+    public Result<List<AgentSkillService.CatalogEntry>> listSkillCatalog(
+            @RequestParam("projectId") Integer projectId, Authentication auth) {
+        Integer studentId = getStudentId(auth);
+        StudentProject project = studentProjectService.getOwnedProject(studentId, projectId);
+        if (project == null) {
+            return Result.error("Project not found");
+        }
+        return Result.success(skillService.resolveCatalog(
+                studentId, ProjectWorkspace.workspaceRootOrNull(project)));
     }
 
     @PostMapping("/skills")

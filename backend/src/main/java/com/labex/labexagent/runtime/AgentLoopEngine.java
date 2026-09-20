@@ -3755,7 +3755,7 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         // 子代理的 mode 已在 runLoop 映射为主代理模式（explore/build），
         // 工具门禁与系统提示复用主代理同一条路径；此处只保留嵌套深度门控。
         ToolExposure toolExposure = this.planToolExposure(studentId, mode, modelConfig, runtimeProfile, taskId,
-                workspaceRootOf(project));
+                ProjectWorkspace.workspaceRootOrNull(project));
         List<ToolDefinition> selectedTools = toolExposure.definitions();
         if (subagent != null && !subagent.canSpawnNested()) {
             selectedTools = selectedTools.stream()
@@ -5782,22 +5782,10 @@ Current Mode: BUILD MODE (Autonomous Implementation & Verification)
         }
         try {
             return AgentSkillService.renderCatalogBlock(
-                    this.skillService.resolveCatalog(studentId, workspaceRootOf(project)));
+                    this.skillService.resolveCatalog(studentId, ProjectWorkspace.workspaceRootOrNull(project)));
         } catch (RuntimeException failure) {
             log.warn("Unable to resolve Skill catalog for student {}: {}", studentId, failure.getMessage());
             return "";
-        }
-    }
-
-    /** 工作区根由项目记录决定；无法解析时返回 null（调用方按"没有项目级技能"处理）。 */
-    static Path workspaceRootOf(StudentProject project) {
-        if (project == null) {
-            return null;
-        }
-        try {
-            return ProjectWorkspace.paths(project).workspaceRoot();
-        } catch (RuntimeException unavailable) {
-            return null;
         }
     }
 

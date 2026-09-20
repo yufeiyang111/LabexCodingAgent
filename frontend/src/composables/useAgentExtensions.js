@@ -2,7 +2,11 @@
 
 const DEFAULT_MAX_SKILL_FILES = 50
 const DEFAULT_MAX_SKILL_FILE_BYTES = 1024 * 1024
-const DEFAULT_MAX_CONTENT_CHARS = 15000
+// 必须与后端 AgentSkillService.MAX_SKILL_CONTENT 一致：前端更早截断会静默丢失技能的尾部规则，
+// 而用户无从察觉（曾实测 6/19 个技能被截，损失最具体的部分）。
+const DEFAULT_MAX_CONTENT_CHARS = 30000
+/** 与 parseSkillMarkdown 写入的标记严格一致，用于在导入结果里如实报告截断。 */
+const TRUNCATION_MARKER = '[内容已截断]'
 
 function fallbackNotifier() {
   return { info() {}, success() {}, warning() {}, error() {} }
@@ -62,6 +66,16 @@ export function eligibleSkillFiles(files, options = {}) {
     .slice(0, maxFiles)
 }
 
+/**
+ * 技能正文是否被截断。
+ *
+ * 抽取成纯函数是因为"静默截断"是这类导入最危险的失败模式：技能看起来导入成功了，
+ * 但尾部（往往是最具体的规则）已经丢失，用户完全无从察觉。
+ */
+export function isTruncatedSkill(parsed) {
+  return typeof parsed?.content === 'string' && parsed.content.includes(TRUNCATION_MARKER)
+}
+
 export function useAgentExtensions(options) {
   const api = options.api || {}
   const notify = { ...fallbackNotifier(), ...(options.notify || {}) }
@@ -69,10 +83,16 @@ export function useAgentExtensions(options) {
   const maxSkillFiles = options.maxSkillFiles || DEFAULT_MAX_SKILL_FILES
   const maxSkillFileBytes = options.maxSkillFileBytes || DEFAULT_MAX_SKILL_FILE_BYTES
   const maxContentChars = options.maxContentChars || DEFAULT_MAX_CONTENT_CHARS
+  // 项目级 Skill 属于某个项目的工作区，因此需要当前 projectId 才能查询。
+  const currentProjectId = options.projectId || ref(null)
 
   const extensionLoading = ref(false)
   const agentSkills = ref([])
   const mcpServers = ref([])
+  const projectSkills = ref([])
+  // ready | loading | error | unsupported
+  // unsupported 表示后端未提供该接口，此时不展示该区块 —— 但绝不伪造"没有项目级技能"。
+  const projectSkillState = ref('loading')
   const editingSkillId = ref(null)
   const editingMcpId = ref(null)
   const skillForm = ref(emptySkillForm())
@@ -84,7 +104,34 @@ export function useAgentExtensions(options) {
   }
 
   function emptyMcpForm() {
-    return { serverName: '', serverKey: '', endpoint: '', authHeader: '', toolsJson: '', isEnabled: true, transport: 'http' }
+    // 不含 toolsJson：MCP 工具清单由后端连接后自动发现，手填字段从未被任何生产代码读取。
+    return { serverName: '', serverKey: '', endpoint: '', authHeader: '', isEnabled: true, transport: 'http' }
+  }
+
+  /**
+   * 读取当前项目的项目级 Skill（工作区 .skill/ 目录）。
+   *
+   * 与用户级不同，项目级 Skill 是工作区里的普通文件、只读展示 —— 用户在文件树中直接编辑。
+   * 接口缺失时标记 unsupported 并清空列表，由界面隐藏该区块，不猜测也不伪造数据。
+   */
+  async function loadProjectSkills() {
+    const projectId = currentProjectId.value
+    if (typeof api.getSkillCatalog !== 'function' || !projectId) {
+      projectSkills.value = []
+      projectSkillState.value = 'unsupported'
+      return false
+    }
+    projectSkillState.value = 'loading'
+    try {
+      const response = await api.getSkillCatalog(projectId)
+      projectSkills.value = (response?.data || []).filter(entry => entry?.source === 'project')
+      projectSkillState.value = 'ready'
+      return true
+    } catch (error) {
+      projectSkills.value = []
+      projectSkillState.value = 'error'
+      return false
+    }
   }
 
   async function loadAgentExtensions() {
@@ -95,6 +142,7 @@ export function useAgentExtensions(options) {
       if (generation !== loadGeneration) return false
       agentSkills.value = skillsResponse?.data || []
       mcpServers.value = mcpResponse?.data || []
+      await loadProjectSkills()
       return true
     } catch (error) {
       if (generation === loadGeneration) notify.warning('扩展配置加载失败')
@@ -175,7 +223,6 @@ export function useAgentExtensions(options) {
       serverKey: server.serverKey || '',
       endpoint: server.endpoint || '',
       authHeader: '',
-      toolsJson: server.toolsJson || '',
       isEnabled: server.isEnabled === 1,
       transport: server.transport || 'http'
     }
@@ -270,7 +317,7 @@ export function useAgentExtensions(options) {
       return { imported: 0, updated: 0, skipped: 0, failed: 0 }
     }
     notify.info(`找到 ${skillFiles.length} 个 SKILL.md 文件，正在导入...`)
-    const counts = { imported: 0, updated: 0, skipped: 0, failed: 0 }
+    const counts = { imported: 0, updated: 0, skipped: 0, failed: 0, truncated: 0 }
     for (const file of skillFiles) {
       try {
         const parsed = parseSkillMarkdown(await file.text(), file.webkitRelativePath || file.name, { maxContentChars })
@@ -284,6 +331,7 @@ export function useAgentExtensions(options) {
           const suffix = '\n\n## Related Files\n- ' + relatedFiles.map(candidate => candidate.webkitRelativePath).join('\n- ')
           parsed.content = (parsed.content + suffix).slice(0, maxContentChars)
         }
+        if (isTruncatedSkill(parsed)) counts.truncated++
         const outcome = await persistImportedSkill(parsed)
         counts[outcome]++
       } catch (error) {
@@ -297,6 +345,10 @@ export function useAgentExtensions(options) {
     if (counts.skipped) labels.push(`${counts.skipped} 个跳过`)
     if (counts.failed) labels.push(`${counts.failed} 个失败`)
     notify.success(`Skill 导入完成: ${labels.join(', ') || '无变更'}`)
+    if (counts.truncated) {
+      // 截断必须显式告知：用户需要知道技能尾部内容没有保存。
+      notify.warning(`有 ${counts.truncated} 个 Skill 正文超过 ${maxContentChars} 字符，尾部已截断`)
+    }
     await loadAgentExtensions()
     if (event?.target) event.target.value = ''
     return counts
@@ -317,6 +369,9 @@ export function useAgentExtensions(options) {
       }
       const outcome = await persistImportedSkill(parsed)
       notify.success(outcome === 'updated' ? 'Skill 已更新' : 'Skill 已导入')
+      if (isTruncatedSkill(parsed)) {
+        notify.warning(`正文超过 ${maxContentChars} 字符，尾部已截断，未保存的内容不会生效`)
+      }
       await loadAgentExtensions()
       return true
     } catch (error) {
@@ -331,11 +386,14 @@ export function useAgentExtensions(options) {
     extensionLoading,
     agentSkills,
     mcpServers,
+    projectSkills,
+    projectSkillState,
     editingSkillId,
     editingMcpId,
     skillForm,
     mcpForm,
     loadAgentExtensions,
+    loadProjectSkills,
     resetSkillForm,
     editSkill,
     saveSkill,
