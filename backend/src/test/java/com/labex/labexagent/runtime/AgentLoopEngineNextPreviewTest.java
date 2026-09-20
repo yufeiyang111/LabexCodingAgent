@@ -88,7 +88,7 @@ class AgentLoopEngineNextPreviewTest {
         when(conversations.buildMemoryContext(7, 3, "conversation")).thenReturn("durable memory");
         when(modelConfigs.resolveForStudent(7, 17)).thenReturn(model);
         when(tools.definitionsForMode("build")).thenReturn(List.of());
-        when(skills.buildPromptContext(7)).thenReturn("");
+        when(skills.resolveCatalog(eq(7), any())).thenReturn(List.of());
         when(mcp.buildPromptContext(7)).thenReturn("");
         when(contextOrchestrator.buildInitialBundle(eq(project), eq("src/App.vue"), anyString(), eq(""),
                 eq("draft request"), anyString(), eq(false), any(AgentContext.class)))
@@ -129,7 +129,6 @@ class AgentLoopEngineNextPreviewTest {
         assertFalse(payload.toString().contains("FOREIGN_CHECKPOINT_SENTINEL"));
         verify(conversations, never()).touchActivity(any(AgentConversation.class));
         verify(conversations, never()).markCompacted(any(AgentConversation.class));
-        verify(skills, never()).buildPromptContext(7);
         verify(mcp, never()).buildPromptContext(7);
         verifyNoInteractions(providers, tasks, usageRegistry);
     }

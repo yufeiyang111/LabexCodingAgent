@@ -3,6 +3,8 @@ package com.labex.labexagent.runtime;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -30,14 +32,14 @@ class ToolExposurePlannerTest {
         ToolRegistry registry = registry();
         registry.registerDynamicTool("mcp_shared", tool("mcp_shared"));
         AgentSkillService skills = mock(AgentSkillService.class);
-        when(skills.hasEnabledSkills(7)).thenReturn(true);
+        when(skills.hasAnySkill(eq(7), any())).thenReturn(true);
         McpManager mcp = mock(McpManager.class);
         when(mcp.getAvailableTools(7)).thenReturn(List.of(mcpTool("docs", "Docs", "search")));
         ToolExposurePlanner planner = new ToolExposurePlanner(registry, new com.labex.labexagent.tool.ToolSelectionPolicy(),
                 skills, mcp, availableWebSearch());
 
         ToolExposure exposure = planner.plan(new ToolExposurePlanner.Request(
-                7, "build", AgentRuntimeProfile.LABEX_NATIVE, true, true, true));
+                7, "build", AgentRuntimeProfile.LABEX_NATIVE, true, true, true, null));
 
         assertEquals(List.of(
                 "read_file", "read_tool_output", "glob", "grep", "write_file", "apply_patch", "shell",
@@ -62,7 +64,7 @@ class ToolExposurePlannerTest {
                 new com.labex.labexagent.tool.ToolSelectionPolicy(), skills, mcp, webSearch);
 
         ToolExposure exposure = planner.plan(new ToolExposurePlanner.Request(
-                7, "build", AgentRuntimeProfile.LABEX_NATIVE, false, true, true));
+                7, "build", AgentRuntimeProfile.LABEX_NATIVE, false, true, true, null));
         List<String> names = exposure.definitions().stream().map(ToolDefinition::getName).toList();
 
         assertFalse(names.contains("web_search"));
@@ -92,7 +94,7 @@ class ToolExposurePlannerTest {
         ToolExposurePlanner planner = new ToolExposurePlanner(registry, new com.labex.labexagent.tool.ToolSelectionPolicy(),
                 skills, mcp, availableWebSearch());
         ToolExposure initial = planner.plan(new ToolExposurePlanner.Request(
-                7, "build", AgentRuntimeProfile.LABEX_NATIVE, false, true, true));
+                7, "build", AgentRuntimeProfile.LABEX_NATIVE, false, true, true, null));
         clearInvocations(mcp);
 
         ToolExposure restored = planner.restore(initial.snapshot());

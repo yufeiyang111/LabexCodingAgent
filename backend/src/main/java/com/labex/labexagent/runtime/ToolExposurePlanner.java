@@ -10,6 +10,7 @@ import com.labex.labexagent.tool.ToolDefinition;
 import com.labex.labexagent.tool.ToolRegistry;
 import com.labex.labexagent.tool.ToolSelectionPolicy;
 import com.labex.service.AgentSkillService;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -47,7 +48,8 @@ public class ToolExposurePlanner {
         AgentRuntimeProfile profile = safeRequest.runtimeProfile();
         String mode = AgentMode.normalize(safeRequest.mode());
         boolean nativeProfile = profile == AgentRuntimeProfile.LABEX_NATIVE;
-        boolean skillCatalogAvailable = nativeProfile && hasEnabledSkills(safeRequest.studentId());
+        boolean skillCatalogAvailable = nativeProfile
+                && hasAnySkill(safeRequest.studentId(), safeRequest.workspaceRoot());
         // native MCP 必须由当前 student 的实际发现结果构成，不能读取全局 dynamic registry。
         boolean globalDynamicMcpEnabled = !nativeProfile && toolRegistry != null && toolRegistry.getDynamicToolCount() > 0;
         boolean webSearchAvailable = safeRequest.webSearchEnabled() && isWebSearchAvailable();
@@ -89,12 +91,16 @@ public class ToolExposurePlanner {
         }
     }
 
-    private boolean hasEnabledSkills(Integer studentId) {
-        if (skillService == null || studentId == null) {
+    /**
+     * 技能可能来自用户级配置，也可能来自工作区的 {@code .skill/} 目录 —— 后者是普通文件，
+     * 用户随时可以放进去，所以判定必须同时看两层。
+     */
+    private boolean hasAnySkill(Integer studentId, Path workspaceRoot) {
+        if (skillService == null) {
             return false;
         }
         try {
-            return skillService.hasEnabledSkills(studentId);
+            return skillService.hasAnySkill(studentId, workspaceRoot);
         } catch (RuntimeException failure) {
             log.warn("Unable to resolve Skill capability for student {}: {}", studentId, failure.getMessage());
             return false;
@@ -142,14 +148,15 @@ public class ToolExposurePlanner {
     }
 
     public record Request(Integer studentId, String mode, AgentRuntimeProfile runtimeProfile,
-                          boolean imageInputEnabled, boolean webSearchEnabled, boolean webFetchEnabled) {
+                          boolean imageInputEnabled, boolean webSearchEnabled, boolean webFetchEnabled,
+                          Path workspaceRoot) {
         public Request {
             mode = AgentMode.normalize(mode);
             runtimeProfile = runtimeProfile == null ? AgentRuntimeProfile.LABEX_LEGACY : runtimeProfile;
         }
 
         static Request empty() {
-            return new Request(null, "build", AgentRuntimeProfile.LABEX_LEGACY, false, false, false);
+            return new Request(null, "build", AgentRuntimeProfile.LABEX_LEGACY, false, false, false, null);
         }
     }
 }

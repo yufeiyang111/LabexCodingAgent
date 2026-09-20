@@ -732,7 +732,8 @@ public class AgentLoopEngine {
         // orchestrator 的完整 bundle 只作为诊断信息放进 previewMetadata，不参与估算。
         String leanMemory = this.contextOrchestrator.buildLeanWorkspaceMemory(project, draft, activePath);
         String initialContextMessage = AgentLoopEngine.buildLeanInitialContextMessage(
-                modePolicy, projectRules, leanMemory, recentRunLog, checkpoint);
+                modePolicy, projectRules, leanMemory, recentRunLog, checkpoint,
+                this.buildSkillCatalogBlock(studentId, project));
         ContextUsageEstimator.PromptContext promptContext = new ContextUsageEstimator.PromptContext(
                 leanMemory, "", "", initialContextMessage);
         List<Map<String, Object>> messages = new ArrayList<>();
@@ -1060,7 +1061,8 @@ public class AgentLoopEngine {
             // 执行进度是可重建的动态投影，不写入 Provider transcript；每次调用前从 durable Part/Event 注入。
             String modePolicy = runtimeProjection.modePolicy();
             String initialContextMessage = AgentLoopEngine.buildLeanInitialContextMessage(
-                    modePolicy, projectRules, leanMemory, recentRunLog, "");
+                    modePolicy, projectRules, leanMemory, recentRunLog, "",
+                    this.buildSkillCatalogBlock(studentId, project));
             ContextUsageEstimator.PromptContext contextPrompt = new ContextUsageEstimator.PromptContext(
                     leanMemory, "", "", initialContextMessage);
             List<Map<String, Object>> persistedMessages;
@@ -3752,7 +3754,8 @@ You are permitted to make file changes, run shell commands, and utilize your ars
                                                            com.labex.labexagent.run.SubagentRuntimeInfo subagent) {
         // 子代理的 mode 已在 runLoop 映射为主代理模式（explore/build），
         // 工具门禁与系统提示复用主代理同一条路径；此处只保留嵌套深度门控。
-        ToolExposure toolExposure = this.planToolExposure(studentId, mode, modelConfig, runtimeProfile, taskId);
+        ToolExposure toolExposure = this.planToolExposure(studentId, mode, modelConfig, runtimeProfile, taskId,
+                workspaceRootOf(project));
         List<ToolDefinition> selectedTools = toolExposure.definitions();
         if (subagent != null && !subagent.canSpawnNested()) {
             selectedTools = selectedTools.stream()
@@ -3898,7 +3901,7 @@ You are permitted to make file changes, run shell commands, and utilize your ars
     }
 
     private ToolExposure planToolExposure(Integer studentId, String mode, AgentModelConfig modelConfig,
-                                          AgentRuntimeProfile runtimeProfile, Long taskId) {
+                                          AgentRuntimeProfile runtimeProfile, Long taskId, Path workspaceRoot) {
         if (runtimeProfile == AgentRuntimeProfile.LABEX_NATIVE && this.toolExposurePlanner != null) {
             if (this.toolExposureSnapshotService != null) {
                 java.util.Optional<ToolExposureSnapshot> snapshot = this.toolExposureSnapshotService.findLatest(
@@ -3910,9 +3913,10 @@ You are permitted to make file changes, run shell commands, and utilize your ars
             boolean imageInputEnabled = modelConfig != null
                     && Integer.valueOf(1).equals(modelConfig.getImageInputEnabled());
             return this.toolExposurePlanner.plan(new ToolExposurePlanner.Request(
-                    studentId, mode, runtimeProfile, imageInputEnabled, true, true));
+                    studentId, mode, runtimeProfile, imageInputEnabled, true, true, workspaceRoot));
         }
-        List<ToolDefinition> definitions = this.selectToolDefinitions(studentId, mode, modelConfig, runtimeProfile);
+        List<ToolDefinition> definitions = this.selectToolDefinitions(studentId, mode, modelConfig, runtimeProfile,
+                workspaceRoot);
         return new ToolExposure(definitions, Map.of(),
                 ToolExposureSnapshot.live(runtimeProfile, mode, definitions, List.of()), false);
     }
@@ -3933,11 +3937,11 @@ You are permitted to make file changes, run shell commands, and utilize your ars
     }
 
     private List<ToolDefinition> selectToolDefinitions(Integer studentId, String mode, AgentModelConfig modelConfig) {
-        return selectToolDefinitions(studentId, mode, modelConfig, AgentRuntimeProfile.LABEX_LEGACY);
+        return selectToolDefinitions(studentId, mode, modelConfig, AgentRuntimeProfile.LABEX_LEGACY, null);
     }
 
     private List<ToolDefinition> selectToolDefinitions(Integer studentId, String mode, AgentModelConfig modelConfig,
-                                                        AgentRuntimeProfile runtimeProfile) {
+                                                        AgentRuntimeProfile runtimeProfile, Path workspaceRoot) {
         boolean imageInputEnabled = modelConfig != null && Integer.valueOf(1).equals(modelConfig.getImageInputEnabled());
         boolean mcpEnabled = this.toolRegistry.getDynamicToolCount() > 0;
         if (!mcpEnabled && this.mcpServerService != null) {
@@ -3950,7 +3954,7 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         boolean skillCatalogAvailable = false;
         if (runtimeProfile == AgentRuntimeProfile.LABEX_NATIVE && this.skillService != null) {
             try {
-                skillCatalogAvailable = this.skillService.hasEnabledSkills(studentId);
+                skillCatalogAvailable = this.skillService.hasAnySkill(studentId, workspaceRoot);
             } catch (RuntimeException lookupFailure) {
                 log.warn("Unable to resolve Skill capability for student {}: {}", studentId, lookupFailure.getMessage());
             }
@@ -5730,7 +5734,8 @@ Current Mode: BUILD MODE (Autonomous Implementation & Verification)
      * （旧版文件 checkpoint 是只读迁移入口，不是事实源，见 AgentCheckpointStore）。</p>
      */
     static String buildLeanInitialContextMessage(String modePolicy, String projectRules,
-                                                 String leanMemory, String recentRunLog, String checkpoint) {
+                                                 String leanMemory, String recentRunLog, String checkpoint,
+                                                 String skillCatalog) {
         StringBuilder builder = new StringBuilder();
         if (modePolicy != null && !modePolicy.isBlank()) {
             builder.append(modePolicy).append("\n\n");
@@ -5745,6 +5750,14 @@ Current Mode: BUILD MODE (Autonomous Implementation & Verification)
                     .append(limitForContext(leanMemory, 2_000))
                     .append("\n</workspace_memory>\n\n");
         }
+        // 技能目录必须主动告知模型，否则 skill 工具就是一个没有上下文理由的孤岛，
+        // 模型不会有任何动机去调用它。这里只放名字与描述，正文由 skill 工具按需加载。
+        if (skillCatalog != null && !skillCatalog.isBlank()) {
+            builder.append("Skills provide specialized instructions for specific tasks. "
+                            + "Use the skill tool to load a skill when a task matches its description.\n")
+                    .append(limitForContext(skillCatalog, 4_000))
+                    .append("\n\n");
+        }
         if (recentRunLog != null && !recentRunLog.isBlank()) {
             builder.append("<latest_agent_run_log purpose=\"resume_previous_work\">\n")
                     .append(limitForContext(recentRunLog, 12_000))
@@ -5756,6 +5769,36 @@ Current Mode: BUILD MODE (Autonomous Implementation & Verification)
                     .append("\n</agent_checkpoint>\n\n");
         }
         return builder.toString().trim();
+    }
+
+    /**
+     * 组装可注入提示词的技能目录（项目级 + 用户级）。
+     *
+     * <p>任何异常都退化为"没有技能"，技能是可选增强，不该让一次请求失败。
+     */
+    private String buildSkillCatalogBlock(Integer studentId, StudentProject project) {
+        if (this.skillService == null) {
+            return "";
+        }
+        try {
+            return AgentSkillService.renderCatalogBlock(
+                    this.skillService.resolveCatalog(studentId, workspaceRootOf(project)));
+        } catch (RuntimeException failure) {
+            log.warn("Unable to resolve Skill catalog for student {}: {}", studentId, failure.getMessage());
+            return "";
+        }
+    }
+
+    /** 工作区根由项目记录决定；无法解析时返回 null（调用方按"没有项目级技能"处理）。 */
+    static Path workspaceRootOf(StudentProject project) {
+        if (project == null) {
+            return null;
+        }
+        try {
+            return ProjectWorkspace.paths(project).workspaceRoot();
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
     }
 
     private String readProjectRules(Integer studentId, Integer projectId) {
