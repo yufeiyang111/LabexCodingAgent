@@ -76,6 +76,32 @@ class OpenAiCompatibleChatRequestAdapterTest {
     }
 
     @Test
+    void sendsMaxReasoningEffortWhenNoAdvancedOptionsRestrictLevels() {
+        LlmProvider.LlmConfig config = new LlmProvider.LlmConfig(
+                "key", "https://example.test", "deepseek-v4.1-flash", 128, 0.2,
+                null, null, null, false, null, "max");
+
+        OpenAiCompatibleChatRequestAdapter.PreparedRequest request = adapter.adapt(
+                "system", List.of(Map.of("role", "user", "content", "hello")), List.of(), config, false, false);
+
+        JsonObject body = JsonParser.parseString(request.body()).getAsJsonObject();
+        assertEquals("max", body.get("reasoning_effort").getAsString());
+    }
+
+    @Test
+    void explicitAllowedLevelsStillRejectUnsupportedEffort() {
+        String options = "{\"reasoning\":{\"allowedLevels\":[\"low\",\"high\"]}}";
+        LlmProvider.LlmConfig config = new LlmProvider.LlmConfig(
+                "key", "https://example.test", "deepseek-v4.1-flash", 128, 0.2,
+                null, null, null, false, null, "max", options);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> adapter.adapt(
+                "system", List.of(), List.of(), config, false, false));
+
+        assertEquals("reasoning effort is not allowed: max", error.getMessage());
+    }
+
+    @Test
     void keepsOpenAiCompatiblePromptCachingImplicitWithoutInlineCacheHints() {
         OpenAiCompatibleChatRequestAdapter.PreparedRequest request = adapter.adapt(
                 "system", List.of(Map.of("role", "user", "content", "hello")),

@@ -27,7 +27,7 @@ import java.security.NoSuchAlgorithmException;
  */
 public class OpenAiCompatibleChatRequestAdapter {
     private static final Gson GSON = new Gson();
-    private static final List<String> DEFAULT_REASONING_LEVELS = List.of("low", "medium", "high", "xhigh");
+    private static final List<String> DEFAULT_REASONING_LEVELS = List.of("low", "medium", "high", "xhigh", "max");
     private static final Set<String> PROTECTED_BODY_FIELDS = Set.of("model", "messages", "tools", "stream");
     private static final Set<String> PROTECTED_HEADERS = Set.of(
             "authorization", "x-api-key", "host", "content-type", "content-length",
