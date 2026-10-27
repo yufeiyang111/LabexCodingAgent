@@ -100,6 +100,41 @@ class AgentModelTurnExecutorTest {
     }
 
     @Test
+    void mergesToolArgumentDeltasWithoutLosingEarlierToolIdentity() throws Exception {
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
+        LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {
+            callback.accept(chunk("tool_args_delta", "{\"path\":", "read_file", "{\"path\":", null, "native-1", 0));
+            callback.accept(chunk("tool_args_delta", "\"README.md\"}", null, "{\"path\":\"README.md\"}", null, "native-1", 0));
+            callback.accept(chunk("done", "", null, null, null));
+        });
+
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request(provider, new ArrayList<>()));
+
+        assertEquals(AgentModelTurnExecutor.ResultType.TOOL_CALL, result.type());
+        assertEquals(1, result.toolCalls().size());
+        assertEquals("read_file", result.toolCalls().get(0).toolName());
+        assertEquals("{\"path\":\"README.md\"}", result.toolCalls().get(0).toolArguments());
+        assertEquals("native-1", result.toolCalls().get(0).toolCallId());
+    }
+
+    @Test
+    void keepsNameFromEarlierChunkWhenLaterChunkCarriesOnlyEmptyName() throws Exception {
+        AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
+        LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {
+            callback.accept(chunk("tool_args_delta", "", "read_file", "", null, "native-1", 0));
+            callback.accept(chunk("tool_args_delta", "{\"path\":\"README.md\"}", "", "{\"path\":\"README.md\"}", null, "native-1", 0));
+            callback.accept(chunk("done", "", null, null, null));
+        });
+
+        AgentModelTurnExecutor.ModelTurnResult result = executor.execute(request(provider, new ArrayList<>()));
+
+        assertEquals(AgentModelTurnExecutor.ResultType.TOOL_CALL, result.type());
+        assertEquals(1, result.toolCalls().size());
+        assertEquals("read_file", result.toolCalls().get(0).toolName());
+        assertEquals("native-1", result.toolCalls().get(0).toolCallId());
+    }
+
+    @Test
     void preservesAllNativeToolCallsInProviderOrder() throws Exception {
         AgentModelTurnExecutor executor = new AgentModelTurnExecutor(executorService, 1000);
         LlmProvider provider = provider(ProviderCapabilities.OPENAI_COMPATIBLE, callback -> {

@@ -15,13 +15,17 @@ final class ToolCallAccumulator {
         int index = integer(rawCall, "index", calls.size());
         MutableToolCall call = calls.computeIfAbsent(index, MutableToolCall::new);
         if (rawCall.has("id") && !rawCall.get("id").isJsonNull()) {
-            call.id = rawCall.get("id").getAsString();
+            String id = rawCall.get("id").getAsString();
+            // 后续分片可能带空 id；空值不能覆盖首片已识别的稳定调用 ID。
+            if (id != null && !id.isBlank()) call.id = id;
         }
         String delta = "";
         if (rawCall.has("function") && rawCall.get("function").isJsonObject()) {
             JsonObject function = rawCall.getAsJsonObject("function");
             if (function.has("name") && !function.get("name").isJsonNull()) {
-                call.name = function.get("name").getAsString();
+                String name = function.get("name").getAsString();
+                // 空 name 是无效分片，不能覆盖首片的有效工具名。
+                if (name != null && !name.isBlank()) call.name = name;
             }
             if (function.has("arguments") && !function.get("arguments").isJsonNull()) {
                 delta = function.get("arguments").getAsString();

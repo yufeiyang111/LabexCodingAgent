@@ -1385,8 +1385,9 @@ You are permitted to make file changes, run shell commands, and utilize your ars
                                             String identityError = this.toolCallBatchProtocol.validateIdentity(call);
                                             if (!identityError.isEmpty()) {
                                                 this.appendRunLog(runLog, "\n- Invalid native tool call: " + identityError + "\n");
-                                                this.stopForMissingToolCallIdentity(sse, conv, task, project, request, ctx,
-                                                        runLog, i, call == null ? "unknown" : call.toolName(), visibleLanguage, emitter);
+                                                this.stopForInvalidToolCall(sse, conv, task, project, request, ctx,
+                                                        runLog, i, call == null ? "unknown" : call.toolName(),
+                                                        identityError, nativeToolCalls, visibleLanguage, emitter);
                                                 return;
                                             }
                                         }
@@ -2932,9 +2933,56 @@ You are permitted to make file changes, run shell commands, and utilize your ars
                 "The provider did not return a tool-call identity suitable for one-time approval binding, so execution stopped safely.");
         this.failTaskAndProject(sse, conv, task, summary, detail);
         this.appendRunLog(runLog, "\n- " + detail + " Tool=`" + this.safeLogText(toolName) + "`\n");
+        this.sendEvent(sse, conv, "DONE", Map.of("message", summary, "iterations", iteration));
+        emitter.complete();
+    }
+
+    private void stopForInvalidToolCall(AgentSsePublisher sse, AgentConversation conv, AgentTask task,
+                                           StudentProject project, AgentStreamRequest request, AgentContext ctx,
+                                           Path runLog, int iteration, String toolName, String identityError,
+                                           List<AgentModelTurnExecutor.NativeToolCall> nativeToolCalls,
+                                           String visibleLanguage, SseEmitter emitter) throws Exception {
+        String summary;
+        String detail;
+        if ("toolName is required".equals(identityError)) {
+            summary = this.localText(visibleLanguage, "模型未返回工具名", "Tool name unavailable");
+            detail = this.localText(visibleLanguage,
+                    "模型返回了工具调用，但没有提供可执行的工具名，因此本次执行已安全停止。请重试；若持续出现，请切换模型或检查网关的流式工具调用兼容性。",
+                    "The model returned a tool call without an executable tool name, so execution stopped safely. Retry, or switch models/check the gateway's streaming tool-call compatibility if this persists.");
+        } else {
+            summary = this.localText(visibleLanguage, "工具调用标识不可用", "Tool call identity unavailable");
+            detail = this.localText(visibleLanguage,
+                    "服务提供方返回的工具调用标识不合法，无法安全绑定一次性审批，因此本次执行已停止。",
+                    "The provider returned an invalid tool-call identity, so execution stopped before it could be safely bound to one-time approval.");
+        }
+        this.failTaskAndProject(sse, conv, task, summary, detail);
+        this.appendRunLog(runLog, "\n- " + detail + " Tool=" + this.safeLogText(toolName)
+                + " IdentityError=" + this.safeLogText(identityError)
+                + " ToolCallShape=" + this.safeLogText(this.toolCallDiagnosticShape(nativeToolCalls)) + "\n");
         this.streamFinal(sse, conv, this.buildStopFinal(summary, detail, project, runLog, visibleLanguage), visibleLanguage);
         this.sendEvent(sse, conv, "DONE", Map.of("message", summary, "iterations", iteration));
         emitter.complete();
+    }
+
+    /**
+     * 失败路径只记录结构摘要，不记录参数正文：用于区分上游漏 name、id 或返回了非标准字段。
+     */
+    private String toolCallDiagnosticShape(List<AgentModelTurnExecutor.NativeToolCall> calls) {
+        if (calls == null || calls.isEmpty()) return "[]";
+        StringBuilder shape = new StringBuilder("[");
+        for (int index = 0; index < calls.size(); index++) {
+            AgentModelTurnExecutor.NativeToolCall call = calls.get(index);
+            if (index > 0) shape.append(",");
+            shape.append("{index=").append(call == null ? -1 : call.toolCallIndex())
+                    .append(",name=").append(call == null || call.toolName() == null
+                            ? "null" : call.toolName().isBlank() ? "blank" : "present")
+                    .append(",id=").append(call == null || call.toolCallId() == null
+                            ? "null" : call.toolCallId().isBlank() ? "blank" : "present")
+                    .append(",args=").append(call == null || call.toolArguments() == null
+                            ? "null" : call.toolArguments().isBlank() ? "blank" : "present")
+                    .append("}");
+        }
+        return shape.append("]").toString();
     }
 
     private ToolResult createCommandApproval(AgentContext ctx, String toolName, CommandClassification classification,

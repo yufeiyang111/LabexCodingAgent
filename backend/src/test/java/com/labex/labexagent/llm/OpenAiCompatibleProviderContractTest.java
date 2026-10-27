@@ -156,6 +156,56 @@ class OpenAiCompatibleProviderContractTest {
     }
 
     @Test
+    void keepsToolNameWhenLaterArgumentDeltaOmitsIt() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-read\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n" +
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"README.md\\\"}\"}}]}}]}\n\n" +
+                    "data: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            List<LlmProvider.StreamChunk> calls = chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.TOOL_CALL)
+                    .toList();
+            assertEquals(1, calls.size());
+            assertEquals("read_file", calls.get(0).toolName());
+            assertEquals("call-read", calls.get(0).toolCallId());
+            assertEquals("{\"path\":\"README.md\"}", calls.get(0).toolArgs());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void keepsToolNameWhenLaterDeltaCarriesBlankName() throws Exception {
+        HttpServer server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-read\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n" +
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-read\",\"function\":{\"name\":\"\",\"arguments\":\"\\\"README.md\\\"}\"}}]}}]}\n\n" +
+                    "data: [DONE]\n\n");
+        });
+        try {
+            List<LlmProvider.StreamChunk> chunks = new ArrayList<>();
+            providerForLocalServer().chatStream("system", List.of(), List.of(), config(server), chunks::add);
+
+            List<LlmProvider.StreamChunk> calls = chunks.stream()
+                    .filter(chunk -> chunk.eventType() == ProviderEventType.TOOL_CALL)
+                    .toList();
+            assertEquals(1, calls.size());
+            assertEquals("read_file", calls.get(0).toolName());
+            assertEquals("call-read", calls.get(0).toolCallId());
+            assertEquals("{\"path\":\"README.md\"}", calls.get(0).toolArgs());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void stripsSplitProtocolTagsFromDedicatedReasoningChannel() throws Exception {
         HttpServer server = startServer(exchange -> {
             exchange.getRequestBody().readAllBytes();

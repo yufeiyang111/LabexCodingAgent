@@ -157,8 +157,11 @@ public class AgentModelTurnExecutor {
                             case TEXT_DELTA -> visibleContentFilter.push(chunk.content());
                             case TOOL_ARGUMENTS_DELTA, TOOL_CALL -> {
                                 int index = chunk.toolCallIndex() == null ? 0 : chunk.toolCallIndex();
-                                toolCalls.put(index, chunk);
-                                if (chunk.usage() != null) usage.set(chunk.usage());
+                                // 同一工具调用的流式分片可能只有首片携带 name/id，后续参数分片为空；
+                                // 必须按字段合并，不能用后片整体覆盖前片，否则会丢失工具身份。
+                                LlmProvider.StreamChunk merged = mergeToolCallChunk(toolCalls.get(index), chunk);
+                                toolCalls.put(index, merged);
+                                if (merged.usage() != null) usage.set(merged.usage());
                             }
                             case ERROR -> {
                                 terminalEvent[0] = true;
@@ -265,6 +268,30 @@ public class AgentModelTurnExecutor {
         }
         String finalContent = content.toString().isBlank() ? thinking.toString() : content.toString();
         return ModelTurnResult.text(finalContent, thinking.toString(), usageValue);
+    }
+
+    /**
+     * 合并同一 toolCallIndex 的流式分片。Provider 通常只在首片返回 name/id，
+     * 后续 TOOL_ARGUMENTS_DELTA 只带累计参数；空字段不得覆盖已识别的身份。
+     */
+    private static LlmProvider.StreamChunk mergeToolCallChunk(LlmProvider.StreamChunk previous,
+                                                               LlmProvider.StreamChunk incoming) {
+        if (previous == null) return incoming;
+        String toolName = incoming.toolName() == null || incoming.toolName().isBlank()
+                ? previous.toolName() : incoming.toolName();
+        String toolCallId = incoming.toolCallId() == null || incoming.toolCallId().isBlank()
+                ? previous.toolCallId() : incoming.toolCallId();
+        String toolArgs = incoming.toolArgs() == null || incoming.toolArgs().isBlank()
+                ? previous.toolArgs() : incoming.toolArgs();
+        String content = incoming.content() == null ? previous.content() : incoming.content();
+        String thinking = incoming.thinking() == null ? previous.thinking() : incoming.thinking();
+        Map<String, Object> usage = incoming.usage() == null ? previous.usage() : incoming.usage();
+        Integer toolCallIndex = incoming.toolCallIndex() == null
+                ? previous.toolCallIndex() : incoming.toolCallIndex();
+        return new LlmProvider.StreamChunk(
+                incoming.type(), content, toolName, toolArgs, thinking,
+                incoming.done() || previous.done(), usage, toolCallId, toolCallIndex,
+                incoming.failure() == null ? previous.failure() : incoming.failure());
     }
 
     /**
