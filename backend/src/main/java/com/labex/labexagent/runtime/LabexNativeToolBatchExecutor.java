@@ -111,6 +111,11 @@ public class LabexNativeToolBatchExecutor {
      * 指标与循环守卫仍复用既有 AgentLoopEngine 路径。这里保证 delegate 永远不会在整批 pending
      * Part 写入前被调用。</p>
      */
+    /** Provider 批内顺序必须稳定落库；10,000 预留单轮最大工具数。 */
+    private static int providerOrderSequence(int iteration, int index) {
+        return iteration * 10_000 + index;
+    }
+
     public BatchResult execute(BatchRequest request, ToolExecutionDelegate delegate,
                                ToolResultProjection resultProjection) throws Exception {
         Objects.requireNonNull(request, "request is required");
@@ -131,11 +136,13 @@ public class LabexNativeToolBatchExecutor {
                         request.admissions().stream().map(Admission::call).toList()));
 
         // 所有 admission 先入 durable Part，任何一个工具都不得抢在同批后续调用落库前执行。
-        for (Admission admission : request.admissions()) {
+        for (int index = 0; index < request.admissions().size(); index++) {
+            Admission admission = request.admissions().get(index);
             if (admission.allowed()) {
+                // pending 的 iteration 参数最终写入 sequence_number；这里编码 Provider 批内顺序。
                 this.toolCallJournalService.pending(request.executionFence(), request.taskId(),
                         admission.call().toolCallId(), admission.call().toolName(), admission.publicArguments(),
-                        request.iteration());
+                        providerOrderSequence(request.iteration(), index));
             } else {
                 this.journalResult(request, admission, admission.rejection());
             }

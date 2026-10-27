@@ -70,9 +70,9 @@ class LabexNativeToolBatchExecutorTest {
         InOrder order = inOrder(transcript, journal);
         order.verify(transcript).append(any(ExecutionFence.class), eq(71L), eq(4L), any(Map.class));
         order.verify(journal).pending(any(ExecutionFence.class), eq(71L), eq("call-read"), eq("read_file"),
-                any(), eq(3));
+                any(), eq(30_000));
         order.verify(journal).pending(any(ExecutionFence.class), eq(71L), eq("call-list"), eq("list_files"),
-                any(), eq(3));
+                any(), eq(30_001));
         // 结果投影严格按 Provider 顺序，与执行完成顺序无关。
         order.verify(journal).completed(any(ExecutionFence.class), eq(71L), eq("call-read"), eq("read_file"),
                 any(), eq(3), org.mockito.ArgumentMatchers.same(firstResult));

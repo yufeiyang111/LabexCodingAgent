@@ -22,29 +22,69 @@ const fast = args.includes('--fast')
 const onlyArg = args.find(a => a.startsWith('--only='))
 const only = onlyArg ? onlyArg.slice('--only='.length).split(',').map(s => s.trim()) : null
 
-const JAVA_HOME = 'D:/jdk21/jdk-21.0.10+7'
-const MAVEN_HOME = 'D:/apache-maven-3.9.10'
+const JAVA_HOME = (() => {
+  const candidates = [
+    process.env.LABEX_JAVA_HOME,
+    process.env.JAVA_HOME,
+    'D:/jdk21/jdk-21.0.10+7',
+    'D:/jdk17',
+    'D:/jdk-17',
+    'C:/Program Files/Java/jdk-17'
+  ].filter(Boolean)
+  for (const home of candidates) {
+    const javaExe = resolve(home, 'bin', 'java.exe')
+    if (!existsSync(javaExe)) continue
+    const r = spawnSync(javaExe, ['-version'], { encoding: 'utf8', shell: false })
+    if (r.status !== 0) continue
+    const text = (r.stdout || '') + '\n' + (r.stderr || '')
+    const match = text.match(/version\s+"(\d+)/)
+    if (match && Number(match[1]) >= 17) return home
+  }
+  return null
+})()
+const MAVEN_HOME = process.env.MAVEN_HOME || 'D:/apache-maven-3.9.10'
 
 /**
  * 本机 mvn 在 MSYS 下会因 classworlds 缺失而崩，必须用 JDK 直启 plexus launcher。
  * 与仓库内既有做法一致（见 .workbuddy/memory/PLAYBOOK.md）。
  */
 function mavenTestCompile() {
-  const javaExe = `${JAVA_HOME}/bin/java.exe`
-  if (!existsSync(javaExe)) {
+  const javaExe = JAVA_HOME ? resolve(JAVA_HOME, 'bin', 'java.exe') : null
+  if (!JAVA_HOME || !javaExe || !existsSync(javaExe)) {
     return { ok: false, detail: `未找到 ${javaExe}，无法在本机编译后端（可跳过该门禁或改用 CI）` }
   }
   const r = spawnSync(javaExe, [
-    `-Dclassworlds.conf=${MAVEN_HOME}\\bin\\m2.conf`,
+    `-Dclassworlds.conf=${resolve(MAVEN_HOME, 'bin', 'm2.conf')}`,
     `-Dmaven.home=${MAVEN_HOME}`,
     `-Dmaven.multiModuleProjectDirectory=${root}\\backend`,
-    '-classpath', `${MAVEN_HOME}\\boot\\plexus-classworlds-2.9.0.jar`,
+    '-classpath', resolve(MAVEN_HOME, 'boot', 'plexus-classworlds-2.9.0.jar'),
     'org.codehaus.plexus.classworlds.launcher.Launcher',
     '-s', 'settings-local.xml', '-o', '-q', 'test-compile'
   ], { cwd: resolve(root, 'backend'), encoding: 'utf8', shell: false })
   return {
     ok: r.status === 0,
     detail: r.status === 0 ? 'BUILD SUCCESS' : (r.stdout || r.stderr || '').split('\n').filter(Boolean).slice(-6).join('\n')
+  }
+}
+
+function mavenHighRiskTests() {
+  const javaExe = JAVA_HOME ? resolve(JAVA_HOME, 'bin', 'java.exe') : null
+  if (!JAVA_HOME || !javaExe || !existsSync(javaExe)) {
+    return { ok: false, detail: `未找到 ${javaExe}，无法运行后端测试` }
+  }
+  const r = spawnSync(javaExe, [
+    `-Dclassworlds.conf=${resolve(MAVEN_HOME, 'bin', 'm2.conf')}`,
+    `-Dmaven.home=${MAVEN_HOME}`,
+    `-Dmaven.multiModuleProjectDirectory=${root}\\backend`,
+    '-classpath', resolve(MAVEN_HOME, 'boot', 'plexus-classworlds-2.9.0.jar'),
+    'org.codehaus.plexus.classworlds.launcher.Launcher',
+    '-s', 'settings-local.xml', '-q',
+    '-Dtest=AgentRunLifecycleServiceTest,AgentRunTranscriptServiceTest,AgentRunPartServiceTest,AgentRunRecoveryServiceTest,AgentRunInteractionDispatchClaimTest,CommandApprovalOrchestratorTest,AgentSyncFeedServiceTest',
+    'test'
+  ], { cwd: resolve(root, 'backend'), encoding: 'utf8', shell: false })
+  return {
+    ok: r.status === 0,
+    detail: r.status === 0 ? 'BUILD SUCCESS' : (r.stdout || r.stderr || '').split('\n').filter(Boolean).slice(-12).join('\n')
   }
 }
 
@@ -71,6 +111,11 @@ const gates = [
     id: 'frontend-undef',
     name: '前端未定义引用（作用域错误，等价 no-undef）',
     cmd: 'node', cmdArgs: ['scripts/check-undefined-refs.mjs'], cwd: resolve(root, 'frontend')
+  },
+  {
+    id: 'file-lines',
+    name: '新增模块文件行数上限（≤400 行）',
+    cmd: 'node', cmdArgs: ['scripts/check-file-lines.mjs'], cwd: root
   },
   {
     id: 'frontend-test',
@@ -109,6 +154,12 @@ const gates = [
     id: 'backend',
     name: '后端编译（含测试源码）',
     custom: mavenTestCompile,
+    skip: fast
+  },
+  {
+    id: 'backend-tests',
+    name: '后端高风险回归测试',
+    custom: mavenHighRiskTests,
     skip: fast
   },
   {
