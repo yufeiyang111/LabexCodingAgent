@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.sql.DataSource;
 import org.apache.ibatis.mapping.Environment;
@@ -53,24 +54,31 @@ class LabexNativeToolBatchDurableDatabaseTest {
                     .toList();
             List<String> executionOrder = new ArrayList<>();
             AtomicBoolean verifiedBeforeFirstExecution = new AtomicBoolean(false);
+            AtomicBoolean providerCallsChecked = new AtomicBoolean(false);
 
             LabexNativeToolBatchExecutor.BatchResult result = fixture.batchExecutor().execute(
                     new LabexNativeToolBatchExecutor.BatchRequest(
                             fixture.fence(), task.getTaskId(), 4L, 2, "", admissions, () -> false),
                     admission -> {
                         if (executionOrder.isEmpty()) {
-                            List<AgentRunPart> providerCalls = fixture.partMapper().selectList(
-                                    new QueryWrapper<AgentRunPart>()
-                                            .eq("task_id", task.getTaskId())
-                                            .eq("part_type", "tool_call")
-                                            .orderByAsc("sequence_number"));
-                            assertThat(providerCalls)
-                                    .extracting(AgentRunPart::getToolCallId)
-                                    .containsExactly("call-read", "call-list");
-                            assertThat(providerCalls)
-                                    .extracting(AgentRunPart::getStatus)
-                                    .containsOnly("pending");
-                            verifiedBeforeFirstExecution.set(true);
+                            // SqlSession 不是线程安全对象；并发工具线程内不能复用它执行查询。
+                            synchronized (providerCallsChecked) {
+                                if (!providerCallsChecked.get()) {
+                                    List<AgentRunPart> providerCalls = fixture.partMapper().selectList(
+                                            new QueryWrapper<AgentRunPart>()
+                                                    .eq("task_id", task.getTaskId())
+                                                    .eq("part_type", "tool_call")
+                                                    .orderByAsc("sequence_number"));
+                                    assertThat(providerCalls)
+                                            .extracting(AgentRunPart::getToolCallId)
+                                            .containsExactly("call-read", "call-list");
+                                    assertThat(providerCalls)
+                                            .extracting(AgentRunPart::getStatus)
+                                            .containsOnly("pending");
+                                    verifiedBeforeFirstExecution.set(true);
+                                    providerCallsChecked.set(true);
+                                }
+                            }
                         }
                         executionOrder.add(admission.call().toolCallId());
                         return LabexNativeToolBatchExecutor.CallExecution.completed(
@@ -128,6 +136,7 @@ class LabexNativeToolBatchDurableDatabaseTest {
             List<LabexNativeToolBatchExecutor.Admission> admissions = controlledTwoToolTurn().toolCalls().stream()
                     .map(this::admission)
                     .toList();
+            CountDownLatch secondToolMayEnter = new CountDownLatch(1);
             AtomicBoolean secondToolExecuted = new AtomicBoolean(false);
 
             LabexNativeToolBatchExecutor.BatchResult result = fixture.batchExecutor().execute(
@@ -140,6 +149,8 @@ class LabexNativeToolBatchDurableDatabaseTest {
                                             "approval required", "approval-call-read", "rm README.md",
                                             "high", "destructive", "2026-08-16T00:00:00Z"));
                         }
+                        // 让第二个工具保持运行，验证审批终态会 interrupt 并显式结算为 skipped。
+                        secondToolMayEnter.await();
                         secondToolExecuted.set(true);
                         return LabexNativeToolBatchExecutor.CallExecution.completed(ToolResult.ok("unexpected"));
                     },
@@ -153,7 +164,11 @@ class LabexNativeToolBatchDurableDatabaseTest {
             List<AgentRunPart> journalledCalls = fixture.partMapper().selectList(new QueryWrapper<AgentRunPart>()
                     .eq("task_id", task.getTaskId())
                     .eq("part_type", "tool")
+                    .orderByAsc("sequence_number")
                     .orderByAsc("part_id"));
+            assertThat(journalledCalls).extracting(AgentRunPart::getSequenceNumber)
+                    .doesNotHaveDuplicates()
+                    .isSorted();
             assertThat(journalledCalls).extracting(AgentRunPart::getToolCallId)
                     .containsExactly("call-read", "call-list");
             assertThat(journalledCalls).extracting(AgentRunPart::getStatus)

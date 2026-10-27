@@ -51,6 +51,12 @@ jobs:
           cd frontend
           npm run check:undef
 
+      # 门禁 0.6：新增模块文件行数上限（≤400 行）。
+      # 该约束此前只写在交接文档里、没有任何执行者：脚本会吞掉目录不存在的异常
+      # 并打印「检查通过：0 个文件」，等于永远绿灯（历史真实假通过）。
+      - name: Gate - New Module File Line Budget
+        run: node scripts/check-file-lines.mjs
+
       # 门禁 1：前端单元测试全量通过
       - name: Gate - Frontend Unit Tests
         run: |
@@ -89,6 +95,19 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      # 门禁 3：后端高风险回归（真实执行，不是只编译测试源码）。
+      # 运行状态机、审批、恢复、transcript、同步供给等发布阻断集。
+      - name: Gate - Backend High-Risk Tests
+        timeout-minutes: 15
+        run: |
+          cd backend
+          mvn -s settings-local.xml -Dtest=AgentRunLifecycleServiceTest,AgentRunTranscriptServiceTest,AgentRunPartServiceTest,AgentRunRecoveryServiceTest,AgentRunInteractionDispatchClaimTest,CommandApprovalOrchestratorTest,AgentSyncFeedServiceTest test
+
+      # 门禁 4：后端全量测试作为发布阻断。
+      - name: Gate - Backend Full Test Suite
+        run: |
+          cd backend
+          mvn -s settings-local.xml test
       # -DskipTests 只跳过执行，仍会编译测试源码，等价于 Playbook 门禁「后端编译与语法检查」
       - name: Build Backend Jar
         run: |

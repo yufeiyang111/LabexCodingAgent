@@ -623,6 +623,7 @@ public class AgentRunPartService {
                 .eq(AgentRunPart::getPartKey, partKey)
                 .last("LIMIT 1"));
         AgentTask task = taskMapper.selectById(taskId);
+        boolean creatingPart = part == null;
         if (part == null) {
             part = new AgentRunPart();
             part.setTaskId(taskId);
@@ -642,11 +643,14 @@ public class AgentRunPartService {
         part.setToolName(toolName == null ? "" : toolName);
         part.setInputJson(input == null ? "{}" : GSON.toJson(input));
         part.setOutputText(output);
-        part.setSequenceNumber(sequence);
+        // Tool Part 首次插入固定 Provider 批内顺序，后续状态更新不得覆盖已落库顺序。
+        if (creatingPart || !"tool".equals(partType)) {
+            part.setSequenceNumber(sequence);
+        }
         long executionEpoch = task == null || task.getExecutionEpoch() == null ? 0L : task.getExecutionEpoch();
         Map<String, Object> metadata = new LinkedHashMap<>();
         mergeResultMetadata(metadata, resultMetadata);
-        metadata.put("sequence", sequence);
+        metadata.put("sequence", part.getSequenceNumber() == null ? sequence : part.getSequenceNumber());
         metadata.put("partType", partType);
         metadata.put("status", part.getStatus());
         metadata.put("executionEpoch", executionEpoch);
