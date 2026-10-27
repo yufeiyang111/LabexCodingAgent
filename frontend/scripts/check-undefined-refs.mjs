@@ -19,8 +19,14 @@
  *
  * 已知覆盖边界（务必知情，不要当成"全量检查"）：
  *   acorn 无法解析 TypeScript 的类型语法（如 `ref<Record<string, string>>({})`、
- *   `defineProps<{ x?: string }>()`）。这类 script 块会被跳过并在输出中列出，
- *   覆盖率会在结尾汇总里显示 —— 缺口是可见的，不是静默的。
+ *   `defineProps<{ x?: string }>()`）。这类块**不会被静默跳过**，而是必须登记进
+ *   下面的 KNOWN_UNCHECKED_BLOCKS：
+ *     - 在白名单内：视为已知欠账，在输出里显式列出（并提醒白名单失效时删掉）；
+ *     - 不在白名单：直接 exit 1，逼作者当场决定——改写成可解析的写法，或显式登记。
+ *   目的：让"未检查"只能由人显式承认，不能由工具自己决定。
+ *   为什么不用 esbuild 剥类型兜底：实测 esbuild 的 transform 会删注释与空行
+ *   （Logo.vue 的 script 块 12 行 → 2 行），行号随之漂移，报错会指向错误的行——
+ *   那种检查比不检查更坏。
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -318,18 +324,106 @@ const DEBUG_WALK = process.argv.includes('--debug-walk')
 if (DEBUG_WALK) walkTrace.length = 0
 const debugRefs = []
 
-function checkSource(code, label) {
+const ACORN_OPTIONS = {
+  ecmaVersion: 'latest',
+  sourceType: 'module',
+  allowAwaitOutsideFunction: true,
+  allowReturnOutsideFunction: true,
+  locations: true
+}
+
+/**
+ * 已知无法检查的 script 块（欠账清单，只减不增）：
+ * 每一项都必须写明原因与删除条件，并**限定允许的失败块数与失败原因**。
+ *
+ * 为什么不能只登记文件名：只登记文件的话，“该文件新增了一个不可解析块”或
+ * “同一个文件因为**别的原因**解析失败”都会被放过——欠账会静默地越欠越多。
+ * 所以这里必须同时约束：块数 + 失败原因签名（acorn 消息去掉位置信息）。
+ */
+const KNOWN_UNCHECKED_BLOCKS = new Map([
+  // `defineProps<{...}>()` 类型参数写法；JS 等价写法是运行时 props 选项。
+  // 删除条件：改用运行时 props 选项（或接入真正的 TS 解析器）后本项自然失效（会打印提醒）。
+  ['src/components/cloud/UserDetailButton.vue', { blocks: 1, signature: 'Unexpected token', reason: 'defineProps 类型参数' }],
+  ['src/components/Logo.vue', { blocks: 1, signature: 'Unexpected token', reason: 'defineProps 类型参数' }]
+])
+
+/** acorn 消息去掉末尾 `(行:列)` 后的签名：用它区分“同一个原因”与“新原因”。 */
+function parseErrorSignature(message) {
+  return String(message).replace(/\s*\(\d+:\d+\)\s*$/, '').trim()
+}
+
+/**
+ * 纯函数：根据“实际发生的解析失败”与欠账清单，判定门禁是否通过。
+ * 抽出来是为了能在 --self-test 里被反复验证（见 runSelfTest）。
+ */
+function evaluateUncheckedBlocks(failures, allowlist) {
+  const byFile = new Map()
+  for (const failure of failures) {
+    if (!byFile.has(failure.file)) byFile.set(failure.file, [])
+    byFile.get(failure.file).push(parseErrorSignature(failure.message))
+  }
+  const unexpected = []
+  const overBudget = []
+  const newReason = []
+  for (const [file, signatures] of byFile.entries()) {
+    const allowed = allowlist.get(file)
+    if (!allowed) {
+      unexpected.push(file)
+      continue
+    }
+    if (signatures.length > allowed.blocks) {
+      overBudget.push({ file, actual: signatures.length, allowed: allowed.blocks })
+    }
+    for (const signature of signatures) {
+      if (signature !== allowed.signature) {
+        newReason.push({ file, signature, allowed: allowed.signature })
+      }
+    }
+  }
+  const stale = [...allowlist.keys()].filter(file => !byFile.has(file))
+  return {
+    ok: unexpected.length === 0 && overBudget.length === 0 && newReason.length === 0,
+    unexpected,
+    overBudget,
+    newReason,
+    stale
+  }
+}
+
+/**
+ * 门禁自检：每次运行都先验证“欠账棘轮”本身仍然有效。
+ * 没有它的话，棘轮逻辑坏了（或被人改成恒真）也一样报绿灯。
+ */
+function runSelfTest(allowlist) {
+  const cases = [
+    { name: '已登记的失败块可通过', failures: [{ file: 'a.vue', message: 'Unexpected token (3:7)' }], allow: [['a.vue', { blocks: 1, signature: 'Unexpected token' }]], expectOk: true },
+    { name: '未登记文件必须拦下', failures: [{ file: 'b.vue', message: 'Unexpected token (1:1)' }], allow: [['a.vue', { blocks: 1, signature: 'Unexpected token' }]], expectOk: false },
+    { name: '已登记文件新增失败块必须拦下', failures: [{ file: 'a.vue', message: 'Unexpected token (1:1)' }, { file: 'a.vue', message: 'Unexpected token (9:9)' }], allow: [['a.vue', { blocks: 1, signature: 'Unexpected token' }]], expectOk: false },
+    { name: '同一个文件换了失败原因必须拦下', failures: [{ file: 'a.vue', message: 'Unterminated string constant (2:5)' }], allow: [['a.vue', { blocks: 1, signature: 'Unexpected token' }]], expectOk: false }
+  ]
+  for (const testCase of cases) {
+    const result = evaluateUncheckedBlocks(testCase.failures, new Map(testCase.allow))
+    if (result.ok !== testCase.expectOk) {
+      console.error(`❌ check-undefined-refs 自检失败：${testCase.name}（期望 ok=${testCase.expectOk}，实际 ok=${result.ok}）`)
+      process.exit(1)
+    }
+  }
+  if (!(allowlist instanceof Map)) {
+    console.error('❌ check-undefined-refs 自检失败：欠账清单必须是 Map（文件 → {blocks, signature}）')
+    process.exit(1)
+  }
+}
+
+if (!process.argv.includes('--no-self-test')) {
+  runSelfTest(KNOWN_UNCHECKED_BLOCKS)
+}
+
+function checkSource(code) {
   let ast
   try {
-    ast = acorn.parse(code, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      allowAwaitOutsideFunction: true,
-      allowReturnOutsideFunction: true,
-      locations: true
-    })
+    ast = acorn.parse(code, ACORN_OPTIONS)
   } catch (e) {
-    return { parseError: `${label}: ${e.message}` }
+    return { parseError: e.message }
   }
   const moduleScope = new Scope(null, true)
   const scopeOf = new Map()
@@ -352,7 +446,7 @@ function walkFiles(dir) {
 
 const files = walkFiles(srcRoot).filter(f => !/\.test\.mjs$/.test(f))
 const findings = []
-const parseErrors = []
+const uncheckedFailures = []
 let blocksChecked = 0
 let blocksSkipped = 0
 
@@ -367,20 +461,20 @@ for (const file of files) {
     for (const m of blocks) {
       const before = raw.slice(0, m.index + m[0].indexOf(m[2]))
       const offset = before.split('\n').length - 1
-      const r = checkSource(m[2], rel)
+      const r = checkSource(m[2])
       if (r.parseError) {
         blocksSkipped++
-        parseErrors.push(`${rel}: ${String(r.parseError).replace(/^[^:]*:\s*/, '')}`)
+        uncheckedFailures.push({ file: rel, message: r.parseError })
         continue
       }
       blocksChecked++
       for (const f of r.refs) findings.push({ file: rel, name: f.name, line: f.line + offset })
     }
   } else {
-    const r = checkSource(raw, rel)
+    const r = checkSource(raw)
     if (r.parseError) {
       blocksSkipped++
-      parseErrors.push(`${rel}: ${String(r.parseError).replace(/^[^:]*:\s*/, '')}`)
+      uncheckedFailures.push({ file: rel, message: r.parseError })
       continue
     }
     blocksChecked++
@@ -395,11 +489,46 @@ if (blocksSkipped > 0) {
   console.log('')
   console.log('⚠️  以下 script 块含 acorn 无法解析的语法（多为 TypeScript 类型参数），未纳入检查：')
   const seen = new Set()
-  for (const e of parseErrors) {
-    if (seen.has(e)) continue
-    seen.add(e)
-    console.log('    ' + e)
+  for (const failure of uncheckedFailures) {
+    const line = `${failure.file}: ${failure.message}`
+    if (seen.has(line)) continue
+    seen.add(line)
+    console.log('    ' + line)
   }
+}
+
+// 欠账棘轮：未登记文件 / 已登记文件新增的失败块 / 换了失败原因，三者全拦。
+const verdict = evaluateUncheckedBlocks(uncheckedFailures, KNOWN_UNCHECKED_BLOCKS)
+if (!verdict.ok) {
+  console.log('')
+  if (verdict.unexpected.length > 0) {
+    console.log('❌ 出现了登记之外、无法解析的 script 块：')
+    for (const file of verdict.unexpected) console.log('    ' + file)
+  }
+  if (verdict.overBudget.length > 0) {
+    console.log('❌ 已登记文件出现了**新增**的不可解析块（欠账清单不允许静默变大）：')
+    for (const item of verdict.overBudget) {
+      console.log(`    ${item.file}：实际 ${item.actual} 个，已登记 ${item.allowed} 个`)
+    }
+  }
+  if (verdict.newReason.length > 0) {
+    console.log('❌ 已登记文件换了失败原因（可能是另一类语法问题，不能沿用旧欠账）：')
+    for (const item of verdict.newReason) {
+      console.log(`    ${item.file}：“${item.signature}”（已登记的是“${item.allowed}”）`)
+    }
+  }
+  console.log('')
+  console.log('   这条门禁默认不放过任何它检查不了的代码，必须二选一：')
+  console.log('   1) 把该写法改成 acorn 可解析的形式（如用运行时 props 选项替代 `defineProps<{...}>()`）；')
+  console.log('   2) 确认确实无法改写，在 check-undefined-refs.mjs 的 KNOWN_UNCHECKED_BLOCKS')
+  console.log('      中登记（必须同时写明 blocks 与 signature）——登记即代表承认该处不在门禁覆盖内。')
+  process.exit(1)
+}
+
+if (verdict.stale.length > 0) {
+  console.log('')
+  console.log('⚠️  白名单已失效（这些文件现在可以解析了，请从 KNOWN_UNCHECKED_BLOCKS 中删除）：')
+  for (const file of verdict.stale) console.log('    ' + file)
 }
 
 if (findings.length) {
@@ -414,8 +543,9 @@ if (findings.length) {
 
 console.log('')
 if (blocksSkipped > 0) {
+  const budget = [...KNOWN_UNCHECKED_BLOCKS.values()].reduce((sum, item) => sum + item.blocks, 0)
   console.log(`✅ 已检查的 ${blocksChecked} 个 script 块中未发现未定义引用。`)
-  console.log(`   （另有 ${blocksSkipped} 个块因语法未覆盖，见上方清单）`)
+  console.log(`   （另有 ${blocksSkipped} 个块因语法未覆盖，均已登记在欠账清单里，合计预算 ${budget} 个）`)
 } else {
   console.log('✅ 未发现未定义引用。')
 }

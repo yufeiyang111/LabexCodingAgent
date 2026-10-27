@@ -30,6 +30,8 @@ import com.labex.labexagent.permission.PermissionService;
 import com.labex.labexagent.service.AgentConversationService;
 import com.labex.labexagent.service.AgentInteractionService;
 import com.labex.labexagent.service.AgentTaskService;
+import com.labex.labexagent.sync.AgentSyncFeed;
+import com.labex.labexagent.sync.AgentSyncFeedService;
 import com.labex.labexagent.service.ManualCompactionTaskRunner;
 import com.labex.labexagent.service.TokenTracker;
 import java.util.ArrayList;
@@ -76,6 +78,7 @@ public class StudentAgentController {
     private final AgentRunEventReplayService eventReplayService;
     private final AgentSubagentService subagentService;
     private final CommandApprovalOrchestrator commandApprovalOrchestrator;
+    private final AgentSyncFeedService syncFeedService;
 
     @Autowired(required = false)
     private ManualCompactionTaskRunner manualCompactionTaskRunner;
@@ -107,8 +110,14 @@ public class StudentAgentController {
                 tokenTracker, permissionService, interactionService, eventReplayService, subagentService, null);
     }
 
-    @Autowired
     public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService, AgentRunEventReplayService eventReplayService, AgentSubagentService subagentService, CommandApprovalOrchestrator commandApprovalOrchestrator) {
+        this(agentLoopEngine, cancellationRegistry, diffService, commandService, conversationService, taskService,
+                tokenTracker, permissionService, interactionService, eventReplayService, subagentService,
+                commandApprovalOrchestrator, null);
+    }
+
+    @Autowired
+    public StudentAgentController(AgentLoopEngine agentLoopEngine, AgentCancellationRegistry cancellationRegistry, DiffService diffService, AgentCommandService commandService, AgentConversationService conversationService, AgentTaskService taskService, TokenTracker tokenTracker, PermissionService permissionService, AgentInteractionService interactionService, AgentRunEventReplayService eventReplayService, AgentSubagentService subagentService, CommandApprovalOrchestrator commandApprovalOrchestrator, AgentSyncFeedService syncFeedService) {
         this.agentLoopEngine = agentLoopEngine;
         this.cancellationRegistry = cancellationRegistry;
         this.diffService = diffService;
@@ -121,6 +130,7 @@ public class StudentAgentController {
         this.eventReplayService = eventReplayService;
         this.subagentService = subagentService;
         this.commandApprovalOrchestrator = commandApprovalOrchestrator;
+        this.syncFeedService = syncFeedService;
     }
 
     @GetMapping(value={"/conversations"})
@@ -330,6 +340,42 @@ public class StudentAgentController {
     @GetMapping(value={"/changes"})
     public Result<List<?>> changes(@PathVariable Integer projectId, Authentication auth) {
         return Result.success(this.taskService.listPendingChanges(this.getStudentId(auth), projectId));
+    }
+
+    /**
+     * B1 同步供给：有序、可分页、可续拉的只读增量流。
+     *
+     * 与既有 {@code /changes} 的分工：后者是「最近 80 条 + update_time 倒序」的展示用列表（改动面板在用，
+     * 无游标、不可续拉、会漏掉 80 条以前的改动），**不能**作为本地落地的数据源；同步一律用本端点。
+     *
+     * 两条进度线必须分别回传（见《sync/README.md》）：
+     *
+     * @param afterChangeSetId 已完整落地的最后一个 change-set id
+     * @param tailUpdateTime   尾巴扫描续拉点（ISO-8601 本地时间；首次同步不传）
+     * @param tailChangeId     尾巴扫描续拉点的 tie-breaker（同一秒多文件时必须带）
+     * @param revisionTime     【已弃用】旧参数名，等价于 tailUpdateTime；
+     *                         当前无生产调用方（前端尚未接线），下线条件：仓库内不再出现该参数引用。
+     * @param limit            期望的 change-set 条数，由 labex-agent.sync-feed.* 夹取
+     */
+    @GetMapping(value={"/changes/feed"})
+    public Result<AgentSyncFeed> changesFeed(@PathVariable Integer projectId,
+                                             @RequestParam(value="afterChangeSetId", required=false) Long afterChangeSetId,
+                                             @RequestParam(value="tailUpdateTime", required=false) String tailUpdateTime,
+                                             @RequestParam(value="tailChangeId", required=false) String tailChangeId,
+                                             @RequestParam(value="revisionTime", required=false) String revisionTime,
+                                             @RequestParam(value="limit", required=false) Integer limit,
+                                             Authentication auth) {
+        if (this.syncFeedService == null) {
+            return Result.error("sync feed service is not wired");
+        }
+        String effectiveTailTime = (tailUpdateTime == null || tailUpdateTime.isBlank()) ? revisionTime : tailUpdateTime;
+        try {
+            return Result.success(this.syncFeedService.fetch(
+                    this.getStudentId(auth), projectId, afterChangeSetId, effectiveTailTime, tailChangeId, limit));
+        }
+        catch (Exception e) {
+            return Result.error((String)e.getMessage());
+        }
     }
 
     @GetMapping(value={"/diff/{changeId}"})

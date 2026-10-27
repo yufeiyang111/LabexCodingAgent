@@ -169,6 +169,11 @@ public class AdditiveSchemaMigrator {
             addIndexIfMissing(metadata, catalog, "t_agent_run_part",
                     "idx_agent_run_part_message_sequence", "message_id, sequence_number");
             addIndexIfMissing(metadata, catalog, "t_agent_message", "idx_msg_conversation_history", "conversation_id, student_id, project_id, message_id");
+            // B1 同步供给（/changes/feed）：
+            //  1) 按 change_set_id 升序的游标分页（多租户必须带 student/project 前缀，否则退化成全局全表扫描）；
+            //  2) 游标之内捞 update_time 水位线之后的文件（发现追加文件 / undo / apply / reject 改状态）。
+            addIndexIfMissing(metadata, catalog, "t_agent_change_set", "idx_cs_project_set", "student_id, project_id, change_set_id");
+            addIndexIfMissing(metadata, catalog, "t_agent_file_change", "idx_fc_project_update", "student_id, project_id, update_time");
             addIndexIfMissing(metadata, catalog, "t_agent_compaction_record",
                     "idx_agent_compaction_conversation_scope",
                     "conversation_id, student_id, project_id, scope, status, compaction_epoch");
@@ -183,16 +188,14 @@ public class AdditiveSchemaMigrator {
      * 将其降级为普通索引（条件式执行以保持既有 migrator 精确计数测试语义）。
      */
     private void relaxOpsAlertFingerprintUniqueIndex(DatabaseMetaData metadata, String catalog) throws SQLException {
-        if (!indexExists(metadata, catalog, "t_ops_alert", "uk_ops_alert_fingerprint_status")
-                && !indexExists(metadata, null, "t_ops_alert", "uk_ops_alert_fingerprint_status")) {
+        if (!indexExists(metadata, catalog, "t_ops_alert", "uk_ops_alert_fingerprint_status")) {
             return;
         }
         try {
             jdbcTemplate.execute("ALTER TABLE t_ops_alert DROP INDEX uk_ops_alert_fingerprint_status");
         } catch (RuntimeException failure) {
             // 并发实例可能已删除同名索引（MySQL 1091）；确认不存在即视为成功。
-            if (indexExists(metadata, catalog, "t_ops_alert", "uk_ops_alert_fingerprint_status")
-                    || indexExists(metadata, null, "t_ops_alert", "uk_ops_alert_fingerprint_status")) {
+            if (indexExists(metadata, catalog, "t_ops_alert", "uk_ops_alert_fingerprint_status")) {
                 throw failure;
             }
         }
@@ -202,21 +205,42 @@ public class AdditiveSchemaMigrator {
 
 
     private void addIndexIfMissing(DatabaseMetaData metadata, String catalog, String table, String index, String columns) throws SQLException {
-        if (indexExists(metadata, catalog, table, index) || indexExists(metadata, null, table, index)) return;
+        if (indexExists(metadata, catalog, table, index)) return;
         try { jdbcTemplate.execute("ALTER TABLE " + table + " ADD INDEX " + index + " (" + columns + ")"); }
         catch (RuntimeException failure) { if (isDuplicateIndexError(failure)) return; throw failure; }
     }
     private void addUniqueIndexIfMissing(DatabaseMetaData metadata, String catalog, String table, String index,
                                          String columns) throws SQLException {
-        if (indexExists(metadata, catalog, table, index) || indexExists(metadata, null, table, index)) return;
+        if (indexExists(metadata, catalog, table, index)) return;
         try { jdbcTemplate.execute("ALTER TABLE " + table + " ADD UNIQUE INDEX " + index + " (" + columns + ")"); }
         catch (RuntimeException failure) { if (isDuplicateIndexError(failure)) return; throw failure; }
     }
 
     private boolean indexExists(DatabaseMetaData metadata, String catalog, String table, String index) throws SQLException {
-        try (ResultSet indexes = metadata.getIndexInfo(catalog, null, table, false, false)) {
+        // 先按 catalog 正常查；再兜底查一次（容忍忽略 catalog 参数的驱动）。
+        // 两次都必须按**行内 TABLE_CAT** 对齐目标库：
+        //   MySQL 在同一台服务器上有多个 schema（本机就存在 labex_agent / labex_agent_manual_test）时，
+        //   getIndexInfo(null, ...) 会把**其它库**的同名索引一并返回。旧实现只看索引名，
+        //   于是“本库缺索引”会被另一个库的同名索引误判为已存在、静默跳过补齐。
+        if (scanIndexes(metadata, catalog, catalog, table, index)) return true;
+        return catalog != null && !catalog.isBlank() && scanIndexes(metadata, null, catalog, table, index);
+    }
+
+    private boolean scanIndexes(DatabaseMetaData metadata, String queryCatalog, String targetCatalog,
+                                String table, String index) throws SQLException {
+        try (ResultSet indexes = metadata.getIndexInfo(queryCatalog, null, table, false, false)) {
             if (indexes == null) return false;
-            while (indexes.next()) if (index.equalsIgnoreCase(indexes.getString("INDEX_NAME"))) return true;
+            while (indexes.next()) {
+                if (!index.equalsIgnoreCase(indexes.getString("INDEX_NAME"))) continue;
+                String rowCatalog = indexes.getString("TABLE_CAT");
+                // 驱动不报 catalog（列为空）时仍然接受，反例最多多做一次 CREATE INDEX，
+                // 而重复索引名会被 isDuplicateIndexError 认清后忽略。
+                if (targetCatalog == null || targetCatalog.isBlank()
+                        || rowCatalog == null || rowCatalog.isBlank()
+                        || targetCatalog.equalsIgnoreCase(rowCatalog)) {
+                    return true;
+                }
+            }
             return false;
         }
     }

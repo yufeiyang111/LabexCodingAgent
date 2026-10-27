@@ -339,7 +339,8 @@ CREATE TABLE IF NOT EXISTS t_agent_change_set (
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_cs_task (task_id),
-    INDEX idx_cs_conv (conversation_id)
+    INDEX idx_cs_conv (conversation_id),
+    INDEX idx_cs_project_set (student_id, project_id, change_set_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_agent_file_change (
@@ -367,7 +368,8 @@ CREATE TABLE IF NOT EXISTS t_agent_file_change (
     undone_time DATETIME DEFAULT NULL,
     INDEX idx_fc_cs (change_set_id),
     INDEX idx_fc_task (task_id),
-    INDEX idx_fc_conv (conversation_id)
+    INDEX idx_fc_conv (conversation_id),
+    INDEX idx_fc_project_update (student_id, project_id, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS t_agent_verification (

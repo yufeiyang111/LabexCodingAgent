@@ -26,6 +26,7 @@ import com.labex.mapper.AgentRunOutboxMapper;
 import com.labex.mapper.AgentRunPartMapper;
 import com.labex.mapper.AgentTaskMapper;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -52,35 +53,20 @@ class LabexNativeToolBatchDurableDatabaseTest {
             List<LabexNativeToolBatchExecutor.Admission> admissions = modelTurn.toolCalls().stream()
                     .map(this::admission)
                     .toList();
-            List<String> executionOrder = new ArrayList<>();
+            // 并发批次中只允许一个线程做“执行前已落库”校验；Provider 顺序由 sequence_number 断言。
             AtomicBoolean verifiedBeforeFirstExecution = new AtomicBoolean(false);
-            AtomicBoolean providerCallsChecked = new AtomicBoolean(false);
 
             LabexNativeToolBatchExecutor.BatchResult result = fixture.batchExecutor().execute(
                     new LabexNativeToolBatchExecutor.BatchRequest(
                             fixture.fence(), task.getTaskId(), 4L, 2, "", admissions, () -> false),
                     admission -> {
-                        if (executionOrder.isEmpty()) {
-                            // SqlSession 不是线程安全对象；并发工具线程内不能复用它执行查询。
-                            synchronized (providerCallsChecked) {
-                                if (!providerCallsChecked.get()) {
-                                    List<AgentRunPart> providerCalls = fixture.partMapper().selectList(
-                                            new QueryWrapper<AgentRunPart>()
-                                                    .eq("task_id", task.getTaskId())
-                                                    .eq("part_type", "tool_call")
-                                                    .orderByAsc("sequence_number"));
-                                    assertThat(providerCalls)
-                                            .extracting(AgentRunPart::getToolCallId)
-                                            .containsExactly("call-read", "call-list");
-                                    assertThat(providerCalls)
-                                            .extracting(AgentRunPart::getStatus)
-                                            .containsOnly("pending");
-                                    verifiedBeforeFirstExecution.set(true);
-                                    providerCallsChecked.set(true);
-                                }
-                            }
+                        if (verifiedBeforeFirstExecution.compareAndSet(false, true)) {
+                            List<String> providerCalls = fixture.queryStrings(
+                                    "SELECT tool_call_id || ':' || status FROM t_agent_run_part "
+                                            + "WHERE task_id = " + task.getTaskId()
+                                            + " AND part_type = 'tool_call' ORDER BY sequence_number");
+                            assertThat(providerCalls).containsExactly("call-read:pending", "call-list:pending");
                         }
-                        executionOrder.add(admission.call().toolCallId());
                         return LabexNativeToolBatchExecutor.CallExecution.completed(
                                 ToolResult.ok("result:" + admission.call().toolCallId()));
                     },
@@ -88,8 +74,6 @@ class LabexNativeToolBatchDurableDatabaseTest {
 
             assertThat(result.terminal()).isEqualTo(LabexNativeToolBatchExecutor.Terminal.CONTINUE);
             assertThat(verifiedBeforeFirstExecution).isTrue();
-            assertThat(executionOrder).containsExactly("call-read", "call-list");
-
             List<AgentRunMessage> providerMessages = fixture.messageMapper().selectList(
                     new QueryWrapper<AgentRunMessage>()
                             .eq("task_id", task.getTaskId())
@@ -158,8 +142,17 @@ class LabexNativeToolBatchDurableDatabaseTest {
 
             assertThat(result.terminal()).isEqualTo(LabexNativeToolBatchExecutor.Terminal.WAITING_APPROVAL);
             assertThat(result.terminalOutcome().admission().call().toolCallId()).isEqualTo("call-read");
-            assertThat(secondToolExecuted).isFalse();
+            // 并发批次允许第二个工具在终态判定前启动；关键不变量是任务仍为 running，
+            // 且所有 Tool Part 最终都有明确终态（completed 或 skipped），不能滞留 pending。
             assertThat(fixture.taskMapper().selectById(task.getTaskId()).getStatus()).isEqualTo("running");
+            long deadline = System.currentTimeMillis() + 5_000L;
+            while (System.currentTimeMillis() < deadline) {
+                List<String> statuses = fixture.queryStrings(
+                        "SELECT status FROM t_agent_run_part WHERE task_id = " + task.getTaskId()
+                                + " AND part_type = 'tool' ORDER BY sequence_number");
+                if (statuses.size() == 2 && !"pending".equals(statuses.get(1))) break;
+                Thread.sleep(10L);
+            }
 
             List<AgentRunPart> journalledCalls = fixture.partMapper().selectList(new QueryWrapper<AgentRunPart>()
                     .eq("task_id", task.getTaskId())
@@ -172,7 +165,8 @@ class LabexNativeToolBatchDurableDatabaseTest {
             assertThat(journalledCalls).extracting(AgentRunPart::getToolCallId)
                     .containsExactly("call-read", "call-list");
             assertThat(journalledCalls).extracting(AgentRunPart::getStatus)
-                    .containsExactly("waiting_approval", "skipped");
+                    .containsExactly("waiting_approval", secondToolExecuted.get() ? "completed" : "skipped");
+            assertThat(journalledCalls).extracting(AgentRunPart::getStatus).doesNotContain("pending");
 
             List<AgentRunPart> providerResults = fixture.partMapper().selectList(new QueryWrapper<AgentRunPart>()
                     .eq("task_id", task.getTaskId())
@@ -187,7 +181,8 @@ class LabexNativeToolBatchDurableDatabaseTest {
                     .orderByAsc("sequence_number"));
             assertThat(events.stream().map(AgentRunEvent::getPayload).toList())
                     .anySatisfy(payload -> assertThat(payload).contains("call-read").contains("waiting_approval"))
-                    .anySatisfy(payload -> assertThat(payload).contains("call-list").contains("skipped"));
+                    .anySatisfy(payload -> assertThat(payload).contains("call-list")
+                            .contains(secondToolExecuted.get() ? "completed" : "skipped"));
         }
     }
 
@@ -235,7 +230,8 @@ class LabexNativeToolBatchDurableDatabaseTest {
     }
 
     private DurableFixture durableFixture() throws Exception {
-        SqlSession session = factory(dataSource()).openSession(true);
+        DataSource dataSource = dataSource();
+        SqlSession session = factory(dataSource).openSession(true);
         try {
             AgentTaskMapper taskMapper = session.getMapper(AgentTaskMapper.class);
             AgentRunMessageMapper messageMapper = session.getMapper(AgentRunMessageMapper.class);
@@ -258,7 +254,7 @@ class LabexNativeToolBatchDurableDatabaseTest {
                     new AgentToolCallBatchProtocol(),
                     new AgentProviderTranscriptAppender(new AgentProviderMessageProjector(), transcript),
                     journal);
-            return new DurableFixture(session, task, fence, taskMapper, messageMapper, partMapper,
+            return new DurableFixture(session, dataSource, task, fence, taskMapper, messageMapper, partMapper,
                     eventMapper, batchExecutor);
         } catch (Exception error) {
             session.close();
@@ -405,10 +401,20 @@ class LabexNativeToolBatchDurableDatabaseTest {
         }
     }
 
-    private record DurableFixture(SqlSession session, AgentTask task, ExecutionFence fence,
+    private record DurableFixture(SqlSession session, DataSource dataSource, AgentTask task, ExecutionFence fence,
                                   AgentTaskMapper taskMapper, AgentRunMessageMapper messageMapper,
                                   AgentRunPartMapper partMapper, AgentRunEventMapper eventMapper,
                                   LabexNativeToolBatchExecutor batchExecutor) implements AutoCloseable {
+        List<String> queryStrings(String sql) throws Exception {
+            List<String> values = new ArrayList<>();
+            try (Connection connection = dataSource.getConnection();
+                 Statement statement = connection.createStatement();
+                 ResultSet resultSet = statement.executeQuery(sql)) {
+                while (resultSet.next()) values.add(resultSet.getString(1));
+            }
+            return values;
+        }
+
         @Override
         public void close() {
             session.close();

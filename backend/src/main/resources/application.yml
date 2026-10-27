@@ -152,6 +152,12 @@ labex-agent:
     max-environment-failures: ${LABEX_AGENT_MAX_ENVIRONMENT_FAILURES:1}
     verification-strategy: ${LABEX_AGENT_VERIFICATION_STRATEGY:auto}
     fallback-verification-strategy: ${LABEX_AGENT_FALLBACK_VERIFICATION_STRATEGY:manual}
+  # 云本混合 L1 同步供给（B1，/changes/feed）读取上限
+  sync-feed:
+    max-change-sets-per-page: ${LABEX_AGENT_SYNC_FEED_MAX_CHANGE_SETS_PER_PAGE:50}
+    max-changed-files-per-page: ${LABEX_AGENT_SYNC_FEED_MAX_CHANGED_FILES_PER_PAGE:200}
+    # 尾巴扫描重叠窗口（秒）：由秒级 DATETIME 精度与 MySQL 四舍五入决定，不能设 0
+    tail-overlap-seconds: ${LABEX_AGENT_SYNC_FEED_TAIL_OVERLAP_SECONDS:2}
   instance-id: ${LABEX_AGENT_INSTANCE_ID:}
   process-host-id: ${LABEX_AGENT_PROCESS_HOST_ID:}
   acceptance:

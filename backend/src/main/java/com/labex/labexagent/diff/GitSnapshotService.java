@@ -28,6 +28,12 @@ import org.springframework.stereotype.Service;
 public class GitSnapshotService {
     private static final Logger log = LoggerFactory.getLogger(GitSnapshotService.class);
     private static final int MAX_OUTPUT = 120_000;
+    /**
+     * 文本内容被截断时追加的标记。
+     * 公开给同步供给（B1）判定内容完整性：被截断的内容不能作为本地回退依据。
+     * 注意：只要这里改了，`limit()` 与 {@code AgentSyncFeedService#isTruncated} 必须同时生效。
+     */
+    public static final String TRUNCATION_MARKER = "\n...[truncated]";
     private static final int SNAPSHOT_TIMEOUT_SECONDS = 20;
 
     /**
@@ -539,7 +545,7 @@ public class GitSnapshotService {
         if (value == null || value.length() <= max) {
             return value == null ? "" : value;
         }
-        return value.substring(0, max) + "\n...[truncated]";
+        return value.substring(0, max) + TRUNCATION_MARKER;
     }
 
     public record Snapshot(boolean available, String ref, String status, String error) {

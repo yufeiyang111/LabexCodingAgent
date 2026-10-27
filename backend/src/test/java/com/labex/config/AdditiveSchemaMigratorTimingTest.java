@@ -48,7 +48,8 @@ class AdditiveSchemaMigratorTimingTest {
         new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, org.mockito.Mockito.times(17)).execute(sql.capture());
+        // 17 条列/索引 + B1 同步供给新增的 2 个索引 = 19 条 DDL。
+        verify(jdbcTemplate, org.mockito.Mockito.times(19)).execute(sql.capture());
         assertTrue(sql.getAllValues().containsAll(List.of(
                 "ALTER TABLE t_agent_task ADD COLUMN submitted_at DATETIME(3) DEFAULT NULL",
                 "ALTER TABLE t_agent_task ADD COLUMN started_at DATETIME(3) DEFAULT NULL",
@@ -67,7 +68,9 @@ class AdditiveSchemaMigratorTimingTest {
                 "ALTER TABLE t_agent_run_part ADD INDEX idx_agent_run_part_message_sequence (message_id, sequence_number)",
                 "ALTER TABLE t_agent_message ADD INDEX idx_msg_conversation_history (conversation_id, student_id, project_id, message_id)",
                 "ALTER TABLE t_agent_compaction_record ADD INDEX idx_agent_compaction_conversation_scope "
-                        + "(conversation_id, student_id, project_id, scope, status, compaction_epoch)")));
+                        + "(conversation_id, student_id, project_id, scope, status, compaction_epoch)",
+                "ALTER TABLE t_agent_change_set ADD INDEX idx_cs_project_set (student_id, project_id, change_set_id)",
+                "ALTER TABLE t_agent_file_change ADD INDEX idx_fc_project_update (student_id, project_id, update_time)")));
     }
 
     @Test
@@ -94,7 +97,7 @@ class AdditiveSchemaMigratorTimingTest {
                     .contains(column.toLowerCase());
             return missingProcessColumn ? missing : present;
         });
-        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, true, false);
+        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, true, true, true, false);
         when(existingIndexes.getString("INDEX_NAME")).thenReturn(
                 "idx_task_retry_due",
                 "idx_task_execution_lease",
@@ -106,6 +109,8 @@ class AdditiveSchemaMigratorTimingTest {
                 "idx_agent_run_message_conversation_parent",
                 "idx_agent_run_part_message_sequence",
                 "idx_msg_conversation_history",
+                "idx_cs_project_set",
+                "idx_fc_project_update",
                 "idx_agent_compaction_conversation_scope");
         when(metadata.getIndexInfo(eq("labex"), isNull(), anyString(), eq(false), eq(false)))
                 .thenReturn(existingIndexes);
@@ -164,7 +169,7 @@ class AdditiveSchemaMigratorTimingTest {
         when(present.next()).thenReturn(true);
         when(metadata.getColumns(any(), isNull(), anyString(), anyString())).thenReturn(present);
         when(metadata.getTables(any(), isNull(), anyString(), any())).thenReturn(present);
-        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, true, false);
+        when(existingIndexes.next()).thenReturn(true, true, true, true, true, true, true, true, true, true, true, true, true, false);
         when(existingIndexes.getString("INDEX_NAME")).thenReturn(
                 "idx_task_retry_due",
                 "idx_task_execution_lease",
@@ -176,6 +181,8 @@ class AdditiveSchemaMigratorTimingTest {
                 "idx_agent_run_message_conversation_parent",
                 "idx_agent_run_part_message_sequence",
                 "idx_msg_conversation_history",
+                "idx_cs_project_set",
+                "idx_fc_project_update",
                 "idx_agent_compaction_conversation_scope");
         when(metadata.getIndexInfo(eq("labex"), isNull(), anyString(), eq(false), eq(false)))
                 .thenReturn(existingIndexes);
@@ -291,6 +298,36 @@ class AdditiveSchemaMigratorTimingTest {
                 "ALTER TABLE t_agent_conversation ADD COLUMN history_migrated_at DATETIME(3) DEFAULT NULL"));
         assertTrue(sql.getAllValues().contains(
                 "ALTER TABLE t_agent_conversation ADD INDEX idx_agent_conversation_fork_task (forked_from_task_id)"));
+    }
+
+    /**
+     * B1 同步供给（/changes/feed）依赖两个索引：
+     *  - t_agent_change_set(student_id, project_id, change_set_id)：按 change_set_id 升序的游标分页；
+     *  - t_agent_file_change(student_id, project_id, update_time)：游标之内捞状态/内容变化的文件。
+     * 旧库靠启动期迁移补上；新库由 schema.sql 内联。
+     */
+    @Test
+    void addsSyncFeedIndexesForCursorPagingAndCatchUpSweep() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+        ResultSet present = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.getMetaData()).thenReturn(metadata);
+        when(connection.getCatalog()).thenReturn("labex");
+        when(present.next()).thenReturn(true);
+        when(metadata.getTables(any(), isNull(), anyString(), any())).thenReturn(present);
+        when(metadata.getColumns(any(), isNull(), anyString(), anyString())).thenReturn(present);
+
+        new AdditiveSchemaMigrator(jdbcTemplate, dataSource).migrate();
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate, org.mockito.Mockito.atLeast(2)).execute(sql.capture());
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_change_set ADD INDEX idx_cs_project_set (student_id, project_id, change_set_id)"));
+        assertTrue(sql.getAllValues().contains(
+                "ALTER TABLE t_agent_file_change ADD INDEX idx_fc_project_update (student_id, project_id, update_time)"));
     }
 
 }

@@ -32,7 +32,9 @@ class AdditiveSchemaMigratorOpsAlertIndexTest {
             "idx_agent_run_message_conversation_parent",
             "idx_agent_run_part_message_sequence",
             "idx_msg_conversation_history",
-            "idx_agent_compaction_conversation_scope");
+            "idx_agent_compaction_conversation_scope",
+            "idx_cs_project_set",
+            "idx_fc_project_update");
 
     @Test
     void downgradesTheLegacyUniqueKeyWhenPresent() throws Exception {
