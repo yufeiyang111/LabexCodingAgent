@@ -172,6 +172,8 @@ const gates = [
       const checks = [
         ['迁移自动收集', 'tar -czf migrations.tar.gz -C deploy/linux migrations'],
         ['迁移执行器', './apply-migrations.sh migrations docker-compose.yml'],
+        ['迁移包缺失阻断', '缺少 migrations.tar.gz，停止发布'],
+        ['部署后健康检查', './post-deploy-check.sh docker-compose.yml'],
         ['前端资源校验', '缺少 frontend-dist.tar.gz'],
       ]
       const miss = checks.filter(([, n]) => !src.includes(n)).map(([l]) => l)

@@ -7,6 +7,10 @@
 - 支持矩阵与发布状态：仓库根 `README.md`
 - 环境变量：复制 `.env.production.example` 为 `.env.production` 并填写真实值
 - 启动校验：`ProductionStartupValidator` 与认证 Redis 校验会在 production profile 下失败并列出全部缺失项（DB、JWT、Secret Store、Redis、CORS/WebSocket 来源、Windows 盘符路径、`full_access` 权限）
+- 生产数据库：`spring.sql.init.mode=never`，启动期 `AdditiveSchemaMigrator` / `AuthSchemaMigrator` 不加载；结构变更只通过 `deploy/linux/migrations/upgrade-YYYYMMDD.sql` 与发布流水线的 `apply-migrations.sh` 执行
+- 新库首次初始化：先显式导入 `backend/src/main/resources/sql/schema.sql` 与 `data.sql`，再启动后端；生产禁止依赖启动自动建表
+- 迁移包缺失：发布直接失败，不允许在数据库结构未确认时继续更新前后端
+- 部署后健康检查：后端重启后由 `post-deploy-check.sh` 轮询验证（启动标志 + 匿名接口 + 鉴权保护 + 静态资源），任一失败则 CI 阻断并输出容器日志与迁移台账，不再只看 `docker compose ps`
 
 ## 部署拓扑
 

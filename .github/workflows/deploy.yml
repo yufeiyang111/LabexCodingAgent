@@ -152,7 +152,8 @@ jobs:
           mkdir -p release-artifacts
           mv frontend-dist.tar.gz migrations.tar.gz release-artifacts/
           cp deploy/linux/apply-migrations.sh release-artifacts/
-          chmod +x release-artifacts/apply-migrations.sh
+          cp deploy/linux/post-deploy-check.sh release-artifacts/
+          chmod +x release-artifacts/apply-migrations.sh release-artifacts/post-deploy-check.sh
           echo "==> 本次发布产物："
           ls -la release-artifacts
 
@@ -184,21 +185,23 @@ jobs:
             set -e
             cd ${{ env.DEPLOY_APP_PATH }}
 
-            echo "==> [1/5] 数据库增量迁移（台账去重，幂等执行）..."
+            echo "==> [1/6] 数据库增量迁移（台账去重，幂等执行）..."
             # 迁移脚本随本次发布一起上传，解压后由 apply-migrations.sh 统一处理：
             # 依据 t_schema_migration 台账跳过已应用项，按文件名顺序执行剩余项，失败即中止。
-            if [ -f "migrations.tar.gz" ]; then
-              chmod +x apply-migrations.sh
-              rm -rf migrations
-              tar -xzf migrations.tar.gz
-              rm -f migrations.tar.gz
-              ./apply-migrations.sh migrations docker-compose.yml
-            else
-              echo "    （本次没有携带迁移包，跳过）"
+            # 生产结构变更只能通过本迁移包落地。迁移包缺失、解压失败或迁移失败，
+            # 都必须阻断后续前端/后端更新，避免“代码已上线、数据库未升级”。
+            if [ ! -f "migrations.tar.gz" ]; then
+              echo "::error::缺少 migrations.tar.gz，停止发布：数据库结构无法确认已升级。"
+              exit 1
             fi
+            chmod +x apply-migrations.sh
+            rm -rf migrations
+            tar -xzf migrations.tar.gz
+            rm -f migrations.tar.gz
+            ./apply-migrations.sh migrations docker-compose.yml
             rm -f apply-migrations.sh
 
-            echo "==> [2/5] 更新前端静态资源..."
+            echo "==> [2/6] 更新前端静态资源..."
             mkdir -p frontend-dist
             if [ -f "frontend-dist.tar.gz" ]; then
               tar -xzf frontend-dist.tar.gz -C frontend-dist
@@ -208,14 +211,20 @@ jobs:
               exit 1
             fi
 
-            echo "==> [3/5] 登录 TCR 并拉取后端最新镜像..."
+            echo "==> [3/6] 登录 TCR 并拉取后端最新镜像..."
             echo "${{ secrets.TCR_PASSWORD }}" | docker login ${{ env.REGISTRY }} -u "${{ secrets.TCR_USERNAME }}" --password-stdin
             docker compose --env-file .env.production pull backend
 
-            echo "==> [4/5] 平滑重启后端容器..."
+            echo "==> [4/6] 平滑重启后端容器..."
             docker compose --env-file .env.production up -d --no-deps backend
 
-            echo "==> [5/5] 清理虚悬镜像并核对状态..."
+            echo "==> [5/6] 部署后应用级健康检查..."
+            # 容器 Up 不代表应用可用：必须等到 Spring 启动标志 + 匿名接口 +
+            # 鉴权保护 + 静态资源全部通过。失败时脚本自打印容器日志与迁移台账并 exit 1。
+            chmod +x post-deploy-check.sh
+            ./post-deploy-check.sh docker-compose.yml
+
+            echo "==> [6/6] 清理虚悬镜像并核对状态..."
             docker image prune -f
             docker compose --env-file .env.production ps
 
