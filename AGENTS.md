@@ -145,6 +145,20 @@ Provider 请求、预算、压缩选择和恢复必须以 `AgentRunMessage` / `A
 - **数据库增量迁移铁律**：严禁直接导入全量 `schema.sql`。涉及表结构或索引变更时，必须编写幂等脚本 `deploy/linux/migrations/upgrade-YYYYMMDD.sql`，使用存储过程与 `information_schema` 校验 `IF NOT EXISTS`，做到重复执行零破坏、零报错，同时对齐更新开发基线 `backend/src/main/resources/sql/schema.sql`。
 - **触发规范**：优先通过推送语义化版本标签 `v*`（如 `git tag -a v1.0.0` && `git push origin v1.0.0`）或在 GitHub Actions 页面手动运行流水线，保障容器拉取与服务重启的确定性。
 
+### 10. 生产数据库受控迁移：当前剩余风险（2026-10-29）
+
+本轮已落实：production 禁用 Spring SQL 初始化、禁用启动期加性迁移器、发布缺少迁移包时阻断、smoke 显式初始化、生产配置契约测试。以下风险仍未闭环，涉及发布前必须逐项确认：
+
+1. **教程种子不会随生产启动自动更新**：`data.sql` 中的 18 条教程 upsert 现在只用于本地/ smoke 基线初始化。教程内容变更必须新增幂等 `upgrade-YYYYMMDD.sql`（或建立独立受控 seed 发布通道）；只改 `data.sql` 不会更新生产。
+2. **生产老库缺少启动期自愈**：生产不再由 `AdditiveSchemaMigrator` / `AuthSchemaMigrator` 自动补齐列、索引、表和触发器。发布前必须在只读副本或隔离库核对生产结构；发现缺口只能新增迁移修复，不能依赖应用启动兜底。
+3. **迁移台账 checksum 尚未强制校验**：`apply-migrations.sh` 已记录 checksum，但已入账迁移被修改时目前仍只会跳过。上线前应核对 `t_schema_migration` 与仓库迁移文件的 SHA-256；后续应升级为不一致即阻断。
+4. **迁移脚本负向测试与幂等自动化仍不足**：目前没有覆盖“已入账文件被改、第二个迁移失败后第三个不执行、非法迁移名、破坏性 SQL”等 CI 用例。修改迁移器时必须补隔离数据库测试，禁止直连生产验证。
+5. **首次部署与新库初始化仍是人工步骤**：生产新库必须先显式导入 `schema.sql` 与 `data.sql`，再执行迁移和启动应用。当前没有一条受确认保护的 `init-schema.sh`；操作遗漏会表现为表不存在而不是自动恢复。
+6. **真实 JVM + MySQL 生产 smoke 尚未在本次改动后执行**：本次仅完成源码、单测、配置契约和 Shell 语法验证。发布前必须在不触碰生产库的测试环境执行 `bash deploy/linux/smoke.sh [backend-jar] [worker-image]`，确认日志无 `schema.sql` / `data.sql` / 两个 SchemaMigrator 执行记录。
+7. **数据库回滚不可自动完成**：镜像和前端可回滚，但已执行迁移不会自动反向。回滚前必须确认迁移是否向后兼容；禁止靠回滚镜像来“回滚数据库”。
+
+以上风险未全部关闭前，不得把生产数据库初始化重新切回 `always`，也不得绕过 `apply-migrations.sh` 直接在全量 schema 上启动生产。
+
 ## Build & run
 
 ### Backend (Spring Boot, Java 17, Maven)
@@ -291,7 +305,7 @@ API 调用全部走 `projectApi.xxx(projectId, ...)` 形式，路径前缀 `/stu
 ## Configuration & data
 
 - 后端配置：[backend/src/main/resources/application.yml](backend/src/main/resources/application.yml)。所有环境变量都带默认值，所以即便不 export 也能起来，但生产环境必须覆盖 `LABEX_AGENT_JWT_SECRET`、`LABEX_AGENT_DB_PASSWORD`、`MINIMAX_API_KEY`。
-- 数据库 schema 由 `spring.sql.init.mode: always` 在启动时从 [backend/src/main/resources/sql/schema.sql](backend/src/main/resources/sql/schema.sql) 自动执行。**手工改库前先备份 schema.sql**，否则下次启动会被覆盖式重建。
+- 本地开发默认由 `spring.sql.init.mode: always` 在启动时执行 [schema.sql](backend/src/main/resources/sql/schema.sql) 与 `data.sql`。**生产 profile 强制 `never`，且启动期 `AdditiveSchemaMigrator` / `AuthSchemaMigrator` 不加载**；生产结构变更只能新增 `deploy/linux/migrations/upgrade-YYYYMMDD.sql`，由发布流水线的 `apply-migrations.sh` 按台账执行。
 - 前端配置：[frontend/vite.config.js](frontend/vite.config.js)（别名、端口、代理）。
 - 用户级运行时数据落在 `${LABEX_AGENT_PROJECT_BASE_PATH}`（默认 `D:/LabexAgent/workspaces`）下，**已被 .gitignore 忽略**。
 

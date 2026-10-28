@@ -53,7 +53,7 @@ LabexAgent 是一个自托管的 AI 编程 Agent 平台：Spring Boot 3 后端 +
 |---|---|
 | 后端 | Java 17 · Spring Boot 3 · MyBatis-Plus · Spring Security · Spring WebSocket |
 | 前端 | Vue 3 · Vite · Pinia · Vue Router · Element Plus · xterm.js · Monaco Editor |
-| 数据库 | MySQL 8.0+（schema 启动时自动执行，表名沿用历史 `t_` 前缀） |
+| 数据库 | MySQL 8.0+（本地启动自动初始化；生产只走受控迁移，表名沿用历史 `t_` 前缀） |
 | 缓存 / 会话 | Redis 7+（认证限流、验证码、OAuth 状态） |
 | 鉴权 | JWT（HS512）+ BCrypt 密码哈希 + 图形验证码 + OAuth（GitHub / Google，可选） |
 | 模型接入 | OpenAI-Compatible 协议（DeepSeek、Qwen、GPT 等），密钥加密存储 |
@@ -182,9 +182,11 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 CREATE DATABASE labex_agent CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-后端配置 `spring.sql.init.mode: always`，启动时自动执行 `schema.sql` 建表（表名沿用历史 `t_` 前缀，约 40 张表）。已有数据库通过 JDBC 元数据做加性 `ALTER TABLE` 迁移，不会清表删库。
+本地开发默认 `spring.sql.init.mode: always`，启动时自动执行 `schema.sql` / `data.sql`（表名沿用历史 `t_` 前缀，约 40 张表）。
 
-> 注意：手工改库前先备份 `schema.sql`，否则下次启动会按该文件重建表结构。
+生产 profile 明确设置 `spring.sql.init.mode: never`，启动期加性迁移器也不会加载；生产结构变更只能新增 `deploy/linux/migrations/upgrade-YYYYMMDD.sql`，由发布流水线的 `apply-migrations.sh` 按台账执行。
+
+> 注意：生产新库必须先显式初始化基线，再启动应用；不要依赖应用启动自动建表。
 
 ---
 

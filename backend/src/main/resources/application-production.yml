@@ -2,6 +2,14 @@
 # 必须显式提供的环境变量见 deploy/linux/.env.production.example；
 # 缺失时 ProductionStartupValidator 会在启动前失败并列出全部问题。
 
+# 生产启动绝不执行 schema.sql / data.sql；结构变更只走
+# deploy/linux/migrations/upgrade-YYYYMMDD.sql + apply-migrations.sh。
+spring:
+  sql:
+    init:
+      mode: never
+
+
 labex-agent:
   project-base-path: ${LABEX_AGENT_PROJECT_BASE_PATH:/srv/labex-agent/workspaces}
   execution:

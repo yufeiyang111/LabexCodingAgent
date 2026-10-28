@@ -6,8 +6,14 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.type.filter.AnnotationTypeFilter;
+import org.springframework.stereotype.Component;
 
 class ProductionConfigurationTest {
 
@@ -19,6 +25,7 @@ class ProductionConfigurationTest {
         properties.put("spring.datasource.url", "jdbc:mysql://db.internal:3306/labex_agent");
         properties.put("spring.datasource.username", "labex");
         properties.put("spring.datasource.password", "production-password");
+        properties.put("spring.sql.init.mode", "never");
         properties.put("jwt.secret", LONG_JWT_SECRET);
         properties.put("labex-agent.secret-store.master-key", MASTER_KEY);
         properties.put("labex-agent.execution.permission-profile", "labex-standard");
@@ -59,6 +66,46 @@ class ProductionConfigurationTest {
     @Test
     void acceptsACompleteProductionConfiguration() {
         assertThat(attemptStartup(Map.of())).isNull();
+    }
+
+    @Test
+    void productionProfileFileDisablesSpringSqlInitialization() throws Exception {
+        var sources = new YamlPropertySourceLoader()
+                .load("application-production", new ClassPathResource("application-production.yml"));
+        String mode = null;
+        for (var source : sources) {
+            Object value = source.getProperty("spring.sql.init.mode");
+            if (value != null) {
+                mode = value.toString();
+            }
+        }
+        assertThat(mode).isEqualTo("never");
+    }
+
+    @Test
+    void rejectsProductionSqlInitializationOverride() {
+        assertThat(attemptStartup(Map.of("spring.sql.init.mode", "always")))
+                .contains("spring.sql.init.mode", "never");
+    }
+
+    @Test
+    void startupSchemaMigratorsAreExcludedFromProduction() throws Exception {
+        ClassPathScanningCandidateComponentProvider scanner =
+                new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter(new AnnotationTypeFilter(Component.class));
+        for (var candidate : scanner.findCandidateComponents("com.labex")) {
+            Class<?> type = Class.forName(candidate.getBeanClassName());
+            if (!type.getSimpleName().endsWith("SchemaMigrator")) {
+                continue;
+            }
+            Profile profile = type.getAnnotation(Profile.class);
+            assertThat(profile)
+                    .as("%s 必须通过 @Profile 明确退出 production", type.getName())
+                    .isNotNull();
+            assertThat(String.join(",", profile.value()))
+                    .as("%s 的 production profile 条件", type.getName())
+                    .contains("!production");
+        }
     }
 
     @Test

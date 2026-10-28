@@ -30,6 +30,9 @@ public class ProductionStartupValidator {
     @Value("${spring.datasource.password:}")
     private String datasourcePassword;
 
+    @Value("${spring.sql.init.mode:never}")
+    private String sqlInitMode;
+
     @Value("${jwt.secret:}")
     private String jwtSecret;
 
@@ -62,6 +65,10 @@ public class ProductionStartupValidator {
         }
         if (datasourcePassword == null || datasourcePassword.isBlank()) {
             problems.add("spring.datasource.password 为空：生产必须设置 LABEX_AGENT_DB_PASSWORD，不允许空密码。");
+        }
+        if (!"never".equalsIgnoreCase(sqlInitMode == null ? "" : sqlInitMode.trim())) {
+            problems.add("spring.sql.init.mode 必须为 never：生产禁止启动时执行 schema.sql/data.sql，"
+                    + "结构变更只能通过 deploy/linux/apply-migrations.sh 执行。");
         }
         if (jwtSecret == null || jwtSecret.isBlank() || LOCAL_JWT_PLACEHOLDER.equals(jwtSecret.trim())
                 || jwtSecret.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 64) {

@@ -10,11 +10,13 @@ import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /** 认证域自己的加性迁移，不把认证字段耦合进 Agent 通用迁移器。 */
 @Component
+@Profile("!prod & !production")
 @DependsOn("dataSourceScriptDatabaseInitializer")
 public class AuthSchemaMigrator {
     private static final Logger log = LoggerFactory.getLogger(AuthSchemaMigrator.class);

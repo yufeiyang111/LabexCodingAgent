@@ -15,10 +15,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 @Component
+@Profile("!prod & !production")
 @DependsOn("dataSourceScriptDatabaseInitializer")
 public class AdditiveSchemaMigrator {
     private static final Logger log = LoggerFactory.getLogger(AdditiveSchemaMigrator.class);

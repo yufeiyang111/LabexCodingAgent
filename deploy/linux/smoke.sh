@@ -13,6 +13,7 @@ WORKER_IMAGE="${2:-labex-agent-sandbox:opencode-2026-08-14}"
 MYSQL_IMAGE="mysql:8.0"
 REDIS_IMAGE="redis:7-alpine"
 COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$COMPOSE_DIR/../.." && pwd)"
 BASE_DIR="/srv/labex-agent"
 WORKSPACES="$BASE_DIR/workspaces"
 UPLOADS="$BASE_DIR/uploads"
@@ -56,6 +57,26 @@ for i in $(seq 1 60); do
   sleep 2
 done
 echo "    Redis 就绪（容器 $(docker inspect -f '{{.Id}}' "${HOSTNAME_PREFIX}-redis" | cut -c1-12)）"
+
+# production profile 禁止应用启动时自动建表；smoke 必须显式初始化空库。
+echo "==> [2.5/7] 显式初始化基线数据库..."
+SCHEMA_FILE="$REPO_ROOT/backend/src/main/resources/sql/schema.sql"
+SEED_FILE="$REPO_ROOT/backend/src/main/resources/sql/data.sql"
+[ -f "$SCHEMA_FILE" ] || { echo "缺少 schema.sql: $SCHEMA_FILE"; exit 1; }
+[ -f "$SEED_FILE" ] || { echo "缺少 data.sql: $SEED_FILE"; exit 1; }
+docker exec -i "${HOSTNAME_PREFIX}-mysql" sh -ec \
+  'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" -D "$MYSQL_DATABASE"' < "$SCHEMA_FILE"
+docker exec -i "${HOSTNAME_PREFIX}-mysql" sh -ec \
+  'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" -D "$MYSQL_DATABASE"' < "$SEED_FILE"
+
+# 关键表存在性校验：失败时立即退出，避免把“应用未建表”误报成业务故障。
+TABLE_COUNT="$(docker exec "${HOSTNAME_PREFIX}-mysql" sh -ec \
+  'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" -D "$MYSQL_DATABASE" -N -B -e "
+SELECT COUNT(*) FROM information_schema.tables
+WHERE table_schema = DATABASE()
+  AND table_name IN (\"t_user\", \"t_student_project\", \"t_agent_task\");"' | tr -d "[:space:]")"
+[ "$TABLE_COUNT" = "3" ] || { echo "基线初始化失败：关键表数量=$TABLE_COUNT"; exit 1; }
+echo "    基线数据库初始化完成（关键表 3/3）"
 
 echo "==> [3/7] 启动 backend（production profile + Docker Worker）"
 export SERVER_PORT="18080"
