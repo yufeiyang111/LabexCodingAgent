@@ -16,10 +16,10 @@
 | C01 | 后端真实新增类型是 `create`，计划器只特判 `add` → 新增文件被误判成 `missing-local` 冲突；`normalizeChange` 丢弃 `status`，未批准/被拒的变更仍会写盘 | `changeSetSyncPlan.js` | ✅ 已修：识别 `create`/`beforeExisted`；`status ∈ {rejected,undone,failed}` 不再写盘并给出显式 reason；截断内容不得当基线/目标 |
 | C03 | 同一 change-set 内第一个文件成功就把游标推进到整个 `changeSetId`；第二个失败后重试按 `<= cursor` 跳过它 → **永久漏同步** | `changeSetSyncPlan.js`（规划侧）、`changeSetSyncOrchestrator.js`（应用侧） | ✅ 已修：规划侧只认"从前往后连续完整"的集合（`completedChangeSetIds`/`changeSetProgress`/`nextCursor`）；应用侧游标只停到"步骤全部成功"的集合 |
 | C04 | 全程用同一份初始 probe，不模拟前一步结果；后端列表按 `update_time DESC` → 同路径连续修改被误判冲突，倒序输入下最终写成中间版本 | `changeSetSyncPlan.js` | ✅ 已修：虚拟本地视图（每步结果写回），集合按 id 升序处理，同路径链式修改串成多步且 `previousContent` 逐级推进 |
-| C05 | 探针读取失败只记 `failures`，缺失探针等同"文件不存在" → 已有内容被覆盖且 journal 错记 `previousExisted:false` | `syncProbe.js:15-23` | ❌ **仍是下一优先项**（探针三态化：存在/不存在/未知，未知必须阻断） |
+| C05 | 探针读取失败只记 `failures`，缺失探针等同"文件不存在" → 已有内容被覆盖且 journal 错记 `previousExisted:false` | `syncProbe.js`、`changeSetSyncPlan.js` | ✅ 已修：probe 三态化为 `present/absent/unknown`；`unknown` 在 strict/skip/overwrite 下都硬阻断，零写入；回归测试见 `syncProbe.test.mjs`、`changeSetSyncPlan.test.mjs`、`changeSetSyncOrchestrator.test.mjs` |
 | C06 | 先改文件、后存 journal；**默认 store 是"空 journal + 无操作 save"** | `changeSetSyncOrchestrator.js:16-17,70-85` | ✅ 已修：缺少 `load/save` 时在构造期抛错（任何文件写入之前），并补两个回归测试 |
 | C07 | 回退不校验当前文件是否仍是本次同步产物 → 覆盖用户后续手工编辑；逆操作全做完才裁剪 journal | `changeSetSyncOrchestrator.js:96-110` | ❌ |
-| C08 | `failed→rolling-back`、`idle→rolling-back`、`blocked→scanning` 都是非法迁移；扫描阶段异常不在 try 内 | `syncSessionState.js:16-24` | ❌ |
+| C08 | `failed→rolling-back`、`idle→rolling-back`、`blocked→scanning` 都是非法迁移；扫描阶段异常不在 try 内 | `syncSessionState.js`、`changeSetSyncOrchestrator.js` | ✅ 已修：允许 `blocked/done → scanning` 重试；扫描/加载/探针/规划异常统一落 `failed`；回归测试见 `syncSessionState.test.mjs`、`changeSetSyncOrchestrator.test.mjs` |
 | C09 | run/rollback 无互斥，同状态迁移被当作无操作 → 并发两次 `run()` 都成功、同一文件被写两次 | `changeSetSyncOrchestrator.js:25-39,70-78` | ❌ |
 | C10 | `resolve(result?.result ?? result)` 在 IndexedDB 缺键时返回 `IDBRequest` 而不是 null | `directoryHandleStore.js:40-51,70-77` | ❌ |
 | C11 | 本地读写只有 UTF-8 文本，云端快照在 120000 字符处静默截断且 DTO 无完整性标志 | `fsAccessDirectoryAdapter.js:66-85` | ⚠️ 服务端已加 `*Truncated`，前端仍未用 |

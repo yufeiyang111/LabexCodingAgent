@@ -105,6 +105,97 @@ test('skip policy applies the safe subset and reports conflicts', async () => {
   assert.equal(adapter.files.get('src/app.js'), 'locally edited')
 })
 
+// C05：只要批内任一探针 unknown，整次同步必须阻断且零写入。
+test('blocks the entire run when any probe is unknown and writes nothing', async () => {
+  const adapter = createMemoryAdapter({ 'src/a.js': 'old', 'src/b.js': 'old' })
+  adapter.fileExists = async path => {
+    if (path === 'src/b.js') throw new Error('permission denied')
+    return adapter.files.has(path)
+  }
+  const journalStore = createJournalStore(undefined)
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => [
+      modify(1, 'src/a.js', 'old', 'a-new'),
+      modify(2, 'src/b.js', 'old', 'b-new')
+    ],
+    journalStore
+  })
+
+  const session = await orchestrator.run()
+  assert.equal(session.state, SYNC_STATES.BLOCKED)
+  assert.equal(session.applied, 0)
+  assert.equal(adapter.writes.length, 0)
+  assert.equal(adapter.files.get('src/a.js'), 'old')
+  assert.equal(adapter.files.get('src/b.js'), 'old')
+  assert.equal(journalStore.stored, undefined)
+  assert.equal(session.conflicts.some(item => item.reason === 'probe-unknown'), true)
+})
+
+// C05：overwrite 只允许覆盖“已知且已确认”的本地漂移，不能绕过 unknown probe。
+test('unknown probe remains blocked under overwrite policy', async () => {
+  const adapter = createMemoryAdapter({ 'src/app.js': 'locally edited' })
+  adapter.fileExists = async () => { throw new Error('permission denied') }
+  const journalStore = createJournalStore(undefined)
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => [modify(1, 'src/app.js', 'old', 'new')],
+    journalStore
+  })
+
+  const session = await orchestrator.run({ policy: CONFLICT_POLICIES.OVERWRITE })
+  assert.equal(session.state, SYNC_STATES.BLOCKED)
+  assert.equal(adapter.writes.length, 0)
+  assert.equal(adapter.files.get('src/app.js'), 'locally edited')
+  assert.equal(session.conflicts[0].reason, 'probe-unknown')
+})
+
+// C08：扫描阶段的加载异常必须收敛到 failed，不能把会话卡在 scanning。
+test('moves to failed when change loading throws during scanning', async () => {
+  const adapter = createMemoryAdapter()
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => { throw new Error('feed unavailable') },
+    journalStore: createJournalStore(undefined)
+  })
+
+  const session = await orchestrator.run()
+  assert.equal(session.state, SYNC_STATES.FAILED)
+  assert.match(session.error, /feed unavailable/)
+  assert.equal(adapter.writes.length, 0)
+})
+
+// C08：非法回滚不得留下“已完成”或“空闲”等误导状态。
+test('rejects rollback without a recoverable journal and does not enter rolling-back', async () => {
+  const adapter = createMemoryAdapter()
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => [],
+    journalStore: createJournalStore(undefined)
+  })
+
+  const session = await orchestrator.rollback()
+  assert.equal(session.state, SYNC_STATES.IDLE)
+  assert.equal(adapter.writes.length, 0)
+})
+
+// C08：done 后再次扫描是合法重试，不能因状态机过严而卡死。
+test('can start a fresh scan after a completed run', async () => {
+  const adapter = createMemoryAdapter()
+  let loads = 0
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => { loads += 1; return [] },
+    journalStore: createJournalStore(undefined)
+  })
+
+  const first = await orchestrator.run()
+  const second = await orchestrator.run()
+  assert.equal(first.state, SYNC_STATES.DONE)
+  assert.equal(second.state, SYNC_STATES.DONE)
+  assert.equal(loads, 2)
+})
+
 test('marks the session failed on write error while keeping applied steps reversible', async () => {
   const adapter = createMemoryAdapter({ 'src/a.js': 'a-old', 'src/b.js': 'b-old' }, { failOnWrite: 'src/b.js' })
   const journalStore = createJournalStore(undefined)

@@ -41,6 +41,23 @@ test('treats self-transition as a no-op patch', () => {
   assert.equal(same.cursor, 7)
 })
 
+// C08：blocked/done 都必须能重新发起扫描；idle/failed 不能伪装成可回滚状态。
+test('allows retry scans from blocked and done, but forbids rollback from idle', () => {
+  const blocked = transition(
+    transition(transition(createSyncSession(), SYNC_STATES.SCANNING), SYNC_STATES.PLANNING),
+    SYNC_STATES.BLOCKED
+  )
+  assert.equal(canTransition(blocked.state, SYNC_STATES.SCANNING), true)
+
+  const done = transition(
+    transition(transition(createSyncSession(), SYNC_STATES.SCANNING), SYNC_STATES.PLANNING),
+    SYNC_STATES.DONE
+  )
+  assert.equal(canTransition(done.state, SYNC_STATES.SCANNING), true)
+  assert.equal(canTransition(SYNC_STATES.IDLE, SYNC_STATES.ROLLING_BACK), false)
+  assert.equal(canTransition(SYNC_STATES.FAILED, SYNC_STATES.ROLLING_BACK), false)
+})
+
 test('describes busy and terminal states for the UI', () => {
   const busy = describeSession({ state: SYNC_STATES.APPLYING, summary: { toApply: 4 }, applied: 2 })
   assert.equal(busy.busy, true)

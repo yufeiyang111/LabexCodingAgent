@@ -21,6 +21,7 @@ const CONFLICT_CONTENT_DRIFT = 'content-drift'
 const CONFLICT_LOCAL_OCCUPIED = 'local-occupied'
 const CONFLICT_TRUNCATED_BASELINE = 'truncated-baseline'
 const CONFLICT_TRUNCATED_TARGET = 'truncated-target'
+const CONFLICT_PROBE_UNKNOWN = 'probe-unknown'
 
 /** 这些状态表示"该变更当前不该落到工作区"（未批准 / 用户已撤回 / 执行失败）。 */
 const NON_APPLICABLE_STATUSES = new Set(['rejected', 'undone', 'failed'])
@@ -104,8 +105,12 @@ function createLocalView(probe) {
     get(path) {
       if (overlay.has(path)) return overlay.get(path)
       const entry = probe?.get ? probe.get(path) : probe?.[path]
-      if (!entry) return { exists: false, content: null }
-      return { exists: entry.exists === true, content: entry.content ?? null }
+      if (!entry) return { exists: false, content: null, unknown: true }
+      return {
+        exists: entry.exists === true,
+        content: entry.content ?? null,
+        unknown: entry.state === 'unknown' || entry.exists === null
+      }
     },
     set(path, value) {
       overlay.set(path, value)
@@ -114,6 +119,7 @@ function createLocalView(probe) {
 }
 
 function classify(file, local) {
+  if (local.unknown) return { kind: 'conflict', reason: CONFLICT_PROBE_UNKNOWN }
   if (file.changeType === 'delete') {
     if (!local.exists) return { kind: 'skip', reason: 'already-absent' }
     if (file.beforeTruncated) return { kind: 'conflict', reason: CONFLICT_TRUNCATED_BASELINE }
@@ -194,6 +200,13 @@ export function buildSyncPlan(payload = {}) {
       }
       if (verdict.kind === 'conflict') {
         conflicts.push({ ...file, reason: verdict.reason, localContent: current.content })
+        const probeUnknown = verdict.reason === CONFLICT_PROBE_UNKNOWN
+        // 未知本地状态不是“冲突”，而是不可判断；任何策略都不得绕过。
+        if (probeUnknown) {
+          progress.conflicts += 1
+          if (policy === CONFLICT_POLICIES.SKIP) account(`conflict:${verdict.reason}`)
+          continue
+        }
         if (policy === CONFLICT_POLICIES.OVERWRITE) {
           steps.push(buildStep(file, current, true))
           local.set(file.path, { exists: true, content: file.afterContent })
@@ -220,6 +233,7 @@ export function buildSyncPlan(payload = {}) {
 
   // 游标只能停在"从前往后连续完整"的 change-set 上：任何一个未完整处理的集合都必须拦住它，
   // 否则重试时那个集合里没落地的文件会被 `<= cursor` 永久跳过。
+  const hasProbeUnknown = conflicts.some(item => item.reason === CONFLICT_PROBE_UNKNOWN)
   const completedChangeSetIds = []
   for (const progress of changeSetProgress) {
     if (!progress.complete) break
@@ -234,7 +248,7 @@ export function buildSyncPlan(payload = {}) {
     cursor,
     nextCursor,
     policy,
-    blocked: policy === CONFLICT_POLICIES.STRICT && conflicts.length > 0,
+    blocked: hasProbeUnknown || (policy === CONFLICT_POLICIES.STRICT && conflicts.length > 0),
     steps,
     conflicts,
     skipped,

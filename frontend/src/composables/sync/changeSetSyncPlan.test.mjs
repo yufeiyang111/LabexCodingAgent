@@ -218,6 +218,24 @@ test('feed: 同一路径连续修改必须串成两步且 previousContent 逐级
   assert.deepEqual(plan.steps.map(step => step.previousContent), ['old', 'middle'])
 })
 
+// C05：读取失败的 probe 是 unknown，绝不能退化成“本地不存在”。
+test('feed: unknown probe blocks the plan and never produces a write step', () => {
+  const plan = buildSyncPlan({
+    changeSets: [feedChangeSet(10, [
+      feedFile({ changeId: 'unknown-probe', relativePath: 'src/protected.js' })
+    ])],
+    cursor: 0,
+    probe: {
+      'src/protected.js': { state: 'unknown', exists: null, content: null, error: 'permission denied' }
+    }
+  })
+  assert.equal(plan.blocked, true)
+  assert.equal(plan.steps.length, 0)
+  assert.equal(plan.conflicts.length, 1)
+  assert.equal(plan.conflicts[0].reason, 'probe-unknown')
+  assert.equal(plan.nextCursor, 0)
+})
+
 // C03：游标只能推进到"完整处理完的 change-set"，冲突未解决时不得越过它。
 test('feed: 游标不得越过未完整处理的 change-set', () => {
   const plan = buildSyncPlan({

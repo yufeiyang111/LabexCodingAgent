@@ -45,32 +45,43 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
   async function run(options = {}) {
     const policy = options.policy
     const ignorePatterns = options.ignorePatterns ?? []
-    moveTo(SYNC_STATES.SCANNING)
-    const journal = await journalStore.load()
-    const cursor = Number(options.cursor ?? journal?.cursor ?? 0) || 0
-    emit({ cursor })
+    let journal
+    let cursor
+    let plan
 
-    const changes = await loadChanges({ cursor })
-    // loadChanges 可以直接返回数组（旧契约），也可以返回 feed 形态 { changeSets: [...] }：
-    // 两种形态都交给 plan 归一化，避免调用方为了接线再写一层适配。
-    const changePayload = Array.isArray(changes) || changes === null || changes === undefined
-      ? { changes: changes ?? [] }
-      : changes
-    emit({ summary: { total: Array.isArray(changes) ? changes.length : countFeedFiles(changePayload) } })
-    moveTo(SYNC_STATES.PLANNING)
+    try {
+      moveTo(SYNC_STATES.SCANNING)
+      journal = await journalStore.load()
+      cursor = Number(options.cursor ?? journal?.cursor ?? 0) || 0
+      emit({ cursor })
 
-    const paths = collectPaths(changePayload)
-    const { probe, failures } = await collectProbe(adapter, paths.filter(Boolean))
+      const changes = await loadChanges({ cursor })
+      // loadChanges 可以直接返回数组（旧契约），也可以返回 feed 形态 { changeSets: [...] }：
+      // 两种形态都交给 plan 归一化，避免调用方为了接线再写一层适配。
+      const changePayload = Array.isArray(changes) || changes === null || changes === undefined
+        ? { changes: changes ?? [] }
+        : changes
+      emit({ summary: { total: Array.isArray(changes) ? changes.length : countFeedFiles(changePayload) } })
+      moveTo(SYNC_STATES.PLANNING)
 
-    const plan = buildSyncPlan({ ...changePayload, cursor, probe, policy, ignorePatterns })
-    emit({ summary: plan.summary, conflicts: plan.conflicts, cursor: plan.cursor })
+      const paths = collectPaths(changePayload)
+      const { probe, failures } = await collectProbe(adapter, paths.filter(Boolean))
 
-    if (failures.length > 0) {
-      emit({ summary: { ...plan.summary, probeFailures: failures.length } })
-    }
-    if (plan.blocked) return moveTo(SYNC_STATES.BLOCKED, { conflicts: plan.conflicts })
-    if (plan.steps.length === 0) {
-      return moveTo(SYNC_STATES.DONE, { cursor: plan.nextCursor, summary: plan.summary })
+      plan = buildSyncPlan({ ...changePayload, cursor, probe, policy, ignorePatterns })
+      emit({ summary: plan.summary, conflicts: plan.conflicts, cursor: plan.cursor })
+
+      if (failures.length > 0) {
+        emit({ summary: { ...plan.summary, probeFailures: failures.length } })
+      }
+      if (plan.blocked) return moveTo(SYNC_STATES.BLOCKED, { conflicts: plan.conflicts })
+      if (plan.steps.length === 0) {
+        return moveTo(SYNC_STATES.DONE, { cursor: plan.nextCursor, summary: plan.summary })
+      }
+    } catch (error) {
+      // 扫描/加载/探针/规划阶段的异常都必须成为可观察的失败态，不能冒泡后卡在 scanning。
+      return moveTo(SYNC_STATES.FAILED, {
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
 
     moveTo(SYNC_STATES.APPLYING, { summary: plan.summary })

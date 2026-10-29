@@ -18,8 +18,8 @@ test('collects local state for the requested paths', async () => {
   const adapter = createReadOnlyAdapter({ 'src/a.js': 'old' })
   const { probe, failures } = await collectProbe(adapter, ['src/a.js', 'src/new.js'])
   assert.deepEqual(failures, [])
-  assert.deepEqual(probe.get('src/a.js'), { exists: true, content: 'old' })
-  assert.deepEqual(probe.get('src/new.js'), { exists: false, content: null })
+  assert.deepEqual(probe.get('src/a.js'), { state: 'present', exists: true, content: 'old' })
+  assert.deepEqual(probe.get('src/new.js'), { state: 'absent', exists: false, content: null })
 })
 
 test('deduplicates paths and ignores empty entries', async () => {
@@ -32,7 +32,7 @@ test('deduplicates paths and ignores empty entries', async () => {
   assert.equal(calls, 1)
 })
 
-test('records read failures without aborting the batch', async () => {
+test('marks unreadable paths as unknown and still probes the rest of the batch', async () => {
   const adapter = {
     async fileExists(path) {
       if (path === 'broken.js') throw new Error('permission denied')
@@ -43,7 +43,13 @@ test('records read failures without aborting the batch', async () => {
   const { probe, failures } = await collectProbe(adapter, ['broken.js', 'src/a.js'])
   assert.equal(failures.length, 1)
   assert.equal(failures[0].path, 'broken.js')
-  assert.equal(probe.has('src/a.js'), true)
+  assert.deepEqual(probe.get('broken.js'), {
+    state: 'unknown',
+    exists: null,
+    content: null,
+    error: 'permission denied'
+  })
+  assert.equal(probe.get('src/a.js').state, 'absent')
 })
 
 test('probe output feeds buildSyncPlan directly', async () => {
