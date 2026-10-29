@@ -124,6 +124,28 @@ activate_frontend() {
   fi
 }
 
+# 回滚前校验目标镜像确实可拉取。
+# 为什么需要它：上一版记录可能是早期短名（如 labex-agent-backend:2026-08-19），
+# Docker 会去 Docker Hub 找而失败；必须在写状态之前就明确失败，避免把
+# previous-backend-image 覆盖掉、让本来还能人工救火的记录也丢了。
+verify_backend_image_pullable() {
+  local image="$1"
+  if docker manifest inspect "$image" >/dev/null 2>&1; then
+    return 0
+  fi
+  # manifest inspect 需要仓库已登录；失败时再用 pull 做一次真实校验
+  if compose pull backend >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "::error::目标镜像不可拉取：$image" >&2
+  echo "    可能原因：" >&2
+  echo "    1) 该镜像是早期短名（未带 TCR 仓库地址），Docker 会去 Docker Hub 查找而失败；" >&2
+  echo "    2) TCR 未登录或凭据过期；" >&2
+  echo "    3) 该 tag 已被清理。" >&2
+  echo "    当前 .env.production 未被修改，可继续用当前版本运行。" >&2
+  return 1
+}
+
 rollback_backend() {
   ensure_state_dir
   local prev_file="$STATE_DIR/previous-backend-image"
@@ -132,15 +154,33 @@ rollback_backend() {
   prev="$(tr -d '\r\n' < "$prev_file")"
   current="$(current_backend_image || true)"
   [ -n "$prev" ] || { echo "上一版镜像记录为空" >&2; exit 1; }
+  if [ "$prev" = "$current" ]; then
+    echo "::error::上一版记录与当前镜像相同（$prev），无法回滚。" >&2
+    exit 1
+  fi
+
+  echo "==> 校验目标镜像可拉取：$prev"
+  # 临时把目标镜像写入 env 供 compose pull 使用；失败则按原权限恢复，不污染状态
+  local env_backup env_mode
+  env_backup="$(mktemp)"
+  env_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || echo 600)"
+  cp -p "$ENV_FILE" "$env_backup"
+  write_backend_image "$prev"
+  if ! verify_backend_image_pullable "$prev"; then
+    cp -p "$env_backup" "$ENV_FILE"
+    chmod "$env_mode" "$ENV_FILE" 2>/dev/null || true
+    rm -f "$env_backup"
+    exit 1
+  fi
+  rm -f "$env_backup"
 
   echo "==> 后端回滚：$current -> $prev"
+  # 校验通过后才覆盖 previous 记录，保证失败时旧记录仍在
   printf '%s\n' "$current" > "$STATE_DIR/previous-backend-image"
-  write_backend_image "$prev"
-  compose pull backend
   compose up -d --no-deps backend
   "$APP_DIR/post-deploy-check.sh" "$COMPOSE_FILE"
   echo "==> 后端回滚完成且健康检查通过。"
-  echo "!! 数据库迁移不会自动反向；如新迁移不向后兼容，请新增补偿迁移。"
+  echo "!! 数据库迁移不会自动反向；如新迁移不向后兼容，请补充迁移。"
 }
 
 rollback_frontend() {
