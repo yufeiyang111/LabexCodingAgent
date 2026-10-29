@@ -142,6 +142,7 @@ jobs:
           file: deploy/linux/backend.Dockerfile
           push: true
           tags: |
+            ${{ env.REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             ${{ env.REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest
 
@@ -153,7 +154,8 @@ jobs:
           mv frontend-dist.tar.gz migrations.tar.gz release-artifacts/
           cp deploy/linux/apply-migrations.sh release-artifacts/
           cp deploy/linux/post-deploy-check.sh release-artifacts/
-          chmod +x release-artifacts/apply-migrations.sh release-artifacts/post-deploy-check.sh
+          cp deploy/linux/release-state.sh release-artifacts/
+          chmod +x release-artifacts/apply-migrations.sh release-artifacts/post-deploy-check.sh release-artifacts/release-state.sh
           echo "==> 本次发布产物："
           ls -la release-artifacts
 
@@ -201,22 +203,26 @@ jobs:
             ./apply-migrations.sh migrations docker-compose.yml
             rm -f apply-migrations.sh
 
-            echo "==> [2/6] 更新前端静态资源..."
-            mkdir -p frontend-dist
-            if [ -f "frontend-dist.tar.gz" ]; then
-              tar -xzf frontend-dist.tar.gz -C frontend-dist
-              rm -f frontend-dist.tar.gz
-            else
+            echo "==> [2/6] 切换前端版本（版本目录 + 软链，保留上一版）..."
+            if [ ! -f "frontend-dist.tar.gz" ]; then
               echo "::error::缺少 frontend-dist.tar.gz，前端资源未更新。"
               exit 1
             fi
+            chmod +x release-state.sh
+            ./release-state.sh activate-frontend frontend-dist.tar.gz "${{ github.sha }}"
+            rm -f frontend-dist.tar.gz
 
-            echo "==> [3/6] 登录 TCR 并拉取后端最新镜像..."
+            echo "==> [3/6] 切换后端镜像 tag 并拉取..."
             echo "${{ secrets.TCR_PASSWORD }}" | docker login ${{ env.REGISTRY }} -u "${{ secrets.TCR_USERNAME }}" --password-stdin
+            # 历史缺陷：compose 读 .env.production 的 LABEX_AGENT_BACKEND_IMAGE，
+            # 而流水线从不更新它，导致新镜像从未被部署。这里是唯一写入入口。
+            NEW_IMAGE="${{ env.REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+            ./release-state.sh set-backend-image "$NEW_IMAGE"
             docker compose --env-file .env.production pull backend
 
             echo "==> [4/6] 平滑重启后端容器..."
             docker compose --env-file .env.production up -d --no-deps backend
+
 
             echo "==> [5/6] 部署后应用级健康检查..."
             # 容器 Up 不代表应用可用：必须等到 Spring 启动标志 + 匿名接口 +
@@ -227,5 +233,8 @@ jobs:
             echo "==> [6/6] 清理虚悬镜像并核对状态..."
             docker image prune -f
             docker compose --env-file .env.production ps
+
+            # 成功后清理辅助脚本；失败时保留以便现场排查
+            rm -f apply-migrations.sh post-deploy-check.sh release-state.sh
 
             echo "==> 发布完成。"

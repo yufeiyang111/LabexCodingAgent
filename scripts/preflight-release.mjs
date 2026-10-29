@@ -174,6 +174,10 @@ const gates = [
         ['迁移执行器', './apply-migrations.sh migrations docker-compose.yml'],
         ['迁移包缺失阻断', '缺少 migrations.tar.gz，停止发布'],
         ['部署后健康检查', './post-deploy-check.sh docker-compose.yml'],
+        ['回滚状态脚本打包', 'cp deploy/linux/release-state.sh release-artifacts/'],
+        ['后端镜像 tag 切换', 'release-state.sh set-backend-image'],
+        ['前端版本目录切换', 'release-state.sh activate-frontend'],
+        ['发布后清理辅助脚本', 'rm -f apply-migrations.sh post-deploy-check.sh release-state.sh'],
         ['前端资源校验', '缺少 frontend-dist.tar.gz'],
       ]
       const miss = checks.filter(([, n]) => !src.includes(n)).map(([l]) => l)
