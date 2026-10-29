@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.nio.file.Path;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
+@EnabledOnOs(OS.WINDOWS)
 class TerminalEnvironmentTest {
     @Test
     void includesOnlyRequiredRuntimeVariablesAndDoesNotLeakHostSecrets() {

@@ -47,13 +47,20 @@ class WorkspaceTextSearchServiceTest {
 
         assertTrue(result.complete());
         assertEquals(2, result.hits().size());
-        var first = result.hits().get(0);
-        assertEquals("App.java", first.path());
-        assertEquals(2, first.lineNumber());
-        assertTrue(first.lineText().contains("helloWorld"));
-        var second = result.hits().get(1);
-        assertEquals("notes.md", second.path());
-        assertTrue(second.lineText().contains("HELLO WORLD"));
+        // 文件遍历顺序由文件系统决定，不能假设 App.java 一定排在第一位；
+        // 按 path 建立索引后分别校验相对路径、行号与命中行文本。
+        var byPath = result.hits().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        WorkspaceTextSearchService.SearchHit::path,
+                        hit -> hit));
+        assertEquals(2, byPath.size());
+        var app = byPath.get("App.java");
+        assertTrue(app != null, "应命中 App.java");
+        assertEquals(2, app.lineNumber());
+        assertTrue(app.lineText().contains("helloWorld"));
+        var notes = byPath.get("notes.md");
+        assertTrue(notes != null, "应命中 notes.md");
+        assertTrue(notes.lineText().contains("HELLO WORLD"));
     }
 
     @Test

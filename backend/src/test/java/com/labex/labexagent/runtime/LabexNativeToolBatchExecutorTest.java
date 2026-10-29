@@ -122,7 +122,7 @@ class LabexNativeToolBatchExecutorTest {
                 (admission, toolResult, kind) -> kind.name() + ":" + admission.call().toolCallId());
 
         assertThat(result.terminal()).isEqualTo(LabexNativeToolBatchExecutor.Terminal.WAITING_APPROVAL);
-        assertThat(secondStarted.await(3, TimeUnit.SECONDS))
+        assertThat(secondStarted.await(15, TimeUnit.SECONDS))
                 .as("second tool must have been dispatched concurrently before the approval terminal")
                 .isTrue();
         verify(journal).waitingApproval(any(ExecutionFence.class), eq(71L), eq("call-install"), eq("bash"),

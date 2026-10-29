@@ -10,7 +10,10 @@ import org.junit.jupiter.api.io.TempDir;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
+@EnabledOnOs(OS.WINDOWS)
 class WslSandboxWorkerTest {
 
     @TempDir

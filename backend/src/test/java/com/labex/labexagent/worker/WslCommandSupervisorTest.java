@@ -10,8 +10,11 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
+@EnabledOnOs(OS.WINDOWS)
 class WslCommandSupervisorTest {
 
     @TempDir
