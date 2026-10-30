@@ -12,6 +12,14 @@ LabexAgent 是从 Labex 云编程工作台剥离出来的独立版本：Spring B
 
 ---
 
+## Deployment topology (confirmed 2026-10-30)
+
+- 生产边缘网关只使用 **Caddy**，不使用 nginx。`deploy/linux/docker-compose.yml` 仅由 caddy 服务发布宿主 80/443，并将 `/api/*` 反代到 `backend:8080`。
+- `deploy/linux/nginx.conf` 不是当前生产链路；不得因该文件存在就推断生产启用了 nginx，也不得把 nginx 配置变更当作生产性能修复。
+- 当前 `deploy/linux/Caddyfile` 已声明 `encode zstd gzip`。这只能证明配置意图，不能证明线上响应确实压缩；验证必须检查生产域名实际响应的 `Content-Encoding`、`Vary` 和传输体积，优先定位协商、反代或部署配置问题，而不是另建 nginx 压缩路径。
+
+---
+
 ## Architecture and AI development governance (mandatory)
 
 本项目的 Agent 只能作为实现助手，不能成为架构事实源。任何 AI 生成或修改的代码都必须服从当前仓库的唯一状态模型、服务边界和持久化契约。完整迁移顺序见 [Agent Runtime State Convergence Plan](docs/superpowers/plans/2026-07-29-agent-runtime-state-convergence.md)。
