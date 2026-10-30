@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { filterSyncPaths, isExcludedPath, normalizeRelativePath } from './syncExclusion.js'
+import { SYNC_EXCLUSION_SEGMENTS, filterSyncPaths, isExcludedPath, normalizeRelativePath } from './syncExclusion.js'
 
 test('normalizes windows separators and leading prefixes', () => {
   assert.equal(normalizeRelativePath('src\\views\\App.vue'), 'src/views/App.vue')
@@ -70,4 +70,14 @@ test('partitions path lists into included and excluded', () => {
   )
   assert.deepEqual(result.included, ['src/a.js', 'src/d.vue'])
   assert.deepEqual(result.excluded, ['node_modules/b.js', 'dist/c.css'])
+})
+
+test('keeps the built-in excluded directory list in sync with ProjectScanPolicy', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const backend = await readFile(new URL('../../../../backend/src/main/java/com/labex/labexagent/service/ProjectScanPolicy.java', import.meta.url), 'utf8')
+  const match = backend.match(/IGNORED_DIRECTORY_NAMES = Set\.of\(([\s\S]*?)\);/)
+  assert.ok(match, 'ProjectScanPolicy ignored directory set must remain parseable')
+  const backendNames = [...match[1].matchAll(/"([^"]+)"/g)].map(item => item[1]).sort()
+  const frontendNames = [...SYNC_EXCLUSION_SEGMENTS].sort()
+  assert.deepEqual(frontendNames, backendNames)
 })
