@@ -236,6 +236,46 @@ test('feed: unknown probe blocks the plan and never produces a write step', () =
   assert.equal(plan.nextCursor, 0)
 })
 
+// C11：服务端截断内容不得作为完整基线或目标写盘。
+test('feed: beforeTruncated blocks a modify even when content would otherwise match', () => {
+  const plan = buildSyncPlan({
+    changeSets: [feedChangeSet(10, [
+      feedFile({ changeId: 'truncated-before', beforeTruncated: true, beforeContent: 'old...[truncated]', afterContent: 'new' })
+    ])],
+    cursor: 0,
+    probe: { 'src/app.js': { exists: true, content: 'old...[truncated]' } }
+  })
+  assert.equal(plan.blocked, true)
+  assert.equal(plan.steps.length, 0)
+  assert.equal(plan.conflicts[0].reason, 'truncated-baseline')
+})
+
+test('feed: afterTruncated never writes a partial target', () => {
+  const plan = buildSyncPlan({
+    changeSets: [feedChangeSet(10, [
+      feedFile({ changeId: 'truncated-after', afterTruncated: true, afterContent: 'partial...[truncated]' })
+    ])],
+    cursor: 0,
+    probe: { 'src/app.js': { exists: true, content: 'old' } }
+  })
+  assert.equal(plan.blocked, true)
+  assert.equal(plan.steps.length, 0)
+  assert.equal(plan.conflicts[0].reason, 'truncated-target')
+})
+
+test('feed: truncated delete baseline does not delete a local file', () => {
+  const plan = buildSyncPlan({
+    changeSets: [feedChangeSet(10, [
+      feedFile({ changeId: 'truncated-delete', changeType: 'delete', beforeTruncated: true, afterContent: null })
+    ])],
+    cursor: 0,
+    probe: { 'src/app.js': { exists: true, content: 'local' } }
+  })
+  assert.equal(plan.blocked, true)
+  assert.equal(plan.steps.length, 0)
+  assert.equal(plan.conflicts[0].reason, 'truncated-baseline')
+})
+
 // C03：游标只能推进到"完整处理完的 change-set"，冲突未解决时不得越过它。
 test('feed: 游标不得越过未完整处理的 change-set', () => {
   const plan = buildSyncPlan({

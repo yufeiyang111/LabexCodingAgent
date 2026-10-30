@@ -5,7 +5,7 @@
 export const JOURNAL_VERSION = 1
 
 export function createJournal() {
-  return { version: JOURNAL_VERSION, entries: [], cursor: 0 }
+  return { version: JOURNAL_VERSION, entries: [], cursor: 0, changeSetCursor: { afterChangeSetId: 0, tailUpdateTime: null, tailChangeId: '' } }
 }
 
 function normalizeStep(step) {
@@ -42,6 +42,20 @@ export function recordApplied(journal, step, meta = {}) {
     version: JOURNAL_VERSION,
     cursor: Math.max(Number(base.cursor ?? 0) || 0, entry.changeSetId),
     entries: [...(base.entries ?? []), entry]
+  }
+}
+
+export function updateJournalCursor(journal, cursor = {}) {
+  const base = journal ?? createJournal()
+  const afterChangeSetId = Number(cursor.afterChangeSetId ?? base.changeSetCursor?.afterChangeSetId ?? base.cursor ?? 0) || 0
+  const tailUpdateTime = cursor.tailUpdateTime ?? base.changeSetCursor?.tailUpdateTime ?? null
+  const tailChangeId = cursor.tailChangeId ?? base.changeSetCursor?.tailChangeId ?? ''
+  return {
+    ...base,
+    version: JOURNAL_VERSION,
+    cursor: afterChangeSetId,
+    changeSetCursor: { afterChangeSetId, tailUpdateTime, tailChangeId },
+    entries: Array.isArray(base.entries) ? base.entries : []
   }
 }
 export function recordAppliedBatch(journal, steps, meta = {}) {

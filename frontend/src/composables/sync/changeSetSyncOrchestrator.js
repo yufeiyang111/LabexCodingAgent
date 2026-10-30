@@ -3,7 +3,7 @@
 // 设计模式：State（复用 syncSessionState）+ Observer（onProgress 回调）+ 依赖注入（便于测试与替换后端）。
 
 import { buildSyncPlan } from './changeSetSyncPlan.js'
-import { markRolledBack, recordApplied, recordAppliedBatch, buildRollbackSteps } from './syncJournal.js'
+import { markRolledBack, recordApplied, recordAppliedBatch, buildRollbackSteps, updateJournalCursor } from './syncJournal.js'
 import { collectProbe } from './syncProbe.js'
 import { SYNC_STATES, createSyncSession, transition } from './syncSessionState.js'
 import { SYNC_LIMITS, positiveLimit, utf8ByteLength } from './syncLimits.js'
@@ -62,17 +62,24 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     let journal
     let cursor
     let plan
+    let changePayload
+    let feedCursor
 
     try {
       moveTo(SYNC_STATES.SCANNING)
       journal = await journalStore.load()
-      cursor = Number(options.cursor ?? journal?.cursor ?? 0) || 0
+      cursor = Number(options.cursor ?? journal?.changeSetCursor?.afterChangeSetId ?? journal?.cursor ?? 0) || 0
       emit({ cursor })
+      feedCursor = {
+        afterChangeSetId: cursor,
+        tailUpdateTime: journal?.changeSetCursor?.tailUpdateTime ?? options.tailUpdateTime ?? null,
+        tailChangeId: journal?.changeSetCursor?.tailChangeId ?? options.tailChangeId ?? ''
+      }
 
-      const changes = await loadChanges({ cursor })
+      const changes = await loadChanges({ cursor: feedCursor })
       // loadChanges 可以直接返回数组（旧契约），也可以返回 feed 形态 { changeSets: [...] }：
       // 两种形态都交给 plan 归一化，避免调用方为了接线再写一层适配。
-      const changePayload = Array.isArray(changes) || changes === null || changes === undefined
+      changePayload = Array.isArray(changes) || changes === null || changes === undefined
         ? { changes: changes ?? [] }
         : changes
       emit({ summary: { total: Array.isArray(changes) ? changes.length : countFeedFiles(changePayload) } })
@@ -93,7 +100,10 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       }
       if (plan.blocked) return moveTo(SYNC_STATES.BLOCKED, { conflicts: plan.conflicts })
       if (plan.steps.length === 0) {
-        return moveTo(SYNC_STATES.DONE, { cursor: plan.nextCursor, summary: plan.summary })
+        const finalCursor = feedCursorAfterSuccess(changePayload, feedCursor, plan)
+        journal = updateJournalCursor(journal, finalCursor)
+        await journalStore.save(journal)
+        return moveTo(SYNC_STATES.DONE, { cursor: finalCursor.afterChangeSetId, summary: plan.summary })
       }
     } catch (error) {
       return moveTo(SYNC_STATES.FAILED, {
@@ -140,6 +150,13 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
           appliedExisted: appliedState.appliedExisted
         })
         assertJournalWithinLimits(currentJournal, limits)
+        const committedCursor = {
+          afterChangeSetId: appliedCursor(),
+          tailUpdateTime: feedCursor.tailUpdateTime,
+          tailChangeId: feedCursor.tailChangeId
+        }
+        currentJournal = updateJournalCursor(currentJournal, committedCursor)
+        assertJournalWithinLimits(currentJournal, limits)
         await journalStore.save(currentJournal)
         applied += 1
         const stepChangeSetId = Number(step.changeSetId) || 0
@@ -154,9 +171,14 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       })
     }
 
+    const finalCursor = feedCursorAfterSuccess(changePayload, feedCursor, plan)
+    currentJournal = updateJournalCursor(currentJournal, finalCursor)
+    assertJournalWithinLimits(currentJournal, limits)
+    await journalStore.save(currentJournal)
+
     return moveTo(SYNC_STATES.DONE, {
       summary: { ...plan.summary, applied },
-      cursor: appliedCursor(),
+      cursor: finalCursor.afterChangeSetId,
       applied,
       conflicts: plan.conflicts
     })
@@ -281,4 +303,17 @@ function assertJournalWithinLimits(journal, limits = {}) {
 
 function recordAppliedBatchPreview(journal, steps, meta = {}) {
   return recordAppliedBatch(journal, steps, meta)
+}
+
+function feedCursorAfterSuccess(payload, feedCursor, plan) {
+  const returned = payload?.nextCursor ?? {}
+  return {
+    afterChangeSetId: Math.max(
+      Number(feedCursor?.afterChangeSetId ?? 0) || 0,
+      Number(returned.afterChangeSetId ?? 0) || 0,
+      Number(plan?.nextCursor ?? 0) || 0
+    ),
+    tailUpdateTime: returned.tailUpdateTime ?? feedCursor?.tailUpdateTime ?? null,
+    tailChangeId: returned.tailChangeId ?? feedCursor?.tailChangeId ?? ''
+  }
 }

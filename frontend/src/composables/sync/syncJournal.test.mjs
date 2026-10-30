@@ -7,6 +7,7 @@ import {
   markRolledBack,
   recordApplied,
   recordAppliedBatch,
+  updateJournalCursor,
   summarizeJournal
 } from './syncJournal.js'
 
@@ -68,6 +69,30 @@ test('records a deletion as no longer existing', () => {
   })
   assert.equal(journal.entries[0].appliedContent, null)
   assert.equal(journal.entries[0].appliedExisted, false)
+})
+
+test('stores both progress lines while preserving the legacy change-set cursor', () => {
+  const journal = updateJournalCursor(createJournal(), {
+    afterChangeSetId: 12,
+    tailUpdateTime: '2026-10-06T10:00:01',
+    tailChangeId: 'tail-2'
+  })
+  assert.equal(journal.cursor, 12)
+  assert.deepEqual(journal.changeSetCursor, {
+    afterChangeSetId: 12,
+    tailUpdateTime: '2026-10-06T10:00:01',
+    tailChangeId: 'tail-2'
+  })
+})
+
+test('normalizes a legacy journal into both progress lines without losing its cursor', () => {
+  const journal = updateJournalCursor({ version: 1, entries: [], cursor: 7 }, {
+    tailUpdateTime: '2026-10-06T10:00:01',
+    tailChangeId: 'tail-7'
+  })
+  assert.equal(journal.cursor, 7)
+  assert.equal(journal.changeSetCursor.afterChangeSetId, 7)
+  assert.equal(journal.changeSetCursor.tailUpdateTime, '2026-10-06T10:00:01')
 })
 
 test('rolls back a modified file by restoring previous content', () => {

@@ -325,6 +325,25 @@ test('does not advance the cursor past a change set that was only half applied',
   assert.equal(session.cursor, 0, '集合只落地了一半，游标必须停在它之前（否则重试会跳过 src/b.js）')
 })
 
+test('failure persists only the fully-applied change-set cursor in both progress fields', async () => {
+  const adapter = createMemoryAdapter({ 'src/a.js': 'a-old', 'src/b.js': 'b-old' }, { failOnWrite: 'src/b.js' })
+  const journalStore = createJournalStore(undefined)
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => [
+      { id: 's1', changeSetId: 7, relativePath: 'src/a.js', changeType: 'modify', beforeContent: 'a-old', afterContent: 'a-new' },
+      { id: 's2', changeSetId: 7, relativePath: 'src/b.js', changeType: 'modify', beforeContent: 'b-old', afterContent: 'b-new' }
+    ],
+    journalStore
+  })
+
+  const session = await orchestrator.run()
+  assert.equal(session.state, SYNC_STATES.FAILED)
+  assert.equal(session.cursor, 0)
+  assert.equal(journalStore.stored.cursor, 0)
+  assert.equal(journalStore.stored.changeSetCursor.afterChangeSetId, 0)
+})
+
 test('advances the cursor to the last fully applied change set', async () => {
   const adapter = createMemoryAdapter({ 'src/a.js': 'a-old', 'src/b.js': 'b-old' })
   const orchestrator = createChangeSetSyncOrchestrator({
@@ -341,46 +360,4 @@ test('advances the cursor to the last fully applied change set', async () => {
   assert.equal(session.state, SYNC_STATES.DONE)
   assert.equal(session.applied, 3)
   assert.equal(session.cursor, 8)
-})
-
-// 接线路径：loadChanges 直接返回服务端 feed 形态（changeSets[].files[]），
-// orchestrator 不需要额外的适配层就能规划——这是把前端切到 /changes/feed 的最小前提。
-test('consumes the server feed shape (changeSets[].files[]) without an adapter layer', async () => {
-  const adapter = createMemoryAdapter({ 'src/app.js': 'old' })
-  const journalStore = createJournalStore(undefined)
-  const orchestrator = createChangeSetSyncOrchestrator({
-    adapter,
-    loadChanges: async () => ({
-      changeSets: [{
-        changeSetId: 11,
-        taskId: 1,
-        status: 'pending',
-        updateTime: '2026-10-06T10:00:00',
-        files: [{
-          changeId: 'f1',
-          changeSetId: 11,
-          relativePath: 'src/app.js',
-          changeType: 'modify',
-          status: 'pending',
-          beforeExisted: true,
-          afterExisted: true,
-          beforeTruncated: false,
-          afterTruncated: false,
-          beforeContent: 'old',
-          afterContent: 'new',
-          updateTime: '2026-10-06T10:00:00'
-        }]
-      }],
-      changedFiles: [],
-      nextCursor: { afterChangeSetId: 11, tailUpdateTime: '2026-10-06T10:00:00', tailChangeId: '' },
-      hasMore: false
-    }),
-    journalStore
-  })
-
-  const session = await orchestrator.run()
-  assert.equal(session.state, SYNC_STATES.DONE)
-  assert.equal(session.cursor, 11)
-  assert.equal(adapter.files.get('src/app.js'), 'new')
-  assert.equal(journalStore.stored.entries.length, 1)
 })

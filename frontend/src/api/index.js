@@ -181,6 +181,14 @@ export const projectApi = {
   agentChanges(projectId) {
     return request.get('/student/projects/' + projectId + '/agent/changes')
   },
+  agentChangeFeed(projectId, cursor = {}) {
+    const params = {}
+    if (cursor.afterChangeSetId != null) params.afterChangeSetId = cursor.afterChangeSetId
+    if (cursor.tailUpdateTime) params.tailUpdateTime = cursor.tailUpdateTime
+    if (cursor.tailChangeId != null) params.tailChangeId = cursor.tailChangeId
+    if (cursor.limit != null) params.limit = cursor.limit
+    return request.get('/student/projects/' + projectId + '/agent/changes/feed', { params })
+  },
   agentDiff(projectId, changeId) {
     return request.get('/student/projects/' + projectId + '/agent/diff/' + changeId)
   },

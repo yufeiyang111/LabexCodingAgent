@@ -22,7 +22,7 @@
 | C08 | `failed→rolling-back`、`idle→rolling-back`、`blocked→scanning` 都是非法迁移；扫描阶段异常不在 try 内 | `syncSessionState.js`、`changeSetSyncOrchestrator.js` | ✅ 已修：允许 `blocked/done → scanning` 重试；扫描/加载/探针/规划异常统一落 `failed`；回归测试见 `syncSessionState.test.mjs`、`changeSetSyncOrchestrator.test.mjs` |
 | C09 | run/rollback 无互斥，同状态迁移被当作无操作 → 并发两次 `run()` 都成功、同一文件被写两次 | `changeSetSyncOrchestrator.js` | ✅ 已修：run/rollback 共用实例级单飞锁，并发调用显式拒绝；锁在 `finally` 释放；回归测试覆盖并发 run、并发 rollback、run/rollback 交叉与异常后重试 |
 | C10 | `resolve(result?.result ?? result)` 在 IndexedDB 缺键时返回 `IDBRequest` 而不是 null | `directoryHandleStore.js` | ✅ 已修：request-like 结果等待 `onsuccess` 并返回 `result ?? null`；fake IndexedDB 覆盖缺键、命中和 request 失败；真实浏览器路径仍需 live smoke |
-| C11 | 本地读写只有 UTF-8 文本，云端快照在 120000 字符处静默截断且 DTO 无完整性标志 | `fsAccessDirectoryAdapter.js:66-85` | ⚠️ 服务端已加 `*Truncated`，前端仍未用 |
+| C11 | 本地读写只有 UTF-8 文本，云端快照在 120000 字符处静默截断且 DTO 无完整性标志 | `changeSetSyncPlan.js` | ✅ 已修：plan 层已消费 `beforeTruncated`/`afterTruncated`，截断基线、截断目标和截断删除均阻断；回归测试见 `changeSetSyncPlan.test.mjs`。真实浏览器二进制读写仍不在本模块范围 |
 | C12 | 无单文件/批次字节、文件数、journal 字节上限；每步复制整个 entries | `syncLimits.js`、`syncProbe.js`、`changeSetSyncOrchestrator.js` | ✅ 已修：集中上限覆盖单文件、批次文件数、批次字节、journal 条目与字节；超限在任何 journal 保存前失败；回归测试见 `syncProbe.test.mjs`、`changeSetSyncOrchestrator.test.mjs` |
 | C13 | 排除规则只查根级 `.labex/`、大小写敏感、漏 `.labex-rename-*`；glob 语义与服务端不同 | `syncExclusion.js` | ✅ 已修：保护区按任意层级且大小写不敏感；对齐 `*`/`**`/`?`、目录规则与 `!` 忽略语义；回归测试见 `syncExclusion.test.mjs` |
 
@@ -61,7 +61,7 @@ GET /student/projects/{projectId}/agent/changes/feed?afterChangeSetId=&tailUpdat
 
 ## 3. 明确延期（本次不做，不要顺手扩范围）
 
-1. **接线到真实 API**：`api.agentChanges` → `api.agentChangeFeed`（含 `fetch` 分页循环，直到
+1. **接线到真实 API**：`agentChangeFeed` + `loadAllAgentChangeFeed` 已实现分页循环、两条游标原样回传、`changeId+status` 去重、游标不前进/页数上限保护；orchestrator 已把 `nextCursor` 持久化到 journal。仍未接 UI 和真实目录授权。
    `hasMoreChangeSets=false && hasMoreChangedFiles=false`）——plan 层已就绪，但**尚未接 UI**。
 2. **同秒同路径的集合内顺序**：`create_time` 秒级 + UUID 主键 ⇒ 服务端集合内顺序不可靠。
    注意：**新增 `seq` 列并不能消除"延迟提交漏行"**——已实测 `AUTO_INCREMENT` 的分配顺序 ≠ 提交顺序
