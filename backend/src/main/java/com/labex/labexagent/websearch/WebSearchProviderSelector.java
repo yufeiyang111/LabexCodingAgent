@@ -50,82 +50,73 @@ public class WebSearchProviderSelector {
 
     public WebSearchResponse search(WebSearchRequest request, AgentContext context) throws WebSearchException {
         String configuredProvider = configuredProvider();
-
-        // 1. 检查搜索内存缓存
-        if (cache != null) {
-            WebSearchResponse cached = cache.get(configuredProvider, request.query(), request.numResults());
-            if (cached != null) {
-                return cached;
-            }
-        }
-
-        WebSearchResponse response = doSearch(configuredProvider, request, context);
-
-        // 2. 写入搜索内存缓存
-        if (cache != null && response != null) {
-            cache.put(configuredProvider, request.query(), request.numResults(), response);
-        }
-        return response;
-    }
-
-    private WebSearchResponse doSearch(String configuredProvider, WebSearchRequest request, AgentContext context)
-            throws WebSearchException {
         if ("tavily".equals(configuredProvider)) {
-            return required(WebSearchProviderId.TAVILY).search(request, context);
+            return searchWithCache(required(WebSearchProviderId.TAVILY), request, context);
         }
         if ("exa".equals(configuredProvider)) {
-            return required(WebSearchProviderId.EXA).search(request, context);
+            return searchWithCache(required(WebSearchProviderId.EXA), request, context);
         }
         if ("parallel".equals(configuredProvider)) {
             return required(WebSearchProviderId.PARALLEL).search(request, context);
         }
         if ("public_fallback".equals(configuredProvider)) {
-            return required(WebSearchProviderId.PUBLIC_FALLBACK).search(request, context);
+            return searchWithCache(required(WebSearchProviderId.PUBLIC_FALLBACK), request, context);
         }
         if (!"auto".equals(configuredProvider)) {
             throw new WebSearchException("Unsupported web-search provider configuration: " + configuredProvider, false);
         }
 
         // auto 模式智能链路：Tavily (优先) -> Exa -> Parallel -> Public Fallback
-        WebSearchProvider tavily = providers.get(WebSearchProviderId.TAVILY);
-        if (tavily != null && tavily.isEnabled()) {
-            try {
-                return tavily.search(request, context);
-            } catch (WebSearchException e) {
-                if (!e.isRecoverable()) {
-                    throw e;
-                }
-            }
+        WebSearchResponse response = tryProvider(WebSearchProviderId.TAVILY, request, context);
+        if (response != null) {
+            return response;
         }
-
-        WebSearchProvider exa = providers.get(WebSearchProviderId.EXA);
-        if (exa != null && exa.isEnabled()) {
-            try {
-                return exa.search(request, context);
-            } catch (WebSearchException e) {
-                if (!e.isRecoverable()) {
-                    throw e;
-                }
-            }
+        response = tryProvider(WebSearchProviderId.EXA, request, context);
+        if (response != null) {
+            return response;
         }
-
-        WebSearchProvider parallel = providers.get(WebSearchProviderId.PARALLEL);
-        if (parallel != null && parallel.isEnabled()) {
-            try {
-                return parallel.search(request, context);
-            } catch (WebSearchException e) {
-                if (!e.isRecoverable()) {
-                    throw e;
-                }
-            }
+        response = tryProvider(WebSearchProviderId.PARALLEL, request, context);
+        if (response != null) {
+            return response;
         }
-
         WebSearchProvider fallback = providers.get(WebSearchProviderId.PUBLIC_FALLBACK);
         if (fallback != null && fallback.isEnabled()) {
-            return fallback.search(request, context);
+            return searchWithCache(fallback, request, context);
         }
-
         throw new WebSearchException("All available web search providers failed or are disabled", false);
+    }
+
+    private WebSearchResponse tryProvider(WebSearchProviderId providerId, WebSearchRequest request,
+                                          AgentContext context) throws WebSearchException {
+        WebSearchProvider provider = providers.get(providerId);
+        if (provider == null || !provider.isEnabled()) {
+            return null;
+        }
+        try {
+            return searchWithCache(provider, request, context);
+        } catch (WebSearchException failure) {
+            if (!failure.isRecoverable()) {
+                throw failure;
+            }
+            return null;
+        }
+    }
+
+    private WebSearchResponse searchWithCache(WebSearchProvider provider, WebSearchRequest request,
+                                              AgentContext context) throws WebSearchException {
+        WebSearchProviderId providerId = provider.id();
+        if (cache != null && providerId != WebSearchProviderId.PARALLEL) {
+            WebSearchResponse cached = cache.get(providerId, request, context);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        WebSearchResponse response = provider.search(request, context);
+        if (cache != null && response != null && response.provider() == providerId
+                && providerId != WebSearchProviderId.PARALLEL) {
+            cache.put(providerId, request, context, response);
+        }
+        return response;
     }
 
     private boolean isEnabled(WebSearchProviderId providerId) {

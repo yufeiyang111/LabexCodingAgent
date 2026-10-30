@@ -57,7 +57,7 @@ LabexAgent 是一个自托管的 AI 编程 Agent 平台：Spring Boot 3 后端 +
 | 缓存 / 会话 | Redis 7+（认证限流、验证码、OAuth 状态） |
 | 鉴权 | JWT（HS512）+ BCrypt 密码哈希 + 图形验证码 + OAuth（GitHub / Google，可选） |
 | 模型接入 | OpenAI-Compatible 协议（DeepSeek、Qwen、GPT 等），密钥加密存储 |
-| 部署 | Docker / docker-compose / Nginx / Caddy（Linux），PowerShell 脚本（Windows） |
+| 部署 | Docker / docker-compose / Caddy（Linux 生产），PowerShell 脚本（Windows） |
 
 ---
 
@@ -105,7 +105,7 @@ LabexAgent/
 │       ├── components/MonacoEditor.vue
 │       ├── stores/ + api/            # Pinia 状态与统一 API 封装
 │       └── styles/                   # 全局主题样式
-├── deploy/linux/                     # 生产部署（Dockerfile、docker-compose、nginx/Caddy）
+├── deploy/linux/                     # 生产部署（Dockerfile、docker-compose、Caddy）
 ├── deploy/windows/                   # Windows 公网部署脚本
 └── scripts/                          # 验收脚本等
 ```
@@ -136,7 +136,14 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 | `LABEX_AGENT_DB_USERNAME` / `LABEX_AGENT_DB_PASSWORD` | `root` / 无 | 数据库账号 |
 | `LABEX_AGENT_JWT_SECRET` | 占位 | JWT 签名密钥，生产必须为 ≥64 字节的高熵串 |
 | `LABEX_AGENT_SECRET_STORE_MASTER_KEY` | 占位 | AES-GCM 主密钥（加密模型 API Key 与 MCP 凭证） |
-| `LABEX_AGENT_AUTH_REDIS_URL` | `redis://localhost:6379` | 认证限流 / 验证码 / OAuth 状态存储（Redis 必用） || `LABEX_AGENT_CONVERSATION_CACHE_ENABLED` | `true` | 会话列表、最近历史第一页、上下文状态 Redis 热缓存开关；关闭时回退 MySQL |
+| `LABEX_AGENT_AUTH_REDIS_URL` | `redis://localhost:6379` | 认证限流 / 验证码 / OAuth 状态存储（Redis 必用）；Web Search L2 复用该连接 |
+| `LABEX_AGENT_CONVERSATION_CACHE_ENABLED` | `true` | 会话列表、最近历史第一页、上下文状态 Redis 热缓存开关；关闭时回退 MySQL |
+| `LABEX_AGENT_WEB_SEARCH_CACHE_ENABLED` | `true` | Web Search 总缓存开关；关闭后同时跳过 L1 与 L2 |
+| `LABEX_AGENT_WEB_SEARCH_CACHE_TTL_SECONDS` | `600` | Web Search L1/L2 统一 TTL |
+| `LABEX_AGENT_WEB_SEARCH_CACHE_MAX_ENTRIES` | `100` | 每实例 L1 LRU 最大条目数 |
+| `LABEX_AGENT_WEB_SEARCH_CACHE_REDIS_ENABLED` | `true` | Web Search Redis L2 开关；关闭时保留 L1 |
+| `LABEX_AGENT_WEB_SEARCH_CACHE_MAX_VALUE_BYTES` | `131072` | 单项序列化缓存值 UTF-8 上限；超限不进入任何缓存层 |
+| `LABEX_AGENT_WEB_SEARCH_CACHE_REDIS_KEY_PREFIX` | `labex:web-search` | Web Search 缓存 key 前缀；按用户/项目/provider/请求摘要隔离 |
 | `LABEX_AGENT_CONVERSATION_CACHE_LIST_TTL` | `120s` | 会话列表缓存 TTL |
 | `LABEX_AGENT_CONVERSATION_CACHE_HISTORY_TTL` | `60s` | 最近历史第一页缓存 TTL |
 | `LABEX_AGENT_CONVERSATION_CACHE_CONTEXT_STATUS_TTL` | `30s` | 上下文状态缓存 TTL |
@@ -263,13 +270,13 @@ npm run dev
 
 ## 8. 生产部署
 
-Linux 生产部署配置在 [deploy/linux/](deploy/linux/)：`backend.Dockerfile`、`docker-compose.yml`、`nginx.conf` / `Caddyfile`、初始化与迁移脚本、构建发布脚本、`smoke.sh` 冒烟检查，以及独立的 `deploy/linux/README.md`。
+Linux 生产部署配置在 [deploy/linux/](deploy/linux/)：`backend.Dockerfile`、`docker-compose.yml`、`Caddyfile`、初始化与迁移脚本、构建发布脚本、`smoke.sh` 冒烟检查，以及独立的 `deploy/linux/README.md`。生产只使用 Caddy 作为边缘网关；`nginx.conf` 不属于当前生产链路。
 
 要点：
 
 1. `SPRING_PROFILES_ACTIVE=production`；
 2. 配置生产沙箱镜像（`LABEX_AGENT_WORKER_DOCKER_IMAGE`）、高熵 `LABEX_AGENT_JWT_SECRET`、`LABEX_AGENT_SECRET_STORE_MASTER_KEY`；
-3. Nginx / Caddy 反代 + HTTPS，注意 WebSocket / SSE 透传（`proxy_buffering off`、透传 Upgrade 头等）。
+3. 使用 Caddy 提供 HTTPS，并将 `/api/*`（含 WebSocket / SSE）反代到 `backend:8080`。
 
 生产 profile 启动时做 Fail-Fast 自检：发现 Windows 路径残留、默认弱密钥、未配置沙箱镜像或不安全权限 profile 会拒绝启动并输出诊断。
 

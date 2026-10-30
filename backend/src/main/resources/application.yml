@@ -298,6 +298,12 @@ labex-agent:
     parallel-api-key: ${PARALLEL_API_KEY:}
     request-timeout-seconds: ${LABEX_AGENT_WEB_SEARCH_TIMEOUT_SECONDS:25}
     max-response-bytes: ${LABEX_AGENT_WEB_SEARCH_MAX_RESPONSE_BYTES:1048576}
+    cache-enabled: ${LABEX_AGENT_WEB_SEARCH_CACHE_ENABLED:true}
+    cache-ttl-seconds: ${LABEX_AGENT_WEB_SEARCH_CACHE_TTL_SECONDS:600}
+    cache-max-entries: ${LABEX_AGENT_WEB_SEARCH_CACHE_MAX_ENTRIES:100}
+    cache-redis-enabled: ${LABEX_AGENT_WEB_SEARCH_CACHE_REDIS_ENABLED:true}
+    cache-max-value-bytes: ${LABEX_AGENT_WEB_SEARCH_CACHE_MAX_VALUE_BYTES:131072}
+    cache-redis-key-prefix: ${LABEX_AGENT_WEB_SEARCH_CACHE_REDIS_KEY_PREFIX:labex:web-search}
   web-fetch:
     connect-timeout-seconds: ${LABEX_AGENT_WEB_FETCH_CONNECT_TIMEOUT_SECONDS:20}
     request-timeout-seconds: ${LABEX_AGENT_WEB_FETCH_REQUEST_TIMEOUT_SECONDS:60}

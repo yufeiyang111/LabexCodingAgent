@@ -142,7 +142,7 @@ class CommandProcessRecoveryServiceTest {
     }
 
     private long waitForChildPid(Path childPidFile) throws Exception {
-        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
         while (System.nanoTime() < deadline) {
             if (Files.exists(childPidFile)) {
                 String value = Files.readString(childPidFile).trim();

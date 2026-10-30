@@ -212,6 +212,15 @@ public class AcceptanceScriptedProvider implements LlmProvider {
             emitTool(onChunk, "list_files", "{\"path\":\"\"}", "acceptance-tool-list");
             return;
         }
+        if (prompt.contains("[acceptance:web-search]")
+                && !prompt.contains("[Tool web_search result]")) {
+            emitTool(onChunk, "web_search",
+                    "{\"query\":\"LabexAgent Redis shared cache acceptance\","
+                            + "\"numResults\":3,\"livecrawl\":\"fallback\","
+                            + "\"type\":\"auto\",\"contextMaxCharacters\":4000}",
+                    "acceptance-web-search");
+            return;
+        }
         if (prompt.contains("[acceptance:durable-progress]")) {
             if (!prompt.contains("[Tool write_file result]")) {
                 emitTool(onChunk, "write_file",
@@ -564,11 +573,17 @@ public class AcceptanceScriptedProvider implements LlmProvider {
                     + "**Verification**\n- Ordinary prose remains non-executable; this acceptance-only envelope passed tool selection and schema validation.\n"
                     + "**Risk**\n- Native structured tool calls remain the preferred production protocol.";
         }
+        if (prompt.contains("[acceptance:web-search]")) {
+            return "## Summary\n**Completed**\n- The production `web_search` tool executed through the configured provider and shared cache path.\n"
+                    + "**Verification**\n- Native tool identity, cache-backed provider output, durable tool observation, and final completion were preserved.\n"
+                    + "**Risk**\n- This deterministic search result is available only under the non-production acceptance profile.";
+        }
         if (prompt.contains("[acceptance:tool]")) {
             return "## Summary\n**Completed**\n- The production Agent loop executed `list_files` and returned its result.\n"
                     + "**Verification**\n- Native tool-call identity, tool observation, token usage, and final SSE completion were preserved.\n"
                     + "**Risk**\n- This response is generated only by the non-production acceptance profile.";
         }
+
         if (prompt.contains("[acceptance:durable-progress]")) {
             return "## Summary\n**Completed**\n- Durable execution progress survived JVM restart without a workspace checkpoint.\n"
                     + "**Verification**\n- The Provider observed reconstructed Tool Part state and verified the written file by SHA-backed read_file.\n"

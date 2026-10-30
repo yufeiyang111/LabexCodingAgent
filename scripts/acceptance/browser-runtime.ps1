@@ -25,6 +25,7 @@ $workspaceRoot = Join-Path $repoRoot "workspaces\browser-acceptance-$runId"
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $databaseRoot = Join-Path $workspaceRoot '.acceptance-db'
 $h2SchemaPath = Join-Path $databaseRoot 'schema-h2.sql'
+$h2DataPath = Join-Path $databaseRoot 'data-h2.sql'
 $h2JarPath = Join-Path $databaseRoot 'h2.jar'
 $h2ServerProcess = $null
 $h2PortProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -48,6 +49,13 @@ if (-not $schemaText.Contains($mysqlPrefixIndex)) {
     throw 'MySQL schema compatibility marker pattern(191) was not found.'
 }
 [IO.File]::WriteAllText($h2SchemaPath, $schemaText.Replace($mysqlPrefixIndex, 'pattern'), [Text.UTF8Encoding]::new($false))
+$dataSource = Join-Path $repoRoot 'backend\src\main\resources\sql\data.sql'
+$dataText = [IO.File]::ReadAllText($dataSource, [Text.Encoding]::UTF8)
+$mysqlUpsertPattern = '(?s)(INSERT INTO t_tutorial_document \([^\r\n]+\)\s*VALUES\s*\(.*?\))\s*ON DUPLICATE KEY UPDATE\s*.*?;'
+$h2DataText = [regex]::Replace($dataText, $mysqlUpsertPattern, { param($match) $match.Groups[1].Value + ';' })
+$h2DataText = $h2DataText -replace '(?i)\bIF\s*\(', 'CASE WHEN '
+if ($h2DataText -match '(?i)ON DUPLICATE KEY') { throw 'H2 acceptance data translation left MySQL upsert syntax behind.' }
+[IO.File]::WriteAllText($h2DataPath, $h2DataText, [Text.UTF8Encoding]::new($false))
 $backend = $null
 $vite = $null
 $browserProcess = $null
@@ -78,7 +86,14 @@ function Start-AcceptanceDatabase {
         if ($script:h2ServerProcess.HasExited) {
             throw "Isolated H2 server exited early, exitCode=$($script:h2ServerProcess.ExitCode), logs=$logRoot"
         }
-        if (-not (Test-PortFree -Port $h2ServerPort)) { return }
+        try {
+            $probe = [Net.Sockets.TcpClient]::new()
+            $probe.Connect('127.0.0.1', $h2ServerPort)
+            $probe.Dispose()
+            return
+        } catch {
+            $probe.Dispose()
+        }
         Start-Sleep -Milliseconds 150
     }
     throw "Isolated H2 server did not listen on port $h2ServerPort within 20 seconds."
@@ -119,10 +134,10 @@ function Wait-Http {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
         try {
-            $parameters = @{ Uri = $Uri; Method = $Method; UseBasicParsing = $true; TimeoutSec = 3 }
+            $parameters = @{ Uri = $Uri; Method = $Method; UseBasicParsing = $true; SkipHttpErrorCheck = $true; TimeoutSec = 3 }
             if ($Body) { $parameters.ContentType = 'application/json'; $parameters.Body = $Body }
             $response = Invoke-WebRequest @parameters
-            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) { return }
+            if ($response.StatusCode -ge 100 -and $response.StatusCode -lt 600) { return }
         } catch { Start-Sleep -Milliseconds 300 }
     }
     throw "服务未在 $TimeoutSeconds 秒内就绪：$Uri"
@@ -138,11 +153,14 @@ $backendArguments = @(
     "--server.port=$BackendPort", '--spring.profiles.active=acceptance,local',
     "--labex-agent.project-base-path=$workspaceRoot",
     "--labex-agent.instance-id=browser-acceptance-$runId",
+    "--labex-agent.cors.allowed-origins=http://127.0.0.1:$FrontendPort",
+    "--labex-agent.websocket.allowed-origins=http://127.0.0.1:$FrontendPort",
     '--spring.datasource.driver-class-name=org.h2.Driver',
     "--spring.datasource.url=jdbc:h2:tcp://127.0.0.1:$h2ServerPort/$($databaseRoot.Replace('\', '/'))/labex-agent;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_ON_EXIT=FALSE",
     '--spring.datasource.username=sa',
     '--spring.datasource.password=',
-    "--spring.sql.init.schema-locations=file:$($h2SchemaPath.Replace('\', '/'))"
+    "--spring.sql.init.schema-locations=file:$($h2SchemaPath.Replace('\', '/'))",
+    "--spring.sql.init.data-locations=file:$($h2DataPath.Replace('\', '/'))"
 )
 
 function Start-BackendProcess {
@@ -209,7 +227,9 @@ try {
     try {
         $env:VITE_API_TARGET = "http://127.0.0.1:$BackendPort"
         $env:ACCEPTANCE_FRONTEND_PORT = [string]$FrontendPort
-        $vite = Start-Process -FilePath 'npm.cmd' -ArgumentList @('run','dev','--','--host','127.0.0.1') -WorkingDirectory $frontendRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'vite.out.log') -RedirectStandardError (Join-Path $logRoot 'vite.err.log')
+        $viteStdin = Join-Path $logRoot 'vite.stdin'
+        [IO.File]::WriteAllText($viteStdin, '')
+        $vite = Start-Process -FilePath 'npm.cmd' -ArgumentList @('run','dev','--','--host','127.0.0.1','--clearScreen','false','--strictPort') -WorkingDirectory $frontendRoot -PassThru -WindowStyle Hidden -RedirectStandardInput $viteStdin -RedirectStandardOutput (Join-Path $logRoot 'vite.out.log') -RedirectStandardError (Join-Path $logRoot 'vite.err.log')
     } finally {
         $env:VITE_API_TARGET = $oldApiTarget
         $env:ACCEPTANCE_FRONTEND_PORT = $oldFrontendPort

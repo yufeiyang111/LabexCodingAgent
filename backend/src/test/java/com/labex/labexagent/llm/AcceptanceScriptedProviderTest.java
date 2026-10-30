@@ -100,6 +100,30 @@ class AcceptanceScriptedProviderTest {
     }
 
     @Test
+    void emitsACompleteWebSearchRequestThenAProviderObservationFinalReply() {
+        List<LlmProvider.StreamChunk> first = stream("[acceptance:web-search]");
+
+        LlmProvider.StreamChunk toolCall = first.stream()
+                .filter(chunk -> "tool_call".equals(chunk.type()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("web_search", toolCall.toolName());
+        assertEquals("acceptance-web-search", toolCall.toolCallId());
+        var arguments = com.google.gson.JsonParser.parseString(toolCall.toolArgs()).getAsJsonObject();
+        assertEquals("LabexAgent Redis shared cache acceptance", arguments.get("query").getAsString());
+        assertEquals(3, arguments.get("numResults").getAsInt());
+        assertEquals("fallback", arguments.get("livecrawl").getAsString());
+        assertEquals("auto", arguments.get("type").getAsString());
+        assertEquals(4000, arguments.get("contextMaxCharacters").getAsInt());
+
+        String completed = text(stream(
+                "[acceptance:web-search]",
+                "[Tool web_search result]\nprovider: exa\n1. Acceptance result"));
+        assertTrue(completed.contains("production `web_search` tool"));
+        assertTrue(completed.contains("shared cache path"));
+    }
+
+    @Test
     void emitsAStableNativeToolCallThenACompleteFinalReply() {
         List<LlmProvider.StreamChunk> first = stream("[acceptance:tool] 请检查项目根目录");
 

@@ -26,6 +26,7 @@ New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $workspaceRoot = Join-Path $repoRoot "workspaces\acceptance-$runId"
 $databaseRoot = Join-Path $workspaceRoot '.acceptance-db'
 $h2SchemaPath = Join-Path $databaseRoot 'schema-h2.sql'
+$h2DataPath = Join-Path $databaseRoot 'data-h2.sql'
 $h2JarPath = Join-Path $databaseRoot 'h2.jar'
 $h2ServerProcess = $null
 $h2PortProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -50,6 +51,13 @@ if (-not $schemaText.Contains($mysqlPrefixIndex)) {
     throw 'MySQL schema compatibility marker pattern(191) was not found.'
 }
 [IO.File]::WriteAllText($h2SchemaPath, $schemaText.Replace($mysqlPrefixIndex, 'pattern'), [Text.UTF8Encoding]::new($false))
+$dataSource = Join-Path $repoRoot 'backend\src\main\resources\sql\data.sql'
+$dataText = [IO.File]::ReadAllText($dataSource, [Text.Encoding]::UTF8)
+$mysqlUpsertPattern = '(?s)(INSERT INTO t_tutorial_document \([^\r\n]+\)\s*VALUES\s*\(.*?\))\s*ON DUPLICATE KEY UPDATE\s*.*?;'
+$h2DataText = [regex]::Replace($dataText, $mysqlUpsertPattern, { param($match) $match.Groups[1].Value + ';' })
+$h2DataText = $h2DataText -replace '(?i)\bIF\s*\(', 'CASE WHEN '
+if ($h2DataText -match '(?i)ON DUPLICATE KEY') { throw 'H2 acceptance data translation left MySQL upsert syntax behind.' }
+[IO.File]::WriteAllText($h2DataPath, $h2DataText, [Text.UTF8Encoding]::new($false))
 $backendProcess = $null
 $token = $null
 $projectId = $null
@@ -246,7 +254,8 @@ function Start-AcceptanceBackend {
         "--spring.datasource.url=$h2JdbcUrl",
         '--spring.datasource.username=sa',
         '--spring.datasource.password=',
-        "--spring.sql.init.schema-locations=file:$($h2SchemaPath.Replace('\', '/'))"
+        "--spring.sql.init.schema-locations=file:$($h2SchemaPath.Replace('\', '/'))",
+        "--spring.sql.init.data-locations=file:$($h2DataPath.Replace('\', '/'))"
     )
     $script:backendProcess = Start-Process -FilePath 'java' -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)

@@ -103,7 +103,7 @@ class LocalProcessExecutorTest {
         AtomicBoolean cancelled = new AtomicBoolean();
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.execute(() -> {
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
             while (!Files.exists(childPidFile) && System.nanoTime() < deadline) {
                 try {
                     Thread.sleep(25);

@@ -19,6 +19,9 @@ public class WebSearchProperties {
     private boolean cacheEnabled = true;
     private int cacheTtlSeconds = 600;
     private int cacheMaxEntries = 100;
+    private boolean cacheRedisEnabled = true;
+    private int cacheMaxValueBytes = 131_072;
+    private String cacheRedisKeyPrefix = "labex:web-search";
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }
@@ -46,4 +49,10 @@ public class WebSearchProperties {
     public void setCacheTtlSeconds(int cacheTtlSeconds) { this.cacheTtlSeconds = cacheTtlSeconds; }
     public int getCacheMaxEntries() { return cacheMaxEntries; }
     public void setCacheMaxEntries(int cacheMaxEntries) { this.cacheMaxEntries = cacheMaxEntries; }
+    public boolean isCacheRedisEnabled() { return cacheRedisEnabled; }
+    public void setCacheRedisEnabled(boolean cacheRedisEnabled) { this.cacheRedisEnabled = cacheRedisEnabled; }
+    public int getCacheMaxValueBytes() { return cacheMaxValueBytes; }
+    public void setCacheMaxValueBytes(int cacheMaxValueBytes) { this.cacheMaxValueBytes = cacheMaxValueBytes; }
+    public String getCacheRedisKeyPrefix() { return cacheRedisKeyPrefix; }
+    public void setCacheRedisKeyPrefix(String cacheRedisKeyPrefix) { this.cacheRedisKeyPrefix = cacheRedisKeyPrefix; }
 }
