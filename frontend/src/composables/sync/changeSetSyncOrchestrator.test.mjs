@@ -4,37 +4,7 @@ import test from 'node:test'
 import { createChangeSetSyncOrchestrator } from './changeSetSyncOrchestrator.js'
 import { CONFLICT_POLICIES } from './changeSetSyncPlan.js'
 import { SYNC_STATES } from './syncSessionState.js'
-
-// 测试替身：内存目录适配器（可注入指定路径的写入失败，用于验证失败路径）
-function createMemoryAdapter(initial = {}, options = {}) {
-  const files = new Map(Object.entries(initial))
-  const writes = []
-  return {
-    files,
-    writes,
-    async listPaths() { return [...files.keys()].sort() },
-    async fileExists(path) { return files.has(path) },
-    async readTextFile(path) { return files.has(path) ? files.get(path) : null },
-    async writeTextFile(path, content) {
-      if (path === options.failOnWrite) throw new Error('disk full')
-      files.set(path, content)
-      writes.push(path)
-    },
-    async deleteFile(path) { return files.delete(path) }
-  }
-}
-
-function createJournalStore(initial) {
-  return {
-    stored: initial,
-    async load() { return this.stored },
-    async save(journal) { this.stored = journal }
-  }
-}
-
-function modify(changeSetId, path, before, after) {
-  return { id: `c${changeSetId}`, changeSetId, relativePath: path, changeType: 'modify', beforeContent: before, afterContent: after }
-}
+import { createJournalStore, createMemoryAdapter, modify } from './syncTestDoubles.mjs'
 
 test('completes with an empty plan when no changes are pending', async () => {
   const adapter = createMemoryAdapter()
@@ -214,27 +184,6 @@ test('marks the session failed on write error while keeping applied steps revers
   assert.match(session.error, /disk full/)
   assert.equal(adapter.files.get('src/a.js'), 'a-new')
   assert.equal(journalStore.stored.entries.length, 1)
-})
-
-test('rollback restores previous contents and rewinds the cursor', async () => {
-  const adapter = createMemoryAdapter({ 'src/app.js': 'old' })
-  const journalStore = createJournalStore(undefined)
-  const orchestrator = createChangeSetSyncOrchestrator({
-    adapter,
-    loadChanges: async () => [
-      modify(1, 'src/app.js', 'old', 'new'),
-      { id: 'c2', changeSetId: 2, relativePath: 'src/added.js', changeType: 'add', beforeContent: null, afterContent: 'brand new' }
-    ],
-    journalStore
-  })
-
-  await orchestrator.run()
-  const session = await orchestrator.rollback()
-  assert.equal(session.state, SYNC_STATES.IDLE)
-  assert.equal(adapter.files.get('src/app.js'), 'old')
-  assert.equal(adapter.files.has('src/added.js'), false)
-  assert.equal(journalStore.stored.entries.length, 0)
-  assert.equal(journalStore.stored.cursor, 0)
 })
 
 test('emits progress states in order', async () => {

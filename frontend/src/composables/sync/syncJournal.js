@@ -9,22 +9,32 @@ export function createJournal() {
 }
 
 function normalizeStep(step) {
+  const op = step?.op === 'delete' ? 'delete' : 'write'
   return {
     changeId: String(step?.changeId ?? ''),
     changeSetId: Number(step?.changeSetId ?? 0) || 0,
     path: String(step?.path ?? ''),
-    op: step?.op === 'delete' ? 'delete' : 'write',
+    op,
     content: step?.content ?? null,
     previousContent: step?.previousContent ?? null,
     previousExisted: step?.previousExisted === true,
+    appliedContent: typeof step?.appliedContent === 'string'
+      ? step.appliedContent
+      : op === 'write' ? String(step?.content ?? '') : null,
+    appliedExisted: typeof step?.appliedExisted === 'boolean'
+      ? step.appliedExisted
+      : op !== 'delete',
     overwritten: step?.overwritten === true
   }
 }
 
 export function recordApplied(journal, step, meta = {}) {
   const base = journal ?? createJournal()
+  const normalized = normalizeStep(step)
   const entry = {
-    ...normalizeStep(step),
+    ...normalized,
+    appliedContent: typeof meta.appliedContent === 'string' ? meta.appliedContent : normalized.appliedContent,
+    appliedExisted: typeof meta.appliedExisted === 'boolean' ? meta.appliedExisted : normalized.appliedExisted,
     appliedAt: Number(meta.appliedAt ?? Date.now()),
     projectId: meta.projectId ?? null
   }
@@ -34,7 +44,6 @@ export function recordApplied(journal, step, meta = {}) {
     entries: [...(base.entries ?? []), entry]
   }
 }
-
 export function recordAppliedBatch(journal, steps, meta = {}) {
   return (Array.isArray(steps) ? steps : []).reduce(
     (acc, step) => recordApplied(acc, step, meta),

@@ -18,9 +18,9 @@
 | C04 | 全程用同一份初始 probe，不模拟前一步结果；后端列表按 `update_time DESC` → 同路径连续修改被误判冲突，倒序输入下最终写成中间版本 | `changeSetSyncPlan.js` | ✅ 已修：虚拟本地视图（每步结果写回），集合按 id 升序处理，同路径链式修改串成多步且 `previousContent` 逐级推进 |
 | C05 | 探针读取失败只记 `failures`，缺失探针等同"文件不存在" → 已有内容被覆盖且 journal 错记 `previousExisted:false` | `syncProbe.js`、`changeSetSyncPlan.js` | ✅ 已修：probe 三态化为 `present/absent/unknown`；`unknown` 在 strict/skip/overwrite 下都硬阻断，零写入；回归测试见 `syncProbe.test.mjs`、`changeSetSyncPlan.test.mjs`、`changeSetSyncOrchestrator.test.mjs` |
 | C06 | 先改文件、后存 journal；**默认 store 是"空 journal + 无操作 save"** | `changeSetSyncOrchestrator.js:16-17,70-85` | ✅ 已修：缺少 `load/save` 时在构造期抛错（任何文件写入之前），并补两个回归测试 |
-| C07 | 回退不校验当前文件是否仍是本次同步产物 → 覆盖用户后续手工编辑；逆操作全做完才裁剪 journal | `changeSetSyncOrchestrator.js:96-110` | ❌ |
+| C07 | 回退不校验当前文件是否仍是本次同步产物 → 覆盖用户后续手工编辑；逆操作全做完才裁剪 journal | `syncJournal.js`、`changeSetSyncOrchestrator.js` | ✅ 已修：journal 记录 `appliedContent/appliedExisted`；回滚先整体预检所有目标，发现用户编辑、重建删除文件或旧 journal 时零写入失败，成功后才裁剪 journal；回归测试见 `syncJournal.test.mjs`、`changeSetSyncOrchestratorRollback.test.mjs` |
 | C08 | `failed→rolling-back`、`idle→rolling-back`、`blocked→scanning` 都是非法迁移；扫描阶段异常不在 try 内 | `syncSessionState.js`、`changeSetSyncOrchestrator.js` | ✅ 已修：允许 `blocked/done → scanning` 重试；扫描/加载/探针/规划异常统一落 `failed`；回归测试见 `syncSessionState.test.mjs`、`changeSetSyncOrchestrator.test.mjs` |
-| C09 | run/rollback 无互斥，同状态迁移被当作无操作 → 并发两次 `run()` 都成功、同一文件被写两次 | `changeSetSyncOrchestrator.js:25-39,70-78` | ❌ |
+| C09 | run/rollback 无互斥，同状态迁移被当作无操作 → 并发两次 `run()` 都成功、同一文件被写两次 | `changeSetSyncOrchestrator.js` | ✅ 已修：run/rollback 共用实例级单飞锁，并发调用显式拒绝；锁在 `finally` 释放；回归测试覆盖并发 run、并发 rollback、run/rollback 交叉与异常后重试 |
 | C10 | `resolve(result?.result ?? result)` 在 IndexedDB 缺键时返回 `IDBRequest` 而不是 null | `directoryHandleStore.js:40-51,70-77` | ❌ |
 | C11 | 本地读写只有 UTF-8 文本，云端快照在 120000 字符处静默截断且 DTO 无完整性标志 | `fsAccessDirectoryAdapter.js:66-85` | ⚠️ 服务端已加 `*Truncated`，前端仍未用 |
 | C12 | 无单文件/批次字节、文件数、journal 字节上限；每步复制整个 entries | `syncProbe.js`、`syncJournal.js`、orchestrator | ❌ |

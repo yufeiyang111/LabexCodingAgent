@@ -49,6 +49,27 @@ test('records entries immutably and advances the cursor', () => {
   assert.equal(next.entries[0].appliedAt, 1000)
 })
 
+// C07：journal 必须持久化同步后的真实状态，作为回滚前的所有权证明。
+test('records applied content and existence from explicit metadata', () => {
+  const journal = recordApplied(createJournal(), writeOverExisting, {
+    appliedAt: 1000,
+    appliedContent: 'new',
+    appliedExisted: true
+  })
+  assert.equal(journal.entries[0].appliedContent, 'new')
+  assert.equal(journal.entries[0].appliedExisted, true)
+})
+
+test('records a deletion as no longer existing', () => {
+  const journal = recordApplied(createJournal(), fileDeletion, {
+    appliedAt: 1000,
+    appliedContent: null,
+    appliedExisted: false
+  })
+  assert.equal(journal.entries[0].appliedContent, null)
+  assert.equal(journal.entries[0].appliedExisted, false)
+})
+
 test('rolls back a modified file by restoring previous content', () => {
   const journal = recordAppliedBatch(createJournal(), [writeOverExisting])
   const steps = buildRollbackSteps(journal)

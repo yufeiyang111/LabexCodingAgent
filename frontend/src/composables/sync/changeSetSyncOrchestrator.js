@@ -30,6 +30,18 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
 
   let session = createSyncSession()
 
+  // C09：run/rollback 共用同一把单飞锁，防止双击或交叉调用重复写盘。
+  let operationInFlight = false
+
+  function beginOperation() {
+    if (operationInFlight) throw new Error('sync operation already in progress')
+    operationInFlight = true
+  }
+
+  function endOperation() {
+    operationInFlight = false
+  }
+
   function emit(patch = {}) {
     session = { ...session, ...patch, updatedAt: now() }
     onProgress({ session: { ...session }, ...patch })
@@ -42,7 +54,7 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     return session
   }
 
-  async function run(options = {}) {
+  async function runLocked(options = {}) {
     const policy = options.policy
     const ignorePatterns = options.ignorePatterns ?? []
     let journal
@@ -110,7 +122,13 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     try {
       for (const step of plan.steps) {
         await applyStep(adapter, step)
-        currentJournal = recordApplied(currentJournal, step, { appliedAt: now(), projectId: options.projectId ?? null })
+        const appliedState = await readAppliedState(adapter, step)
+        currentJournal = recordApplied(currentJournal, step, {
+          appliedAt: now(),
+          projectId: options.projectId ?? null,
+          appliedContent: appliedState.appliedContent,
+          appliedExisted: appliedState.appliedExisted
+        })
         // 每步落盘：中途崩溃也能回退已应用的部分（journal 是回退的唯一依据）
         await journalStore.save(currentJournal)
         applied += 1
@@ -148,13 +166,22 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       .map(item => item?.relativePath ?? item?.path)
   }
 
-  async function rollback(options = {}) {
-    const journal = await journalStore.load()
-    const steps = buildRollbackSteps(journal, { limit: options.limit })
-    if (steps.length === 0) return moveTo(SYNC_STATES.IDLE, { applied: 0 })
-
-    moveTo(SYNC_STATES.ROLLING_BACK)
+  async function rollbackLocked(options = {}) {
+    let journal
+    let steps
     try {
+      journal = await journalStore.load()
+      steps = buildRollbackSteps(journal, { limit: options.limit })
+      if (steps.length === 0) return moveTo(SYNC_STATES.IDLE, { applied: 0 })
+      await preflightRollback(adapter, journal, steps)
+    } catch (error) {
+      return moveTo(SYNC_STATES.FAILED, {
+        error: error instanceof Error ? error.message : String(error)
+      })
+    }
+
+    try {
+      moveTo(SYNC_STATES.ROLLING_BACK)
       for (const step of steps) await applyStep(adapter, step)
       const rolled = markRolledBack(journal, steps.length)
       await journalStore.save(rolled)
@@ -163,6 +190,23 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       return moveTo(SYNC_STATES.FAILED, {
         error: error instanceof Error ? error.message : String(error)
       })
+    }
+  }
+  async function run(options = {}) {
+    beginOperation()
+    try {
+      return await runLocked(options)
+    } finally {
+      endOperation()
+    }
+  }
+
+  async function rollback(options = {}) {
+    beginOperation()
+    try {
+      return await rollbackLocked(options)
+    } finally {
+      endOperation()
     }
   }
 
@@ -179,4 +223,32 @@ async function applyStep(adapter, step) {
     return
   }
   await adapter.writeTextFile(step.path, step.content ?? '')
+}
+
+async function readAppliedState(adapter, step) {
+  const exists = await adapter.fileExists(step.path)
+  if (exists !== true) return { appliedExisted: false, appliedContent: null }
+  const content = await adapter.readTextFile(step.path)
+  if (typeof content !== 'string') throw new Error(`rollback preflight could not read applied content: ${step.path}`)
+  return { appliedExisted: true, appliedContent: content }
+}
+
+async function preflightRollback(adapter, journal, steps) {
+  const entries = Array.isArray(journal?.entries) ? journal.entries : []
+  const selected = entries.slice(Math.max(0, entries.length - steps.length))
+  if (selected.some(entry => typeof entry.appliedExisted !== 'boolean')) {
+    throw new Error('rollback refused: legacy journal entry has no applied state')
+  }
+  for (const entry of selected) {
+    const exists = await adapter.fileExists(entry.path)
+    if (entry.appliedExisted === false) {
+      if (exists) throw new Error(`rollback target changed: ${entry.path}`)
+      continue
+    }
+    if (!exists) throw new Error(`rollback target changed: ${entry.path}`)
+    const content = await adapter.readTextFile(entry.path)
+    if (content !== (entry.appliedContent ?? null)) {
+      throw new Error(`rollback target changed: ${entry.path}`)
+    }
+  }
 }
