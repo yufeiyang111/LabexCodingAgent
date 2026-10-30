@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS t_agent_task (
     update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_task_conv (conversation_id),
     INDEX idx_task_student (student_id),
+    INDEX idx_agent_task_student_status (student_id, status),
     INDEX idx_task_project (project_id),
     INDEX idx_task_retry_due (status, next_retry_at),
     INDEX idx_task_execution_lease (execution_lease_expires_at)
@@ -558,7 +559,7 @@ CREATE TABLE IF NOT EXISTS t_agent_run_event (
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_agent_run_event_sequence (task_id, sequence_number),
     UNIQUE KEY uk_agent_run_event_idempotency (task_id, idempotency_key),
-    INDEX idx_agent_run_event_task_sequence (task_id, sequence_number),
+    INDEX idx_agent_run_event_task_type (task_id, event_type),
     INDEX idx_agent_run_event_project (project_id, create_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -859,8 +860,7 @@ CREATE TABLE IF NOT EXISTS t_ops_metric_sample (
     token_completion_total BIGINT NOT NULL DEFAULT 0,
     token_total BIGINT NOT NULL DEFAULT 0,
     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_ops_metric_sample_time (sample_time),
-    INDEX idx_ops_metric_sample_time (sample_time)
+    UNIQUE KEY uk_ops_metric_sample_time (sample_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

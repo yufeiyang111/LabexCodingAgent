@@ -15,6 +15,7 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.google.gson.Gson;
 import com.labex.entity.AgentChangeSet;
@@ -43,6 +44,11 @@ class AgentTaskServiceTest {
 
     @BeforeAll
     static void initializeEntityMetadata() {
+        if (TableInfoHelper.getTableInfo(AgentChangeSet.class) == null) {
+            TableInfoHelper.initTableInfo(
+                    new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+                    AgentChangeSet.class);
+        }
         if (TableInfoHelper.getTableInfo(AgentFileChange.class) == null) {
             TableInfoHelper.initTableInfo(
                     new MapperBuilderAssistant(new MybatisConfiguration(), ""),
@@ -119,6 +125,34 @@ class AgentTaskServiceTest {
         query.getSqlSegment();
 
         assertTrue(query.getParamNameValuePairs().containsValue("conflicted"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void incrementChangeCountUsesIndexedCountInsteadOfLoadingFileChanges() {
+        AgentFileChangeMapper fileChangeMapper = mock(AgentFileChangeMapper.class);
+        AgentChangeSetMapper changeSetMapper = mock(AgentChangeSetMapper.class);
+        when(fileChangeMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(2L);
+        AgentTaskService service = newTaskService(
+                mock(AgentTaskMapper.class),
+                changeSetMapper,
+                fileChangeMapper);
+
+        service.incrementChangeCount(42L);
+
+        ArgumentCaptor<LambdaQueryWrapper<AgentFileChange>> queryCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(fileChangeMapper).selectCount(queryCaptor.capture());
+        queryCaptor.getValue().getSqlSegment();
+        assertTrue(queryCaptor.getValue().getParamNameValuePairs().containsValue(42L));
+        verify(fileChangeMapper, never()).selectList(any(LambdaQueryWrapper.class));
+
+        ArgumentCaptor<LambdaUpdateWrapper<AgentChangeSet>> updateCaptor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(changeSetMapper).update(eq(null), updateCaptor.capture());
+        updateCaptor.getValue().getSqlSegment();
+        assertTrue(updateCaptor.getValue().getParamNameValuePairs().containsValue(42L));
+        assertTrue(updateCaptor.getValue().getParamNameValuePairs().containsValue(2));
     }
 
     @Test

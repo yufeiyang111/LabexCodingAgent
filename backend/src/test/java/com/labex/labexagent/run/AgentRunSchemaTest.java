@@ -1,5 +1,6 @@
 package com.labex.labexagent.run;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -67,5 +68,35 @@ class AgentRunSchemaTest {
         assertTrue(schema.contains("background_base_ref VARCHAR(128) DEFAULT NULL"));
         assertTrue(schema.contains("background_cleanup_status VARCHAR(32) DEFAULT NULL"));
         assertTrue(!schema.contains("ADD COLUMN IF NOT EXISTS"));
+    }
+
+    @Test
+    void alignsMeasuredQueryIndexesAndAvoidsDuplicateIndexes() throws Exception {
+        String schema = Files.readString(Path.of("src/main/resources/sql/schema.sql"));
+        String migrator = Files.readString(Path.of("src/main/java/com/labex/config/AdditiveSchemaMigrator.java"));
+
+        assertTrue(schema.contains("idx_agent_task_student_status (student_id, status)"));
+        assertTrue(schema.contains("idx_agent_run_event_task_type (task_id, event_type)"));
+        assertFalse(schema.contains("INDEX idx_agent_run_event_task_sequence (task_id, sequence_number)"));
+        assertFalse(schema.contains("INDEX idx_ops_metric_sample_time (sample_time)"));
+        assertFalse(migrator.contains("INDEX idx_ops_metric_sample_time (sample_time)"));
+    }
+
+    @Test
+    void migrationIsIdempotentAndPreservesSyncFeedIndexes() throws Exception {
+        String migration = Files.readString(Path.of("../deploy/linux/migrations/upgrade-20261029.sql"));
+
+        assertTrue(migration.contains("idx_cs_project_set"));
+        assertTrue(migration.contains("idx_fc_project_update"));
+        assertTrue(migration.contains("idx_agent_task_student_status"));
+        assertFalse(migration.contains("idx_token_student_provider"));
+        assertFalse(migration.contains("idx_cmd_audit_student"));
+        assertTrue(migration.contains("idx_agent_run_event_task_type"));
+        assertTrue(migration.contains("DROP INDEX idx_agent_run_event_task_sequence"));
+        assertTrue(migration.contains("DROP INDEX idx_ops_metric_sample_time"));
+        assertTrue(migration.contains("information_schema.statistics"));
+        assertTrue(migration.contains("AND index_name = 'idx_agent_run_event_task_sequence'"));
+        assertTrue(migration.contains("AND index_name = 'idx_ops_metric_sample_time'"));
+        assertFalse(migration.contains("DELETE FROM"));
     }
 }

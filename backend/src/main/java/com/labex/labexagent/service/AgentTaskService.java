@@ -666,8 +666,13 @@ public class AgentTaskService {
         if (changeSetId == null) {
             return;
         }
-        List<?> changes = this.fileChangeMapper.selectList(new LambdaQueryWrapper<AgentFileChange>().eq(AgentFileChange::getChangeSetId, changeSetId));
-        this.changeSetMapper.update(null, new LambdaUpdateWrapper<AgentChangeSet>().eq(AgentChangeSet::getChangeSetId, changeSetId).set(AgentChangeSet::getChangeCount, changes.size()).set(AgentChangeSet::getUpdateTime, LocalDateTime.now()));
+        Long count = this.fileChangeMapper.selectCount(new LambdaQueryWrapper<AgentFileChange>()
+                .eq(AgentFileChange::getChangeSetId, changeSetId));
+        int changeCount = Math.toIntExact(count == null ? 0L : count);
+        this.changeSetMapper.update(null, new LambdaUpdateWrapper<AgentChangeSet>()
+                .eq(AgentChangeSet::getChangeSetId, changeSetId)
+                .set(AgentChangeSet::getChangeCount, changeCount)
+                .set(AgentChangeSet::getUpdateTime, LocalDateTime.now()));
     }
 
     public List<AgentTask> listTasks(Integer studentId, Integer projectId) {

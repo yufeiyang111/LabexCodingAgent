@@ -622,8 +622,7 @@ public class AdditiveSchemaMigrator {
                     token_completion_total BIGINT NOT NULL DEFAULT 0,
                     token_total BIGINT NOT NULL DEFAULT 0,
                     create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE KEY uk_ops_metric_sample_time (sample_time),
-                    INDEX idx_ops_metric_sample_time (sample_time)
+                    UNIQUE KEY uk_ops_metric_sample_time (sample_time)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """;
         try {
