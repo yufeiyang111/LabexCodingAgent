@@ -40,3 +40,7 @@ test('browser acceptance bounds JVM native and heap memory', () => {
   assert.match(browserRuntime, /'-XX:MaxMetaspaceSize=256m'/)
   assert.match(browserRuntime, /'-XX:ReservedCodeCacheSize=128m'/)
 })
+
+test('backend acceptance isolates local registration policy from workspace overrides', () => {
+  assert.match(agentRuntime, /'--labex-agent\.auth\.invite-code-enabled=false'/)
+})

@@ -3,10 +3,14 @@
 // 语义必须与服务端保持同源；任何一侧新增排除项都要同步另一侧。
 
 const EXCLUDED_SEGMENTS = new Set([
-  'node_modules', 'bower_components', 'target', 'venv', '.venv', 'dist', 'build', 'out', 'coverage',
+  'node_modules', 'bower_components', 'target', 'dist', 'build', 'out', 'coverage',
   '.git', '.hg', '.svn', '.idea', '.vscode', '__pycache__', '.pytest_cache', '.mypy_cache',
   '.next', '.nuxt', '.svelte-kit', '.vite', 'vendor', '.gradle', '.mvn', '.npm', '.cache',
-  'appdata', 'microsoft', 'npm-cache'
+  'appdata', 'microsoft', 'npm-cache', '.labexagent', '.labex', '.labex-agent', 'venv', '.venv'
+])
+
+
+
 
 const EXCLUDED_PROTECTED_SEGMENTS = new Set(['.labex', '.labex-agent'])
 const RENAME_TEMP_PREFIX = '.labex-rename-'

@@ -249,6 +249,7 @@ function Start-AcceptanceBackend {
         "--labex-agent.project-base-path=$workspaceRoot",
         "--labex-agent.instance-id=acceptance-$runId-$Profile",
         "--labex-agent.process-host-id=acceptance-host-$runId",
+        '--labex-agent.auth.invite-code-enabled=false',
         '--labex-agent.execution-lease-duration-ms=15000',
         '--labex-agent.execution-heartbeat-interval-ms=1000',
         '--spring.datasource.driver-class-name=org.h2.Driver',

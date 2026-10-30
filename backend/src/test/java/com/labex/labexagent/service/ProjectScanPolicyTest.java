@@ -28,6 +28,8 @@ class ProjectScanPolicyTest {
 
         assertThat(rules.shouldSkipEntry(workspace.resolve("node_modules"), true)).isTrue();
         assertThat(rules.shouldSkipEntry(workspace.resolve(".idea"), true)).isTrue();
+        assertThat(rules.shouldSkipEntry(workspace.resolve("venv"), true)).isTrue();
+        assertThat(rules.shouldSkipEntry(workspace.resolve(".venv"), true)).isTrue();
     }
 
     @Test

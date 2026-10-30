@@ -27,7 +27,7 @@ public final class ProjectScanPolicy {
             ".git", ".hg", ".svn",
             ".labex", ".labex-agent", ".labexagent",
             "appdata", "microsoft", "npm-cache", ".npm", ".cache",
-            "node_modules", "bower_components", "vendor",
+            "node_modules", "bower_components", "vendor", "venv", ".venv",
             "dist", "build", "target", "out", "coverage",
             ".next", ".nuxt", ".svelte-kit", ".vite",
             "__pycache__", ".pytest_cache", ".mypy_cache",
