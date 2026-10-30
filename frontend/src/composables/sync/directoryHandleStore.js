@@ -37,6 +37,12 @@ function openDatabase(factory, options) {
   })
 }
 
+function isRequestLike(value) {
+  return Boolean(value) && typeof value === 'object'
+    && ('onsuccess' in value || 'onerror' in value)
+    && 'result' in value
+}
+
 function runTransaction(database, storeName, mode, executor) {
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(storeName, mode)
@@ -48,9 +54,17 @@ function runTransaction(database, storeName, mode, executor) {
       reject(error)
       return
     }
-    transaction.oncomplete = () => resolve(result?.result ?? result)
-    transaction.onerror = () => reject(transaction.error ?? new Error('indexedDB transaction failed'))
-    transaction.onabort = () => reject(transaction.error ?? new Error('indexedDB transaction aborted'))
+
+    const fail = error => reject(error ?? new Error('indexedDB transaction failed'))
+    if (isRequestLike(result)) {
+      result.onsuccess = () => resolve(result.result ?? null)
+      result.onerror = () => fail(result.error)
+    }
+    transaction.oncomplete = () => {
+      if (!isRequestLike(result)) resolve(result ?? null)
+    }
+    transaction.onerror = () => fail(transaction.error ?? new Error('indexedDB transaction failed'))
+    transaction.onabort = () => fail(transaction.error ?? new Error('indexedDB transaction aborted'))
   })
 }
 
