@@ -2,6 +2,8 @@ package com.labex.labexagent.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -15,7 +17,14 @@ import com.labex.entity.AgentRunEvent;
 import com.labex.labexagent.run.ExecutionFence;
 import com.labex.labexagent.run.AgentRunLifecycleService;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -152,7 +161,9 @@ class AgentSsePublisherDurabilityTest {
         AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
         AgentRunEvent event = new AgentRunEvent();
         event.setSequenceNumber(42L);
-        when(lifecycle.appendEvent(eq(71L), eq("THINK"), any(), anyString())).thenReturn(event);
+        AgentRunEvent laterEvent = new AgentRunEvent();
+        laterEvent.setSequenceNumber(43L);
+        when(lifecycle.appendEvent(eq(71L), eq("THINK"), any(), anyString())).thenReturn(event, laterEvent);
         org.mockito.Mockito.doThrow(new IOException("client disconnected"))
                 .when(emitter).send(any(SseEmitter.SseEventBuilder.class));
 
@@ -160,7 +171,9 @@ class AgentSsePublisherDurabilityTest {
         publisher.bindRun(lifecycle, 71L);
 
         assertDoesNotThrow(() -> publisher.send("THINK", Map.of("content", "Still running")));
-        verify(lifecycle).appendEvent(eq(71L), eq("THINK"), any(), anyString());
+        assertDoesNotThrow(() -> publisher.send("THINK", Map.of("content", "Still running after disconnect")));
+        verify(lifecycle, org.mockito.Mockito.times(2)).appendEvent(eq(71L), eq("THINK"), any(), anyString());
+        verify(emitter, org.mockito.Mockito.times(1)).send(any(SseEmitter.SseEventBuilder.class));
     }
 
     @Test
@@ -253,6 +266,91 @@ class AgentSsePublisherDurabilityTest {
         verify(emitter, org.mockito.Mockito.times(2)).send(frames.capture());
         org.junit.jupiter.api.Assertions.assertTrue(frameData(frames.getAllValues().get(0)).contains("planRevision"));
         org.junit.jupiter.api.Assertions.assertTrue(frameData(frames.getAllValues().get(1)).contains("after plan"));
+    }
+
+    @Test
+    void projectsConcurrentDurableSendsInStrictSequenceOrder() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        AtomicLong nextSequence = new AtomicLong();
+        TreeMap<Long, AgentRunEvent> persistedEvents = new TreeMap<>();
+        TreeMap<Long, String> persistedContents = new TreeMap<>();
+        when(lifecycle.appendEvent(eq(71L), eq("THINK"), any(), anyString())).thenAnswer(invocation -> {
+            long sequence = nextSequence.incrementAndGet();
+            String content = (String) ((Map<?, ?>) invocation.getArgument(2)).get("content");
+            persistedEvents.put(sequence, event(sequence, "THINK", new com.google.gson.Gson().toJson(Map.of("content", content))));
+            persistedContents.put(sequence, content);
+            return persistedEvents.get(sequence);
+        });
+        when(lifecycle.eventsAfter(eq(71L), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong()))
+                .thenAnswer(invocation -> {
+                    long after = invocation.getArgument(1);
+                    long through = invocation.getArgument(2);
+                    return new ArrayList<>(persistedEvents.subMap(after, false, through, true).values());
+                });
+
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter);
+        publisher.bindRun(lifecycle, 71L);
+        int workerCount = 8;
+        int sendsPerWorker = 12;
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(workerCount);
+        try {
+            var futures = new ArrayList<java.util.concurrent.Future<?>>();
+            for (int worker = 0; worker < workerCount; worker++) {
+                int workerId = worker;
+                futures.add(workers.submit(() -> {
+                    start.await();
+                    for (int send = 0; send < sendsPerWorker; send++) {
+                        publisher.send("THINK", Map.of("content", workerId + "-" + send));
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var future : futures) {
+                future.get(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+
+        ArgumentCaptor<SseEmitter.SseEventBuilder> frames =
+                ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        int eventCount = workerCount * sendsPerWorker;
+        verify(emitter, org.mockito.Mockito.times(eventCount)).send(frames.capture());
+        assertEquals(eventCount, persistedContents.size());
+        for (int index = 0; index < eventCount; index++) {
+            String expectedContent = persistedContents.get((long) index + 1);
+            assertTrue(
+                    frameData(frames.getAllValues().get(index)).contains("\"content\":\"" + expectedContent + "\""));
+        }
+    }
+
+    @Test
+    void continuesDurableProjectionAfterTheThousandEventPageBoundary() throws Exception {
+        SseEmitter emitter = mock(SseEmitter.class);
+        AgentRunLifecycleService lifecycle = mock(AgentRunLifecycleService.class);
+        TreeMap<Long, AgentRunEvent> persistedEvents = new TreeMap<>();
+        for (long sequence = 1; sequence <= 1001; sequence++) {
+            persistedEvents.put(sequence, event(sequence, "THINK", "{\"content\":\"event-" + sequence + "\"}"));
+        }
+        when(lifecycle.eventsAfter(eq(71L), org.mockito.ArgumentMatchers.anyLong(), eq(1001L)))
+                .thenAnswer(invocation -> {
+                    long after = invocation.getArgument(1);
+                    return new ArrayList<>(persistedEvents.tailMap(after, false).values().stream().limit(1000).toList());
+                });
+
+        AgentSsePublisher publisher = new AgentSsePublisher(emitter);
+        publisher.bindRun(lifecycle, 71L);
+        publisher.sendPersisted(1001L, "THINK", Map.of("content", "event-1001"));
+
+        ArgumentCaptor<SseEmitter.SseEventBuilder> frames =
+                ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        verify(emitter, org.mockito.Mockito.times(1001)).send(frames.capture());
+        verify(lifecycle, org.mockito.Mockito.times(2)).eventsAfter(eq(71L), org.mockito.ArgumentMatchers.anyLong(), eq(1001L));
+        assertTrue(frameData(frames.getAllValues().get(0)).contains("event-1"));
+        assertTrue(frameData(frames.getAllValues().get(1000)).contains("event-1001"));
     }
 
     private AgentRunEvent event(long sequence, String type, String payload) {
