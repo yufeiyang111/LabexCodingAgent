@@ -46,11 +46,11 @@ function createFakeIndexedDb({ value, requestError = null, transactionError = nu
   }
   const store = {
     get() { return createRequest(value) },
-  const store = {
-    get() { return remember(request(value)) }
-    put() { return remember(request(undefined)) }
-    delete() { return remember(request(undefined)) }
+    put() { return createRequest(undefined) },
+    delete() { return createRequest(undefined) }
   }
+  const transaction = {
+    objectStore() { return store },
     oncomplete: null,
     onerror: null,
     onabort: null
@@ -58,10 +58,9 @@ function createFakeIndexedDb({ value, requestError = null, transactionError = nu
   const database = {
     objectStoreNames: { contains() { return true } },
     transaction() {
-  let lastRequest
+      queueMicrotask(() => {
         if (requestError) {
           lastRequest.error = requestError
-        if (requestError) {
           lastRequest.onerror?.()
           return
         }
@@ -79,7 +78,6 @@ function createFakeIndexedDb({ value, requestError = null, transactionError = nu
   }
   const openRequest = {
     result: database,
-  }
     onupgradeneeded: null,
     onsuccess: null,
     onerror: null

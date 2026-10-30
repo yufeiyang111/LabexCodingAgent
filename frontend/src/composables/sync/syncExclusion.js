@@ -3,13 +3,14 @@
 // 语义必须与服务端保持同源；任何一侧新增排除项都要同步另一侧。
 
 const EXCLUDED_SEGMENTS = new Set([
-  'node_modules', 'target', 'venv', '.venv', 'dist', 'build',
-  '.git', '.idea', '.vscode', '__pycache__', '.next', '.nuxt', 'vendor'
-])
+  'node_modules', 'bower_components', 'target', 'venv', '.venv', 'dist', 'build', 'out', 'coverage',
+  '.git', '.hg', '.svn', '.idea', '.vscode', '__pycache__', '.pytest_cache', '.mypy_cache',
+  '.next', '.nuxt', '.svelte-kit', '.vite', 'vendor', '.gradle', '.mvn', '.npm', '.cache',
+  'appdata', 'microsoft', 'npm-cache'
 
-const EXCLUDED_PREFIXES = ['.labex/', '.labex-agent/']
-
-const EXCLUDED_FILENAMES = new Set(['.DS_Store', 'Thumbs.db'])
+const EXCLUDED_PROTECTED_SEGMENTS = new Set(['.labex', '.labex-agent'])
+const RENAME_TEMP_PREFIX = '.labex-rename-'
+const EXCLUDED_FILENAMES = new Set(['.ds_store', 'thumbs.db'])
 
 export function normalizeRelativePath(input) {
   const raw = String(input ?? '').trim().replace(/\\/g, '/')
@@ -19,38 +20,74 @@ export function normalizeRelativePath(input) {
   return collapsed.join('/')
 }
 
-function wildcardToRegExp(pattern) {
-  const escaped = pattern.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')
-  return new RegExp(`^${escaped}$`)
+function globToRegExp(pattern) {
+  let regex = '^'
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]
+    if (char === '*') {
+      if (pattern[index + 1] === '*') {
+        index += 1
+        if (pattern[index + 1] === '/') {
+          regex += '(?:.*/)?'
+          index += 1
+        } else {
+          regex += '.*'
+        }
+      } else {
+        regex += '[^/]*'
+      }
+    } else if (char === '?') {
+      regex += '[^/]'
+    } else {
+      if ('\\.[]()^$+|{}'.includes(char)) regex += '\\'
+      regex += char
+    }
+  }
+  return new RegExp(`${regex}$`)
+}
+
+function parseIgnorePatterns(patterns) {
+  const parsed = []
+  for (const raw of Array.isArray(patterns) ? patterns : []) {
+    let value = String(raw ?? '').trim().replace(/\\/g, '/')
+    if (!value || value.startsWith('#') || value.startsWith('!')) continue
+    while (value.startsWith('/')) value = value.slice(1)
+    const directoryOnly = value.endsWith('/')
+    if (directoryOnly) value = value.slice(0, -1)
+    if (!value) continue
+    parsed.push({ expression: value, directoryOnly, regex: globToRegExp(value) })
+  }
+  return parsed
 }
 
 function matchesIgnorePattern(path, pattern) {
-  const normalized = normalizeRelativePath(pattern)
-  if (!normalized) return false
-  if (!normalized.includes('*')) {
-    return path === normalized
-      || path.startsWith(`${normalized}/`)
-      || path.split('/').includes(normalized)
+  if (pattern.directoryOnly && (path === pattern.expression || path.startsWith(`${pattern.expression}/`))) {
+    return true
   }
-  const regex = wildcardToRegExp(normalized)
-  if (regex.test(path)) return true
-  const basename = path.split('/').pop() ?? ''
-  return regex.test(basename)
+  if (pattern.regex.test(path)) return true
+  if (!pattern.expression.includes('/')) {
+    return pattern.regex.test(path.split('/').pop() ?? '')
+  }
+  return false
+}
+
+function isProtectedSegment(segment) {
+  const lower = segment.toLowerCase()
+  return EXCLUDED_PROTECTED_SEGMENTS.has(lower) || lower.startsWith(RENAME_TEMP_PREFIX)
 }
 
 export function isExcludedPath(path, options = {}) {
   const normalized = normalizeRelativePath(path)
   if (!normalized) return true
 
-  const basename = normalized.split('/').pop() ?? ''
-  if (EXCLUDED_FILENAMES.has(basename)) return true
-  if (EXCLUDED_PREFIXES.some(prefix => normalized.startsWith(prefix))) return true
-
   const segments = normalized.split('/')
-  if (segments.some(segment => EXCLUDED_SEGMENTS.has(segment))) return true
+  const lowerSegments = segments.map(segment => segment.toLowerCase())
+  const basename = lowerSegments[lowerSegments.length - 1] ?? ''
+  if (EXCLUDED_FILENAMES.has(basename)) return true
+  if (lowerSegments.some(isProtectedSegment)) return true
+  if (lowerSegments.some(segment => EXCLUDED_SEGMENTS.has(segment))) return true
 
-  const patterns = Array.isArray(options.ignorePatterns) ? options.ignorePatterns : []
-  return patterns.some(pattern => matchesIgnorePattern(normalized, pattern))
+  return parseIgnorePatterns(options.ignorePatterns).some(pattern => matchesIgnorePattern(normalized, pattern))
 }
 
 export function filterSyncPaths(paths, options = {}) {

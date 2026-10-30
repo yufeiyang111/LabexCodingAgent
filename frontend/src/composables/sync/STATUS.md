@@ -21,10 +21,10 @@
 | C07 | 回退不校验当前文件是否仍是本次同步产物 → 覆盖用户后续手工编辑；逆操作全做完才裁剪 journal | `syncJournal.js`、`changeSetSyncOrchestrator.js` | ✅ 已修：journal 记录 `appliedContent/appliedExisted`；回滚先整体预检所有目标，发现用户编辑、重建删除文件或旧 journal 时零写入失败，成功后才裁剪 journal；回归测试见 `syncJournal.test.mjs`、`changeSetSyncOrchestratorRollback.test.mjs` |
 | C08 | `failed→rolling-back`、`idle→rolling-back`、`blocked→scanning` 都是非法迁移；扫描阶段异常不在 try 内 | `syncSessionState.js`、`changeSetSyncOrchestrator.js` | ✅ 已修：允许 `blocked/done → scanning` 重试；扫描/加载/探针/规划异常统一落 `failed`；回归测试见 `syncSessionState.test.mjs`、`changeSetSyncOrchestrator.test.mjs` |
 | C09 | run/rollback 无互斥，同状态迁移被当作无操作 → 并发两次 `run()` 都成功、同一文件被写两次 | `changeSetSyncOrchestrator.js` | ✅ 已修：run/rollback 共用实例级单飞锁，并发调用显式拒绝；锁在 `finally` 释放；回归测试覆盖并发 run、并发 rollback、run/rollback 交叉与异常后重试 |
-| C10 | `resolve(result?.result ?? result)` 在 IndexedDB 缺键时返回 `IDBRequest` 而不是 null | `directoryHandleStore.js:40-51,70-77` | ❌ |
+| C10 | `resolve(result?.result ?? result)` 在 IndexedDB 缺键时返回 `IDBRequest` 而不是 null | `directoryHandleStore.js` | ✅ 已修：request-like 结果等待 `onsuccess` 并返回 `result ?? null`；fake IndexedDB 覆盖缺键、命中和 request 失败；真实浏览器路径仍需 live smoke |
 | C11 | 本地读写只有 UTF-8 文本，云端快照在 120000 字符处静默截断且 DTO 无完整性标志 | `fsAccessDirectoryAdapter.js:66-85` | ⚠️ 服务端已加 `*Truncated`，前端仍未用 |
-| C12 | 无单文件/批次字节、文件数、journal 字节上限；每步复制整个 entries | `syncProbe.js`、`syncJournal.js`、orchestrator | ❌ |
-| C13 | 排除规则只查根级 `.labex/`、大小写敏感、漏 `.labex-rename-*`；glob 语义与服务端不同 | `syncExclusion.js:5-10,22-53` | ❌ |
+| C12 | 无单文件/批次字节、文件数、journal 字节上限；每步复制整个 entries | `syncLimits.js`、`syncProbe.js`、`changeSetSyncOrchestrator.js` | ✅ 已修：集中上限覆盖单文件、批次文件数、批次字节、journal 条目与字节；超限在任何 journal 保存前失败；回归测试见 `syncProbe.test.mjs`、`changeSetSyncOrchestrator.test.mjs` |
+| C13 | 排除规则只查根级 `.labex/`、大小写敏感、漏 `.labex-rename-*`；glob 语义与服务端不同 | `syncExclusion.js` | ✅ 已修：保护区按任意层级且大小写不敏感；对齐 `*`/`**`/`?`、目录规则与 `!` 忽略语义；回归测试见 `syncExclusion.test.mjs` |
 
 ## 2.5 前端 plan 层的输入契约（2026-10-06 已实现）
 

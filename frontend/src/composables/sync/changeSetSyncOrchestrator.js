@@ -3,9 +3,10 @@
 // 设计模式：State（复用 syncSessionState）+ Observer（onProgress 回调）+ 依赖注入（便于测试与替换后端）。
 
 import { buildSyncPlan } from './changeSetSyncPlan.js'
-import { markRolledBack, recordApplied, buildRollbackSteps } from './syncJournal.js'
+import { markRolledBack, recordApplied, recordAppliedBatch, buildRollbackSteps } from './syncJournal.js'
 import { collectProbe } from './syncProbe.js'
 import { SYNC_STATES, createSyncSession, transition } from './syncSessionState.js'
+import { SYNC_LIMITS, positiveLimit, utf8ByteLength } from './syncLimits.js'
 
 function noop() {}
 
@@ -14,6 +15,7 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
   const adapter = dependencies.adapter
   const journalStore = dependencies.journalStore
   const onProgress = typeof dependencies.onProgress === 'function' ? dependencies.onProgress : noop
+  const limits = dependencies.limits ?? {}
   const now = typeof dependencies.now === 'function' ? dependencies.now : () => Date.now()
 
   if (typeof loadChanges !== 'function') throw new Error('orchestrator requires a loadChanges function')
@@ -77,7 +79,11 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       moveTo(SYNC_STATES.PLANNING)
 
       const paths = collectPaths(changePayload)
-      const { probe, failures } = await collectProbe(adapter, paths.filter(Boolean))
+      const { probe, failures } = await collectProbe(adapter, paths.filter(Boolean), {
+        maxFileBytes: limits.maxFileBytes,
+        maxFiles: limits.maxFiles,
+        maxBatchBytes: limits.maxBatchBytes
+      })
 
       plan = buildSyncPlan({ ...changePayload, cursor, probe, policy, ignorePatterns })
       emit({ summary: plan.summary, conflicts: plan.conflicts, cursor: plan.cursor })
@@ -90,7 +96,6 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
         return moveTo(SYNC_STATES.DONE, { cursor: plan.nextCursor, summary: plan.summary })
       }
     } catch (error) {
-      // 扫描/加载/探针/规划阶段的异常都必须成为可观察的失败态，不能冒泡后卡在 scanning。
       return moveTo(SYNC_STATES.FAILED, {
         error: error instanceof Error ? error.message : String(error)
       })
@@ -100,8 +105,6 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     let currentJournal = journal
     let applied = 0
 
-    // 游标只能停在"完整落地"的 change-set 上：同一集合里只写成功一半就推进游标，
-    // 重试时剩余文件会被 `<= cursor` 永久跳过（C03 的应验侧）。
     const stepsPerChangeSet = new Map()
     for (const step of plan.steps) {
       const id = Number(step.changeSetId) || 0
@@ -120,6 +123,13 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     }
 
     try {
+      assertJournalWithinLimits(
+        recordAppliedBatchPreview(currentJournal, plan.steps, {
+          appliedAt: now(),
+          projectId: options.projectId ?? null
+        }),
+        limits
+      )
       for (const step of plan.steps) {
         await applyStep(adapter, step)
         const appliedState = await readAppliedState(adapter, step)
@@ -129,7 +139,7 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
           appliedContent: appliedState.appliedContent,
           appliedExisted: appliedState.appliedExisted
         })
-        // 每步落盘：中途崩溃也能回退已应用的部分（journal 是回退的唯一依据）
+        assertJournalWithinLimits(currentJournal, limits)
         await journalStore.save(currentJournal)
         applied += 1
         const stepChangeSetId = Number(step.changeSetId) || 0
@@ -166,6 +176,7 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       .map(item => item?.relativePath ?? item?.path)
   }
 
+
   async function rollbackLocked(options = {}) {
     let journal
     let steps
@@ -192,6 +203,7 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       })
     }
   }
+
   async function run(options = {}) {
     beginOperation()
     try {
@@ -229,7 +241,8 @@ async function readAppliedState(adapter, step) {
   const exists = await adapter.fileExists(step.path)
   if (exists !== true) return { appliedExisted: false, appliedContent: null }
   const content = await adapter.readTextFile(step.path)
-  if (typeof content !== 'string') throw new Error(`rollback preflight could not read applied content: ${step.path}`)
+  if (typeof content !== 'string') throw new Error('rollback preflight could not read applied content: ' + step.path)
+
   return { appliedExisted: true, appliedContent: content }
 }
 
@@ -251,4 +264,21 @@ async function preflightRollback(adapter, journal, steps) {
       throw new Error(`rollback target changed: ${entry.path}`)
     }
   }
+}
+
+function assertJournalWithinLimits(journal, limits = {}) {
+  const entries = Array.isArray(journal?.entries) ? journal.entries : []
+  const maxEntries = positiveLimit(limits.maxJournalEntries, SYNC_LIMITS.MAX_JOURNAL_ENTRIES)
+  if (entries.length > maxEntries) {
+    throw new Error(`journal entry limit exceeded: ${entries.length} > ${maxEntries}`)
+  }
+  const maxBytes = positiveLimit(limits.maxJournalBytes, SYNC_LIMITS.MAX_JOURNAL_BYTES)
+  const bytes = utf8ByteLength(JSON.stringify(journal ?? null))
+  if (bytes > maxBytes) {
+    throw new Error(`journal size limit exceeded: ${bytes} > ${maxBytes}`)
+  }
+}
+
+function recordAppliedBatchPreview(journal, steps, meta = {}) {
+  return recordAppliedBatch(journal, steps, meta)
 }

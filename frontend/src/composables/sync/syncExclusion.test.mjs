@@ -35,6 +35,29 @@ test('applies ignore patterns with wildcard and exact semantics', () => {
   assert.equal(isExcludedPath('docs/final.md', options), false)
 })
 
+test('excludes platform paths at any depth and case-insensitively', () => {
+  assert.equal(isExcludedPath('src/.labex/runtime.env'), true)
+  assert.equal(isExcludedPath('src/.LABEX/permissions.json'), true)
+  assert.equal(isExcludedPath('packages/app/.labex-agent/runtime/x'), true)
+  assert.equal(isExcludedPath('src/.labex-rename-123/file.txt'), true)
+  assert.equal(isExcludedPath('frontend/NODE_MODULES/vue/index.js'), true)
+  assert.equal(isExcludedPath('frontend/.GIT/config'), true)
+})
+
+test('keeps single-star within one path segment and supports double-star', () => {
+  assert.equal(isExcludedPath('logs/a.log', { ignorePatterns: ['logs/*.log'] }), true)
+  assert.equal(isExcludedPath('logs/sub/a.log', { ignorePatterns: ['logs/*.log'] }), false)
+  assert.equal(isExcludedPath('logs/sub/a.log', { ignorePatterns: ['logs/**/*.log'] }), true)
+  assert.equal(isExcludedPath('a1.log', { ignorePatterns: ['a?.log'] }), true)
+  assert.equal(isExcludedPath('a10.log', { ignorePatterns: ['a?.log'] }), false)
+})
+
+test('matches directory-only rules and ignores negation rules like the server', () => {
+  assert.equal(isExcludedPath('docs/guide.md', { ignorePatterns: ['docs/'] }), true)
+  assert.equal(isExcludedPath('src/docs/guide.md', { ignorePatterns: ['docs/'] }), false)
+  assert.equal(isExcludedPath('important.log', { ignorePatterns: ['!important.log'] }), false)
+})
+
 test('treats empty paths as excluded', () => {
   assert.equal(isExcludedPath(''), true)
   assert.equal(isExcludedPath(null), true)

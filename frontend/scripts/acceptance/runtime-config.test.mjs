@@ -23,6 +23,13 @@ test('acceptance scripts contain no hidden ASCII control characters', () => {
   }
 })
 
+test('backend acceptance initializes its strict-mode cleanup flag before execution', () => {
+  const initialization = agentRuntime.indexOf('$script:evidenceReported = $false')
+  const firstTryBlock = agentRuntime.indexOf('try {')
+  assert.notEqual(initialization, -1)
+  assert.ok(firstTryBlock === -1 || initialization < firstTryBlock)
+})
+
 test('browser acceptance script preserves the UTF-8 BOM required by Windows PowerShell 5', () => {
   assert.deepEqual([...browserRuntimeBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf])
 })

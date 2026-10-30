@@ -6,6 +6,8 @@
 //   present：确认存在，content 为读取到的文本
 //   absent ：确认不存在，content 为 null
 //   unknown：无法判断（权限/IO/未返回有效结果），计划器必须阻断
+import { SYNC_LIMITS, positiveLimit, utf8ByteLength } from './syncLimits.js'
+
 export const PROBE_STATES = Object.freeze({
   PRESENT: 'present',
   ABSENT: 'absent',
@@ -20,6 +22,19 @@ export async function collectProbe(adapter, paths, options = {}) {
   const probe = createProbeMap()
   const unique = [...new Set((Array.isArray(paths) ? paths : []).filter(Boolean))]
   const failures = []
+  const maxFiles = positiveLimit(options.maxFiles, SYNC_LIMITS.MAX_BATCH_FILES)
+  const maxFileBytes = positiveLimit(options.maxFileBytes, SYNC_LIMITS.MAX_FILE_BYTES)
+  const maxBatchBytes = positiveLimit(options.maxBatchBytes, SYNC_LIMITS.MAX_BATCH_BYTES)
+  let totalBytes = 0
+
+  if (unique.length > maxFiles) {
+    const message = `batch file limit exceeded: ${unique.length} > ${maxFiles}`
+    for (const path of unique) {
+      failures.push({ path, message })
+      probe.set(path, { state: PROBE_STATES.UNKNOWN, exists: null, content: null, error: message })
+    }
+    return { probe, failures }
+  }
 
   for (const path of unique) {
     try {
@@ -34,6 +49,22 @@ export async function collectProbe(adapter, paths, options = {}) {
       const content = await adapter.readTextFile(path)
       if (typeof content !== 'string') {
         throw new Error('probe returned no text for an existing file')
+      }
+      const contentBytes = utf8ByteLength(content)
+      if (contentBytes > maxFileBytes) {
+        throw new Error(`file size limit exceeded: ${contentBytes} > ${maxFileBytes}`)
+      }
+      totalBytes += contentBytes
+      if (totalBytes > maxBatchBytes) {
+        const message = `batch size limit exceeded: ${totalBytes} > ${maxBatchBytes}`
+        failures.push({ path, message })
+        probe.set(path, { state: PROBE_STATES.UNKNOWN, exists: null, content: null, error: message })
+        for (const [knownPath, entry] of probe) {
+          if (entry.state !== PROBE_STATES.UNKNOWN) {
+            probe.set(knownPath, { state: PROBE_STATES.UNKNOWN, exists: null, content: null, error: message })
+          }
+        }
+        return { probe, failures }
       }
       probe.set(path, { state: PROBE_STATES.PRESENT, exists: true, content })
     } catch (error) {

@@ -52,6 +52,31 @@ test('marks unreadable paths as unknown and still probes the rest of the batch',
   assert.equal(probe.get('src/a.js').state, 'absent')
 })
 
+test('marks an oversized local file as unknown without reading it as a valid baseline', async () => {
+  const adapter = createReadOnlyAdapter({ 'src/large.txt': '12345' })
+  const { probe, failures } = await collectProbe(adapter, ['src/large.txt'], { maxFileBytes: 4 })
+  assert.equal(failures.length, 1)
+  assert.equal(probe.get('src/large.txt').state, 'unknown')
+  assert.match(probe.get('src/large.txt').error, /file size limit exceeded/)
+})
+
+test('marks the batch unknown when the file count limit is exceeded', async () => {
+  const adapter = createReadOnlyAdapter({})
+  const { probe, failures } = await collectProbe(adapter, ['a.js', 'b.js', 'c.js'], { maxFiles: 2 })
+  assert.equal(failures.length, 3)
+  assert.match(failures[0].message, /batch file limit exceeded/)
+  assert.equal([...probe.values()].every(entry => entry.state === 'unknown'), true)
+})
+
+test('marks the batch unknown when the total content byte limit is exceeded', async () => {
+  const adapter = createReadOnlyAdapter({ 'a.txt': '1234', 'b.txt': '5678' })
+  const { probe, failures } = await collectProbe(adapter, ['a.txt', 'b.txt'], { maxBatchBytes: 7 })
+  assert.equal(failures.length, 1)
+  assert.match(failures[0].message, /batch size limit exceeded/)
+  assert.equal(probe.get('a.txt').state, 'unknown')
+  assert.equal(probe.get('b.txt').state, 'unknown')
+})
+
 test('probe output feeds buildSyncPlan directly', async () => {
   const adapter = createReadOnlyAdapter({ 'src/a.js': 'old' })
   const { probe } = await collectProbe(adapter, ['src/a.js'])

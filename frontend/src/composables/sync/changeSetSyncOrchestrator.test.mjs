@@ -239,6 +239,47 @@ test('refuses to construct without an explicit journal store and never writes be
   assert.equal(adapter.files.get('src/app.js'), 'old')
 })
 
+// C12：journal 超过条目或字节上限时必须失败，不能继续写盘。
+test('fails before saving a journal that exceeds the entry limit', async () => {
+  const adapter = createMemoryAdapter({ 'src/a.js': 'old', 'src/b.js': 'old' })
+  const journalStore = createJournalStore(undefined)
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => [
+      modify(1, 'src/a.js', 'old', 'a-new'),
+      modify(2, 'src/b.js', 'old', 'b-new')
+    ],
+    journalStore,
+    limits: { maxJournalEntries: 1 }
+  })
+
+  const session = await orchestrator.run()
+  assert.equal(session.state, SYNC_STATES.FAILED)
+  assert.match(session.error, /journal entry limit exceeded/)
+  assert.equal(adapter.writes.length, 0)
+  assert.equal(adapter.files.get('src/a.js'), 'old')
+  assert.equal(adapter.files.get('src/b.js'), 'old')
+  assert.equal(journalStore.stored, undefined)
+})
+
+test('fails before saving a journal that exceeds the byte limit', async () => {
+  const adapter = createMemoryAdapter({ 'src/a.js': 'old' })
+  const journalStore = createJournalStore(undefined)
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => [modify(1, 'src/a.js', 'old', 'new')],
+    journalStore,
+    limits: { maxJournalBytes: 1 }
+  })
+
+  const session = await orchestrator.run()
+  assert.equal(session.state, SYNC_STATES.FAILED)
+  assert.match(session.error, /journal size limit exceeded/)
+  assert.equal(adapter.writes.length, 0)
+  assert.equal(adapter.files.get('src/a.js'), 'old')
+  assert.equal(journalStore.stored, undefined)
+})
+
 test('surfaces a journal save failure instead of reporting a successful sync', async () => {
   const adapter = createMemoryAdapter({ 'src/app.js': 'old' })
   let writeAttempts = 0
