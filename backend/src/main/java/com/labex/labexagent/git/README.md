@@ -141,6 +141,70 @@ Agent 改动的 diff 属于**「这次工具调用」**，跟着对话走，不�
 
 **必须有回归测试**：连续执行「快照 → 暂存 → 快照」，确认暂存状态不丢、快照树正确。
 
+## 5.1 与 DeepSeek Harness `workspace-changes` 的对照
+
+DSH 用 `@deepseek-ai/dsh-workspace-changes` 解决同类问题。读它的设计（GitHub 讨论区与
+`packages/fs/workspace-changes`）能拿到三条可验证的经验，也暴露了它自己的一个缺陷。
+
+### 它怎么做的
+
+- **turn 前后两次快照，不是对比 HEAD**：把 git 的 object 目录指向临时目录
+  （`mkdtemp` → `%TEMP%\dsh-workspace-changes-XXXXXX\objects`），在 turn 开始和结束各做一次
+  `git add --all` + `write-tree`，再 `diff-tree` 求差。
+- **为什么这么做**：原文说 "Uncommitted differences already present before the turn do not
+  become new changes merely by being there." 对比 HEAD 的话，用户上周没提交的改动会一直
+  出现在"本轮改动"里。用时间窗口划界才对。
+- **文件工具与 shell 两条路**：`write`/`edit`/`str_replace_editor` 在首次编辑前整文件复制；
+  shell 命令只能做路径无关快照（`rm`/`mv`/`sed -i` 可恢复，原地写入 `>`/`cp` 覆盖/`>>` 不可）。
+
+### 它的已知缺陷（Discussion #7138）
+
+> Concurrent user edits during the turn can still count, so the summary does not establish
+> model authorship.
+
+标题就是 *"Turn changed-files card attributes a concurrent writer's changes to this session"*——
+**Agent 跑任务期间用户手改的文件，会被算成 Agent 的改动**。因为它按时间窗口归属，不按写入者归属。
+
+### 我们的位置
+
+| 维度 | DSH | 本项目 |
+|---|---|---|
+| Agent 改动归属 | 时间窗口推断，**会误判** | `t_agent_file_change` 权威记录，**不会误判** |
+| 未提交改动基准 | 与 Agent 归属混用同一套快照 | 明确用 git HEAD |
+| 快照隔离 | 私有 object 目录 | `--git-dir` 指向 `.labex/git-snapshots`，不碰用户仓库 |
+| 仓库 git hook 风险 | Discussion #9382：`add --all` 会触发仓库 hooks | 无（我们的仓库是私有 bare 仓库） |
+
+**结论**：归属用 change-set，不用时间窗口。这是本项目比 DSH 强的地方，不能照搬它的做法。
+
+## 5.2 硬链接快照：实测与本轮取舍
+
+DSH 文档提到「hardlinking every workspace file before the call takes ~0.4 s for 20,000 files,
+costs no file bytes」。**本机实测达不到这个数字**，记录如下，避免照着别人的结论做决策。
+
+| 方式 | 文件数 | 耗时 | 每文件 |
+|---|---|---|---|
+| `git add -A`（现状，含排除 pathspec） | 27272（含依赖） | **13678ms** | — |
+| PowerShell `New-Item -ItemType HardLink` | 1556 | 11368ms | 7.3ms |
+| Node `fs.linkSync`（含建目录） | 1556 | 2317ms | 1.5ms |
+| Node `fs.linkSync`（平铺，排除建目录） | 1556 | 1129ms | **0.725ms** |
+
+环境：D 盘 SSD，100MB 顺序写 176ms（IO 本身不慢）。
+
+**差距分析**：DSH 的 0.4s/2 万文件 = 0.02ms/文件，比本机快 36 倍。这个差距不是实现方式
+（已经用 Node 直接系统调用），而是**文件系统元数据操作的成本**。同一份代码在 DSH 的
+开发机上快、在本机慢，说明这条数字不可移植。
+
+**本轮结论**：**不做硬链接快照**。理由：
+
+1. 收益有限——1556 个文件仍要 1.1 秒，而快照不是同步的热路径（Agent 改一个文件才触发一次）；
+2. 硬链接快照**不能替代** git 快照：它只能恢复"被删除/被替换"的文件，无法恢复原地写入
+   （`>`、`cp` 覆盖、`>>`），而 git 快照两者都覆盖。要做只能作为补充，不是替代；
+3. 引入新的正确性风险（跨盘失败、硬链接与编辑器写入语义的交互），换 1 秒不值得。
+
+**如果将来要做**，先决条件是：确认目标机器上 `fs.linkSync` 能到 0.1ms/文件以下，
+否则只是把 13 秒换成 11 秒。届时作为 `GitSnapshotService` 的可选加速层，
+在 `git add` 之前预筛"哪些文件没变"，而不是替代 git。
+
 ## 6. 模块设计
 
 ### 6.1 排除规则（唯一事实源）
@@ -250,6 +314,8 @@ Agent 改动的 diff 属于**「这次工具调用」**，跟着对话走，不�
 6. `git http-backend` 接入 + token 鉴权
 7. 前端 `SourceControlPanel` + `GitHistoryPanel` + 接线
 8. live 验收：真实 clone + 用户提交 + 确认 Agent 改动不进 git
+
+**硬链接快照不在本轮**（见 §5.2 的实测与取舍）。
 
 ## 10. 已知风险
 
