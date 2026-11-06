@@ -718,13 +718,44 @@
 
           <!-- ==================== REVIEW TAB (Changes) ==================== -->
           <div v-if="activeAiTab === 'review'" class="ai-content ai-content-nopad">
-            <ChangesPanel
-              :changes="effectiveChanges"
-              :project-id="projectId"
-              :refresh-key="changesRefreshKey"
-              @revert="revertChange"
-              @undo="onUndoChange"
-              @open-diff="handleOpenFileDiff"
+            <div class="review-split">
+              <ChangesPanel
+                :changes="effectiveChanges"
+                :project-id="projectId"
+                :refresh-key="changesRefreshKey"
+                @revert="revertChange"
+                @undo="onUndoChange"
+                @open-diff="handleOpenFileDiff"
+              />
+              <SyncPanel
+                :state="syncSession.state"
+                :busy="syncBusy"
+                :has-directory="syncHasDirectory"
+                :directory-name="syncDirectoryName"
+                :summary="syncSummary"
+                :progress-view="syncProgress"
+                :up-to-date="syncUpToDate"
+                :error="syncSession.error || ''"
+                :steps="syncSession.steps || []"
+                :applied="syncSession.applied || 0"
+                :conflicts="syncSession.conflicts || []"
+                :skipped="syncSession.skipped || []"
+                :can-rollback="(syncSession.applied || 0) > 0 && !syncBusy"
+                @sync="handleSyncRequest"
+                @pick-directory="pickSyncDirectory"
+                @rollback="handleSyncRollback"
+                @review-conflicts="showSyncConflicts = true"
+                @reset-progress="handleResetSyncProgress"
+                @cancel="handleCancelSync"
+              />
+            </div>
+            <SyncConflictDialog
+              :open="showSyncConflicts"
+              :conflicts="syncSession.conflicts || []"
+              :policy="syncConflictPolicy"
+              @update:policy="value => syncConflictPolicy = value"
+              @retry="handleSyncRetry"
+              @close="showSyncConflicts = false"
             />
           </div>
 
@@ -1065,6 +1096,9 @@ import { useFileClipboard } from '@/composables/useFileClipboard'
 import { useFileUploads } from '@/composables/useFileUploads'
 import { useFilePreviewActions } from '@/composables/useFilePreviewActions'
 import { useProjectExport } from '@/composables/useProjectExport'
+import { useChangeSetSync } from '@/composables/sync/useChangeSetSync'
+import { createFsAccessDirectoryAdapter } from '@/composables/sync/fsAccessDirectoryAdapter'
+import { SYNC_DEFAULT_CONFLICT_POLICY, SYNC_DIRECTORY_PICKER_OPTIONS } from '@/constants/sync'
 import { createWorkspaceMutationProjection } from '@/composables/workspaceMutationProjection'
 import { useChangeSetState } from '@/composables/useChangeSetState'
 import { reduceContextManagementEvent, reduceHistoryEvent } from '@/composables/agentHistoryReducer'
@@ -1113,6 +1147,8 @@ const ModelConfigDialog = defineAsyncComponent(() => import('@/components/cloud/
 const CenterAiWorkspace = defineAsyncComponent({ loader: () => import('@/components/cloud/chat/CenterAiWorkspace.vue'), loadingComponent: AsyncLoadingState })
 const SubagentSessionTab = defineAsyncComponent({ loader: () => import('@/components/cloud/chat/SubagentSessionTab.vue'), loadingComponent: AsyncLoadingState })
 const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/ChangesPanel.vue'))
+const SyncPanel = defineAsyncComponent(() => import('@/components/sync/SyncPanel.vue'))
+const SyncConflictDialog = defineAsyncComponent(() => import('@/components/sync/SyncConflictDialog.vue'))
 const UsagePanel = defineAsyncComponent(() => import('@/components/cloud/UsagePanel.vue'))
 const CenterDiffViewer = defineAsyncComponent(() => import('@/components/cloud/CenterDiffViewer.vue'))
 const CompletionEvidenceCard = defineAsyncComponent(() => import('@/components/cloud/CompletionEvidenceCard.vue'))
@@ -2764,6 +2800,94 @@ const modelConfigs = ref([])
 const sessionChanges = ref([])
 const effectiveChanges = computed(() => resolveEffectiveChanges(sessionChanges.value, messages.value))
 const changesRefreshKey = ref(0)
+
+// ===== 同步到本地（L1 手动同步）=====
+// 同步目标目录由用户显式授权；未授权前 run() 会失败而不是静默跳过。
+const syncConflictPolicy = ref(SYNC_DEFAULT_CONFLICT_POLICY)
+const showSyncConflicts = ref(false)
+const {
+  session: syncSession,
+  busy: syncBusy,
+  hasDirectory: syncHasDirectory,
+  conflictCount: syncConflictCount,
+  summary: syncSummary,
+  progress: syncProgress,
+  upToDate: syncUpToDate,
+  directoryName: syncDirectoryName,
+  pickDirectory: pickSyncDirectory,
+  restoreDirectory: restoreSyncDirectory,
+  resetProgress: resetSyncProgress,
+  run: runSync,
+  cancel: cancelSync,
+  rollback: rollbackSync,
+  reset: resetSync
+} = useChangeSetSync({
+  projectId: () => projectId.value,
+  api: projectApi,
+  directoryPicker: pickSyncTargetDirectory,
+  adapterFactory: handle => createFsAccessDirectoryAdapter(handle),
+  notify: ElMessage
+})
+
+// 刷新页面后自动恢复上次授权的目录，避免每次都要重选。
+// 浏览器可能拒绝静默恢复权限（需要用户手势），此时保持"未选目录"状态由用户手动选择。
+onMounted(() => { void restoreSyncDirectory() })
+
+function pickSyncTargetDirectory() {
+  const picker = typeof window !== 'undefined' ? window.showDirectoryPicker : undefined
+  if (typeof picker !== 'function') {
+    // 不是静默失败：告诉用户当前浏览器不支持，而不是给一个点了没反应的按钮。
+    return Promise.reject(new Error('当前浏览器不支持选择本地目录（需要 Chromium 内核）'))
+  }
+  return picker(SYNC_DIRECTORY_PICKER_OPTIONS)
+}
+
+async function handleSyncRequest() {
+  if (!syncHasDirectory.value) {
+    const picked = await pickSyncDirectory()
+    if (!picked) return
+  }
+  await runSync({ policy: syncConflictPolicy.value })
+  if (syncConflictCount.value > 0) showSyncConflicts.value = true
+}
+
+async function handleSyncRetry() {
+  showSyncConflicts.value = false
+  await runSync({ policy: syncConflictPolicy.value })
+}
+
+async function handleSyncRollback() {
+  await rollbackSync()
+}
+
+/** 中止当前同步：已写入的文件仍可通过「回退本次同步」撤销。 */
+function handleCancelSync() {
+  cancelSync()
+  ElMessage.info('正在中止同步…')
+}
+
+/** 重置同步进度：清空游标，下次同步从零重新拉全部变更。 */
+async function handleResetSyncProgress() {
+  try {
+    await ElMessageBox.confirm(
+      '重置后下次同步会重新下发全部云端变更，并把它们写到已选的本地目录。'
+        + '本地已有的同名文件会按冲突策略处理。',
+      '重置同步进度',
+      { confirmButtonText: '重置', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  const cleared = await resetSyncProgress()
+  if (cleared) {
+    ElMessage.success('同步进度已重置，请重新点击同步')
+    return
+  }
+  ElMessage.warning('没有可重置的同步进度')
+}
+
+// 切换项目后旧的目录授权与 journal 不属于新项目，必须丢弃。
+watch(projectId, () => resetSync())
 
 // 当代码变更生效时自动触发预览无缝热刷新
 watch(

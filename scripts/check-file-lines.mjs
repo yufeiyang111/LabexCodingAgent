@@ -20,7 +20,10 @@ import { fileURLToPath } from 'node:url'
 // frontend/frontend/src/... 这种假失败（报“目标目录不可读”），误导性强。
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-const DEFAULT_TARGETS = ['frontend/src/composables/sync']
+const DEFAULT_TARGETS = [
+  'frontend/src/composables/sync',
+  'frontend/src/components/sync'
+]
 const SOURCE_EXTENSIONS = ['.js', '.mjs', '.vue', '.ts', '.go', '.java']
 const SKIPPED_DIRECTORIES = new Set(['node_modules', '.git'])
 

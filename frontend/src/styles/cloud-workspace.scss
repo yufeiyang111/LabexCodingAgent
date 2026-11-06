@@ -767,6 +767,24 @@ html[data-theme='dark'] .ws-dialog-input:focus {
   overflow-x: hidden;
   height: 100%;
 }
+/* Review 页左右分栏：左侧改动面板、右侧同步到本地。
+   窄屏（<1180px）改为上下堆叠，避免同步面板被压到不可用宽度。 */
+.review-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  height: 100%;
+  min-height: 0;
+}
+.review-split > .changes-panel {
+  min-width: 0;
+  min-height: 0;
+}
+@media (max-width: 1180px) {
+  .review-split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(220px, 1fr) minmax(260px, 1fr);
+  }
+}
 .ai-msg-actions {
   display: flex;
   gap: 2px;
