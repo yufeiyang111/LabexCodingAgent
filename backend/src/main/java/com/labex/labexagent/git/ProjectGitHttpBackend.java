@@ -38,9 +38,11 @@ public class ProjectGitHttpBackend {
     private static final int BACKEND_TIMEOUT_SECONDS = 300;
 
     private final ProjectGitRepository repository;
+    private final ProjectGitProperties properties;
 
-    public ProjectGitHttpBackend(ProjectGitRepository repository) {
+    public ProjectGitHttpBackend(ProjectGitRepository repository, ProjectGitProperties properties) {
         this.repository = repository;
+        this.properties = properties;
     }
 
     /**
@@ -259,9 +261,26 @@ public class ProjectGitHttpBackend {
         return value == null ? "" : value;
     }
 
+    /**
+     * 定位 {@code git-http-backend}。
+     *
+     * <p>查找顺序：显式配置 → {@code GIT_EXEC_PATH} → {@code PATH} 各级目录 →
+     * {@code git --exec-path} 的输出。
+     *
+     * <p>最后一项是必要的而不是兜底：Git for Windows 把 http-backend 放在
+     * {@code <git>/mingw64/libexec/git-core}，这个目录**不在 PATH 上**，只能由 git 自己报出来。
+     * 向已安装的 git 询问它自己的 exec-path，比在代码里猜 {@code C:/Program Files/Git/...}
+     * 这类安装位置可靠得多——后者只在开发机上成立，生产容器里必然失效。
+     *
+     * <p>找不到就返回 503 并记 error：那是部署问题（镜像缺 git），不该伪装成别的错误。
+     */
     private Path locateBackend() {
-        String execPath = System.getenv("GIT_EXEC_PATH");
         List<Path> candidates = new ArrayList<>();
+        String configured = properties.getHttpBackendPath();
+        if (configured != null && !configured.isBlank()) {
+            candidates.add(Path.of(configured.trim()));
+        }
+        String execPath = System.getenv("GIT_EXEC_PATH");
         if (execPath != null && !execPath.isBlank()) {
             candidates.add(Path.of(execPath, executableName()));
         }
@@ -273,13 +292,34 @@ public class ProjectGitHttpBackend {
                 }
             }
         }
-        candidates.add(Path.of("D:/Git/mingw64/libexec/git-core", executableName()));
+        String reported = gitExecPath();
+        if (reported != null && !reported.isBlank()) {
+            candidates.add(Path.of(reported.trim(), executableName()));
+        }
         for (Path candidate : candidates) {
             if (Files.isRegularFile(candidate)) {
                 return candidate;
             }
         }
         return null;
+    }
+
+    /** 问 git 自己的 exec-path。git 不在 PATH 或调用失败时返回 null。 */
+    private String gitExecPath() {
+        try {
+            Process process = new ProcessBuilder("git", "--exec-path").redirectErrorStream(true).start();
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            if (!process.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return null;
+            }
+            return process.exitValue() == 0 ? output.trim() : null;
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            return null;
+        }
     }
 
     private String executableName() {

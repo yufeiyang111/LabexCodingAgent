@@ -289,6 +289,8 @@ labex-agent:
     clone-token-ttl-minutes: ${LABEX_AGENT_PROJECT_GIT_CLONE_TOKEN_TTL_MINUTES:60}
     # clone 地址对外暴露的基地址（如 https://labex.example.com）。留空时按请求的 Host 推断。
     public-base-url: ${LABEX_AGENT_PROJECT_GIT_PUBLIC_BASE_URL:}
+    # git-http-backend 绝对路径；留空时按 GIT_EXEC_PATH / PATH 查找。
+    http-backend-path: ${LABEX_AGENT_PROJECT_GIT_HTTP_BACKEND_PATH:}
   agent-cleanup:
     enabled: ${LABEX_AGENT_CLEANUP_ENABLED:true}
     interval-ms: ${LABEX_AGENT_CLEANUP_INTERVAL_MS:1800000}

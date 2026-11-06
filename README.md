@@ -148,6 +148,7 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 | `LABEX_AGENT_CONVERSATION_CACHE_HISTORY_TTL` | `60s` | 最近历史第一页缓存 TTL |
 | `LABEX_AGENT_CONVERSATION_CACHE_CONTEXT_STATUS_TTL` | `30s` | 上下文状态缓存 TTL |
 | `LABEX_AGENT_CONVERSATION_CACHE_DOUBLE_DELETE_DELAY_MS` | `500` | 数据库提交后的延迟二次删缓存时间 |
+| `LABEX_AGENT_CONVERSATION_CACHE_LIST_MAX_VALUE_BYTES` | `262144` | 单个会话列表 Redis 值的 UTF-8 字节上限；超限时仍返回数据库结果但不缓存 |
 | `LABEX_AGENT_CONVERSATION_CACHE_KEY_PREFIX` | `labex:conversation` | 会话热缓存键前缀，与认证 Redis key 隔离 |
 | `LABEX_AGENT_PROJECT_BASE_PATH` | `D:/LabexAgent/workspaces` | 用户工作区根路径 |
 | `LABEX_AGENT_DOCKER_HOST_WORKSPACE_BASE_PATH` | 空 | 控制面容器化部署（backend 容器 + 宿主 docker.sock）时必填：把容器内工作区前缀改写为 daemon 可见的宿主机目录，否则 worker 容器 bind mount 报 `bind source path does not exist`。Linux 生产 compose 填 `/srv/labex-agent/data/workspaces` |
@@ -178,6 +179,12 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 **使用教程**：登录后从主页面主题按钮左侧的书本图标进入 `/tutorials`。教程目录和正文来自 `t_tutorial_document`，首启会幂等写入默认教程；后续可由运维管理端在同一表上进行编辑、发布和下线。`GET /tutorials` 只返回已发布目录，`GET /tutorials/{slug}` 返回已发布正文。
 
 **站点监控（可选）**：`/ops` 页面查看 PV/UV、热门路径、状态码分布、访问明细与系统资源曲线，以及 MySQL / Redis / Provider / Worker / MCP / Workspace 的依赖健康状态（`/ops/health`，单个依赖超时或异常被隔离，不会拖垮整体）、Agent 运行任务查询（`/ops/runtime`：任务列表分页、状态/用户/Provider/超时租约过滤、任务详情、事件时间线，全部只读投影自权威状态）、指标趋势（`/ops/metrics`：系统/任务/token 低频采样、1h~30d 历史趋势、按保留天数自动清理）、告警中心（`/ops/alerts`：规则 CRUD、基于持久化采样的低频评估、FIRING/ACKNOWLEDGED/SILENCED/RESOLVED 状态机、去重与冷却、可选 Webhook 通知及失败重试、确认/静默/恢复）、故障（`/ops/incidents`：OPEN/ACKNOWLEDGED/MITIGATING/RESOLVED/CLOSED 状态机、处理时间线）、事件流（`/ops/events`：启动、告警、故障、受控操作统一落库）与审计日志（`/ops/audit`：敏感键值自动脱敏、按保留天数清理）。入口用独立访问校验码，配置 `LABEX_AGENT_MONITOR_ACCESS_CODE` 后启用；**默认只读**，配置 `LABEX_AGENT_MONITOR_OPERATOR_CODE` 后用操作码登录可获得 `OPS_OPERATOR` 角色以执行告警/故障处理与受控操作（`/ops/operations`：取消任务、重试任务、释放过期租约、Worker 暂停/恢复，全部要求幂等键并写审计；任务取消/重试/租约恢复都委托既有生命周期服务，不直接改 `AgentTask`）。IP 归属地使用离线 `ip2region_v4.xdb` 库本地查询，不外发访客 IP。
+
+**项目版本库（源码管理面板）**：每个项目在 `<workspace>/.labex/git-snapshots` 有一份 bare 仓库，用户在「审查 → 源代码管理」里勾选文件、写提交信息后提交，形成可 clone、可回滚的永久历史。它与 Agent 改动是两套独立系统：Agent 改动只走 change-set + diff + undo，不进 git；两者唯一的接触点是工作区文件。排除规则写进仓库的 `info/exclude`（不在工作区生成 `.gitignore`），名单唯一来源是 `ProjectScanPolicy`，与 Agent 扫描共用。
+
+clone 走 `git http-backend`，地址由面板生成（`GET .../git/clone-url`），内嵌只读短期令牌（默认 1 小时，`LABEX_AGENT_PROJECT_GIT_CLONE_TOKEN_TTL_MINUTES`）。clone 端点挂在根路径 `/git/{projectId}.git`，不在 `/api` 之下——git 客户端不经过前端代理，`SecurityConfig` 对该路径放行，安全性完全由令牌承担。**部署镜像必须包含 `git-http-backend`**，缺失时该端点返回 503 并在日志记 error。
+
+「回滚到此提交」不会改写历史：它把工作区恢复到目标树并新增一条 `Revert "..."` 提交，因此回滚本身可以再回滚。工作区有未提交改动时拒绝执行，不覆盖用户正在写的内容。其余可调参数（查询/写入超时、分页大小、状态条目上限、diff 字节上限、clone 对外基地址）见 `labex-agent.project-git.*` 与 `.env.example` 的 `LABEX_AGENT_PROJECT_GIT_*`。
 
 完整环境变量表见 `.env.example` 与 `backend/src/main/resources/application.yml`。
 
@@ -215,6 +222,17 @@ java -jar target/labex-agent-backend-*.jar
 - REST 根路径：`http://localhost:8080/api`（`server.servlet.context-path=/api`）
 - WebSocket 终端端点：`/api/ws/terminal`（与 SSE 不共享连接）
 
+**本机 8080 被其他程序占用时**，用环境变量覆盖端口，不要改 `application.yml` 的默认值（生产 Caddy 与 docker-compose 都按 `backend:8080` 反代，改默认值会打断生产链路）：
+
+```bash
+# PowerShell
+$env:SERVER_PORT=8081
+# bash
+export SERVER_PORT=8081
+```
+
+前端开发服务器的代理默认已指向 `http://localhost:8081`（`VITE_API_TARGET` 可覆盖）。仓库脚本 `scripts/start_backend.ps1` / `scripts/restart_backend.ps1` 默认端口也是 8081，可用 `-Port` 参数改。
+
 仓库自带 Maven 配置：`mvn -s settings-local.xml spring-boot:run`（默认空 mirror）。
 
 ---
@@ -228,7 +246,7 @@ npm run dev
 ```
 
 - 前端地址：`http://localhost:3000`
-- `vite.config.js` 里 `/api` 代理到 `http://localhost:8080`（`ws: true` 透传 WebSocket，流式对话依赖此配置；**改了代理配置必须重启 dev server**）
+- `vite.config.js` 里 `/api` 代理到 `http://localhost:8081`（`ws: true` 透传 WebSocket，流式对话依赖此配置；**改了代理配置必须重启 dev server**）。后端若在别的端口，用 `VITE_API_TARGET=http://localhost:<port>` 覆盖。
 - 生产构建：`npm run build`（产物在 `frontend/dist`）
 - 本地预览：`npm run preview`
 
@@ -293,7 +311,8 @@ Windows 公网部署脚本在 [deploy/windows/](deploy/windows/)。
 HS512 要求 ≥64 字节。本地占位符会自动派生安全密钥；生产必须配置高熵随机串（`openssl rand -base64 64`）。
 
 **Q3: 前端请求 Network Error？**
-确认后端在 `8080` 启动、`vite.config.js` 代理 target 正确；改过代理配置要重启 dev server。
+确认后端在 `8081`（本地默认）启动、`vite.config.js` 代理 target 正确；改过代理配置要重启 dev server。
+后端端口被占用时用 `SERVER_PORT` 覆盖（见第 4 节），不要改 `application.yml` 默认值。
 
 **Q4: 流式对话变成一次性返回？**
 `vite.config.js` 里 `proxy['/api']` 的 `ws: true` 被去掉，或反代没有关闭 buffering 且未透传 Upgrade 头。

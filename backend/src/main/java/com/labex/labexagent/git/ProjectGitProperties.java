@@ -25,6 +25,11 @@ public class ProjectGitProperties {
     private int diffMaxBytes = 400_000;
     /** clone URL 里短期令牌的有效期。 */
     private int cloneTokenTtlMinutes = 60;
+    /**
+     * {@code git-http-backend} 的绝对路径。留空时按 {@code GIT_EXEC_PATH}、{@code PATH} 查找。
+     * 仅当 git 装在非标准位置时才需要设置。
+     */
+    private String httpBackendPath = "";
 
     public int getQueryTimeoutSeconds() {
         return queryTimeoutSeconds;
@@ -72,6 +77,14 @@ public class ProjectGitProperties {
 
     public void setCloneTokenTtlMinutes(int value) {
         cloneTokenTtlMinutes = clamp(value, 1, 1440);
+    }
+
+    public String getHttpBackendPath() {
+        return httpBackendPath;
+    }
+
+    public void setHttpBackendPath(String value) {
+        httpBackendPath = value == null ? "" : value.trim();
     }
 
     private static int clamp(int value, int min, int max) {
