@@ -139,7 +139,8 @@ test('summarizes the whole batch', () => {
       'src/b.js': { exists: false, content: null }
     }
   })
-  assert.deepEqual(plan.summary, { total: 3, toApply: 2, conflicts: 0, skipped: 1 })
+  // coalesced 记录被合并掉的中间版本数（同路径多次变更只写最终态）。
+  assert.deepEqual(plan.summary, { total: 3, toApply: 2, conflicts: 0, skipped: 1, coalesced: 0 })
   assert.equal(plan.nextCursor, 3)
 })
 

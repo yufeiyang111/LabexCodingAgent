@@ -4,6 +4,8 @@
 
 import { buildSyncPlan } from './changeSetSyncPlan.js'
 import { markRolledBack, recordApplied, recordAppliedBatch, buildRollbackSteps, updateJournalCursor } from './syncJournal.js'
+import { createJournalCommitter } from './syncJournalCommitter.js'
+import { appliedStateOf, applyStep } from './syncStepApplier.js'
 import { collectProbe } from './syncProbe.js'
 import { SYNC_STATES, createSyncSession, transition } from './syncSessionState.js'
 import { SYNC_LIMITS, positiveLimit, utf8ByteLength } from './syncLimits.js'
@@ -17,6 +19,11 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
   const onProgress = typeof dependencies.onProgress === 'function' ? dependencies.onProgress : noop
   const limits = dependencies.limits ?? {}
   const now = typeof dependencies.now === 'function' ? dependencies.now : () => Date.now()
+  // 每写多少个文件提交一次 journal。取值依据：
+  //   - 太密（1）= 每步一次 IndexedDB 事务，45 个文件曾耗时约 5 分钟；
+  //   - 太疏（=整批）= 刷新页面会丢掉全部进度与回退依据。
+  // 8 是折中：40 个文件只多 5 次事务，而任何时刻中断最多丢 7 个文件的记录。
+  const commitInterval = positiveLimit(dependencies.journalCommitInterval, SYNC_LIMITS.JOURNAL_COMMIT_INTERVAL)
 
   if (typeof loadChanges !== 'function') throw new Error('orchestrator requires a loadChanges function')
   if (!adapter || typeof adapter.writeTextFile !== 'function') throw new Error('orchestrator requires a directory adapter')
@@ -34,6 +41,17 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
 
   // C09：run/rollback 共用同一把单飞锁，防止双击或交叉调用重复写盘。
   let operationInFlight = false
+  // 用户主动中止：每次 run 开始时重置，cancel() 只影响当前/下一次 run。
+  let cancelRequested = false
+  let runActive = false
+
+  function throwIfCancelled() {
+    if (cancelRequested) {
+      const error = new Error('同步已中止')
+      error.name = 'SyncCancelledError'
+      throw error
+    }
+  }
 
   function beginOperation() {
     if (operationInFlight) throw new Error('sync operation already in progress')
@@ -66,6 +84,8 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     let feedCursor
 
     try {
+      // 开跑前先检查：上一次 run 之前就按了中止，不该再写任何文件。
+      throwIfCancelled()
       moveTo(SYNC_STATES.SCANNING)
       journal = await journalStore.load()
       cursor = Number(options.cursor ?? journal?.changeSetCursor?.afterChangeSetId ?? journal?.cursor ?? 0) || 0
@@ -93,17 +113,36 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       })
 
       plan = buildSyncPlan({ ...changePayload, cursor, probe, policy, ignorePatterns })
-      emit({ summary: plan.summary, conflicts: plan.conflicts, cursor: plan.cursor })
+      // session.steps 必须是**实际写盘队列**（合并后的 writeSteps）：
+      // 进度条按 applied 索引取"当前文件"，用完整变更链会错位——
+      // 同一路径改 3 次时链长 45、写盘只有 22，第 23 步之后索引直接越界。
+      // 完整链保留在 changeSteps，供审计与"为什么只写了 22 个"的解释。
+      emit({
+        summary: plan.summary,
+        conflicts: plan.conflicts,
+        cursor: plan.cursor,
+        steps: plan.writeSteps,
+        changeSteps: plan.steps,
+        skipped: plan.skipped
+      })
 
       if (failures.length > 0) {
         emit({ summary: { ...plan.summary, probeFailures: failures.length } })
       }
-      if (plan.blocked) return moveTo(SYNC_STATES.BLOCKED, { conflicts: plan.conflicts })
+      if (plan.blocked) {
+        return moveTo(SYNC_STATES.BLOCKED, { conflicts: plan.conflicts, steps: plan.writeSteps, changeSteps: plan.steps, skipped: plan.skipped })
+      }
       if (plan.steps.length === 0) {
         const finalCursor = feedCursorAfterSuccess(changePayload, feedCursor, plan)
         journal = updateJournalCursor(journal, finalCursor)
         await journalStore.save(journal)
-        return moveTo(SYNC_STATES.DONE, { cursor: finalCursor.afterChangeSetId, summary: plan.summary })
+        return moveTo(SYNC_STATES.DONE, {
+          cursor: finalCursor.afterChangeSetId,
+          summary: plan.summary,
+          steps: plan.writeSteps,
+          changeSteps: plan.steps,
+          skipped: plan.skipped
+        })
       }
     } catch (error) {
       return moveTo(SYNC_STATES.FAILED, {
@@ -115,6 +154,9 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     let currentJournal = journal
     let applied = 0
 
+    // 写入用合并后的 writeSteps：同一路径只写最终版本一次。
+    // 游标完整性仍按原始 steps 判定（一个 change-set 的所有变更都算落地）。
+    const writeSteps = Array.isArray(plan.writeSteps) ? plan.writeSteps : plan.steps
     const stepsPerChangeSet = new Map()
     for (const step of plan.steps) {
       const id = Number(step.changeSetId) || 0
@@ -132,55 +174,93 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
       return last
     }
 
+    let journalCommitted = false
+    const committer = createJournalCommitter({
+      journalStore,
+      interval: commitInterval,
+      assertWithinLimits: journal => assertJournalWithinLimits(journal, limits)
+    })
+
     try {
       assertJournalWithinLimits(
-        recordAppliedBatchPreview(currentJournal, plan.steps, {
+        recordAppliedBatchPreview(currentJournal, writeSteps, {
           appliedAt: now(),
           projectId: options.projectId ?? null
         }),
         limits
       )
-      for (const step of plan.steps) {
+      for (const step of writeSteps) {
+        // 每写一个文件前检查中止：中止后不再写盘，已写的部分由下面的 catch 补存 journal。
+        throwIfCancelled()
         await applyStep(adapter, step)
-        const appliedState = await readAppliedState(adapter, step)
+        const appliedState = appliedStateOf(step)
         currentJournal = recordApplied(currentJournal, step, {
           appliedAt: now(),
           projectId: options.projectId ?? null,
           appliedContent: appliedState.appliedContent,
           appliedExisted: appliedState.appliedExisted
         })
-        assertJournalWithinLimits(currentJournal, limits)
-        const committedCursor = {
+        applied += 1
+        // 一步合并步骤可能覆盖同一 change-set 的多条原始变更，因此按覆盖数累加。
+        const stepChangeSetId = Number(step.changeSetId) || 0
+        appliedPerChangeSet.set(
+          stepChangeSetId,
+          (appliedPerChangeSet.get(stepChangeSetId) || 0) + (step.coalescedCount || 1)
+        )
+        currentJournal = updateJournalCursor(currentJournal, {
           afterChangeSetId: appliedCursor(),
           tailUpdateTime: feedCursor.tailUpdateTime,
           tailChangeId: feedCursor.tailChangeId
-        }
-        currentJournal = updateJournalCursor(currentJournal, committedCursor)
-        assertJournalWithinLimits(currentJournal, limits)
-        await journalStore.save(currentJournal)
-        applied += 1
-        const stepChangeSetId = Number(step.changeSetId) || 0
-        appliedPerChangeSet.set(stepChangeSetId, (appliedPerChangeSet.get(stepChangeSetId) || 0) + 1)
+        })
         emit({ applied, cursor: appliedCursor() })
+
+        if (committer.shouldCommit(applied)) {
+          await committer.commit(currentJournal, applied)
+        }
       }
+
+      // 收尾提交：最后不足一个间隔的那批也要落盘，否则尾部文件的回退依据会丢。
+      // 这里直接用**最终游标**（含 feed 的 nextCursor），避免之后再补一次保存。
+      const finalCursor = feedCursorAfterSuccess(changePayload, feedCursor, plan)
+      currentJournal = updateJournalCursor(currentJournal, finalCursor)
+      await committer.commitFinal(currentJournal, applied)
+      journalCommitted = true
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // 失败路径分两种，语义必须区分开：
+      //   a) 写文件失败（journal 尚未提交）→ 已写盘的部分必须有回退依据，补存一次；
+      //   b) journal 本身存不上 → 恢复记录不存在，不能声称任何一条"已应用"，
+      //      否则 UI 会给出一个无法回退的成功假象。
+      if (!journalCommitted && applied > 0) {
+        try {
+          await committer.commit(currentJournal, applied)
+          journalCommitted = true
+        } catch (saveFailure) {
+          const saveMessage = saveFailure instanceof Error ? saveFailure.message : String(saveFailure)
+          return moveTo(SYNC_STATES.FAILED, {
+            error: `${message}; journal save also failed: ${saveMessage}`,
+            applied: 0,
+            cursor: appliedCursor()
+          })
+        }
+      }
       return moveTo(SYNC_STATES.FAILED, {
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
         applied,
         cursor: appliedCursor()
       })
     }
 
     const finalCursor = feedCursorAfterSuccess(changePayload, feedCursor, plan)
-    currentJournal = updateJournalCursor(currentJournal, finalCursor)
-    assertJournalWithinLimits(currentJournal, limits)
-    await journalStore.save(currentJournal)
 
     return moveTo(SYNC_STATES.DONE, {
       summary: { ...plan.summary, applied },
       cursor: finalCursor.afterChangeSetId,
       applied,
-      conflicts: plan.conflicts
+      conflicts: plan.conflicts,
+      steps: plan.writeSteps,
+      changeSteps: plan.steps,
+      skipped: plan.skipped
     })
   }
 
@@ -228,11 +308,27 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
 
   async function run(options = {}) {
     beginOperation()
+    // 只有"运行中取消"才需要重置；用户在没有 run 时按下的中止必须保留，
+    // 否则下一次 run 会悄悄跑起来，与用户意图相反。
+    if (runActive) cancelRequested = false
+    runActive = true
     try {
       return await runLocked(options)
     } finally {
+      runActive = false
       endOperation()
     }
+  }
+
+  /**
+   * 请求中止当前同步。
+   * - 在写入循环的下一个检查点生效，已写盘的文件仍会被记入 journal；
+   * - 若当前没有 run 在执行，标记会保留到下一次 run 开始时立即失败
+   *   （用户按了中止就该停下，而不是下次悄悄跑起来）。
+   * 重复调用无副作用。
+   */
+  function cancel() {
+    cancelRequested = true
   }
 
   async function rollback(options = {}) {
@@ -248,24 +344,7 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     return { ...session }
   }
 
-  return { run, rollback, getSession }
-}
-
-async function applyStep(adapter, step) {
-  if (step.op === 'delete') {
-    await adapter.deleteFile(step.path)
-    return
-  }
-  await adapter.writeTextFile(step.path, step.content ?? '')
-}
-
-async function readAppliedState(adapter, step) {
-  const exists = await adapter.fileExists(step.path)
-  if (exists !== true) return { appliedExisted: false, appliedContent: null }
-  const content = await adapter.readTextFile(step.path)
-  if (typeof content !== 'string') throw new Error('rollback preflight could not read applied content: ' + step.path)
-
-  return { appliedExisted: true, appliedContent: content }
+  return { run, rollback, cancel, getSession, get isRunning() { return runActive } }
 }
 
 async function preflightRollback(adapter, journal, steps) {

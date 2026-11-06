@@ -78,9 +78,10 @@ test('skip policy applies the safe subset and reports conflicts', async () => {
 // C05：只要批内任一探针 unknown，整次同步必须阻断且零写入。
 test('blocks the entire run when any probe is unknown and writes nothing', async () => {
   const adapter = createMemoryAdapter({ 'src/a.js': 'old', 'src/b.js': 'old' })
-  adapter.fileExists = async path => {
+  // 探针只走 readTextFile（一次读取即可判定三态），所以"不可读"要在这里注入。
+  adapter.readTextFile = async path => {
     if (path === 'src/b.js') throw new Error('permission denied')
-    return adapter.files.has(path)
+    return adapter.files.get(path) ?? null
   }
   const journalStore = createJournalStore(undefined)
   const orchestrator = createChangeSetSyncOrchestrator({
@@ -105,7 +106,7 @@ test('blocks the entire run when any probe is unknown and writes nothing', async
 // C05：overwrite 只允许覆盖“已知且已确认”的本地漂移，不能绕过 unknown probe。
 test('unknown probe remains blocked under overwrite policy', async () => {
   const adapter = createMemoryAdapter({ 'src/app.js': 'locally edited' })
-  adapter.fileExists = async () => { throw new Error('permission denied') }
+  adapter.readTextFile = async () => { throw new Error('permission denied') }
   const journalStore = createJournalStore(undefined)
   const orchestrator = createChangeSetSyncOrchestrator({
     adapter,

@@ -3,9 +3,9 @@
 // 说明：FileSystemDirectoryHandle 可结构化克隆，能直接存进 IndexedDB；
 // 介质不可用时**不静默降级**——save 显式抛错，load 返回 null 交由调用方引导用户重选目录。
 
-const DEFAULT_DB_NAME = 'labex-sync'
+import { SYNC_DB_NAME, openSyncDatabase } from './syncDatabase.js'
+
 const DEFAULT_STORE_NAME = 'directory-handles'
-const DEFAULT_DB_VERSION = 1
 
 function resolveFactory(indexedDbLike) {
   const factory = indexedDbLike ?? globalThis.indexedDB
@@ -23,17 +23,11 @@ function requireKey(key) {
   return value
 }
 
+// 建库统一走 syncDatabase：本模块只声明"我要用哪个 store"，不再自己定义库与版本。
 function openDatabase(factory, options) {
-  const dbName = options.dbName ?? DEFAULT_DB_NAME
-  const storeName = options.storeName ?? DEFAULT_STORE_NAME
-  return new Promise((resolve, reject) => {
-    const request = factory.open(dbName, options.dbVersion ?? DEFAULT_DB_VERSION)
-    request.onupgradeneeded = () => {
-      const database = request.result
-      if (!database.objectStoreNames.contains(storeName)) database.createObjectStore(storeName)
-    }
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('indexedDB open failed'))
+  return openSyncDatabase(factory, {
+    dbName: options.dbName ?? SYNC_DB_NAME,
+    objectStores: options.objectStores
   })
 }
 

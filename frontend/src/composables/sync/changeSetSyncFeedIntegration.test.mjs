@@ -132,3 +132,37 @@ test('consumes the server feed shape (changeSets[].files[]) without an adapter l
   assert.equal(adapter.files.get('src/app.js'), 'new')
   assert.equal(journalStore.stored.entries.length, 1)
 })
+
+test('exposes the planned steps and skipped entries on the session so the UI can render them', async () => {
+  const adapter = createMemoryAdapter({ 'src/app.js': 'old' })
+  const orchestrator = createChangeSetSyncOrchestrator({
+    adapter,
+    loadChanges: async () => ({
+      changeSets: [{
+        changeSetId: 11,
+        files: [
+          {
+            changeId: 'f1', changeSetId: 11, relativePath: 'src/app.js', changeType: 'modify',
+            status: 'pending', beforeExisted: true, beforeContent: 'old', afterContent: 'new',
+            beforeTruncated: false, afterTruncated: false
+          },
+          {
+            changeId: 'f2', changeSetId: 11, relativePath: 'node_modules/x.js', changeType: 'modify',
+            status: 'pending', beforeExisted: true, beforeContent: 'a', afterContent: 'b',
+            beforeTruncated: false, afterTruncated: false
+          }
+        ]
+      }],
+      changedFiles: [],
+      nextCursor: { afterChangeSetId: 11, tailUpdateTime: '2026-10-06T10:00:00', tailChangeId: '' },
+      hasMore: false
+    }),
+    journalStore: createJournalStore(undefined)
+  })
+
+  const session = await orchestrator.run()
+  assert.equal(session.state, SYNC_STATES.DONE)
+  assert.deepEqual(session.steps.map(step => step.path), ['src/app.js'])
+  assert.equal(session.skipped.length, 1)
+  assert.equal(session.skipped[0].reason, 'excluded')
+})

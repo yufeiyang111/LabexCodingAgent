@@ -5,7 +5,13 @@ export const SYNC_LIMITS = Object.freeze({
   MAX_BATCH_FILES: 500,
   MAX_BATCH_BYTES: 64 * 1024 * 1024,
   MAX_JOURNAL_ENTRIES: 10_000,
-  MAX_JOURNAL_BYTES: 32 * 1024 * 1024
+  MAX_JOURNAL_BYTES: 32 * 1024 * 1024,
+  /**
+   * 每写多少个文件提交一次 journal。
+   * 太密会让每个文件多一次 IndexedDB 事务（45 个文件曾耗时约 5 分钟）；
+   * 太疏则刷新页面会丢掉已写文件的回退依据与游标进度。
+   */
+  JOURNAL_COMMIT_INTERVAL: 8
 })
 
 export function positiveLimit(value, fallback) {

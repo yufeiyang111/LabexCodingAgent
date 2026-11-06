@@ -10,17 +10,21 @@ export function createJournal() {
 
 function normalizeStep(step) {
   const op = step?.op === 'delete' ? 'delete' : 'write'
+  const content = step?.content ?? null
+  const appliedContent = typeof step?.appliedContent === 'string'
+    ? step.appliedContent
+    : op === 'write' ? String(step?.content ?? '') : null
   return {
     changeId: String(step?.changeId ?? ''),
     changeSetId: Number(step?.changeSetId ?? 0) || 0,
     path: String(step?.path ?? ''),
     op,
-    content: step?.content ?? null,
+    // content 与 appliedContent 在写入场景下恒等（applyStep 写的就是 content）。
+    // 只保留一份：journal 体积直接减半，而回退只用 appliedContent 做所有权校验。
+    content: content === appliedContent ? undefined : content,
     previousContent: step?.previousContent ?? null,
     previousExisted: step?.previousExisted === true,
-    appliedContent: typeof step?.appliedContent === 'string'
-      ? step.appliedContent
-      : op === 'write' ? String(step?.content ?? '') : null,
+    appliedContent,
     appliedExisted: typeof step?.appliedExisted === 'boolean'
       ? step.appliedExisted
       : op !== 'delete',
