@@ -17,15 +17,10 @@
 
 import { isExcludedPath, normalizeRelativePath } from './syncExclusion.js'
 import { coalesceSteps } from './syncStepCoalescing.js'
+import { CONFLICT_REASONS, SKIP_REASONS, buildStep, classifyFile, isBinaryContent } from './syncFileVerdict.js'
+import { applyToLocalView, createLocalView } from './syncLocalView.js'
 
 export const CONFLICT_POLICIES = Object.freeze({ STRICT: 'strict', SKIP: 'skip', OVERWRITE: 'overwrite' })
-
-const CONFLICT_MISSING_LOCAL = 'missing-local'
-const CONFLICT_CONTENT_DRIFT = 'content-drift'
-const CONFLICT_LOCAL_OCCUPIED = 'local-occupied'
-const CONFLICT_TRUNCATED_BASELINE = 'truncated-baseline'
-const CONFLICT_TRUNCATED_TARGET = 'truncated-target'
-const CONFLICT_PROBE_UNKNOWN = 'probe-unknown'
 
 /** 这些状态表示"该变更当前不该落到工作区"（未批准 / 用户已撤回 / 执行失败）。 */
 const NON_APPLICABLE_STATUSES = new Set(['rejected', 'undone', 'failed'])
@@ -99,109 +94,13 @@ function collectChangeSets(payload) {
   return sets
 }
 
-/**
- * 虚拟本地视图：探针给的是"同步开始前"的状态，而同一批次里同一路径可能被多次修改。
- * 每产出一个步骤就把结果写回视图，后一步才能拿到正确的"基"（C04）。
- *
- * `createdInBatch` 记录"本批次自己刚创建出来的路径"：服务端对同一文件连续产生的
- * change 行，changeType 可能都是 create（新增文件被再次编辑）。此时本地"存在"是本批次
- * 自己的产物，不是用户预先占用的文件，**不能**判成 local-occupied —— 否则整批同步被阻断。
- */
-function createLocalView(probe) {
-  const overlay = new Map()
-  const createdInBatch = new Set()
-  return {
-    get(path) {
-      const entry = overlay.has(path)
-        ? overlay.get(path)
-        : (() => {
-          const probed = probe?.get ? probe.get(path) : probe?.[path]
-          if (!probed) return { exists: false, content: null, unknown: true }
-          return {
-            exists: probed.exists === true,
-            content: probed.content ?? null,
-            unknown: probed.state === 'unknown' || probed.exists === null
-          }
-        })()
-      return { ...entry, createdInBatch: createdInBatch.has(path) }
-    },
-    set(path, value) {
-      overlay.set(path, value)
-    },
-    markCreated(path) {
-      createdInBatch.add(path)
-    },
-    markRemoved(path) {
-      createdInBatch.delete(path)
-    }
-  }
-}
-
-/**
- * 把一步的结果写回虚拟本地视图，并维护"本批次创建"标记。
- * 标记的作用：让后续对同一路径的 create/modify 知道"这个文件是我刚建的"，
- * 而不是用户预先占用的文件（后者才该判 local-occupied）。
- */
-function applyToLocalView(local, file, step) {
-  local.set(file.path, {
-    exists: step.op !== 'delete',
-    content: step.op === 'delete' ? null : file.afterContent
-  })
-  if (step.op === 'delete') {
-    local.markRemoved(file.path)
-  } else if (file.changeType === 'create' || file.beforeExisted === false) {
-    local.markCreated(file.path)
-  }
-}
-
-function classify(file, local) {
-  if (local.unknown) return { kind: 'conflict', reason: CONFLICT_PROBE_UNKNOWN }
-  if (file.changeType === 'delete') {
-    if (!local.exists) return { kind: 'skip', reason: 'already-absent' }
-    if (file.beforeTruncated) return { kind: 'conflict', reason: CONFLICT_TRUNCATED_BASELINE }
-    if (file.beforeContent !== null && local.content !== file.beforeContent) {
-      return { kind: 'conflict', reason: CONFLICT_CONTENT_DRIFT }
-    }
-    return { kind: 'step', op: 'delete' }
-  }
-  if (file.afterTruncated) {
-    // 目标内容本身被截断：写下去就是把残缺内容落盘，宁可停在冲突让人处理。
-    return { kind: 'conflict', reason: CONFLICT_TRUNCATED_TARGET }
-  }
-  if (file.changeType === 'create' || file.beforeExisted === false) {
-    if (!local.exists) return { kind: 'step', op: 'write' }
-    // 本批次自己刚创建的文件被再次修改：继续写，不算占用冲突。
-    if (local.createdInBatch) {
-      if (file.afterContent !== null && local.content === file.afterContent) {
-        return { kind: 'skip', reason: 'already-applied' }
-      }
-      return { kind: 'step', op: 'write' }
-    }
-    if (file.afterContent !== null && local.content === file.afterContent) {
-      return { kind: 'skip', reason: 'already-applied' }
-    }
-    return { kind: 'conflict', reason: CONFLICT_LOCAL_OCCUPIED }
-  }
-  if (!local.exists) return { kind: 'conflict', reason: CONFLICT_MISSING_LOCAL }
-  // 目标内容已经落地：重叠窗口会重复交付同一条变更，若只看 beforeContent 就会判成漂移，
-  // 让 strict 策略在每次重扫时永久卡住。先比目标态，再比基线。
-  if (file.afterContent !== null && local.content === file.afterContent) {
-    return { kind: 'skip', reason: 'already-applied' }
-  }
-  if (file.beforeTruncated) return { kind: 'conflict', reason: CONFLICT_TRUNCATED_BASELINE }
-  if (file.beforeContent === null || local.content === file.beforeContent) {
-    return { kind: 'step', op: 'write' }
-  }
-  return { kind: 'conflict', reason: CONFLICT_CONTENT_DRIFT }
-}
-
 export function buildSyncPlan(payload = {}) {
   const cursor = Number(payload.cursor ?? 0) || 0
   const policy = payload.policy ?? CONFLICT_POLICIES.STRICT
   const ignorePatterns = Array.isArray(payload.ignorePatterns) ? payload.ignorePatterns : []
   const changeSets = collectChangeSets(payload)
   const tailFiles = collectTailFiles(payload)
-  const local = createLocalView(payload.probe)
+  const local = createLocalView(payload.probe, payload.deliveredPaths)
 
   const steps = []
   const conflicts = []
@@ -240,7 +139,7 @@ export function buildSyncPlan(payload = {}) {
         recordConflict({ ...file, reason: outcome.reason, localContent: outcome.localContent })
         progress.conflicts += 1
         // 未知本地状态不是"冲突"，而是不可判断；任何策略都不得绕过。
-        if (outcome.reason === CONFLICT_PROBE_UNKNOWN || policy === CONFLICT_POLICIES.SKIP) {
+        if (outcome.reason === CONFLICT_REASONS.PROBE_UNKNOWN || policy === CONFLICT_POLICIES.SKIP) {
           if (policy === CONFLICT_POLICIES.SKIP) {
             skipped.push({ ...file, reason: `conflict:${outcome.reason}` })
             progress.accounted += 1
@@ -279,7 +178,7 @@ export function buildSyncPlan(payload = {}) {
 
   // 游标只能停在"从前往后连续完整"的 change-set 上：任何一个未完整处理的集合都必须拦住它，
   // 否则重试时那个集合里没落地的文件会被 `<= cursor` 永久跳过。
-  const hasProbeUnknown = conflicts.some(item => item.reason === CONFLICT_PROBE_UNKNOWN)
+  const hasProbeUnknown = conflicts.some(item => item.reason === CONFLICT_REASONS.PROBE_UNKNOWN)
   const completedChangeSetIds = []
   for (const progress of changeSetProgress) {
     if (!progress.complete) break
@@ -327,14 +226,20 @@ function evaluateFile(file, context) {
     return { kind: 'skip', reason: `status:${file.status}` }
   }
   if (isExcludedPath(file.path, { ignorePatterns })) return { kind: 'skip', reason: 'excluded' }
+  // 二进制内容无论本地状态如何都不写盘：服务端存的是有损文本，写下去就是损坏文件。
+  // 这条必须排在 classify 之前——否则本地恰好已有同文本时会走 already-applied，
+  // 看起来"同步成功"，实际上这个路径从来没被正确落过。
+  if (file.changeType !== 'delete' && isBinaryContent(file.afterContent)) {
+    return { kind: 'skip', reason: SKIP_REASONS.BINARY_CONTENT }
+  }
 
   const current = local.get(file.path)
-  const verdict = classify(file, current)
+  const verdict = classifyFile(file, current)
 
   if (verdict.kind === 'skip') return { kind: 'skip', reason: verdict.reason }
   if (verdict.kind === 'conflict') {
     const overwrite = policy === CONFLICT_POLICIES.OVERWRITE
-      && verdict.reason !== CONFLICT_PROBE_UNKNOWN
+      && verdict.reason !== CONFLICT_REASONS.PROBE_UNKNOWN
     if (overwrite) return { kind: 'step', step: buildStep(file, current, true) }
     return { kind: 'conflict', reason: verdict.reason, localContent: current.content }
   }
@@ -358,19 +263,4 @@ function collectTailFiles(payload) {
     files.push(normalized)
   }
   return files
-}
-
-function buildStep(file, local, overwritten) {
-  return {
-    changeId: file.changeId,
-    changeSetId: file.changeSetId,
-    path: file.path,
-    changeType: file.changeType,
-    status: file.status,
-    op: file.changeType === 'delete' ? 'delete' : 'write',
-    content: file.changeType === 'delete' ? null : file.afterContent,
-    previousContent: local.exists ? local.content : null,
-    previousExisted: local.exists,
-    overwritten: overwritten === true
-  }
 }

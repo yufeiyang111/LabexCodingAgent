@@ -3,12 +3,19 @@
 // 设计模式：State（复用 syncSessionState）+ Observer（onProgress 回调）+ 依赖注入（便于测试与替换后端）。
 
 import { buildSyncPlan } from './changeSetSyncPlan.js'
-import { markRolledBack, recordApplied, recordAppliedBatch, buildRollbackSteps, updateJournalCursor } from './syncJournal.js'
+import { markRolledBack, recordApplied, buildRollbackSteps, updateJournalCursor } from './syncJournal.js'
 import { createJournalCommitter } from './syncJournalCommitter.js'
 import { appliedStateOf, applyStep } from './syncStepApplier.js'
 import { collectProbe } from './syncProbe.js'
 import { SYNC_STATES, createSyncSession, transition } from './syncSessionState.js'
-import { SYNC_LIMITS, positiveLimit, utf8ByteLength } from './syncLimits.js'
+import { SYNC_LIMITS, positiveLimit } from './syncLimits.js'
+import {
+  assertJournalWithinLimits,
+  feedCursorAfterSuccess,
+  journalPaths,
+  preflightRollback,
+  recordAppliedBatchPreview
+} from './syncOrchestratorSupport.js'
 
 function noop() {}
 
@@ -112,7 +119,16 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
         maxBatchBytes: limits.maxBatchBytes
       })
 
-      plan = buildSyncPlan({ ...changePayload, cursor, probe, policy, ignorePatterns })
+      plan = buildSyncPlan({
+        ...changePayload,
+        cursor,
+        probe,
+        policy,
+        ignorePatterns,
+        // journal 是"这个目录收到过哪些路径"的唯一记录：只有它知道某个缺失的本地文件
+        // 是用户删的，还是这个目录从来没同步过（后者不该拦，否则首次同步永远走不通）。
+        deliveredPaths: journalPaths(journal)
+      })
       // session.steps 必须是**实际写盘队列**（合并后的 writeSteps）：
       // 进度条按 applied 索引取"当前文件"，用完整变更链会错位——
       // 同一路径改 3 次时链长 45、写盘只有 22，第 23 步之后索引直接越界。
@@ -264,8 +280,7 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     })
   }
 
-  function countFeedFiles(payload) {
-    if (!Array.isArray(payload?.changeSets)) return 0
+  function countFeedFiles(payload) {    if (!Array.isArray(payload?.changeSets)) return 0
     return payload.changeSets.reduce((sum, set) => sum + (Array.isArray(set?.files) ? set.files.length : 0), 0)
   }
 
@@ -345,54 +360,4 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
   }
 
   return { run, rollback, cancel, getSession, get isRunning() { return runActive } }
-}
-
-async function preflightRollback(adapter, journal, steps) {
-  const entries = Array.isArray(journal?.entries) ? journal.entries : []
-  const selected = entries.slice(Math.max(0, entries.length - steps.length))
-  if (selected.some(entry => typeof entry.appliedExisted !== 'boolean')) {
-    throw new Error('rollback refused: legacy journal entry has no applied state')
-  }
-  for (const entry of selected) {
-    const exists = await adapter.fileExists(entry.path)
-    if (entry.appliedExisted === false) {
-      if (exists) throw new Error(`rollback target changed: ${entry.path}`)
-      continue
-    }
-    if (!exists) throw new Error(`rollback target changed: ${entry.path}`)
-    const content = await adapter.readTextFile(entry.path)
-    if (content !== (entry.appliedContent ?? null)) {
-      throw new Error(`rollback target changed: ${entry.path}`)
-    }
-  }
-}
-
-function assertJournalWithinLimits(journal, limits = {}) {
-  const entries = Array.isArray(journal?.entries) ? journal.entries : []
-  const maxEntries = positiveLimit(limits.maxJournalEntries, SYNC_LIMITS.MAX_JOURNAL_ENTRIES)
-  if (entries.length > maxEntries) {
-    throw new Error(`journal entry limit exceeded: ${entries.length} > ${maxEntries}`)
-  }
-  const maxBytes = positiveLimit(limits.maxJournalBytes, SYNC_LIMITS.MAX_JOURNAL_BYTES)
-  const bytes = utf8ByteLength(JSON.stringify(journal ?? null))
-  if (bytes > maxBytes) {
-    throw new Error(`journal size limit exceeded: ${bytes} > ${maxBytes}`)
-  }
-}
-
-function recordAppliedBatchPreview(journal, steps, meta = {}) {
-  return recordAppliedBatch(journal, steps, meta)
-}
-
-function feedCursorAfterSuccess(payload, feedCursor, plan) {
-  const returned = payload?.nextCursor ?? {}
-  return {
-    afterChangeSetId: Math.max(
-      Number(feedCursor?.afterChangeSetId ?? 0) || 0,
-      Number(returned.afterChangeSetId ?? 0) || 0,
-      Number(plan?.nextCursor ?? 0) || 0
-    ),
-    tailUpdateTime: returned.tailUpdateTime ?? feedCursor?.tailUpdateTime ?? null,
-    tailChangeId: returned.tailChangeId ?? feedCursor?.tailChangeId ?? ''
-  }
 }

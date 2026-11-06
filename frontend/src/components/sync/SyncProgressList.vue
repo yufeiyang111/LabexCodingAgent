@@ -45,6 +45,7 @@ const REASON_LABELS = {
   'already-applied': '内容已一致',
   'already-absent': '本地已不存在',
   excluded: '在排除列表中',
+  'binary-content': '二进制文件，不能用文本同步',
   'invalid-path': '路径非法'
 }
 

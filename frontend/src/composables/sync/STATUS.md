@@ -1,15 +1,17 @@
-# 同步核心（I0–I2 + I3）交付状态
+# 同步核心（I0–I2 + I3 + I4）交付状态
 
 > **为什么这个文件在 `src/` 而不是 `docs/`**：`docs/` 整个目录被 `.gitignore` 忽略（第 74 行，
 > "entire directory is private and never pushed"），换机器 / 新克隆 / CI 都读不到。
 > 这份清单是**代码级的阻塞条件**，必须跟代码一起走。
 > 服务端同步供给契约的权威说明在 `backend/src/main/java/com/labex/labexagent/sync/README.md`。
 >
-> **状态（2026-11-06，I3 已完成并通过 live 验证）**：服务端同步供给已修正 P0 并做过真实 MySQL + JVM 验证；
+> **状态（2026-11-06，I3 + I4 已完成）**：服务端同步供给已修正 P0 并做过真实 MySQL + JVM 验证；
 > plan 层已吃 feed 形态（C01/C03/C04 已修）；**I3-a/b/c/d 已完成**：journal 持久化、
-> Vue 接线、5 个 UI 组件、接入 Review 页。
-> **已在真实 Chromium + 真实后端上完成 live 验证**（见 §4.0），过程中发现并修复了两个真实缺陷
-> （冲突按路径去重、中止后允许回退）。仍未验证的只剩原生目录选择弹窗的人工交互。
+> Vue 接线、5 个 UI 组件、接入 Review 页；**I4 v0 验收已完成**（见 §4.5），
+> 可复跑入口 `frontend/scripts/acceptance/sync-v0-acceptance.mjs`。
+> 两轮 live 验证共发现并修复 5 个真实缺陷（冲突按路径去重、中止后允许回退、
+> 二进制文件写坏、首次同步被 missing-local 拦住、冲突策略永久生效）。
+> 仍未验证的只剩原生目录选择弹窗的人工交互。
 
 ## 1. 接线前必须修（每条先写一个失败回归测试，再改实现）
 
@@ -207,6 +209,47 @@ Node 侧并发有效（1000 个文件：串行 8.8s → 并发 4 为 4.0s），�
 4. **大项目默认走导出 zip**：已有 `GET /{projectId}/export`，服务端打包、一次下载。
    对"首次拉取 10 万文件"这种场景，单流下载比逐文件写更合适。
 
+## 4.5 I4 v0 验收（2026-11-06，真实 Chromium + 真实后端 8081 + 真实 MySQL）
+
+验收对象：**项目 2「测试」**——一个真实全栈博客项目（Spring Boot + React），
+24 个 change-set / 137 条变更 / 71 个路径 / 3 个删除，排除 `.venv` 后 patch **91.1KB < 100KB**。
+
+可复跑入口（不是一次性脚本）：
+
+```bash
+node frontend/scripts/acceptance/sync-v0-acceptance.mjs --project 2
+```
+
+| 规划 §8 v0 验收项 | 结果 |
+|---|---|
+| ① 同步一个真实前端项目（排除 node_modules 后 patch < 100KB） | ✅ 91.1KB，67 个文件写入，**逐字节与服务端一致** |
+| ② 回退用例全过 | ✅ 空目录全量回退清零；skip 后回退只撤销本次写入、保留用户文件 |
+| ③ 脏目录冲突被哈希校验正确拦截 | ✅ strict 整批拦截，本地文件零改动、目录零写入 |
+| ④ L0 回归：既有测试全绿 | ✅ 669/669 |
+
+完整 16 项断言：feed 翻页收敛、patch 预算、首次同步、逐字节一致、二进制跳过、二进制不落盘、
+回退清零、strict 拦截、冲突文件未改动、拦截时零写入、skip 写入其余、skip 保留冲突文件、
+skip 结果可见、回退保留用户文件、overwrite 覆盖、再次同步收敛。
+
+**本轮发现并修复的 3 个真实缺陷**（都是单测覆盖不到、只有真实项目才暴露的）：
+
+1. **二进制文件被写成损坏文本**（`C11` 的延伸）。服务端 `Files.readString(UTF_8)` 把非法字节
+   替换成 U+FFFD 后存进 `longtext`，前端再按文本写回：`backend/blog.db` 从 45056 字节变成
+   45094 字节，SQLite 头还在、后面整片错位。判据只认 NUL（`\u0000`）——U+FFFD 不能作依据，
+   合法正文里本来就有。命中按**跳过**处理而不是冲突：原始字节在服务端落库那刻就丢了，
+   用户裁决不了；判成冲突会让 strict 永久卡在同一文件、游标推不动。
+2. **首次同步被 `missing-local` 整批拦住**。项目接入 Agent 之前就存在的文件，服务端第一条记录是
+   `modify` 而非 `create`；同步到空目录时本地 absent → 旧逻辑判缺失冲突。实测项目 2 有 1 个、
+   277 有 13 个、287 有 4 个这种路径。改为由 journal 提供 `deliveredPaths`：只有**交付过**的路径
+   缺失才算用户删除（仍然拦截），从未交付过的路径缺失只是"还没同步"。
+3. **冲突策略永久生效**。对话框文案是"按所选方式重试"，实现却把选择存进持久 ref：
+   为一次冲突选了「覆盖」之后，**之后每次点同步都会静默覆盖本地改动、也不再弹冲突提示**——
+   等于把冲突保护永久关掉而界面毫无区别。改为普通同步恒用 strict，重试用完即复位。
+
+**已知限制**：`showDirectoryPicker` 是原生对话框，CDP 无法自动化。验收脚本只替换这一个入口
+（返回真实 OPFS 目录句柄），其后的 `attachHandle → adapterFactory → orchestrator → 写盘`
+全部走生产代码。原生授权弹窗仍需人工点一次。
+
 ## 5. 明确延期（本次不做，不要顺手扩范围）
 
 1. **同秒同路径的集合内顺序**：`create_time` 秒级 + UUID 主键 ⇒ 服务端集合内顺序不可靠。
@@ -219,11 +262,12 @@ Node 侧并发有效（1000 个文件：串行 8.8s → 并发 4 为 4.0s），�
 ## 6. 门禁（改动本目录时必须跑）
 
 ```bash
-node --test frontend/src/composables/sync/*.test.mjs   # 本目录单测（230 用例）
-npm run test                                           # 前端全量（657 用例）
+node --test frontend/src/composables/sync/*.test.mjs   # 本目录单测（242 用例）
+npm run test                                           # 前端全量（669 用例）
 npm run check:undef                                    # acorn no-undef + 欠账棘轮（白名单外的解析失败会 exit 1）
 node ../scripts/check-file-lines.mjs                   # 单文件 ≤400 行（相对仓库根解析，任意 cwd 都可执行）
 npx vite build && node scripts/check-chunk-budget.mjs   # 构建 + chunk 预算
+node frontend/scripts/acceptance/sync-v0-acceptance.mjs --project 2   # v0 live 验收（需后端 8081 + dev server 3000）
 ```
 
 另有一个**非开发者可用的验收脚本**（启动后端后一条命令看结果）：

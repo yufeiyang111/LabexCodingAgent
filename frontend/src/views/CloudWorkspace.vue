@@ -2847,13 +2847,19 @@ async function handleSyncRequest() {
     const picked = await pickSyncDirectory()
     if (!picked) return
   }
-  await runSync({ policy: syncConflictPolicy.value })
+  // 普通同步永远用安全策略。对话框里选过的策略只对「那一次重试」有效：
+  // 否则用户为一次冲突选了「覆盖」之后，之后每次点同步都会静默覆盖本地改动、
+  // 也不再弹冲突提示——等于把冲突保护永久关掉，而界面上看不出任何区别。
+  await runSync({ policy: SYNC_DEFAULT_CONFLICT_POLICY })
   if (syncConflictCount.value > 0) showSyncConflicts.value = true
 }
 
 async function handleSyncRetry() {
   showSyncConflicts.value = false
-  await runSync({ policy: syncConflictPolicy.value })
+  const policy = syncConflictPolicy.value
+  await runSync({ policy })
+  // 用掉即失效，回到安全默认值。
+  syncConflictPolicy.value = SYNC_DEFAULT_CONFLICT_POLICY
 }
 
 async function handleSyncRollback() {
