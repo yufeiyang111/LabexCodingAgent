@@ -5,7 +5,7 @@
 > 同源副本在 `docs/superpowers/specs/2026-11-06-project-git-repository-design.md`（本机可见）。
 
 **日期**：2026-11-06
-**状态**：设计待评审
+**状态**：已实施（见 §11 实施记录）
 **相关**：`frontend/src/composables/sync/STATUS.md`、`backend/src/main/java/com/labex/labexagent/diff/GitSnapshotService.java`
 
 ## 1. 两套系统，一条边界
@@ -125,21 +125,35 @@ Agent 改动的 diff 属于**「这次工具调用」**，跟着对话走，不�
 
 ## 5. 关键技术约束：索引必须隔离
 
-`GitSnapshotService` 用**临时索引**做快照：`createEphemeralIndex()` 建临时文件，
-通过 `GIT_INDEX_FILE` 环境变量传给 git 进程，用完删除。
-
-用户暂存区需要**持久索引**（bare 仓库的 `index` 文件，当前 3.2MB）。
+`GitSnapshotService` 用**独立索引**做快照，用户暂存区用**仓库默认索引**。
 
 两者共用会互相污染：
-- 快照写入临时索引后，用户暂存区的勾选状态被清空；
+- 快照写入同一索引后，用户暂存区的勾选状态被清空；
 - 用户暂存的内容污染快照树，导致 apply/reject/undo 回滚到错误状态。
 
 **规则**：
-- 快照路径（`GitSnapshotService`）：**只用** `GIT_INDEX_FILE=<临时文件>`，永不碰持久索引。现状已如此，保持不变。
-- 暂存路径（`ProjectGitService`）：**只用**持久索引，永不传 `GIT_INDEX_FILE`。
+- 快照路径（`GitSnapshotService`）：**只用** `GIT_INDEX_FILE=<仓库>/snapshot.index`，永不碰默认索引。
+- 暂存路径（`ProjectGitService`）：**只用**默认索引，永不传 `GIT_INDEX_FILE`。
 - 两条路径都通过 `WorkspaceLeaseService` 的租约锁互斥。
 
 **必须有回归测试**：连续执行「快照 → 暂存 → 快照」，确认暂存状态不丢、快照树正确。
+测试见 `ProjectGitIndexIsolationTest`。
+
+### 5.0 快照索引必须是持久文件（实施期修正）
+
+原设计写的是「临时索引，用完删除」。实测推翻了这个做法：
+
+| 索引方式 | 10k 文件首次 | 10k 文件后续 |
+|---|---|---|
+| 专用持久索引 | 53.0s | **300ms / 492ms** |
+| 临时索引（用完就删） | 35.9s | **39.3s / 40.5s** |
+
+原因：git 的 stat 缓存存在索引文件里。临时索引每次都是空的，`git add` 必须重新哈希全部
+文件内容；持久索引只哈希变了的文件。10k 文件从 40 秒降到 0.5 秒，**80 倍**，且随文件数线性放大
+（10 万文件时临时索引约 7 分钟）。
+
+所以快照索引是**持久的独立文件** `snapshot.index`，隔离靠「不同文件」而不是「用完就删」。
+它不属于任何提交、也不被 `git status` 读取，因此不会污染用户可见状态。
 
 ## 5.1 与 DeepSeek Harness `workspace-changes` 的对照
 
@@ -215,21 +229,23 @@ costs no file bytes」。**本机实测达不到这个数字**，记录如下，
 做法：以 `ProjectScanPolicy.IGNORED_DIRECTORY_NAMES` 为唯一来源，生成仓库的 `info/exclude`。
 **不在工作区写 `.gitignore`**——那是用户的文件，会污染它；bare 仓库的 `info/exclude` 等价且不侵入。
 
-### 6.2 历史重建（一次性脚本）
+### 6.2 旧仓库重置（一次性脚本）
 
-`scripts/rebuild-project-git.mjs`（运维脚本，不进业务路径）：
+`scripts/project-git-reset.mjs`（运维脚本，不进业务路径）：把被污染的
+`.labex/git-snapshots` 改名备份到 `.labex/git-snapshots-backup-<timestamp>/`，**工作区文件一个不动**。
+之后用户在前端面板勾选文件、写提交信息，完成第一次提交。
 
-1. 读 `t_agent_change_set` 按 `change_set_id` 升序；
-2. 每个集合取 `t_agent_file_change` 的最终内容（同路径多行取 `change_set_id` 最大的那条）；
-3. 按集合顺序依次：写工作区文件 → `git add`（带排除 pathspec）→ `git commit`
-   （message 用集合的时间与摘要）；
-4. `delete` 类型的行执行删除；
-5. 结束后 `git gc`。
+```bash
+node scripts/project-git-reset.mjs --project=288          # 预演
+node scripts/project-git-reset.mjs --project=288 --apply  # 执行
+node scripts/project-git-reset.mjs --all --apply
+```
 
-**幂等**：先删旧仓库重建，重复执行结果一致。
+**幂等**：仓库已不存在时报告「无需处理」并退出 0，重复执行结果一致。
 
-**风险**：重建会改写工作区。开始前要求工作区干净，并备份到 `.labex/rebuild-backup-<timestamp>/`。
-必须先在项目 288（22 个路径）上验证，再动项目 2。
+**为什么不是「按 change-set 回放重建历史」**：初稿写的回放方案与 §1「Agent 改动不进 git」
+直接冲突——它会把 45 条 Agent 改动变成 5 条 git 提交，正是本文档禁止的事。历史重建只能
+丢弃脏仓库，不能伪造一条由 Agent 改动组成的提交线。
 
 ### 6.3 后端 API
 
@@ -241,10 +257,16 @@ costs no file bytes」。**本机实测达不到这个数字**，记录如下，
 | `GET /student/projects/{id}/git/commits?limit=&before=` | 提交列表（分页） |
 | `GET /student/projects/{id}/git/commits/{sha}` | 提交详情 + 文件清单 |
 | `GET /student/projects/{id}/git/commits/{sha}/diff?path=` | 提交级 diff |
+| `GET /student/projects/{id}/git/diff?path=` | 未提交改动的单文件 diff |
 | `POST /student/projects/{id}/git/revert` | 回滚到某次提交 |
 | `GET /student/projects/{id}/git/clone-url` | 带短期 token 的 clone URL |
 
 全部走现有 JWT 鉴权 + 项目归属校验。写操作（stage / commit / revert）必须拿租约锁。
+
+**clone 端点不在 `/api` 之下**：`/git/{projectId}.git` 挂在根路径。原因是 git 客户端不经过
+前端代理，且 `git clone` 的 URL 会被用户直接粘到终端；`/api/git/2.git` 这种路径会让人误以为
+要通过前端。该路径在 `SecurityConfig` 里 `permitAll`，安全性完全由短期令牌承担
+（`ProjectGitCloneTokenService`：HMAC-SHA256、只读、限定单个项目、默认 1 小时）。
 
 **`/git/status` 不做来源分组**：git 不区分谁改的。若 UI 要标注"这个文件 Agent 也改过"，
 由前端拿 `change-set` 数据自行比对，不在 git 接口里掺 Agent 概念。
@@ -259,6 +281,14 @@ costs no file bytes」。**本机实测达不到这个数字**，记录如下，
 - 回滚本身应该可撤销——再回滚一次就能回去。
 
 实现：`git read-tree` + `git checkout-index -a -f` 到工作区（不依赖 diff 文本）。
+
+**实际实现**：`git read-tree --reset -u <target>` 一步同时更新索引与工作区。比
+`checkout-index` 少一步，语义相同（都是「让工作区等于目标树」），且不会漏掉删除的文件。
+
+**Windows 陷阱**：提交信息必须用 `git commit --file <临时文件>`，不能用 `git commit -m <message>`。
+ProcessBuilder 在 Windows 上对含内嵌双引号的参数转义不完整，`Revert "abc"` 会被拆成多个 argv，
+git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回归测试见
+`ProjectGitServiceTest#commitMessageWithQuotesAndColonsSurvivesIntact`。
 
 **冲突处理**：工作区有未提交改动时拒绝并提示（与同步的 strict 策略一致：不覆盖用户改动）。
 
@@ -279,18 +309,25 @@ costs no file bytes」。**本机实测达不到这个数字**，记录如下，
 
 布局：作为 `ChangesPanel` 的 tab，不新增第三栏（1180px 以下会挤）。
 
+**实际实现**：审查页左栏内三个 tab——「Agent 改动」（原 `ChangesPanel` 原样保留）、
+「源代码管理」、「提交历史」。`DiffLines.vue` 是两者共用的 diff 渲染组件；共享外观在
+`styles/git-panels.scss`，配色走 `--wabi-*` 变量 + `html[data-theme="dark"]` 覆盖，
+与 `ChangesPanel` 同一套主题语言（初版硬编码深色值，浅色主题下不可读，已修正）。
+
 ## 7. 测试策略
 
-| 层 | 测什么 |
-|---|---|
-| 后端单测 | 排除规则生成、commit 列表分页、diff 格式、revert 冲突拒绝 |
-| 后端单测（关键） | **索引隔离**：连续「快照 → 暂存 → 快照」，暂存不丢、快照树正确 |
-| 后端集成 | 真实 git 仓库：重建 → stage → commit → clone → revert → 再 revert |
-| 前端单测 | 两个面板的纯展示逻辑 |
-| live 验收 | 项目 288 → 项目 2；`git clone` 后源码文件数 = 76 |
+| 层 | 测什么 | 实现 |
+|---|---|---|
+| 后端单测 | 排除规则与扫描名单一致 | `ProjectGitExcludeTest`（3） |
+| 后端单测 | porcelain / name-status / numstat 解析 | `GitPorcelainParserTest`（8） |
+| 后端单测（关键） | **索引隔离**：快照不碰暂存索引 | `ProjectGitIndexIsolationTest`（3） |
+| 后端单测 | status / stage / commit / 分页 / revert | `ProjectGitServiceTest`（14） |
+| 后端单测 | clone 令牌签发、校验、篡改、过期、撤销 | `ProjectGitCloneTokenServiceTest`（6） |
+| 前端单测 | 两个面板的纯展示逻辑 | `git-source-control-model.test.mjs`（9） |
+| live 验收 | 真实 clone + 用户提交 + Agent 改动不进 git | 见 §11 |
 
 **关键验收判据**：
-1. clone 下来的源码文件数 = **76**（与磁盘一致），不是 23153；
+1. clone 下来的源码文件数 = **77**（与磁盘一致），不是 23153；
 2. 用户手改文件 → 面板出现未提交改动 → 勾选 → 提交 → 历史可见；
 3. **Agent 改文件 → 工作区出现改动、`ChangesPanel` 能看到 diff 和 undo → 不进 git 历史**；
 4. 回滚到某次提交 → 新增 revert 提交，之前的历史仍在。
@@ -304,12 +341,12 @@ costs no file bytes」。**本机实测达不到这个数字**，记录如下，
 - **不改 Agent 侧**：`DiffService` / `ChangesPanel` / apply / reject / undo 全部保持原样。
 - **不在 git 接口里掺 Agent 概念**：两套系统在 API 层就分开。
 
-## 9. 实施顺序
+## 9. 实施顺序（已全部完成）
 
 1. 统一排除规则 + 生成 `info/exclude`（回归测试：名单与 `ProjectScanPolicy` 一致）
-2. **索引隔离**：`ProjectGitService` 的 stage/commit 只用持久索引 + 隔离回归测试
-3. 项目 288 验证历史重建脚本，确认 clone 文件数正确
-4. 项目 2 重建，确认 76 个源码文件
+2. **索引隔离**：`ProjectGitService` 的 stage/commit 只用默认索引 + 隔离回归测试
+3. 项目 288 验证重置脚本，确认快照树只含 24 个源码文件
+4. 项目 2 重置，确认快照树含 77 个源码文件
 5. 后端 API + 单测
 6. `git http-backend` 接入 + token 鉴权
 7. 前端 `SourceControlPanel` + `GitHistoryPanel` + 接线
@@ -321,10 +358,45 @@ costs no file bytes」。**本机实测达不到这个数字**，记录如下，
 
 | 风险 | 应对 |
 |---|---|
-| 索引互相污染（快照 vs 暂存） | 快照只用 `GIT_INDEX_FILE`，暂存只用持久索引；专门回归测试 |
-| 历史重建改写工作区 | 开始前备份到 `.labex/rebuild-backup-*`，工作区脏则拒绝 |
-| `git http-backend` 生产容器缺失 | 部署镜像需装 git；CI 加检查 |
+| 索引互相污染（快照 vs 暂存） | 快照只用 `snapshot.index`，暂存只用默认索引；专门回归测试 |
+| 旧仓库重置丢历史 | 改名备份到 `.labex/git-snapshots-backup-*`，工作区不动；脚本幂等 |
+| `git http-backend` 生产容器缺失 | 部署镜像需装 git；缺失时端点返回 503 并记 error 日志 |
 | clone URL 内嵌 token 进 shell 历史 | token 短期（1 小时）+ 只读 + 按项目授权 |
 | 回滚与同步并发 | 回滚、stage、commit 都走 `WorkspaceLeaseService` 同一把锁 |
 | 大项目 clone 慢 | 物理成本，已在 `sync/STATUS.md` §4.3 量化 |
 | 用户误以为 Agent 改动已被提交 | 面板明确显示未提交数量；`ChangesPanel` 与 git 面板并列展示 |
+
+## 11. 实施记录（2026-11-06）
+
+**代码位置**
+
+| 模块 | 文件 |
+|---|---|
+| git 子进程唯一入口 | `git/GitCommandRunner`（超时、输出上限、`GIT_INDEX_FILE` 注入） |
+| 仓库位置与初始化 | `git/ProjectGitRepository`（`info/exclude` 生成、配置缓存） |
+| 用户提交 | `git/ProjectGitService`（status / stage / commit / commits / detail / diff / revert） |
+| 输出解析 | `git/GitPorcelainParser`（纯函数，无 IO） |
+| clone 鉴权 | `git/ProjectGitCloneTokenService`、`git/ProjectGitHttpBackend` |
+| REST | `controller/student/ProjectGitController`（`/api/student/projects/{id}/git/**`） |
+| clone 端点 | `controller/student/ProjectGitHttpController`（`/git/{id}.git`） |
+| 配置 | `git/ProjectGitProperties`（`labex-agent.project-git.*`） |
+| 前端 | `components/git/{SourceControlPanel,GitHistoryPanel,DiffLines}.vue`、`composables/git/sourceControlModel.js` |
+
+**实测结果**
+
+| 项 | 结果 |
+|---|---|
+| 项目 2 快照树文件数 | **77**（重置前被污染的仓库是 23153，源码只有 56） |
+| 此前缺失的文件 | `CommentController`、`CommentService`、`PostView`、`SearchPage.jsx` 等 20 个已全部收录 |
+| 真实 `git clone` | 成功，77 个文件，1 条提交 |
+| Agent 改动后 git 历史 | 仍是 1 条（改动只出现在工作区未提交列表） |
+| 回滚 | 新增 `Revert "..."` 提交，历史从 2 条变 3 条，全部保留 |
+| 项目 2 重置备份 | 124.9 MB（`.labex/git-snapshots-backup-2026-11-06T09-52-17-692Z`） |
+
+**实施期修正的两处设计**
+
+1. **快照索引用持久文件而非临时文件**（§5.0）：10k 文件实测 40s → 0.5s。
+2. **旧仓库处理是「重置 + 用户首次提交」，不是「按 change-set 回放重建历史」**（§6.2）：
+   回放与「Agent 改动不进 git」自相矛盾。
+
+**未做**：push、分支、行级暂存、自动提交、硬链接快照（§5.2）。

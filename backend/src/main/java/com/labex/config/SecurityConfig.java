@@ -89,6 +89,9 @@ public class SecurityConfig {
                         .requestMatchers("/preview/**").permitAll()
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/ops/**").permitAll()
+                        // git 客户端无法附加 JWT 头，clone 端点由 URL 里的短期只读令牌自证；
+                        // 令牌校验在 ProjectGitHttpController 里，失败一律 401。
+                        .requestMatchers("/git/**").permitAll()
                         // 教程是公开内容：控制器只返回已发布（listPublished / getPublished）的文档，
                         // 前端路由也声明为不需要登录，故此处一并放行，否则未登录访客会拿到 403。
                         .requestMatchers("/tutorials", "/tutorials/**").permitAll()

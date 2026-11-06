@@ -1,0 +1,170 @@
+@use './git-panels.scss';
+
+/* 源代码管理面板的专属样式。共享外观（头部、状态色、空态、详情容器）在
+   styles/git-panels.scss；这里只放本面板独有的行、提交框与 clone 框。 */
+
+.sc-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.sc-row:hover {
+  background: var(--wabi-stone-light);
+}
+.sc-row.selected {
+  background: var(--wabi-green-light);
+}
+.sc-row input[type='checkbox'] {
+  margin: 0;
+  accent-color: var(--wabi-green);
+  flex-shrink: 0;
+}
+.sc-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+.sc-path:hover {
+  color: var(--wabi-green);
+}
+.sc-agent-badge {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: var(--wabi-radius-sm);
+  background: var(--wabi-brown-light);
+  color: var(--wabi-brown);
+  font-size: 10px;
+  line-height: 15px;
+}
+.sc-commit {
+  flex-shrink: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--wabi-border-light);
+}
+.sc-message {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 52px;
+  padding: 6px 8px;
+  border: 1px solid var(--wabi-border);
+  border-radius: var(--wabi-radius-sm);
+  background: var(--wabi-surface);
+  color: var(--wabi-text);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sc-message:focus {
+  outline: none;
+  border-color: var(--wabi-green);
+}
+.sc-commit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+.sc-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--wabi-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.sc-select-all input {
+  margin: 0;
+  accent-color: var(--wabi-green);
+}
+.sc-commit-btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--wabi-radius-sm);
+  background: var(--wabi-green);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sc-commit-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.sc-commit-btn:disabled {
+  background: var(--wabi-stone-light);
+  color: var(--wabi-text-muted);
+  cursor: default;
+}
+.sc-clone {
+  flex-shrink: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--wabi-border-light);
+  background: var(--wabi-surface-warm);
+}
+.sc-clone-title {
+  margin-bottom: 5px;
+  color: var(--wabi-text-secondary);
+  font-size: 11px;
+}
+.sc-clone-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sc-clone-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--wabi-border);
+  border-radius: var(--wabi-radius-sm);
+  background: var(--wabi-surface);
+  color: var(--wabi-text);
+  font-family: var(--wabi-font-mono);
+  font-size: 11px;
+}
+
+html[data-theme='dark'] .sc-row:hover { background: rgba(255, 255, 255, 0.04); }
+html[data-theme='dark'] .sc-row.selected { background: rgba(99, 102, 241, 0.1); }
+html[data-theme='dark'] .sc-path:hover { color: #c7d2fe; }
+html[data-theme='dark'] .sc-agent-badge {
+  background: rgba(139, 92, 246, 0.18);
+  color: #c4b5fd;
+}
+html[data-theme='dark'] .sc-commit,
+html[data-theme='dark'] .sc-clone {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}
+html[data-theme='dark'] .sc-clone {
+  background: rgba(0, 0, 0, 0.15);
+}
+html[data-theme='dark'] .sc-message,
+html[data-theme='dark'] .sc-clone-input {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.25);
+  color: #e4e4e7;
+}
+html[data-theme='dark'] .sc-commit-btn {
+  background: #4f46e5;
+}
+html[data-theme='dark'] .sc-commit-btn:disabled {
+  background: rgba(79, 70, 229, 0.35);
+  color: rgba(255, 255, 255, 0.6);
+}
+html[data-theme='dark'] .sc-clone-title,
+html[data-theme='dark'] .sc-select-all {
+  color: #a1a1aa;
+}

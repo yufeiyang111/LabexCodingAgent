@@ -779,6 +779,58 @@ html[data-theme='dark'] .ws-dialog-input:focus {
   min-width: 0;
   min-height: 0;
 }
+/* 左栏内部再分三个视图（Agent 改动 / 源代码管理 / 提交历史）。
+   用 tab 而不是第三栏：1180px 以下三栏会挤到不可用宽度。 */
+.review-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.review-tabs {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.review-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #a1a1aa;
+  font-size: 12px;
+  cursor: pointer;
+}
+.review-tab:hover {
+  color: #e4e4e7;
+}
+.review-tab.active {
+  color: #e4e4e7;
+  border-bottom-color: #6366f1;
+}
+.review-tab-badge {
+  padding: 0 4px;
+  border-radius: 7px;
+  background: rgba(99, 102, 241, 0.25);
+  color: #c7d2fe;
+  font-size: 10px;
+  line-height: 14px;
+}
+.review-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.review-tab-body > * {
+  height: 100%;
+  min-height: 0;
+}
 @media (max-width: 1180px) {
   .review-split {
     grid-template-columns: minmax(0, 1fr);

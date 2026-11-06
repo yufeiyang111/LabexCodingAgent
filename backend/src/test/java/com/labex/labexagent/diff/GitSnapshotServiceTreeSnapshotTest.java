@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.git.GitCommandRunner;
+import com.labex.labexagent.git.ProjectGitRepository;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,11 +21,11 @@ class GitSnapshotServiceTreeSnapshotTest {
     Path workspace;
 
     @Test
-    void pathScopedCaptureDoesNotPersistASharedWorkspaceIndex() throws Exception {
+    void pathScopedCaptureNeverTouchesTheUserStagingIndex() throws Exception {
         Files.createDirectories(workspace.resolve("src"));
         Files.writeString(workspace.resolve("src/Main.java"), "class Main {}\n");
         StudentProject project = project();
-        GitSnapshotService snapshots = new GitSnapshotService();
+        GitSnapshotService snapshots = snapshots();
 
         GitSnapshotService.Snapshot before = capturePaths(snapshots, project, "before", List.of("src/Main.java"));
         Files.writeString(workspace.resolve("src/Main.java"), "class Main { int value; }\n");
@@ -32,7 +34,9 @@ class GitSnapshotServiceTreeSnapshotTest {
         assertTrue(before.available());
         assertTrue(after.available());
         assertFalse(Files.exists(workspace.resolve(".labex/git-snapshots/index")),
-                "path-scoped captures must not retain a shared index that can accumulate generated workspace files");
+                "snapshots must not write the persistent index that the source control panel stages into");
+        assertTrue(Files.exists(workspace.resolve(".labex/git-snapshots/snapshot.index")),
+                "snapshots keep their own index so git can reuse the stat cache across captures");
     }
 
     @Test
@@ -41,7 +45,7 @@ class GitSnapshotServiceTreeSnapshotTest {
         Files.writeString(workspace.resolve("src/Main.java"), "class Main {}\n");
         Files.writeString(workspace.resolve("notes.txt"), "baseline\n");
         StudentProject project = project();
-        GitSnapshotService snapshots = new GitSnapshotService();
+        GitSnapshotService snapshots = snapshots();
 
         GitSnapshotService.Snapshot before = capturePaths(snapshots, project, "before", List.of("src/Main.java"));
         Files.writeString(workspace.resolve("src/Main.java"), "class Main { int value; }\n");
@@ -60,6 +64,11 @@ class GitSnapshotServiceTreeSnapshotTest {
         assertTrue(snapshots.restore(project, before.ref(), snapshots.serializePaths(changes)));
         assertEquals("class Main {}\n", Files.readString(workspace.resolve("src/Main.java")));
         assertEquals("unrelated change\n", Files.readString(workspace.resolve("notes.txt")));
+    }
+
+    private GitSnapshotService snapshots() {
+        GitCommandRunner git = new GitCommandRunner();
+        return new GitSnapshotService(git, new ProjectGitRepository(git));
     }
 
     private GitSnapshotService.Snapshot capturePaths(GitSnapshotService snapshots, StudentProject project,

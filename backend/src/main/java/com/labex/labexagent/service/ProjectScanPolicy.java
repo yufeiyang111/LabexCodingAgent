@@ -128,6 +128,17 @@ public final class ProjectScanPolicy {
         return IGNORED_DIRECTORY_NAMES.stream().sorted().toList();
     }
 
+    /**
+     * 项目版本库 {@code info/exclude} 的内容：与 Agent 扫描共用同一份内置目录名单。
+     *
+     * <p>写成 {@code name/} 而不是 {@code name}，只匹配目录，避免把同名文件（例如一个叫
+     * {@code build} 的脚本）误排除。写进 bare 仓库的 {@code info/exclude} 而不是工作区
+     * {@code .gitignore}：后者是用户的文件，不该被系统改写。
+     */
+    public static List<String> gitExcludeLines() {
+        return ignoredDirectoryNames().stream().map(directory -> directory + "/").toList();
+    }
+
     public static boolean isSafeWorkspaceEntry(SecureWorkspacePath paths, Path entry) {
         try {
             Path normalized = entry.toAbsolutePath().normalize();

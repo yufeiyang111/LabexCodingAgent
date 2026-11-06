@@ -2,13 +2,15 @@ package com.labex.labexagent.diff;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.labex.labexagent.git.GitCommandRunner;
+import com.labex.labexagent.git.ProjectGitRepository;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import org.junit.jupiter.api.Test;
 
 class GitSnapshotServicePathTest {
 
-    private final GitSnapshotService snapshots = new GitSnapshotService();
+    private final GitSnapshotService snapshots = snapshots();
 
     @Test
     void rejectsEscapingAndAbsolutePathsFromSerializedSnapshots() {
@@ -17,6 +19,11 @@ class GitSnapshotServicePathTest {
 
         assertTrue(snapshots.deserializePaths(escaping).isEmpty());
         assertTrue(snapshots.deserializePaths(absolute).isEmpty());
+    }
+
+    private GitSnapshotService snapshots() {
+        GitCommandRunner git = new GitCommandRunner();
+        return new GitSnapshotService(git, new ProjectGitRepository(git));
     }
 
     private String line(String status, String oldPath, String path) {

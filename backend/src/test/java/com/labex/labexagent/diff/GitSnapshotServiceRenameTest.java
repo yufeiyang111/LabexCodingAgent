@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.git.GitCommandRunner;
+import com.labex.labexagent.git.ProjectGitRepository;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -22,7 +24,7 @@ class GitSnapshotServiceRenameTest {
         StudentProject project = new StudentProject();
         project.setProjectId(12);
         project.setWorkspacePath(workspace.toString());
-        GitSnapshotService snapshots = new GitSnapshotService();
+        GitSnapshotService snapshots = snapshots();
 
         GitSnapshotService.Snapshot before = snapshots.capture(project, "before rename");
         Files.move(workspace.resolve("OldName.txt"), workspace.resolve("NewName.txt"));
@@ -50,7 +52,7 @@ class GitSnapshotServiceRenameTest {
         StudentProject project = new StudentProject();
         project.setProjectId(12);
         project.setWorkspacePath(workspace.toString());
-        GitSnapshotService snapshots = new GitSnapshotService();
+        GitSnapshotService snapshots = snapshots();
 
         GitSnapshotService.Snapshot before = snapshots.capture(project, "before ignored changes");
         Files.writeString(workspace.resolve("src/Main.java"), "class Main { int value; }\n");
@@ -67,6 +69,11 @@ class GitSnapshotServiceRenameTest {
         assertTrue(visibleDiff.contains("src/Main.java"));
         assertFalse(visibleDiff.contains("node_modules"));
         assertFalse(visibleDiff.contains(".cache"));
+    }
+
+    private GitSnapshotService snapshots() {
+        GitCommandRunner git = new GitCommandRunner();
+        return new GitSnapshotService(git, new ProjectGitRepository(git));
     }
 
     private void disableDefaultRenameDetection() throws Exception {

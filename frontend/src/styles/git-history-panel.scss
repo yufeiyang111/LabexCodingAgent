@@ -1,0 +1,176 @@
+@use './git-panels.scss';
+
+/* 提交历史面板的专属样式。共享外观在 styles/git-panels.scss。 */
+
+.gh-group {
+  padding: 8px 12px 3px;
+  color: var(--wabi-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.gh-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.gh-row:hover {
+  background: var(--wabi-stone-light);
+}
+.gh-row.active {
+  background: var(--wabi-green-light);
+}
+.gh-graph {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--wabi-green);
+}
+.gh-sha {
+  flex-shrink: 0;
+  color: var(--wabi-green);
+  font-family: var(--wabi-font-mono);
+  font-size: 11px;
+}
+.gh-message {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gh-time {
+  flex-shrink: 0;
+  color: var(--wabi-text-muted);
+  font-size: 10px;
+}
+.gh-more {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 8px 12px;
+  padding: 5px;
+  border: 1px solid var(--wabi-border);
+  border-radius: var(--wabi-radius-sm);
+  background: transparent;
+  color: var(--wabi-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.gh-more:hover:not(:disabled) {
+  background: var(--wabi-stone-light);
+}
+.gh-detail-head {
+  padding: 8px 12px;
+}
+.gh-detail-title {
+  font-weight: 600;
+  color: var(--wabi-text);
+  word-break: break-word;
+}
+.gh-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 3px;
+  color: var(--wabi-text-muted);
+  font-size: 10px;
+}
+.gh-detail-sha {
+  color: var(--wabi-green);
+  font-family: var(--wabi-font-mono);
+}
+.gh-detail-actions {
+  margin-top: 6px;
+}
+.gh-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--wabi-danger);
+  border-radius: var(--wabi-radius-sm);
+  background: var(--wabi-danger-light);
+  color: var(--wabi-danger);
+  font-size: 11px;
+  cursor: pointer;
+}
+.gh-btn:hover:not(:disabled) {
+  filter: brightness(0.97);
+}
+.gh-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.gh-files {
+  max-height: 40%;
+  overflow-y: auto;
+  border-top: 1px solid var(--wabi-border-light);
+}
+.gh-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.gh-file:hover {
+  background: var(--wabi-stone-light);
+}
+.gh-file.active {
+  background: var(--wabi-green-light);
+}
+.gh-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gh-file-stat {
+  flex-shrink: 0;
+  display: flex;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--wabi-text-muted);
+}
+.gh-add { color: var(--wabi-green); }
+.gh-del { color: var(--wabi-danger); }
+
+html[data-theme='dark'] .gh-group { color: #71717a; }
+html[data-theme='dark'] .gh-row:hover { background: rgba(255, 255, 255, 0.04); }
+html[data-theme='dark'] .gh-row.active { background: rgba(99, 102, 241, 0.12); }
+html[data-theme='dark'] .gh-graph { background: #6366f1; }
+html[data-theme='dark'] .gh-sha { color: #818cf8; }
+html[data-theme='dark'] .gh-time { color: #71717a; }
+html[data-theme='dark'] .gh-more {
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #a1a1aa;
+}
+html[data-theme='dark'] .gh-more:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
+html[data-theme='dark'] .gh-detail-title { color: #e4e4e7; }
+html[data-theme='dark'] .gh-detail-meta { color: #71717a; }
+html[data-theme='dark'] .gh-detail-sha { color: #818cf8; }
+html[data-theme='dark'] .gh-btn {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fca5a5;
+}
+html[data-theme='dark'] .gh-files { border-top-color: rgba(255, 255, 255, 0.05); }
+html[data-theme='dark'] .gh-file:hover { background: rgba(255, 255, 255, 0.04); }
+html[data-theme='dark'] .gh-file.active { background: rgba(99, 102, 241, 0.12); }
+html[data-theme='dark'] .gh-file-stat { color: #71717a; }
+html[data-theme='dark'] .gh-add { color: #4ade80; }
+html[data-theme='dark'] .gh-del { color: #f87171; }

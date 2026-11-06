@@ -18,6 +18,8 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.labex.entity.AgentChangeSet;
 import com.labex.entity.AgentFileChange;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.git.GitCommandRunner;
+import com.labex.labexagent.git.ProjectGitRepository;
 import com.labex.labexagent.service.AgentTaskService;
 import com.labex.labexagent.tool.FileContentFingerprint;
 import com.labex.labexagent.service.WorkspaceContextInvalidator;
@@ -330,7 +332,8 @@ class DiffServiceCasTest {
         Files.createDirectories(skill.getParent());
         Files.writeString(skill, "# skill instructions\n");
         StudentProject project = project();
-        GitSnapshotService snapshots = new GitSnapshotService();
+        GitCommandRunner gitRunner = new GitCommandRunner();
+        GitSnapshotService snapshots = new GitSnapshotService(gitRunner, new ProjectGitRepository(gitRunner));
         GitSnapshotService.Snapshot before = snapshots.capture(project, "before delete skill");
         Files.delete(skill);
         Files.delete(skill.getParent());

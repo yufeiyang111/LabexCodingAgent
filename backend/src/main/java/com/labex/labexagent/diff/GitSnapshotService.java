@@ -1,40 +1,53 @@
 package com.labex.labexagent.diff;
 
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.git.GitCommandRunner;
+import com.labex.labexagent.git.ProjectGitRepository;
 import com.labex.labexagent.service.ProjectScanPolicy;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+/**
+ * Agent 改动的树快照：{@code git add} + {@code write-tree}，不做 commit。
+ *
+ * <p>快照只用仓库内的 {@code snapshot.index}，与用户暂存区（仓库默认 {@code index}）物理隔离。
+ * 该索引持久保留，因为 git 的 stat 缓存能把重复快照的成本从"重新哈希全部文件"降到
+ * "只哈希变了的文件"：10k 文件实测 40s → 0.5s。索引文件本身不会污染用户可见状态，
+ * 因为它不属于任何提交，也不会被 {@code git status} 读取。
+ */
 @Service
 public class GitSnapshotService {
     private static final Logger log = LoggerFactory.getLogger(GitSnapshotService.class);
-    private static final int MAX_OUTPUT = 120_000;
+    private static final int MAX_OUTPUT = GitCommandRunner.MAX_OUTPUT;
     /**
      * 文本内容被截断时追加的标记。
      * 公开给同步供给（B1）判定内容完整性：被截断的内容不能作为本地回退依据。
-     * 注意：只要这里改了，`limit()` 与 {@code AgentSyncFeedService#isTruncated} 必须同时生效。
+     * 注意：只要这里改了，{@code AgentSyncFeedService#isTruncated} 必须同时生效。
      */
-    public static final String TRUNCATION_MARKER = "\n...[truncated]";
-    private static final int SNAPSHOT_TIMEOUT_SECONDS = 20;
+    public static final String TRUNCATION_MARKER = GitCommandRunner.TRUNCATION_MARKER;
+    private static final int SNAPSHOT_TIMEOUT_SECONDS = 120;
+
+    private final GitCommandRunner git;
+    private final ProjectGitRepository repository;
+
+    public GitSnapshotService(GitCommandRunner git, ProjectGitRepository repository) {
+        this.git = git;
+        this.repository = repository;
+    }
 
     /**
      * Captures every trackable workspace file. This remains the compatibility entry point for
@@ -45,7 +58,7 @@ public class GitSnapshotService {
     }
 
     /**
-     * Captures only the supplied, workspace-relative paths. The private Git index is updated with
+     * Captures only the supplied, workspace-relative paths. The snapshot index is updated with
      * those paths and {@code git write-tree} returns a tree object; no commit, status scan, or
      * HEAD lookup is needed on the write-tool hot path.
      */
@@ -72,40 +85,31 @@ public class GitSnapshotService {
                         projectId, safeLabel, scope, elapsedMs(startedNanos), unavailable.error());
                 return unavailable;
             }
-            Path gitDir = gitDir(root);
-            init(root, gitDir);
-            Path captureIndex = pathScoped ? createEphemeralIndex(gitDir) : null;
-            try {
-                long stageStartedNanos = System.nanoTime();
-                if (pathScoped) {
-                    runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, pathScopedAddArgs(paths), captureIndex);
-                } else {
-                    runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS,
-                            buildArgs("add", "-A", "--", ".", excludedPathspecs()));
-                }
-                long stageElapsedMs = elapsedMs(stageStartedNanos);
+            Path gitDir = repository.gitDir(root);
+            repository.ensureInitialized(root, gitDir);
+            Path snapshotIndex = repository.snapshotIndex(gitDir);
 
-                long writeTreeStartedNanos = System.nanoTime();
-                String ref = runGit(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, List.of("write-tree"), captureIndex).output().trim();
+            long stageStartedNanos = System.nanoTime();
+            if (pathScoped) {
+                git.git(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, pathScopedAddArgs(paths), snapshotIndex);
+            } else {
+                git.git(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, List.of("add", "-A", "--", "."), snapshotIndex);
+            }
+            long stageElapsedMs = elapsedMs(stageStartedNanos);
+
+            long writeTreeStartedNanos = System.nanoTime();
+            String ref = git.git(root, gitDir, SNAPSHOT_TIMEOUT_SECONDS, List.of("write-tree"), snapshotIndex)
+                    .trimmed();
             if (ref.isBlank()) {
                 throw new IOException("git write-tree returned an empty tree ref");
             }
-                long writeTreeElapsedMs = elapsedMs(writeTreeStartedNanos);
-                Snapshot snapshot = Snapshot.available(ref, "tree");
-                log.info("GIT_SNAPSHOT_CAPTURE_COMPLETE projectId={} label={} scope={} pathCount={} state={} refPrefix={} stageMs={} writeTreeMs={} elapsedMs={} indexMode={}",
-                        projectId, safeLabel, scope, paths.size(), snapshot.status(), ref.substring(0, Math.min(12, ref.length())),
-                        stageElapsedMs, writeTreeElapsedMs, elapsedMs(startedNanos),
-                        pathScoped ? "ephemeral" : "shared");
-                return snapshot;
-            } finally {
-                if (captureIndex != null) {
-                    try {
-                        Files.deleteIfExists(captureIndex);
-                    } catch (IOException cleanupFailure) {
-                        log.debug("Unable to remove ephemeral Git snapshot index: {}", cleanupFailure.getMessage());
-                    }
-                }
-            }
+            long writeTreeElapsedMs = elapsedMs(writeTreeStartedNanos);
+            Snapshot snapshot = Snapshot.available(ref, "tree");
+            log.info("GIT_SNAPSHOT_CAPTURE_COMPLETE projectId={} label={} scope={} pathCount={} state={} refPrefix={} stageMs={} writeTreeMs={} elapsedMs={}",
+                    projectId, safeLabel, scope, paths.size(), snapshot.status(),
+                    ref.substring(0, Math.min(12, ref.length())),
+                    stageElapsedMs, writeTreeElapsedMs, elapsedMs(startedNanos));
+            return snapshot;
         } catch (Exception e) {
             log.warn("GIT_SNAPSHOT_CAPTURE_FAILED projectId={} label={} scope={} pathCount={} elapsedMs={} errorType={} error={}",
                     projectId, safeLabel, scope, paths.size(), elapsedMs(startedNanos),
@@ -120,8 +124,9 @@ public class GitSnapshotService {
         }
         try {
             Path root = workspaceRoot(project);
-            Path gitDir = gitDir(root);
-            String output = runGit(root, gitDir, 60, List.of("diff", "--name-status", "-M", before.ref(), after.ref(), "--")).output();
+            Path gitDir = repository.gitDir(root);
+            String output = git.git(root, gitDir, 60,
+                    List.of("diff", "--name-status", "-M", before.ref(), after.ref(), "--")).output();
             List<ChangedFile> files = new ArrayList<>();
             for (String line : output.split("\\R")) {
                 if (line == null || line.isBlank()) {
@@ -151,7 +156,7 @@ public class GitSnapshotService {
         }
         try {
             Path root = workspaceRoot(project);
-            Path gitDir = gitDir(root);
+            Path gitDir = repository.gitDir(root);
             List<String> args = new ArrayList<>();
             args.add("diff");
             args.add("-M");
@@ -163,7 +168,7 @@ public class GitSnapshotService {
                 args.add(file.oldPath());
             }
             args.add(file.path());
-            return limit(runGit(root, gitDir, 60, args).output(), MAX_OUTPUT);
+            return limit(git.git(root, gitDir, 60, args).output(), MAX_OUTPUT);
         } catch (Exception e) {
             return "";
         }
@@ -175,9 +180,8 @@ public class GitSnapshotService {
         }
         try {
             Path root = workspaceRoot(project);
-            Path gitDir = gitDir(root);
-            CommandResult result = runGit(root, gitDir, 30, List.of("show", ref + ":" + path));
-            return limit(result.output(), MAX_OUTPUT);
+            Path gitDir = repository.gitDir(root);
+            return limit(git.git(root, gitDir, 30, List.of("show", ref + ":" + path)).output(), MAX_OUTPUT);
         } catch (Exception e) {
             return "";
         }
@@ -189,7 +193,7 @@ public class GitSnapshotService {
         }
         try {
             Path root = workspaceRoot(project);
-            Path gitDir = gitDir(root);
+            Path gitDir = repository.gitDir(root);
             List<ChangedFile> files = deserializePaths(serializedPaths);
             if (files.isEmpty()) {
                 return false;
@@ -260,7 +264,7 @@ public class GitSnapshotService {
             deletePath(root, file.path());
         }
         if (existsAt(root, gitDir, beforeRef, restorePath)) {
-            runGit(root, gitDir, 60, List.of("checkout", beforeRef, "--", restorePath));
+            git.git(root, gitDir, 60, List.of("checkout", beforeRef, "--", restorePath));
         } else {
             deletePath(root, file.path());
         }
@@ -271,7 +275,7 @@ public class GitSnapshotService {
             return false;
         }
         try {
-            runGit(root, gitDir, 20, List.of("cat-file", "-e", ref + ":" + path));
+            git.git(root, gitDir, 20, List.of("cat-file", "-e", ref + ":" + path));
             return true;
         } catch (Exception e) {
             return false;
@@ -311,146 +315,6 @@ public class GitSnapshotService {
         }
     }
 
-    private void init(Path root, Path gitDir) throws IOException, InterruptedException {
-        Files.createDirectories(gitDir.getParent());
-        boolean newRepository = !Files.exists(gitDir.resolve("HEAD"));
-        if (newRepository) {
-            long initStartedNanos = System.nanoTime();
-            log.info("GIT_SNAPSHOT_INIT_START gitDir={}", gitDir);
-            run(root, List.of("git", "init", "--bare", gitDir.toString()), 60);
-            runGit(root, gitDir, 20, List.of("config", "core.autocrlf", "false"));
-            runGit(root, gitDir, 20, List.of("config", "core.longpaths", "true"));
-            runGit(root, gitDir, 20, List.of("config", "core.symlinks", "true"));
-            runGit(root, gitDir, 20, List.of("config", "core.quotepath", "false"));
-            log.info("GIT_SNAPSHOT_INIT_COMPLETE gitDir={} elapsedMs={}", gitDir, elapsedMs(initStartedNanos));
-        }
-        Path exclude = gitDir.resolve("info").resolve("exclude");
-        Files.createDirectories(exclude.getParent());
-        if (!Files.exists(exclude)) {
-            Files.writeString(exclude, String.join("\n", ProjectScanPolicy.ignoredDirectoryNames()) + "\n",
-                    StandardCharsets.UTF_8, StandardOpenOption.CREATE);
-        }
-    }
-
-    private Path createEphemeralIndex(Path gitDir) throws IOException {
-        Path index = Files.createTempFile(gitDir, "index-path-", ".tmp");
-        Files.deleteIfExists(index);
-        return index;
-    }
-
-    private CommandResult runGit(Path root, Path gitDir, int timeoutSeconds, List<String> args) throws IOException, InterruptedException {
-        return runGit(root, gitDir, timeoutSeconds, args, null);
-    }
-
-    private CommandResult runGit(Path root, Path gitDir, int timeoutSeconds, List<String> args, Path indexFile) throws IOException, InterruptedException {
-        List<String> command = new ArrayList<>();
-        command.add("git");
-        command.add("-c");
-        command.add("core.longpaths=true");
-        command.add("-c");
-        command.add("core.symlinks=true");
-        command.add("-c");
-        command.add("core.autocrlf=false");
-        command.add("-c");
-        command.add("core.quotepath=false");
-        command.add("--git-dir");
-        command.add(gitDir.toString());
-        command.add("--work-tree");
-        command.add(root.toString());
-        command.addAll(args);
-        return run(root, command, timeoutSeconds, indexFile);
-    }
-
-    private CommandResult run(Path root, List<String> command, int timeoutSeconds) throws IOException, InterruptedException {
-        return run(root, command, timeoutSeconds, null);
-    }
-
-    private CommandResult run(Path root, List<String> command, int timeoutSeconds, Path indexFile) throws IOException, InterruptedException {
-        long startedNanos = System.nanoTime();
-        String operation = gitOperation(command);
-        log.info("GIT_SNAPSHOT_COMMAND_START operation={} timeoutSeconds={}", operation, timeoutSeconds);
-        ProcessBuilder builder = new ProcessBuilder(command)
-                .directory(root.toFile())
-                .redirectErrorStream(true);
-        if (indexFile != null) {
-            builder.environment().put("GIT_INDEX_FILE", indexFile.toString());
-        }
-        Process process = builder.start();
-        OutputCollector collector = new OutputCollector(process.getInputStream(), MAX_OUTPUT);
-        Thread reader = new Thread(collector, "labex-git-snapshot-output");
-        reader.setDaemon(true);
-        reader.start();
-        boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            process.waitFor(5, TimeUnit.SECONDS);
-            reader.join(2_000);
-            log.warn("GIT_SNAPSHOT_COMMAND_TIMEOUT operation={} timeoutSeconds={} elapsedMs={} outputChars={}",
-                    operation, timeoutSeconds, elapsedMs(startedNanos), collector.output().length());
-            throw new IOException("git command timeout");
-        }
-        reader.join(2_000);
-        if (reader.isAlive()) {
-            throw new IOException("git command output reader did not finish");
-        }
-        if (collector.error() != null) {
-            throw collector.error();
-        }
-        String output = collector.output();
-        if (process.exitValue() != 0) {
-            log.warn("GIT_SNAPSHOT_COMMAND_FAILED operation={} exitCode={} elapsedMs={} outputChars={} truncated={}",
-                    operation, process.exitValue(), elapsedMs(startedNanos), output.length(), collector.truncated());
-            throw new IOException(limit(output, 4000));
-        }
-        log.info("GIT_SNAPSHOT_COMMAND_COMPLETE operation={} exitCode={} elapsedMs={} outputChars={} truncated={}",
-                operation, process.exitValue(), elapsedMs(startedNanos), output.length(), collector.truncated());
-        return new CommandResult(process.exitValue(), output);
-    }
-
-    private String gitOperation(List<String> command) {
-        for (String value : command) {
-            if (List.of("add", "status", "commit", "rev-parse", "diff", "config", "init", "checkout", "reset",
-                    "write-tree", "cat-file", "show").contains(value)) {
-                return value;
-            }
-        }
-        return command == null || command.isEmpty() ? "unknown" : command.get(0);
-    }
-
-    private static long elapsedMs(long startedNanos) {
-        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
-    }
-
-    private List<String> buildArgs(String first, String second, String third, String fourth, String fifth, List<String> tail) {
-        List<String> args = new ArrayList<>();
-        args.add(first);
-        args.add(second);
-        args.add(third);
-        args.add(fourth);
-        args.add(fifth);
-        args.addAll(tail);
-        return args;
-    }
-
-    private List<String> buildArgs(String first, String second, String third, String fourth, List<String> tail) {
-        List<String> args = new ArrayList<>();
-        args.add(first);
-        args.add(second);
-        args.add(third);
-        args.add(fourth);
-        args.addAll(tail);
-        return args;
-    }
-
-    private List<String> buildArgs(String first, String second, String third, List<String> tail) {
-        List<String> args = new ArrayList<>();
-        args.add(first);
-        args.add(second);
-        args.add(third);
-        args.addAll(tail);
-        return args;
-    }
-
     private List<String> pathScopedAddArgs(List<String> paths) {
         List<String> args = new ArrayList<>();
         args.add("add");
@@ -474,21 +338,8 @@ public class GitSnapshotService {
         return List.copyOf(paths);
     }
 
-    private List<String> excludedPathspecs() {
-        List<String> pathspecs = new ArrayList<>();
-        for (String name : ProjectScanPolicy.ignoredDirectoryNames()) {
-            pathspecs.add(":(exclude,glob)**/" + name);
-            pathspecs.add(":(exclude,glob)**/" + name + "/**");
-        }
-        return pathspecs;
-    }
-
     private Path workspaceRoot(StudentProject project) {
         return new SecureWorkspacePath(Path.of(project.getWorkspacePath())).workspaceRoot();
-    }
-
-    private Path gitDir(Path root) {
-        return new SecureWorkspacePath(root).resolveForCreate(".labex/git-snapshots");
     }
 
     private String safeLabel(String label) {
@@ -542,10 +393,11 @@ public class GitSnapshotService {
     }
 
     private String limit(String value, int max) {
-        if (value == null || value.length() <= max) {
-            return value == null ? "" : value;
-        }
-        return value.substring(0, max) + TRUNCATION_MARKER;
+        return GitCommandRunner.limit(value, max);
+    }
+
+    private static long elapsedMs(long startedNanos) {
+        return (System.nanoTime() - startedNanos) / 1_000_000;
     }
 
     public record Snapshot(boolean available, String ref, String status, String error) {
@@ -559,52 +411,5 @@ public class GitSnapshotService {
     }
 
     public record ChangedFile(String status, String oldPath, String path) {
-    }
-
-    private static final class OutputCollector implements Runnable {
-        private final InputStream input;
-        private final int limit;
-        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
-        private final AtomicReference<IOException> error = new AtomicReference<>();
-        private volatile boolean truncated;
-
-        private OutputCollector(InputStream input, int limit) {
-            this.input = input;
-            this.limit = limit;
-        }
-
-        @Override
-        public void run() {
-            byte[] buffer = new byte[8_192];
-            try (InputStream stream = input) {
-                int read;
-                while ((read = stream.read(buffer)) != -1) {
-                    int remaining = limit - output.size();
-                    if (remaining > 0) {
-                        output.write(buffer, 0, Math.min(read, remaining));
-                    }
-                    if (read > remaining) {
-                        truncated = true;
-                    }
-                }
-            } catch (IOException e) {
-                error.set(e);
-            }
-        }
-
-        private String output() {
-            return output.toString(StandardCharsets.UTF_8);
-        }
-
-        private IOException error() {
-            return error.get();
-        }
-
-        private boolean truncated() {
-            return truncated;
-        }
-    }
-
-    private record CommandResult(int exitCode, String output) {
     }
 }

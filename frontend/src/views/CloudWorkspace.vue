@@ -30,7 +30,7 @@
 
     <div class="ws-body" :class="{ 'is-mobile': isMobile, [`mobile-tab-${mobileActiveTab}`]: isMobile, 'mobile-ai-fallback': isMobile && mobileActiveTab === 'ai' && (isAgentInCenter || aiCollapsed) }">
       <!-- 左侧活动栏 (Activity Rail) 复刻图一 -->
-      <nav class="ws-activity-rail" aria-label="活动栏">
+      <nav class="ws-activity-rail" :class="{ 'is-collapsed': explorerVisible }" aria-label="活动栏">
         <div class="rail-top">
           <button
             type="button"
@@ -107,16 +107,24 @@
           @confirm-rename="confirmRename"
           @collapse-sidebar="explorerVisible = false"
         />
+        <!--
+          会话列表只在切到该视图时才需要，用 v-if 而非 v-show：
+          它默认不可见，但 v-show 仍会把它挂载进 DOM（约 170 个节点），
+          首屏要为这些看不见的节点付布局与样式计算的钱。
+          该面板是纯 props/emits 渲染，没有本地状态，重建无副作用。
+        -->
         <ConversationPanel
-          v-show="sidebarView === 'conversations'"
+          v-if="sidebarView === 'conversations'"
           :conversations="conversations"
           :current-conversation-id="currentAgentSession?.conversationId"
+          :running-conversation-id="agentLoading ? currentAgentSession?.conversationId : null"
           @select="selectConversation"
           @fork="forkConversation"
           @compact="compactConversation"
           @delete="deleteConversation"
           @create="createNewSession"
         />
+        <!-- 搜索面板保留 v-show：它持有输入框与结果列表的本地状态，重建会丢失已搜结果 -->
         <SearchPanel
           v-show="sidebarView === 'search'"
           :project-id="projectId"
@@ -316,7 +324,12 @@
 
         <!-- 底部终端拉伸条与面板 -->
         <div v-if="terminalPanelVisible" class="ws-terminal-resize-handle" @pointerdown="startTerminalResize" title="拖动调整终端高度"></div>
-        <section v-show="terminalPanelVisible" class="ws-terminal-dock" :class="{ dark: aiDarkTheme }" :style="{ height: `${terminalHeight}px` }">
+        <!--
+          终端首次打开前不挂载：它默认隐藏，但 v-show 仍会加载 xterm（约 103KB）并建立
+          ResizeObserver，首屏为此付出一整轮布局。打开过一次之后改用 v-show 保活，
+          这样关闭面板不会销毁已连接的 PTY 会话。
+        -->
+        <section v-if="terminalEverOpened" v-show="terminalPanelVisible" class="ws-terminal-dock" :class="{ dark: aiDarkTheme }" :style="{ height: `${terminalHeight}px` }">
           <div class="ws-terminal-dock-header">
             <span>终端</span>
             <button class="ws-btn ws-btn-outline ws-btn-icon" @click="toggleTerminalPanel" title="关闭终端">
@@ -435,8 +448,22 @@
           <!-- ==================== CHAT TAB ==================== -->
           <div v-show="activeAiTab === 'chat'" :class="['ai-content', { 'is-empty': messages.length === 0 }]">
             <div class="ai-messages" ref="msgContainer" @scroll="handleScroll">
-              <button v-if="hasOlderMessages" class="ai-history-load" type="button" :disabled="loadingOlderMessages" @click="loadOlderHistory">
-                {{ loadingOlderMessages ? '正在加载更早记录...' : '加载更早记录' }}
+              <!--
+                历史窗口：默认只渲染最近 6 条消息，更早的留在 messages 里但不进 DOM。
+                一个长会话的首屏要挂载上千个节点（每条消息含 Markdown、工具卡、diff），
+                这是点击会话后 1 秒多白屏的主因。往上滚到这里时先本地展开一批，
+                本地都展开完了才请求服务端更早的一页。
+              -->
+              <button
+                v-if="hasHiddenMessages || hasOlderMessages"
+                class="ai-history-load"
+                type="button"
+                :disabled="loadingOlderMessages"
+                @click="revealEarlierMessages"
+              >
+                {{ loadingOlderMessages
+                  ? '正在加载更早记录...'
+                  : (hasHiddenMessages ? `加载更早的 ${hiddenMessageCount} 条记录` : '加载更早记录') }}
               </button>
               <!-- Empty State -->
               <div v-if="messages.length === 0" class="ai-empty">
@@ -463,7 +490,7 @@
               <!-- Messages -->
               <TransitionGroup :key="conversationRenderEpoch" name="ai-msg" tag="div" class="ai-msg-list">
                 <div
-                  v-for="(msg, i) in messages"
+                  v-for="{ msg, i } in visibleMessages"
                   :key="getMessageKey(msg, i)"
                   class="ai-msg"
                   :class="msg.role"
@@ -708,6 +735,7 @@
           </div>
 
           <ContextUsageDialog
+            v-if="showContextUsageDialog"
             :open="showContextUsageDialog"
             :status="contextUsageStatus"
             :prediction="nextContextPreview"
@@ -719,14 +747,47 @@
           <!-- ==================== REVIEW TAB (Changes) ==================== -->
           <div v-if="activeAiTab === 'review'" class="ai-content ai-content-nopad">
             <div class="review-split">
-              <ChangesPanel
-                :changes="effectiveChanges"
-                :project-id="projectId"
-                :refresh-key="changesRefreshKey"
-                @revert="revertChange"
-                @undo="onUndoChange"
-                @open-diff="handleOpenFileDiff"
-              />
+              <div class="review-main">
+                <!-- 三块面板并列但不并排：Agent 改动、用户暂存、提交历史共享同一栏宽度。
+                     Agent 改动与 git 是两套独立系统，这里只是把它们放在同一个入口下。 -->
+                <div class="review-tabs">
+                  <button
+                    v-for="tab in reviewTabs"
+                    :key="tab.key"
+                    class="review-tab"
+                    :class="{ active: reviewTab === tab.key }"
+                    @click="reviewTab = tab.key"
+                  >
+                    {{ tab.label }}
+                    <span v-if="tab.key === 'agent' && effectiveChanges.length" class="review-tab-badge">{{ effectiveChanges.length }}</span>
+                    <span v-else-if="tab.key === 'source' && gitPendingCount" class="review-tab-badge">{{ gitPendingCount }}</span>
+                  </button>
+                </div>
+                <div class="review-tab-body">
+                  <ChangesPanel
+                    v-show="reviewTab === 'agent'"
+                    :changes="effectiveChanges"
+                    :project-id="projectId"
+                    :refresh-key="changesRefreshKey"
+                    @revert="revertChange"
+                    @undo="onUndoChange"
+                    @open-diff="handleOpenFileDiff"
+                  />
+                  <SourceControlPanel
+                    v-if="reviewTab === 'source'"
+                    :project-id="projectId"
+                    :agent-paths="effectiveChanges.map(change => change.relativePath || change.file).filter(Boolean)"
+                    :refresh-key="gitRefreshKey"
+                    @committed="handleGitCommitted"
+                  />
+                  <GitHistoryPanel
+                    v-if="reviewTab === 'history'"
+                    :project-id="projectId"
+                    :refresh-key="gitRefreshKey"
+                    @reverted="handleGitCommitted"
+                  />
+                </div>
+              </div>
               <SyncPanel
                 :state="syncSession.state"
                 :busy="syncBusy"
@@ -961,12 +1022,13 @@
     </div>
 
     <ImageLightboxModal
+      v-if="showImageLightbox"
       v-model:visible="showImageLightbox"
       :src="imageLightboxSrc"
       :title="imageLightboxTitle"
     />
 
-    <ModelConfigDialog :state="modelConfigDialogState" :actions="modelConfigDialogActions" />
+    <ModelConfigDialog v-if="showModelConfig" :state="modelConfigDialogState" :actions="modelConfigDialogActions" />
 
     <!-- 工作区文件增强操作：上传入口 / 冲突裁决 / 文件时间线 -->
     <input
@@ -976,19 +1038,26 @@
       style="display: none"
       @change="fileUploads.onInputChange"
     />
+    <!--
+      以下弹窗默认关闭，各自的根节点都带 v-if。外层再挂一层 v-if，
+      让它们连同依赖的 chunk 一起推迟到真正打开时才加载。
+    -->
     <FileConflictDialog
+      v-if="fileConflictState.visible"
       :visible="fileConflictState.visible"
       :conflicts="fileConflictState.conflicts"
       :kind="fileConflictState.kind"
       @complete="resolveFileConflicts"
     />
     <FileHistoryPanel
+      v-if="historyPanelVisible"
       :visible="historyPanelVisible"
       :project-id="projectId"
       :path="historyPanelPath"
       @close="historyPanelVisible = false"
     />
     <ExportProgressDialog
+      v-if="projectExport.phase.value !== 'idle'"
       :visible="projectExport.phase.value !== 'idle'"
       :phase="projectExport.phase.value"
       :progress-percent="projectExport.progressPercent.value"
@@ -1149,6 +1218,8 @@ const SubagentSessionTab = defineAsyncComponent({ loader: () => import('@/compon
 const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/ChangesPanel.vue'))
 const SyncPanel = defineAsyncComponent(() => import('@/components/sync/SyncPanel.vue'))
 const SyncConflictDialog = defineAsyncComponent(() => import('@/components/sync/SyncConflictDialog.vue'))
+const SourceControlPanel = defineAsyncComponent(() => import('@/components/git/SourceControlPanel.vue'))
+const GitHistoryPanel = defineAsyncComponent(() => import('@/components/git/GitHistoryPanel.vue'))
 const UsagePanel = defineAsyncComponent(() => import('@/components/cloud/UsagePanel.vue'))
 const CenterDiffViewer = defineAsyncComponent(() => import('@/components/cloud/CenterDiffViewer.vue'))
 const CompletionEvidenceCard = defineAsyncComponent(() => import('@/components/cloud/CompletionEvidenceCard.vue'))
@@ -1399,6 +1470,63 @@ async function handleTreeMenuAction({ action, node }) {
 const messages = ref([])
 const conversationRenderEpoch = ref(0)
 const agentInput = ref('')
+
+/*
+ * 首屏消息窗口：只渲染最近 INITIAL_VISIBLE_MESSAGES 条。
+ *
+ * 会话历史一次性把整页 20 轮都塞进 DOM 时，长会话首屏要挂载上千节点
+ * （每条消息含 Markdown、工具卡、diff、代码高亮），点击后 1 秒多才出画面。
+ * 这里把窗口起点往后收，往上滚到顶再按 REVEAL_BATCH_MESSAGES 条一批展开，
+ * 本地展开完才向服务端要更早的一页。
+ */
+const INITIAL_VISIBLE_MESSAGES = 6
+const REVEAL_BATCH_MESSAGES = 10
+const visibleStart = ref(0)
+
+const hiddenMessageCount = computed(() => visibleStart.value)
+const hasHiddenMessages = computed(() => visibleStart.value > 0)
+
+const visibleMessages = computed(() => {
+  const all = messages.value
+  const start = Math.min(visibleStart.value, Math.max(0, all.length - 1))
+  return all.slice(start).map((msg, offset) => ({ msg, i: start + offset }))
+})
+
+/** 消息数量变化时把窗口对齐到「最近 N 条」，除非用户已经在往回翻。 */
+function resetVisibleWindow() {
+  visibleStart.value = Math.max(0, messages.value.length - INITIAL_VISIBLE_MESSAGES)
+}
+
+/*
+ * 新消息到达（用户发问、Agent 回包）时窗口要跟上，否则刚发出的消息会落在
+ * 窗口之外、屏幕上什么也不出现。判断依据是「窗口原本贴着末尾」：
+ * 用户正在往回翻历史时不打扰他。
+ */
+watch(
+  () => messages.value.length,
+  (next, prev) => {
+    if (next <= prev) return
+    const wasAtTail = prev - visibleStart.value <= INITIAL_VISIBLE_MESSAGES
+    if (wasAtTail) resetVisibleWindow()
+  }
+)
+
+function revealEarlierMessages() {
+  if (hasHiddenMessages.value) {
+    const container = msgContainer.value
+    const oldScrollHeight = container?.scrollHeight || 0
+    const oldScrollTop = container?.scrollTop || 0
+    visibleStart.value = Math.max(0, visibleStart.value - REVEAL_BATCH_MESSAGES)
+    // 插入更早的消息会把内容整体下推，补偿滚动位置以免视口跳动
+    if (container) {
+      nextTick(() => {
+        container.scrollTop = container.scrollHeight - oldScrollHeight + oldScrollTop
+      })
+    }
+    return
+  }
+  if (hasOlderMessages.value && !loadingOlderMessages.value) void loadOlderHistory()
+}
 const agentLoading = ref(false)
 const agentMode = ref('build')
 const msgContainer = ref(null)
@@ -1938,6 +2066,16 @@ function onWorkspaceTabDrop(e, targetIdx) {
 }
 
 const activeAiTab = ref('chat')
+// 审查页内的三个视图：Agent 改动 / 用户暂存 / 提交历史。
+// 用 tab 而不是第三栏：窄屏（<1180px）分栏已经挤到不可用宽度。
+const reviewTab = ref('agent')
+const reviewTabs = [
+  { key: 'agent', label: 'Agent 改动' },
+  { key: 'source', label: '源代码管理' },
+  { key: 'history', label: '提交历史' }
+]
+const gitRefreshKey = ref(0)
+const gitPendingCount = ref(0)
 
 function scrollToLatestMessageInstant() {
   nextTick(() => {
@@ -2118,6 +2256,9 @@ watch(projectId, () => { void loadProjectSkills() })
 const terminalPanelRef = ref(null)
 const workspaceCenterRef = ref(null)
 const terminalPanelVisible = ref(false)
+// 一旦打开过终端就常驻挂载，避免关闭面板时销毁 PTY 会话
+const terminalEverOpened = ref(false)
+watch(terminalPanelVisible, visible => { if (visible) terminalEverOpened.value = true })
 const terminalHeight = ref(280)
 const projectPath = ref('')
 
@@ -2801,6 +2942,31 @@ const sessionChanges = ref([])
 const effectiveChanges = computed(() => resolveEffectiveChanges(sessionChanges.value, messages.value))
 const changesRefreshKey = ref(0)
 
+/**
+ * 用户提交或回滚之后：刷新 Agent 改动面板（工作区变了）与 git 面板，
+ * 并让审查页停在刚操作的那个 tab 上。
+ */
+function handleGitCommitted() {
+  changesRefreshKey.value += 1
+  gitRefreshKey.value += 1
+  refreshGitPendingCount()
+}
+
+/** 审查页角标：未提交改动数。只用于提示，不影响任何 git 行为。 */
+async function refreshGitPendingCount() {
+  if (!projectId.value) return
+  try {
+    const result = await projectApi.gitStatus(projectId.value)
+    if (result.code === 0) {
+      const entries = result.data.entries || []
+      gitPendingCount.value = entries.length
+    }
+  } catch (error) {
+    // 角标是纯装饰，读不到就不显示，不打断页面
+    gitPendingCount.value = 0
+  }
+}
+
 // ===== 同步到本地（L1 手动同步）=====
 // 同步目标目录由用户显式授权；未授权前 run() 会失败而不是静默跳过。
 const syncConflictPolicy = ref(SYNC_DEFAULT_CONFLICT_POLICY)
@@ -2952,7 +3118,7 @@ const conversationState = useConversationState({
   currentAgentSession,
   replayHistoryEvent,
   onHistoryAttachments: hydrateHistoryAttachmentPreviews,
-  onHistoryLoaded: initialScroll,
+  onHistoryLoaded: () => { resetVisibleWindow(); initialScroll() },
   onClearMessages: msgs => msgs.forEach(m => revokeImageObjectUrls(m.attachments || []))
 })
 const {
@@ -3718,15 +3884,19 @@ function navigateMessage(direction) {
   currentMessageIndex.value = newIndex
   userScrolled.value = true
 
+  // 目标消息可能还在隐藏窗口里：先把窗口扩到能看见它，再滚动
+  if (newIndex < visibleStart.value) {
+    visibleStart.value = Math.max(0, newIndex - 1)
+  }
+
   nextTick(() => {
     const container = msgContainer.value
     if (!container) {
       isNavigating.value = false
       return
     }
-    const msgElements = container.querySelectorAll('.ai-msg')
-    if (msgElements && msgElements[newIndex]) {
-      const targetEl = msgElements[newIndex]
+    const targetEl = container.querySelector(`.ai-msg[data-index="${newIndex}"]`)
+    if (targetEl) {
       const containerRect = container.getBoundingClientRect()
       const targetRect = targetEl.getBoundingClientRect()
       const relativeTop = targetRect.top - containerRect.top
@@ -3768,16 +3938,18 @@ function updateCurrentMessageIndex() {
   const containerRect = msgContainer.value.getBoundingClientRect()
   const containerCenter = containerRect.top + containerRect.height / 2
 
-  let closestIndex = 0
+  let closestIndex = visibleStart.value
   let closestDistance = Infinity
 
-  msgElements.forEach((el, index) => {
+  msgElements.forEach(el => {
     const rect = el.getBoundingClientRect()
     const elCenter = rect.top + rect.height / 2
     const distance = Math.abs(elCenter - containerCenter)
     if (distance < closestDistance) {
       closestDistance = distance
-      closestIndex = index
+      // 隐藏窗口后 DOM 里只有可见消息，索引要按 data-index 还原成完整数组下标
+      const idx = Number(el.dataset.index)
+      closestIndex = Number.isFinite(idx) ? idx : visibleStart.value
     }
   })
 
@@ -3809,13 +3981,20 @@ async function loadOlderHistory() {
   if (!loaded || !container) return
   await nextTick()
   container.scrollTop = container.scrollHeight - oldScrollHeight + oldScrollTop
+  // 服务端新页到达后，本地窗口也要把新消息纳入可见范围，否则用户看不到刚取回的记录
+  visibleStart.value = Math.max(0, visibleStart.value - REVEAL_BATCH_MESSAGES)
 }
 
 function handleScroll() {
   if (!msgContainer.value) return
   const { scrollTop, scrollHeight, clientHeight } = msgContainer.value
-  if (scrollTop <= 48 && hasOlderMessages.value && !loadingOlderMessages.value) {
-    void loadOlderHistory()
+  if (scrollTop <= 48 && !loadingOlderMessages.value) {
+    // 先展开本地隐藏的消息；本地都展开完了才去要服务端更早的一页
+    if (hasHiddenMessages.value) {
+      revealEarlierMessages()
+    } else if (hasOlderMessages.value) {
+      void loadOlderHistory()
+    }
   }
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight
   showScrollBtn.value = distanceFromBottom > 150

@@ -1,5 +1,8 @@
 server:
-  port: 8080
+  # 默认端口必须保持 8080：生产 Caddyfile 与 docker-compose 均按 backend:8080 反代，
+  # 且 compose 未显式设置 SERVER_PORT。本机端口冲突请用环境变量覆盖，不要改这里：
+  #   PowerShell:  $env:SERVER_PORT=8081
+  port: ${SERVER_PORT:8080}
   servlet:
     context-path: /api
 
@@ -246,6 +249,7 @@ labex-agent:
     history-ttl: ${LABEX_AGENT_CONVERSATION_CACHE_HISTORY_TTL:60s}
     context-status-ttl: ${LABEX_AGENT_CONVERSATION_CACHE_CONTEXT_STATUS_TTL:30s}
     double-delete-delay-ms: ${LABEX_AGENT_CONVERSATION_CACHE_DOUBLE_DELETE_DELAY_MS:500}
+    list-max-value-bytes: ${LABEX_AGENT_CONVERSATION_CACHE_LIST_MAX_VALUE_BYTES:262144}
     key-prefix: ${LABEX_AGENT_CONVERSATION_CACHE_KEY_PREFIX:labex:conversation}
   secret-store:
     master-key: ${LABEX_AGENT_SECRET_STORE_MASTER_KEY:}
@@ -276,6 +280,15 @@ labex-agent:
   file-ops:
     export-storage-dir: ${LABEX_AGENT_EXPORT_STORAGE_DIR:${LABEX_AGENT_UPLOAD_PATH:D:/LabexAgent/uploads}/exports}
     export-cleanup-interval-ms: ${LABEX_AGENT_EXPORT_CLEANUP_INTERVAL_MS:60000}
+  project-git:
+    query-timeout-seconds: ${LABEX_AGENT_PROJECT_GIT_QUERY_TIMEOUT_SECONDS:60}
+    write-timeout-seconds: ${LABEX_AGENT_PROJECT_GIT_WRITE_TIMEOUT_SECONDS:180}
+    commits-page-size: ${LABEX_AGENT_PROJECT_GIT_COMMITS_PAGE_SIZE:50}
+    status-max-entries: ${LABEX_AGENT_PROJECT_GIT_STATUS_MAX_ENTRIES:2000}
+    diff-max-bytes: ${LABEX_AGENT_PROJECT_GIT_DIFF_MAX_BYTES:400000}
+    clone-token-ttl-minutes: ${LABEX_AGENT_PROJECT_GIT_CLONE_TOKEN_TTL_MINUTES:60}
+    # clone 地址对外暴露的基地址（如 https://labex.example.com）。留空时按请求的 Host 推断。
+    public-base-url: ${LABEX_AGENT_PROJECT_GIT_PUBLIC_BASE_URL:}
   agent-cleanup:
     enabled: ${LABEX_AGENT_CLEANUP_ENABLED:true}
     interval-ms: ${LABEX_AGENT_CLEANUP_INTERVAL_MS:1800000}

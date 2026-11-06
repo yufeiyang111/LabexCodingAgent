@@ -201,6 +201,36 @@ export const projectApi = {
   agentUndoDiff(projectId, changeId) {
     return request.post('/student/projects/' + projectId + '/agent/diff/' + changeId + '/undo')
   },
+  // 用户 git 提交（源码管理面板）。与上面 agent* 是两套独立系统：
+  // agent* 是 Agent 改动的 diff/undo，这里是用户自己的版本库历史。
+  gitStatus(projectId) {
+    return request.get('/student/projects/' + projectId + '/git/status')
+  },
+  gitStage(projectId, paths = []) {
+    return request.post('/student/projects/' + projectId + '/git/stage', { paths })
+  },
+  gitCommit(projectId, message) {
+    return request.post('/student/projects/' + projectId + '/git/commit', { message })
+  },
+  gitCommits(projectId, params = {}) {
+    return request.get('/student/projects/' + projectId + '/git/commits', { params })
+  },
+  gitCommitDetail(projectId, sha) {
+    return request.get('/student/projects/' + projectId + '/git/commits/' + sha)
+  },
+  gitCommitDiff(projectId, sha, path) {
+    const params = path ? { path } : {}
+    return request.get('/student/projects/' + projectId + '/git/commits/' + sha + '/diff', { params })
+  },
+  gitWorkingDiff(projectId, path) {
+    return request.get('/student/projects/' + projectId + '/git/diff', { params: { path } })
+  },
+  gitRevert(projectId, sha) {
+    return request.post('/student/projects/' + projectId + '/git/revert', { sha })
+  },
+  gitCloneUrl(projectId) {
+    return request.get('/student/projects/' + projectId + '/git/clone-url')
+  },
   list() {
     return request.get('/student/projects')
   },
