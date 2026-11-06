@@ -31,24 +31,44 @@ function journalWithOneEntry() {
 
 // 说明：IndexedDB 的真实持久化只能在浏览器里验证（Node 无实现）。
 // 这里用 fake 只验证「读写协议 + 错误语义」，不冒充浏览器路径已验证。
+//
+// fake 必须实现真实 IndexedDB 用到的全部方法：journal 增量存储依赖
+// getAll(range) 按键区间取某项目的条目，缺了它测试就会在替身上失败而不是在真实现上。
 function createFakeIndexedDb(options = {}) {
-  const state = new Map()
+  // 每个 store 一份独立状态：entries 与 cursors 是两个不同的 store。
+  const stores = new Map()
   const calls = []
-  const store = {
-    get(key) {
-      calls.push(['get', key])
-      return createRequest(state.get(key))
-    },
-    put(value, key) {
-      calls.push(['put', key])
-      if (options.putError) return createRequest(undefined, options.putError)
-      state.set(key, value)
-      return createRequest(undefined)
-    },
-    delete(key) {
-      calls.push(['delete', key])
-      state.delete(key)
-      return createRequest(undefined)
+  function stateOf(name) {
+    if (!stores.has(name)) stores.set(name, new Map())
+    return stores.get(name)
+  }
+  function sortedKeys(map, range) {
+    const keys = [...map.keys()].sort()
+    if (!range) return keys
+    return keys.filter(key => key >= range.lower && key <= range.upper)
+  }
+  function makeStore(name) {
+    return {
+      get(key) {
+        calls.push(['get', name, key])
+        return createRequest(stateOf(name).get(key))
+      },
+      getAll(range) {
+        calls.push(['getAll', name])
+        const map = stateOf(name)
+        return createRequest(sortedKeys(map, range).map(key => map.get(key)))
+      },
+      put(value, key) {
+        calls.push(['put', name, key])
+        if (options.putError) return createRequest(undefined, options.putError)
+        stateOf(name).set(key, value)
+        return createRequest(undefined)
+      },
+      delete(key) {
+        calls.push(['delete', name, key])
+        stateOf(name).delete(key)
+        return createRequest(undefined)
+      }
     }
   }
   function createRequest(result, error = null) {
@@ -63,12 +83,14 @@ function createFakeIndexedDb(options = {}) {
     return request
   }
   const transaction = {
-    objectStore() { return store },
+    objectStore(name) { return makeStore(name) },
     oncomplete: null,
     onerror: null,
     onabort: null
   }
   const database = {
+    // 库 schema 里始终有全部 store（与 openSyncDatabase 的建库行为一致）；
+    // 旧格式 journal 的"是否存在"由 get 的结果决定，不靠 schema 判断。
     objectStoreNames: { contains() { return true } },
     transaction(name, mode) {
       calls.push(['transaction', name, mode])
@@ -78,8 +100,10 @@ function createFakeIndexedDb(options = {}) {
     close() { calls.push(['close']) }
   }
   return {
-    state,
+    stores,
     calls,
+    /** 直接读某个 store 的内容（测试断言用）。 */
+    dump(name) { return stateOf(name) },
     // 与真实 IndexedDB 一致：每次 open() 返回一个新的请求对象，各自异步成功。
     open() {
       const openRequest = {

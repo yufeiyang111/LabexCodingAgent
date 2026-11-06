@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { loadJournal, saveJournal } from './journalStore.js'
 import { createJournal } from './syncJournal.js'
+import { SYNC_OBJECT_STORES } from './syncDatabase.js'
 
 // 用户 2026-11-05 的浏览器里已经存在一个"坏"的 version 1 库：
 //   早期实现里 directoryHandleStore 先建库，只创建了 directory-handles，
@@ -49,14 +50,23 @@ function createBrokenDatabase({ existingStores, existingVersion = 1 }) {
           return {}
         },
         transaction(storeName) {
-          if (!record.stores.has(storeName)) {
-            throw new Error('One of the specified object stores was not found.')
+          // journal 的增量布局在**一个事务里**同时写 entries 与 cursors，因此这里支持数组。
+          const names = Array.isArray(storeName) ? storeName : [storeName]
+          for (const name of names) {
+            if (!record.stores.has(name)) {
+              throw new Error('One of the specified object stores was not found.')
+            }
           }
-          const data = record.stores.get(storeName)
           const transaction = {
-            objectStore() {
+            objectStore(name) {
+              const data = record.stores.get(name)
               return {
                 get(key) { return makeRequest(data.get(key)) },
+                getAll(range) {
+                  const keys = [...data.keys()].sort()
+                  const filtered = range ? keys.filter(key => key >= range.lower && key <= range.upper) : keys
+                  return makeRequest(filtered.map(key => data.get(key)))
+                },
                 put(value, key) { data.set(key, value); return makeRequest(undefined) },
                 delete(key) { data.delete(key); return makeRequest(undefined) }
               }
@@ -108,7 +118,7 @@ test('the repair preserves data already stored in surviving object stores', asyn
 })
 
 test('a healthy database is opened without any extra upgrade', async () => {
-  const indexedDB = createBrokenDatabase({ existingStores: ['directory-handles', 'sync-journals'] })
+  const indexedDB = createBrokenDatabase({ existingStores: [...SYNC_OBJECT_STORES] })
 
   await saveJournal('288', createJournal(), { indexedDB })
 

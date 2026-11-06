@@ -9,6 +9,7 @@ import { appliedStateOf, applyStep } from './syncStepApplier.js'
 import { collectProbe } from './syncProbe.js'
 import { SYNC_STATES, createSyncSession, transition } from './syncSessionState.js'
 import { SYNC_LIMITS, positiveLimit } from './syncLimits.js'
+import { findProbeLimitFailure, findWriteLimitFailure } from './syncWriteLimits.js'
 import {
   assertJournalWithinLimits,
   feedCursorAfterSuccess,
@@ -118,6 +119,21 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
         maxFiles: limits.maxFiles,
         maxBatchBytes: limits.maxBatchBytes
       })
+
+      // 资源上限类的失败必须单独报出来，不能混进"冲突"。
+      // 它们不是"本地和云端不一致"，用户按冲突去处理永远处理不完；
+      // 而且这些批次一个文件都不该写，所以要在这里直接终止。
+      const probeLimitFailure = findProbeLimitFailure(failures)
+      if (probeLimitFailure) {
+        return moveTo(SYNC_STATES.FAILED, { error: probeLimitFailure, applied: 0, cursor })
+      }
+
+      // 探针只检查"本地文件有多大"，本地目录为空时它什么都读不到——
+      // 云端交付的巨型文件会绕过上限直接写进浏览器，所以写入侧必须独立再查一次。
+      const writeLimitFailure = findWriteLimitFailure(changePayload, limits)
+      if (writeLimitFailure) {
+        return moveTo(SYNC_STATES.FAILED, { error: writeLimitFailure, applied: 0, cursor })
+      }
 
       plan = buildSyncPlan({
         ...changePayload,
@@ -280,7 +296,8 @@ export function createChangeSetSyncOrchestrator(dependencies = {}) {
     })
   }
 
-  function countFeedFiles(payload) {    if (!Array.isArray(payload?.changeSets)) return 0
+  function countFeedFiles(payload) {
+    if (!Array.isArray(payload?.changeSets)) return 0
     return payload.changeSets.reduce((sum, set) => sum + (Array.isArray(set?.files) ? set.files.length : 0), 0)
   }
 

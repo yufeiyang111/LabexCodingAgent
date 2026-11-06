@@ -5,12 +5,14 @@
 > 这份清单是**代码级的阻塞条件**，必须跟代码一起走。
 > 服务端同步供给契约的权威说明在 `backend/src/main/java/com/labex/labexagent/sync/README.md`。
 >
-> **状态（2026-11-06，I3 + I4 已完成）**：服务端同步供给已修正 P0 并做过真实 MySQL + JVM 验证；
+> **状态（2026-11-06，I3 + I4 已完成，规模化两项已落地）**：服务端同步供给已修正 P0 并做过真实 MySQL + JVM 验证；
 > plan 层已吃 feed 形态（C01/C03/C04 已修）；**I3-a/b/c/d 已完成**：journal 持久化、
-> Vue 接线、5 个 UI 组件、接入 Review 页；**I4 v0 验收已完成**（见 §4.5），
+> Vue 接线、5 个 UI 组件、接入 Review 页；**I4 v0 验收已完成**（见 §4.6），
 > 可复跑入口 `frontend/scripts/acceptance/sync-v0-acceptance.mjs`。
 > 两轮 live 验证共发现并修复 5 个真实缺陷（冲突按路径去重、中止后允许回退、
 > 二进制文件写坏、首次同步被 missing-local 拦住、冲突策略永久生效）。
+> 规模化：journal 增量存储（500 个 4KB 文件写入量 66.4MB → 2.09MB）与批次分块
+> （解除 500 文件整批阻断），见 §4.4。
 > 仍未验证的只剩原生目录选择弹窗的人工交互。
 
 ## 1. 接线前必须修（每条先写一个失败回归测试，再改实现）
@@ -155,21 +157,22 @@ GET /student/projects/{projectId}/agent/changes/feed?afterChangeSetId=&tailUpdat
 2. 目录句柄缓存：`getDirectoryHandle` 每次约 1.1ms，40 次重复解析 118ms → 6ms
    （`fsAccessDirectoryAdapter.js`）。
 
-**仍存在的规模问题**：journal 每次提交都把整个 journal 重新序列化并整条 `put`。
+**当时的规模问题（已修，见 §4.4）**：journal 每次提交都把整个 journal 重新序列化并整条 `put`。
 实测 50/200/500 个 4KB 文件的 journal 写入总量是 1.8MB / 23.6MB / 135.6MB，
 而增量写入只需 0.4MB / 1.7MB / 4.2MB（差 4.4× / 14× / 32.5×）。
-500 个文件时单是 journal 就 1.6s。改成按条目增量写是下一步的优化点，未做。
+500 个文件时单是 journal 就 1.6s。
 
 ## 4.2 规模上限（2026-11-06，回答"能不能撑 10 万文件"）
 
-**不能。而且第一个撞到的不是写盘速度，是内存与 journal 上限。**
+**写盘速度不是瓶颈，浏览器 API 的固定开销才是。**
+（下表是 2026-11-06 优化**之前**的状态，其中前两条已在 §4.4 修掉。）
 
-| 约束 | 值 | 折算成文件数 |
-|---|---|---|
-| `MAX_BATCH_FILES` | 500 | 单批 500 个文件，超出**整批 blocked，零写入** |
-| `MAX_JOURNAL_BYTES` | 32MB | 每条 entry 存 `previousContent` + `appliedContent`（两份），4KB 文件约 **3950 个**，20KB 文件约 **813 个** |
-| `MAX_JOURNAL_ENTRIES` | 10000 | 1KB 文件约 10000 个 |
-| journal 全量重写 | 每 8 步一次 | 10 万文件累计写 **2.4TB**（O(n²)） |
+| 约束 | 值 | 折算成文件数 | 现状 |
+|---|---|---|---|
+| `MAX_BATCH_FILES` | 500 | 旧：单批 500 个文件，超出整批 blocked | ✅ 已改为分块读取 |
+| `MAX_JOURNAL_BYTES` | 32MB | 旧：每条存两份内容，4KB 文件约 3950 个 | ✅ 增量存储后按内容量计 |
+| `MAX_JOURNAL_ENTRIES` | 10000 | 1KB 文件约 10000 个 | 仍是硬上限 |
+| journal 全量重写 | 每 8 步一次 | 旧：10 万文件累计写 2.4TB（O(n²)） | ✅ 已消除 |
 
 实测单文件写盘成本约 20ms（浏览器 File System Access，与内容大小无关）：
 
@@ -182,6 +185,10 @@ GET /student/projects/{projectId}/agent/changes/feed?afterChangeSetId=&tailUpdat
 **并行写无效**：浏览器侧 200 个文件，并发 1 / 4 / 16 分别是 4186 / 3961 / 3975ms，
 几乎无差别（File System Access 的 `createWritable` 在渲染进程串行化）。
 Node 侧并发有效（1000 个文件：串行 8.8s → 并发 4 为 4.0s），说明瓶颈在浏览器 API 而非磁盘。
+
+**结论**：优化后 10 万文件在**正确性**上已经可行（不再被批次和 journal 上限卡死），
+但首次全量同步仍需约 33 分钟——这是"每个文件一次落盘"的物理成本，
+只有 daemon（§4.5 第 2 条）能改变它。
 
 ## 4.3 与 git 的对比（同一台机器，NVMe SSD，2000 个 2KB 文件）
 
@@ -198,18 +205,53 @@ Node 侧并发有效（1000 个文件：串行 8.8s → 并发 4 为 4.0s），�
 结论：**没有任何传输方式能绕过"每个文件一次落盘"的物理成本**。能优化的是
 「不重复写已经一致的文件」和「一次写更少的文件」，而不是换协议。
 
-## 4.4 真正可行的规模化方向（未实现，按收益排序）
+## 4.4 规模化：已完成的两项（2026-11-06）
+
+### ① journal 增量存储（已实现）
+
+旧实现每次提交都把整个 journal 序列化后整条 `put`，写入量是 **O(n²)**。
+现在每条 entry 一条记录（`sync-journal-entries`）、游标单独一条（`sync-journal-cursors`），
+一次提交只写新增的那几条，两条记录在同一个事务里写。
+
+真实 Chromium + 真实 IndexedDB 实测（`scripts/acceptance/sync-journal-browser-bench.mjs`）：
+
+| 文件数 × 4KB | 内容量 | 提交次数 | 累计写入 | 耗时 |
+|---|---|---|---|---|
+| 500 | 1.95MB | 63 | **2.09MB**（改前 66.4MB） | 273ms |
+| 2000 | 7.81MB | 250 | **8.36MB** | 1369ms |
+
+写入量从"内容量的 33 倍"降到"1.07 倍"，并且**随文件数线性增长**——
+2000 个文件是 500 个的 4.0 倍文件、4.0 倍写入。3950 个文件的硬上限因此消失。
+
+旧格式（整对象）仍可读：`loadJournal` 在新布局没有游标记录时迁移一次并删掉旧记录。
+退出条件：所有用户完成一次同步后，即可删除 `sync-journals` store 与 `readLegacyJournal`。
+
+### ② 批次分块（已实现）
+
+旧实现里 `MAX_BATCH_FILES=500` 是**整批否决**：超过就全部标成 `probe-unknown`、
+整批 blocked、零写入。500 个文件的中型项目直接同步不了，而且界面显示成
+"500 个文件都无法判断本地状态"——原因和现象对不上。
+
+现在 `maxFiles` 只决定"每块读多少"，文件数不再是否决条件。
+`MAX_FILE_BYTES` 与 `MAX_BATCH_BYTES` 的语义不变，且补上了**写入侧**的检查：
+探针只能看到本地文件多大，本地目录为空时它什么都读不到，
+云端交付的巨型文件原本会绕过上限直接写进浏览器。
+
+报错顺序也修正了：整批内容放不进内存时先报 `batch size limit exceeded`，
+而不是等 journal 上限先触发——后者会让用户以为是"历史记录太多"。
+
+## 4.5 仍然可行的规模化方向（未实现，按收益排序）
 
 1. **只写变更 + 内容寻址跳过**：本地已有相同内容的文件直接跳过，不发、不写。
    同步的瓶颈从"项目规模"降为"本次改动规模"——这也是 git 唯一真正的优势来源。
-2. **journal 增量存储**：按条目追加 + 独立游标记录，消除 O(n²)。
-   500 个文件时 journal 从 1.6s 降到约 0.18s，且解除 3950 个文件的硬上限。
-3. **daemon（L3）**：常驻进程直接写磁盘，绕开浏览器 File System Access 的串行化。
+   现状：`changeSetSyncPlan` 已有 `already-applied` 判定（比对 `afterContent`），
+   但它只在服务端**交付了这个文件**之后才生效，省的是写盘、不是传输。
+2. **daemon（L3）**：常驻进程直接写磁盘，绕开浏览器 File System Access 的串行化。
    实测 Node 并发 4 可达 3.95ms/文件，比浏览器的 20ms 快 5 倍，且能在关页面后继续。
-4. **大项目默认走导出 zip**：已有 `GET /{projectId}/export`，服务端打包、一次下载。
+3. **大项目默认走导出 zip**：已有 `GET /{projectId}/export`，服务端打包、一次下载。
    对"首次拉取 10 万文件"这种场景，单流下载比逐文件写更合适。
 
-## 4.5 I4 v0 验收（2026-11-06，真实 Chromium + 真实后端 8081 + 真实 MySQL）
+## 4.6 I4 v0 验收（2026-11-06，真实 Chromium + 真实后端 8081 + 真实 MySQL）
 
 验收对象：**项目 2「测试」**——一个真实全栈博客项目（Spring Boot + React），
 24 个 change-set / 137 条变更 / 71 个路径 / 3 个删除，排除 `.venv` 后 patch **91.1KB < 100KB**。
@@ -262,8 +304,8 @@ skip 结果可见、回退保留用户文件、overwrite 覆盖、再次同步�
 ## 6. 门禁（改动本目录时必须跑）
 
 ```bash
-node --test frontend/src/composables/sync/*.test.mjs   # 本目录单测（242 用例）
-npm run test                                           # 前端全量（669 用例）
+node --test frontend/src/composables/sync/*.test.mjs   # 本目录单测（252 用例）
+npm run test                                           # 前端全量（679 用例）
 npm run check:undef                                    # acorn no-undef + 欠账棘轮（白名单外的解析失败会 exit 1）
 node ../scripts/check-file-lines.mjs                   # 单文件 ≤400 行（相对仓库根解析，任意 cwd 都可执行）
 npx vite build && node scripts/check-chunk-budget.mjs   # 构建 + chunk 预算

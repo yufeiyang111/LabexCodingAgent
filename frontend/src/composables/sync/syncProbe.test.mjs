@@ -75,12 +75,20 @@ test('marks an oversized local file as unknown without reading it as a valid bas
   assert.match(probe.get('src/large.txt').error, /file size limit exceeded/)
 })
 
-test('marks the batch unknown when the file count limit is exceeded', async () => {
-  const adapter = createReadOnlyAdapter({})
-  const { probe, failures } = await collectProbe(adapter, ['a.js', 'b.js', 'c.js'], { maxFiles: 2 })
-  assert.equal(failures.length, 3)
-  assert.match(failures[0].message, /batch file limit exceeded/)
-  assert.equal([...probe.values()].every(entry => entry.state === 'unknown'), true)
+test('reads every path even when there are more files than one chunk holds', async () => {
+  // 旧行为：超过 maxFiles 就把整批标成 unknown，于是 500 个文件的中型项目
+  // 同步不了，界面还显示成"500 个文件都无法判断本地状态"。
+  // 现在 maxFiles 只决定"每块读多少"，不再是否决条件。
+  const adapter = createReadOnlyAdapter({ 'a.js': '1', 'b.js': '2', 'c.js': '3' })
+  const chunks = []
+  const { probe, failures } = await collectProbe(adapter, ['a.js', 'b.js', 'c.js'], {
+    maxFiles: 2,
+    onProgress: info => chunks.push(info.probed)
+  })
+  assert.equal(failures.length, 0)
+  assert.equal([...probe.values()].every(entry => entry.state === 'present'), true)
+  // 每读满一块报一次进度：2 个文件一块，3 个文件 → 1 次回调
+  assert.deepEqual(chunks, [2])
 })
 
 test('marks the batch unknown when the total content byte limit is exceeded', async () => {

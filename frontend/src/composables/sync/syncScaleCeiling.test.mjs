@@ -37,9 +37,10 @@ function feedOf(count) {
   }
 }
 
-test('a batch larger than the probe limit is blocked entirely instead of syncing partially', async () => {
-  // 不是"超过的部分被跳过"，而是整批 unknown → blocked → 一个文件都不写。
-  // 这意味着 10 万文件的项目在第一次同步时会直接卡住，而不是慢慢跑。
+test('a batch larger than one chunk is synced fully instead of being blocked', async () => {
+  // 2026-11-06 之前：整批 unknown → blocked → 一个文件都不写，
+  // 500 个文件的中型项目直接同步不了，界面还显示成"全部无法判断本地状态"。
+  // 现在 maxFiles 只决定每块读多少，文件数本身不再是天花板。
   const count = SYNC_LIMITS.MAX_BATCH_FILES + 1
   const adapter = createMemoryAdapter({})
   const orchestrator = createChangeSetSyncOrchestrator({
@@ -50,10 +51,10 @@ test('a batch larger than the probe limit is blocked entirely instead of syncing
 
   const session = await orchestrator.run()
 
-  assert.equal(session.state, SYNC_STATES.BLOCKED)
-  assert.equal(session.applied, 0)
-  assert.equal(adapter.writes.length, 0)
-  assert.match(session.conflicts[0].reason, /probe-unknown/)
+  assert.equal(session.state, SYNC_STATES.DONE)
+  assert.equal(session.applied, count)
+  assert.equal(adapter.writes.length, count)
+  assert.equal(session.conflicts.length, 0)
 })
 
 test('the journal entry ceiling bounds how many files one project can ever sync', () => {
@@ -71,8 +72,12 @@ test('the journal entry ceiling bounds how many files one project can ever sync'
 })
 
 test('a batch whose content exceeds the journal byte ceiling fails before writing anything', async () => {
-  // journal 每条 entry 要同时存 previousContent 与 appliedContent，
+  // journal 每条 entry 要存 previousContent 与 appliedContent，
   // 所以 MAX_JOURNAL_BYTES(32MB) 实际只够约 16MB 内容。超了在写第一个文件之前就失败。
+  //
+  // 2026-11-06 起先命中 MAX_BATCH_BYTES：那批内容本身就已经放不进内存，
+  // 它比 journal 上限更早、更准确地描述同一件事。两个原因都指向"这批太大"，
+  // 关键是**不变量不变**：零写入、显式失败，绝不写一半再发现存不下回退依据。
   const fileSize = 1024 * 1024
   const count = Math.floor(SYNC_LIMITS.MAX_BATCH_BYTES / fileSize) + 2
   const adapter = createMemoryAdapter({})
@@ -89,7 +94,7 @@ test('a batch whose content exceeds the journal byte ceiling fails before writin
 
   // 关键不变量：宁可整批失败，也不能写一半再发现存不下回退依据。
   assert.equal(session.state, SYNC_STATES.FAILED)
-  assert.match(session.error, /journal size limit exceeded/)
+  assert.match(session.error, /limit exceeded/)
   assert.equal(adapter.writes.length, 0)
 })
 

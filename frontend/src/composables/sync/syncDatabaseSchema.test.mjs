@@ -61,14 +61,23 @@ function createSchemaAwareIndexedDb() {
       transaction(storeName, _mode) {
         // 真实浏览器在 store 不存在时立即抛错，这里必须同样失败，
         // 否则测试会掩盖用户看到的那个 bug。
-        if (!record.stores.has(storeName)) {
-          throw new Error("One of the specified object stores was not found.")
+        // journal 的增量布局在**一个事务里**同时写 entries 与 cursors，因此这里支持数组。
+        const names = Array.isArray(storeName) ? storeName : [storeName]
+        for (const name of names) {
+          if (!record.stores.has(name)) {
+            throw new Error("One of the specified object stores was not found.")
+          }
         }
         const transaction = {
-          objectStore() {
-            const data = record.stores.get(storeName)
+          objectStore(name) {
+            const data = record.stores.get(name)
             return {
               get(key) { return makeRequest(data.get(key)) },
+              getAll(range) {
+                const keys = [...data.keys()].sort()
+                const filtered = range ? keys.filter(key => key >= range.lower && key <= range.upper) : keys
+                return makeRequest(filtered.map(key => data.get(key)))
+              },
               put(value, key) { data.set(key, value); return makeRequest(undefined) },
               delete(key) { data.delete(key); return makeRequest(undefined) }
             }

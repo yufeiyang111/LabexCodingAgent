@@ -21,7 +21,9 @@ export const SYNC_DB_NAME = 'labex-sync'
  */
 export const SYNC_OBJECT_STORES = Object.freeze([
   'directory-handles',
-  'sync-journals'
+  'sync-journals',
+  'sync-journal-entries',
+  'sync-journal-cursors'
 ])
 
 /**

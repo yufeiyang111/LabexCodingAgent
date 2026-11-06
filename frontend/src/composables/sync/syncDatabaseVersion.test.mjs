@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { loadJournal, saveJournal } from './journalStore.js'
+import { SYNC_OBJECT_STORES } from './syncDatabase.js'
 import { createJournal } from './syncJournal.js'
 
 // 用户现场（2026-11-05，第二轮）：
@@ -62,14 +63,23 @@ function createVersionedIndexedDb(initialVersion = 1, initialStores = ['director
           return {}
         },
         transaction(storeName) {
-          if (!record.stores.has(storeName)) {
-            throw new Error('One of the specified object stores was not found.')
+          // journal 的增量布局在**一个事务里**同时写 entries 与 cursors，因此这里支持数组。
+          const names = Array.isArray(storeName) ? storeName : [storeName]
+          for (const name of names) {
+            if (!record.stores.has(name)) {
+              throw new Error('One of the specified object stores was not found.')
+            }
           }
-          const data = record.stores.get(storeName)
           const transaction = {
-            objectStore() {
+            objectStore(name) {
+              const data = record.stores.get(name)
               return {
                 get(key) { return makeRequest(data.get(key)) },
+                getAll(range) {
+                  const keys = [...data.keys()].sort()
+                  const filtered = range ? keys.filter(key => key >= range.lower && key <= range.upper) : keys
+                  return makeRequest(filtered.map(key => data.get(key)))
+                },
                 put(value, key) { data.set(key, value); return makeRequest(undefined) },
                 delete(key) { data.delete(key); return makeRequest(undefined) }
               }
@@ -122,7 +132,7 @@ test('repeated opens keep working after the database version has advanced', asyn
 
 test('a database already ahead of the declared version opens without downgrading', async () => {
   // 用户浏览器里可能已经是被自愈升过版本的库
-  const indexedDB = createVersionedIndexedDb(3, ['directory-handles', 'sync-journals'])
+  const indexedDB = createVersionedIndexedDb(3, [...SYNC_OBJECT_STORES])
 
   const journal = await loadJournal('288', { indexedDB })
   assert.equal(journal, null)

@@ -27,15 +27,12 @@ export async function collectProbe(adapter, paths, options = {}) {
   const maxBatchBytes = positiveLimit(options.maxBatchBytes, SYNC_LIMITS.MAX_BATCH_BYTES)
   let totalBytes = 0
 
-  if (unique.length > maxFiles) {
-    const message = `batch file limit exceeded: ${unique.length} > ${maxFiles}`
-    for (const path of unique) {
-      failures.push({ path, message })
-      probe.set(path, { state: PROBE_STATES.UNKNOWN, exists: null, content: null, error: message })
-    }
-    return { probe, failures }
-  }
-
+  // 文件数超限不再整批拒绝，而是**分块读取**。
+  // 旧行为把"这批有 600 个文件"报成"600 个文件都无法判断本地状态"，
+  // 用户看到的是 600 个冲突——原因和现象都对不上，而且中型项目直接同步不了。
+  // 分块只影响"一次读多少"，不改变单文件与整批字节上限的语义：
+  //   - 单文件超限：仍然整批失败（一个文件都写不了，继续也没意义）；
+  //   - 累计字节超限：仍然整批失败（内存保护，不能靠分块绕过）。
   for (const path of unique) {
     try {
       // 一次读取即可判定三态：返回字符串 = 存在且可读；返回 null = 确认不存在；
@@ -76,6 +73,9 @@ export async function collectProbe(adapter, paths, options = {}) {
         error: message
       })
       if (options.failFast === true) throw error
+    }
+    if (options.onProgress && (probe.size % maxFiles === 0)) {
+      options.onProgress({ probed: probe.size, total: unique.length })
     }
   }
 
