@@ -81,10 +81,10 @@
         <span>导出</span>
       </button>
 
-      <span v-if="fileContentDirty" class="unsaved-badge">未保存</span>
+      <span v-if="fileContentDirty && !readOnlyView" class="unsaved-badge">未保存</span>
 
       <button
-        v-if="activePath"
+        v-if="activePath && !readOnlyView"
         class="topbar-btn solid-black"
         :disabled="savingFile"
         @click="emit('save-file')"
@@ -130,6 +130,11 @@ const props = defineProps({
   aiPanelVisible: {
     type: Boolean,
     default: true,
+  },
+  /** 只读视图（如 git diff 标签）：没有可保存的内容，隐藏保存按钮与未保存角标。 */
+  readOnlyView: {
+    type: Boolean,
+    default: false,
   },
 })
 

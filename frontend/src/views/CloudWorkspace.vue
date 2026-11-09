@@ -6,6 +6,7 @@
       :active-path="activePath"
       :file-content-dirty="fileContentDirty"
       :saving-file="savingFile"
+      :read-only-view="Boolean(openFiles[activeTabIndex]?.isGitDiff)"
       :explorer-visible="explorerVisible"
       :terminal-visible="terminalPanelVisible"
       :preview-visible="webPreviewVisible"
