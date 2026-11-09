@@ -31,6 +31,8 @@ public class ProjectGitService {
     /** log 输出的字段分隔符与记录分隔符：消息正文可能包含任意字符，用控制字符避免歧义。 */
     private static final String FIELD = "\u0001";
     private static final String RECORD = "\u001e";
+    /** diff 里"空的一侧"：新文件与空设备比较，得到整份内容都是新增的补丁。 */
+    private static final String EMPTY_SIDE = "/dev/null";
 
     private final GitCommandRunner git;
     private final ProjectGitRepository repository;
@@ -116,7 +118,9 @@ public class ProjectGitService {
     public ProjectGitDtos.CommitPage commits(StudentProject project, String before, Integer limit) {
         Path root = workspaceRoot(project);
         Path gitDir = repository.gitDir(root);
-        if (!Files.exists(gitDir.resolve("HEAD"))) {
+        // 仓库存在但还没有提交时 HEAD 指向未出生的分支，git log 会直接失败：
+        // 「没有历史」要返回空列表，不能当成错误抛给前端。
+        if (!Files.exists(gitDir.resolve("HEAD")) || !repository.hasCommits(gitDir)) {
             return new ProjectGitDtos.CommitPage(List.of(), null);
         }
         int pageSize = limit == null || limit <= 0
@@ -172,13 +176,13 @@ public class ProjectGitService {
         }
     }
 
-    /** 某次提交相对其父提交的补丁。{@code path} 为空表示整个提交。 */
+    /** 某次提交相对其父提交的补丁。{@code path} 为空表示整个提交。不传 {@code --binary}，理由同 {@link #workingDiff}。 */
     public String commitDiff(StudentProject project, String sha, String path) {
         String resolved = requireSha(project, sha);
         Path root = workspaceRoot(project);
         Path gitDir = repository.gitDir(root);
         try {
-            List<String> args = new ArrayList<>(List.of("show", "--format=", "--patch", "--binary",
+            List<String> args = new ArrayList<>(List.of("show", "--format=", "--patch",
                     "--find-renames", resolved));
             if (path != null && !path.isBlank()) {
                 args.add("--");
@@ -191,16 +195,27 @@ public class ProjectGitService {
         }
     }
 
-    /** 未提交改动的单文件 diff：工作区（含暂存）相对 HEAD。 */
+    /**
+     * 未提交改动的单文件 diff：工作区（含暂存）相对 HEAD。
+     *
+     * <p>未跟踪文件在 HEAD 里没有条目，{@code git diff HEAD} 对它什么都不输出；仓库还没有
+     * 第一条提交时整个工作区都属于这种情况。这两处都改走"空设备 vs 文件"，把整份内容
+     * 当成新增，否则用户点开文件只会看到空 diff。
+     *
+     * <p>不传 {@code --binary}：二进制文件只显示 {@code Binary files ... differ} 一行，
+     * 否则整段 base64 补丁会铺满面板。
+     */
     public String workingDiff(StudentProject project, String path) {
         String relative = requireTrackablePath(path);
         Path root = workspaceRoot(project);
         Path gitDir = repository.gitDir(root);
         try {
             repository.ensureInitialized(root, gitDir);
-            return GitCommandRunner.limit(git.git(root, gitDir, properties.getQueryTimeoutSeconds(),
-                    List.of("diff", "HEAD", "--patch", "--binary", "--find-renames", "--", relative)).output(),
-                    properties.getDiffMaxBytes());
+            String diff = repository.hasCommits(gitDir) && isTracked(root, gitDir, relative)
+                    ? git.git(root, gitDir, properties.getQueryTimeoutSeconds(),
+                            List.of("diff", "HEAD", "--patch", "--find-renames", "--", relative)).output()
+                    : newFileDiff(root, gitDir, relative);
+            return GitCommandRunner.limit(diff, properties.getDiffMaxBytes());
         } catch (IOException | InterruptedException e) {
             throw failure("读取改动 diff 失败", e);
         }
@@ -270,6 +285,22 @@ public class ProjectGitService {
     /** 仓库是否已经有提交。前端据此区分"首次提交"与"日常提交"。 */
     public boolean initialized(StudentProject project) {
         return repository.hasCommits(repository.gitDir(workspaceRoot(project)));
+    }
+
+    /** 文件是否已进索引。未跟踪文件在索引与 HEAD 里都没有条目。 */
+    private boolean isTracked(Path root, Path gitDir, String relative) throws IOException, InterruptedException {
+        return !git.git(root, gitDir, properties.getQueryTimeoutSeconds(),
+                List.of("ls-files", "--", relative)).output().isBlank();
+    }
+
+    /**
+     * 还没有基线的文件：拿空设备和它比较，整份内容都算新增。
+     *
+     * <p>{@code /dev/null} 由 git 自己解释，Windows 上不需要换成 {@code NUL}。
+     */
+    private String newFileDiff(Path root, Path gitDir, String relative) throws IOException, InterruptedException {
+        return git.gitDiffNoIndex(root, gitDir, properties.getQueryTimeoutSeconds(),
+                List.of("diff", "--no-index", "--patch", "--", EMPTY_SIDE, relative)).output();
     }
 
     private int countFiles(Path root, Path gitDir, String sha) throws IOException, InterruptedException {

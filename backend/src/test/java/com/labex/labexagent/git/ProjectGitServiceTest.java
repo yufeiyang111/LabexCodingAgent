@@ -86,6 +86,18 @@ class ProjectGitServiceTest {
     }
 
     @Test
+    void commitHistoryIsEmptyBeforeTheFirstCommit() throws Exception {
+        write("src/Main.java", "class Main {}\n");
+        // 首次打开源码管理面板就会走到 status：它建库，但没有提交。
+        service.status(project);
+
+        ProjectGitDtos.CommitPage page = service.commits(project, null, 10);
+
+        assertThat(page.commits()).isEmpty();
+        assertThat(page.nextBefore()).isNull();
+    }
+
+    @Test
     void commitDetailListsFilesWithLineCounts() throws Exception {
         write("src/Main.java", "class Main {}\n");
         service.stage(project, List.of());
@@ -237,6 +249,38 @@ class ProjectGitServiceTest {
         String diff = service.workingDiff(project, "a.txt");
 
         assertThat(diff).contains("+two");
+    }
+
+    @Test
+    void workingDiffShowsTheWholeFileBeforeTheFirstCommit() throws Exception {
+        write("src/Main.java", "class Main {}\n");
+        service.status(project);
+
+        String diff = service.workingDiff(project, "src/Main.java");
+
+        assertThat(diff).contains("new file mode").contains("+class Main {}");
+    }
+
+    @Test
+    void workingDiffShowsUntrackedFileAsAddedAfterTheFirstCommit() throws Exception {
+        write("a.txt", "one\n");
+        service.stage(project, List.of());
+        service.commit(project, "first");
+        write("b.txt", "brand new\n");
+
+        String diff = service.workingDiff(project, "b.txt");
+
+        assertThat(diff).contains("new file mode").contains("+brand new");
+    }
+
+    @Test
+    void workingDiffShowsBinaryFileAsASingleNotice() throws Exception {
+        Files.write(workspace.resolve("data.bin"), new byte[] {0, 1, 2, 3, 0, 5});
+        service.status(project);
+
+        String diff = service.workingDiff(project, "data.bin");
+
+        assertThat(diff).contains("Binary files").doesNotContain("GIT binary patch");
     }
 
     private void write(String relativePath, String content) throws Exception {

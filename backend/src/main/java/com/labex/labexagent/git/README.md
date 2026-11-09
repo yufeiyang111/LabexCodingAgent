@@ -321,6 +321,30 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 **旧位置**：早先版本把 git 放在 AI 审查页的三个 tab 里（Agent 改动 / 源代码管理 / 提交历史）。
 审查页现在只剩 `ChangesPanel`（Agent 改动）与同步面板——这两套系统本来就不该共用入口。
 
+### 6.6 还没有第一条提交时
+
+面板在全新项目上第一次打开就同时问三件事：有哪些改动、历史是什么、这个文件改了什么。此时仓库
+刚由 `git init --bare` 建出来，`master` 指向一个未出生的分支——HEAD 文件存在，但它指向的引用没有值。
+git 对这三种查询的反应各不相同，必须逐条按「没有基线」处理：
+
+| 查询 | 直接跑 git 的结果 | 面板行为 |
+|---|---|---|
+| `status --porcelain` | 正常，全部文件是 `??` | 列出文件，`initialized=false` |
+| `log` | `fatal: your current branch 'master' does not have any commits yet` | 返回空列表 |
+| `diff HEAD -- <path>` | `fatal: bad revision 'HEAD'` | 按新增文件出 diff |
+
+判断依据统一用 `ProjectGitRepository.hasCommits`（`rev-parse --verify HEAD`），**不要**用「HEAD
+文件是否存在」——那只说明仓库建过，不说明有历史。
+
+**未跟踪文件属于同一类**：`git diff HEAD -- <path>` 对未跟踪文件什么都不输出（它不在索引里），
+所以首次提交之后新加的文件同样只会看到空 diff。这类文件改走
+`git diff --no-index --patch -- /dev/null <path>`，整份内容按新增输出。`--no-index`
+在发现差异时退出码为 1，那是命令的正常结果；`GitCommandRunner.gitDiffNoIndex` 只额外接受这一个
+退出码，其余非零仍然抛异常。
+
+diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ` 一行，否则整段 base64
+补丁会铺满面板（229 个文件的首次提交里就含 `salary.db`、`salary_model.pkl`）。
+
 ## 7. 测试策略
 
 | 层 | 测什么 | 实现 |
@@ -328,7 +352,8 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 | 后端单测 | 排除规则与扫描名单一致 | `ProjectGitExcludeTest`（3） |
 | 后端单测 | porcelain / name-status / numstat 解析 | `GitPorcelainParserTest`（8） |
 | 后端单测（关键） | **索引隔离**：快照不碰暂存索引 | `ProjectGitIndexIsolationTest`（3） |
-| 后端单测 | status / stage / commit / 分页 / revert | `ProjectGitServiceTest`（14） |
+| 后端单测 | status / stage / commit / 分页 / revert | `ProjectGitServiceTest`（18） |
+| 后端单测 | 首次提交前：历史为空、未跟踪/二进制文件出 diff | `ProjectGitServiceTest`（§6.6） |
 | 后端单测 | clone 令牌签发、校验、篡改、过期、撤销 | `ProjectGitCloneTokenServiceTest`（6） |
 | 前端单测 | 面板纯展示逻辑（状态字母、diff 分类、路径拆分、默认全选） | `git-source-control-model.test.mjs`（14） |
 | live 验收 | 真实 clone + 用户提交 + Agent 改动不进 git | 见 §11 |
@@ -440,3 +465,29 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 （`TypeError: $setup.selected.has is not a function`）。改用 `selectedSet` 计算属性后恢复。
 
 **未做**：push、分支、行级暂存、自动提交、硬链接快照（§5.2）。
+
+### 11.3 首次提交前的读路径修复（2026-11-09）
+
+**现象**：全新项目打开侧边栏的「代码」，弹出
+`读取提交历史失败：fatal: your current branch 'master' does not have any commits yet`。
+
+**原因**：`commits()` 用「HEAD 文件存在」判断仓库能不能读。仓库是 `status()` 建出来的，HEAD 必然
+存在，但没有任何提交，`git log` 直接失败，错误被包成 `Result.error` 交给前端提示框。同一处
+`workingDiff()` 对未出生的 HEAD 执行 `diff HEAD` 也会失败；未跟踪文件即使在有历史之后也只得到空 diff。
+
+**修复**：`commits()` 改用 `hasCommits`；`workingDiff()` 在没有基线时改走 `--no-index` 的空设备比较，
+并给 `GitCommandRunner` 加 `gitDiffNoIndex`（只额外接受退出码 1）。三处 diff 同时去掉 `--binary`，
+二进制文件不再把 base64 补丁铺满面板。回归测试四个：
+`commitHistoryIsEmptyBeforeTheFirstCommit`、`workingDiffShowsTheWholeFileBeforeTheFirstCommit`、
+`workingDiffShowsUntrackedFileAsAddedAfterTheFirstCommit`、
+`workingDiffShowsBinaryFileAsASingleNotice`。
+
+**实测**
+
+| 项 | 结果 |
+|---|---|
+| 项目 277（仓库 0 提交）历史 | `code=0`、空列表，不再是错误 |
+| 项目 277 未跟踪文件 diff | 660 字符，`new file mode` + 全 `+` 行 |
+| 项目 2（6 次提交）历史 | 不变：`a45ac81` 起 6 条 |
+| 项目 2 改动文件 diff | 正常输出 `--- a/README.md` / `+++ b/README.md` |
+

@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
@@ -48,6 +49,11 @@ public class GitCommandRunner {
      */
     public CommandResult run(Path workingDirectory, List<String> command, int timeoutSeconds, Path indexFile)
             throws IOException, InterruptedException {
+        return execute(workingDirectory, command, timeoutSeconds, indexFile, Set.of(0));
+    }
+
+    private CommandResult execute(Path workingDirectory, List<String> command, int timeoutSeconds, Path indexFile,
+                                  Set<Integer> acceptedExitCodes) throws IOException, InterruptedException {
         long startedNanos = System.nanoTime();
         String operation = gitOperation(command);
         log.info("GIT_COMMAND_START operation={} timeoutSeconds={} indexMode={}",
@@ -80,7 +86,7 @@ public class GitCommandRunner {
             throw collector.error();
         }
         String output = collector.output();
-        if (process.exitValue() != 0) {
+        if (!acceptedExitCodes.contains(process.exitValue())) {
             log.warn("GIT_COMMAND_FAILED operation={} exitCode={} elapsedMs={} outputChars={} truncated={}",
                     operation, process.exitValue(), elapsedMs(startedNanos), output.length(), collector.truncated());
             throw new IOException(limit(output, 4000));
@@ -100,6 +106,22 @@ public class GitCommandRunner {
 
     public CommandResult git(Path workTree, Path gitDir, int timeoutSeconds, List<String> args, Path indexFile)
             throws IOException, InterruptedException {
+        return execute(workTree, gitCommand(workTree, gitDir, args), timeoutSeconds, indexFile, Set.of(0));
+    }
+
+    /**
+     * 针对指定仓库执行 {@code git diff --no-index}：比较两个路径而不是 HEAD 与工作区。
+     *
+     * <p>唯一差别是退出码：{@code --no-index} 在发现差异时返回 1，那是命令的正常结果，
+     * 不是失败。只有 1 被额外接受，其余非零退出码照样抛异常。未跟踪文件在 HEAD 里没有条目，
+     * 只能用这条路把它和空设备比较。
+     */
+    public CommandResult gitDiffNoIndex(Path workTree, Path gitDir, int timeoutSeconds, List<String> args)
+            throws IOException, InterruptedException {
+        return execute(workTree, gitCommand(workTree, gitDir, args), timeoutSeconds, null, Set.of(0, 1));
+    }
+
+    private List<String> gitCommand(Path workTree, Path gitDir, List<String> args) {
         List<String> command = new ArrayList<>();
         command.add("git");
         command.addAll(REPOSITORY_OPTIONS);
@@ -108,7 +130,7 @@ public class GitCommandRunner {
         command.add("--work-tree");
         command.add(workTree.toString());
         command.addAll(args);
-        return run(workTree, command, timeoutSeconds, indexFile);
+        return command;
     }
 
     public static String limit(String value, int max) {
