@@ -8,6 +8,8 @@ import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+// 本地开发默认代理到 8080（与 application.yml 的 SERVER_PORT 默认、生产 Caddy 的 backend:8080 一致）。
+// 本机 8080 被占用时用 VITE_API_TARGET 覆盖，不要改这里的默认值。
 const apiTarget = process.env.VITE_API_TARGET || 'http://localhost:8080'
 const frontendPort = Number.parseInt(process.env.ACCEPTANCE_FRONTEND_PORT || '3000', 10)
 

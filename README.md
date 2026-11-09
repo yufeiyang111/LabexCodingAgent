@@ -231,7 +231,7 @@ $env:SERVER_PORT=8081
 export SERVER_PORT=8081
 ```
 
-前端开发服务器的代理默认已指向 `http://localhost:8081`（`VITE_API_TARGET` 可覆盖）。仓库脚本 `scripts/start_backend.ps1` / `scripts/restart_backend.ps1` 默认端口也是 8081，可用 `-Port` 参数改。
+前端开发服务器的代理默认指向 `http://localhost:8080`（`VITE_API_TARGET` 可覆盖；改过代理配置必须重启 dev server）。仓库脚本 `scripts/start_backend.ps1` / `scripts/restart_backend.ps1` 默认端口也是 8080，可用 `-Port` 参数改。
 
 仓库自带 Maven 配置：`mvn -s settings-local.xml spring-boot:run`（默认空 mirror）。
 
@@ -246,7 +246,7 @@ npm run dev
 ```
 
 - 前端地址：`http://localhost:3000`
-- `vite.config.js` 里 `/api` 代理到 `http://localhost:8081`（`ws: true` 透传 WebSocket，流式对话依赖此配置；**改了代理配置必须重启 dev server**）。后端若在别的端口，用 `VITE_API_TARGET=http://localhost:<port>` 覆盖。
+- `vite.config.js` 里 `/api` 代理到 `http://localhost:8080`（`ws: true` 透传 WebSocket，流式对话依赖此配置；**改了代理配置必须重启 dev server**）。后端若在别的端口，用 `VITE_API_TARGET=http://localhost:<port>` 覆盖。
 - 生产构建：`npm run build`（产物在 `frontend/dist`）
 - 本地预览：`npm run preview`
 
@@ -311,7 +311,7 @@ Windows 公网部署脚本在 [deploy/windows/](deploy/windows/)。
 HS512 要求 ≥64 字节。本地占位符会自动派生安全密钥；生产必须配置高熵随机串（`openssl rand -base64 64`）。
 
 **Q3: 前端请求 Network Error？**
-确认后端在 `8081`（本地默认）启动、`vite.config.js` 代理 target 正确；改过代理配置要重启 dev server。
+确认后端在 `8080`（本地默认）启动、`vite.config.js` 代理 target 正确；改过代理配置要重启 dev server。
 后端端口被占用时用 `SERVER_PORT` 覆盖（见第 4 节），不要改 `application.yml` 默认值。
 
 **Q4: 流式对话变成一次性返回？**

@@ -1,4 +1,4 @@
-﻿# 启动 LabexAgent 后端：从根目录 .env 注入环境变量，复用 current_cmdline.txt 记录的启动命令。
+# 启动 LabexAgent 后端：从根目录 .env 注入环境变量，复用 current_cmdline.txt 记录的启动命令。
 #
 # 与 restart_backend.ps1 的区别（以及为什么需要它）：
 #   1. .env 注入。application.yml 里 `spring.datasource.password: ${LABEX_AGENT_DB_PASSWORD:}` 默认空，
@@ -16,7 +16,7 @@
 #   b) 只探测一个业务端点，端口在听但应用还在初始化时也可能被误判。
 # 现在改为：
 #   1) **主判据**：日志出现 Spring 的 `Started LabexAgentApplication` —— 这是应用自己宣告就绪；
-#   2) 辅助：8080 是否在监听（用于区分“还没起来”与“起来了但没宣告”）；
+#   2) 辅助：目标端口是否在监听（用于区分“还没起来”与“起来了但没宣告”）；
 #   3) captcha 只用来报告**依赖降级**（非 200 时打印警告并给出状态码），不参与就绪判定。
 # 结论只有三种：就绪 / 进程已退出（失败，附退出码与日志尾部）/ 超时未确认（不臆断成功或失败）。
 #
@@ -26,7 +26,10 @@
 # 现在用 Start-Process 的文件重定向：写入由 OS 完成，与宿主是否存活无关，宿主观测进程只负责等待。
 
 param(
-    [int]$ReadyTimeoutSeconds = 90
+    [int]$ReadyTimeoutSeconds = 90,
+    # 后端监听端口。默认 8080：与 application.yml 的 SERVER_PORT 默认、生产 Caddy 的 backend:8080 一致。
+    # 必须与子进程实际监听端口一致，否则就绪探测会一直等到超时。
+    [int]$Port = 8080
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,8 +102,8 @@ if ($rawCmd -match '^("?[^"]+?java(?:\.exe)?"?)\s+(.*)$') {
 }
 if (-not (Test-Path $javaExe)) { throw "java 可执行文件不存在：$javaExe" }
 
-# 3. 停止占用 8080 的旧进程
-$listeners = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+# 3. 停止占用目标端口的旧进程
+$listeners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 foreach ($victim in ($listeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
     if ($victim -gt 0) { Stop-Process -Id $victim -Force -ErrorAction SilentlyContinue }
 }
@@ -110,7 +113,9 @@ Start-Sleep -Seconds 2
 foreach ($k in $envMap.Keys) {
     Set-Item -Path ("Env:" + $k) -Value ([string]$envMap[$k])
 }
-Write-Host ("已从 .env 注入 " + $envMap.Count + " 个环境变量")
+# 端口以参数为准，覆盖 .env 里可能存在的 SERVER_PORT，保证"探测端口 = 实际监听端口"。
+Set-Item -Path "Env:SERVER_PORT" -Value ([string]$Port)
+Write-Host ("已从 .env 注入 " + $envMap.Count + " 个环境变量；SERVER_PORT=" + $Port)
 
 # 5. 启动（日志走 OS 级重定向，不依赖宿主泵流）
 Remove-Item $logFile, $errLogFile, $launcherLogFile -ErrorAction SilentlyContinue
@@ -147,13 +152,13 @@ for ($i = 0; $i -lt $ReadyTimeoutSeconds; $i++) {
         break
     }
     if (-not $portListening) {
-        $portListening = [bool](Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue)
+        $portListening = [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
     }
 }
 if (-not $ready -and -not $process.HasExited) {
     $ready = [bool](Select-String -Path $logFile -SimpleMatch $startedMarker -Quiet -ErrorAction SilentlyContinue)
     if (-not $portListening) {
-        $portListening = [bool](Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue)
+        $portListening = [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
     }
 }
 
@@ -161,7 +166,7 @@ if (-not $ready -and -not $process.HasExited) {
 $captchaStatus = $null
 if ($ready) {
     try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:8080/api/auth/captcha" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        $resp = Invoke-WebRequest -Uri "http://localhost:$Port/api/auth/captcha" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
         $captchaStatus = [int]$resp.StatusCode
     } catch {
         $statusCode = $null
@@ -186,7 +191,7 @@ if ($process.HasExited) {
 if ($ready) {
     Write-Both "[start_backend] 就绪（Spring 已宣告 $startedMarker），PID=$($process.Id)"
     Write-Host ""
-    Write-Host "后端已就绪：http://localhost:8080/api   （PID=$($process.Id)）"
+    Write-Host "后端已就绪：http://localhost:$Port/api   （PID=$($process.Id)）"
     if ($captchaStatus -ne 200) {
         Write-Warning "依赖降级：GET /api/auth/captcha 返回 $captchaStatus（该端点依赖 Redis）。后端本身可用，但验证码/登录相关功能可能不可用。"
         Write-Both "[start_backend] 警告：captcha=$captchaStatus（Redis 依赖降级），后端已就绪但相关功能可能不可用"
@@ -198,7 +203,7 @@ if ($ready) {
     Write-Host ""
 } else {
     # 除“已退出”外不轻易断言失败：可能只是初始化慢，端口已在监听。
-    $hint = if ($portListening) { "8080 已在监听，应用可能仍在初始化" } else { "8080 尚未监听" }
+    $hint = if ($portListening) { "$Port 已在监听，应用可能仍在初始化" } else { "$Port 尚未监听" }
     Write-Both "[start_backend] 就绪超时（$ReadyTimeoutSeconds 秒），PID=$($process.Id)，$hint"
     Write-Warning "就绪超时（PID=$($process.Id)，$hint）—— 未确认就绪，请查看 $logFile"
     exit 2

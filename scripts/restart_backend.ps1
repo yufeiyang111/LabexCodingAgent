@@ -1,3 +1,7 @@
+# 后端监听端口。默认 8080：与 application.yml 的 SERVER_PORT 默认、生产 Caddy 的 backend:8080 一致。
+# 必须与 application.yml 的 server.port 覆盖值一致，否则健康检查探测的不是真实端口。
+param([int]$Port = 8080)
+
 $ErrorActionPreference = "Stop"
 
 $workspaceRoot = "D:\LabexAgent"
@@ -21,13 +25,13 @@ if ($rawCmd -match '^("?[^"]+?java(?:\.exe)?"?)\s+(.*)$') {
     exit 1
 }
 
-# 1. 查找占用 8080 端口的 PID
-$tcp = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+# 1. 查找占用目标端口的 PID
+$tcp = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($tcp) {
     $pids = $tcp | Select-Object -ExpandProperty OwningProcess -Unique
     foreach ($pidToKill in $pids) {
         if ($pidToKill -gt 0) {
-            Write-Host "Stopping existing process on 8080: PID $pidToKill"
+            Write-Host "Stopping existing process on ${Port}: PID $pidToKill"
             Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
         }
     }
@@ -44,6 +48,8 @@ $startInfo.UseShellExecute = $false
 $startInfo.RedirectStandardOutput = $true
 $startInfo.RedirectStandardError = $true
 $startInfo.CreateNoWindow = $true
+# 端口以参数为准：子进程继承该环境变量，覆盖 application.yml 的默认值。
+$startInfo.EnvironmentVariables["SERVER_PORT"] = [string]$Port
 
 $process = New-Object System.Diagnostics.Process
 $process.StartInfo = $startInfo
@@ -72,14 +78,14 @@ if (-not $started) {
 $process.BeginOutputReadLine()
 $process.BeginErrorReadLine()
 
-Write-Host "Backend started with PID $($process.Id), waiting for port 8080..."
+Write-Host "Backend started with PID $($process.Id), waiting for port $Port..."
 
-# 3. 轮询健康检查直到 8080 就绪（最多 45 秒）
+# 3. 轮询健康检查直到目标端口就绪（最多 45 秒）
 $ready = $false
 for ($i = 0; $i -lt 45; $i++) {
     Start-Sleep -Seconds 1
     try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:8080/api/auth/captcha" -UseBasicParsing -TimeoutSec 2 -ErrorAction SilentlyContinue
+        $resp = Invoke-WebRequest -Uri "http://localhost:$Port/api/auth/captcha" -UseBasicParsing -TimeoutSec 2 -ErrorAction SilentlyContinue
         if ($resp.StatusCode -eq 200) {
             $ready = $true
             break
@@ -90,7 +96,7 @@ for ($i = 0; $i -lt 45; $i++) {
 }
 
 if ($ready) {
-    Write-Host "Backend successfully started and ready on port 8080! PID: $($process.Id)"
+    Write-Host "Backend successfully started and ready on port $Port! PID: $($process.Id)"
 } else {
-    Write-Warning "Backend process started (PID $($process.Id)), but port 8080 healthcheck timed out. Check log: $logFile"
+    Write-Warning "Backend process started (PID $($process.Id)), but port $Port healthcheck timed out. Check log: $logFile"
 }

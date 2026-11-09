@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import test from 'node:test'
 
 async function loadConfig(target, port) {
@@ -19,6 +19,7 @@ test('production build keeps relative /api base and dist output for the reverse 
   const config = (await import(`../../vite.config.js?prod=${Date.now()}`)).default
   assert.equal(config.build.outDir, 'dist')
   // 生产构建产物必须使用相对 /api 路径（Nginx 同源代理），不能内嵌 localhost 或外部 host。
+  // dev 代理默认端口只是本地开发便利值（8080，与后端 SERVER_PORT 默认一致），生产链路不经过 Vite。
   assert.equal(config.server.proxy['/api'].target, 'http://localhost:8080')
   // 无独立 base 配置：默认 '/',与 Nginx `root /usr/share/nginx/html` 一致。
   assert.ok(config.base === '/' || config.base === undefined)
