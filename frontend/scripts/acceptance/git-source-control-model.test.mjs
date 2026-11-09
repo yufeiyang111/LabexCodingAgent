@@ -5,7 +5,6 @@ import {
   buildCloneCommand,
   canCommit,
   defaultSelection,
-  diffToLines,
   formatCommitTime,
   groupCommitsByDay,
   splitGitPath,
@@ -27,34 +26,6 @@ test('statusClass 给每种状态一个颜色类', () => {
   assert.equal(statusClass('D'), 'deleted')
   assert.equal(statusClass('R'), 'renamed')
   assert.equal(statusClass('??'), 'untracked')
-})
-
-test('diffToLines 区分文件头与真实增删行', () => {
-  const diff = [
-    'diff --git a/a.txt b/a.txt',
-    'index 111..222 100644',
-    '--- a/a.txt',
-    '+++ b/a.txt',
-    '@@ -1,2 +1,2 @@',
-    '-old line',
-    '+new line',
-    ' context line'
-  ].join('\n')
-
-  const lines = diffToLines(diff)
-
-  assert.equal(lines[0].type, 'meta', 'diff 行是文件头')
-  assert.equal(lines[2].type, 'meta', '--- 是文件头，不是删除行')
-  assert.equal(lines[3].type, 'meta', '+++ 是文件头，不是新增行')
-  assert.equal(lines[4].type, 'hunk')
-  assert.equal(lines[5].type, 'del')
-  assert.equal(lines[6].type, 'add')
-  assert.equal(lines[7].type, 'context')
-})
-
-test('diffToLines 对空输入返回空数组', () => {
-  assert.deepEqual(diffToLines(''), [])
-  assert.deepEqual(diffToLines(null), [])
 })
 
 test('buildCloneCommand 把令牌放进 URL 凭据位置（labex:token@）避免客户端挂起等待密码', () => {

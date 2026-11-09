@@ -303,14 +303,6 @@
   font-size: 9px;
   line-height: 14px;
 }
-.sc-diff {
-  margin: 2px 0 6px;
-  border-top: 1px solid var(--theme-border);
-  border-bottom: 1px solid var(--theme-border);
-  background: var(--theme-surface);
-  max-height: 320px;
-  overflow: auto;
-}
 
 /* ===== clone 地址 ===== */
 .sc-clone {
@@ -350,9 +342,6 @@ html[data-theme='dark'] .sc-status-modified { color: #e2c08d; }
 html[data-theme='dark'] .sc-status-deleted { color: #f17a6a; }
 html[data-theme='dark'] .sc-status-renamed { color: #6cb6ff; }
 html[data-theme='dark'] .sc-status-untracked { color: #73c991; }
-html[data-theme='dark'] .sc-diff {
-  background: #1b1b1b;
-}
 html[data-theme='dark'] .sc-clone {
   background: #1f1f1f;
 }

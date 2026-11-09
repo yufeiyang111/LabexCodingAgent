@@ -147,8 +147,10 @@
           :project-id="projectId"
           :agent-paths="agentChangePaths"
           :refresh-key="gitRefreshKey"
+          :active-path="gitDiffPath"
           @committed="handleGitCommitted"
           @changed="gitPendingCount = $event"
+          @open-diff="openGitDiff"
         />
       </aside>
 
@@ -313,8 +315,10 @@
             <CenterDiffViewer
               v-if="openFiles[activeTabIndex]?.isDiffView"
               :diff="openFiles[activeTabIndex].diff || ''"
-              :file-path="openFiles[activeTabIndex].path"
+              :file-path="openFiles[activeTabIndex].gitPath || openFiles[activeTabIndex].path"
               :is-dark="aiDarkTheme"
+              :show-actions="!openFiles[activeTabIndex].isGitDiff"
+              :loading="Boolean(openFiles[activeTabIndex].diffLoading)"
               @switch-to-editor="handleSwitchToEditor(openFiles[activeTabIndex])"
               @accept-all="handleAcceptAllDiff(openFiles[activeTabIndex])"
               @revert-all="handleRevertAllDiff(openFiles[activeTabIndex])"
@@ -918,11 +922,18 @@
                   <input v-model.trim="skillForm.title" class="ext-input" placeholder="标题，例如 Vue 组件规范" />
                   <input v-model.trim="skillForm.skillKey" class="ext-input" placeholder="Key，例如 vue-component" />
                   <input v-model.trim="skillForm.description" class="ext-input" placeholder="描述，帮助 Agent 选择何时使用" />
-                  <textarea v-model="skillForm.content" class="ext-textarea" rows="7" placeholder="写入可复用规则、工作流、代码风格、测试要求等&#10;&#10;支持 SKILL.md 格式：&#10;---&#10;name: my-skill&#10;description: 描述&#10;---&#10;# Skill 内容"></textarea>
+                  <!-- 正文按 id 单独加载：加载中禁用输入，避免用户在空框里打字后被回填的内容覆盖 -->
+                  <textarea
+                    v-model="skillForm.content"
+                    class="ext-textarea"
+                    rows="7"
+                    :disabled="skillContentLoading"
+                    :placeholder="skillContentPlaceholder"
+                  ></textarea>
                   <label class="ext-check"><input type="checkbox" v-model="skillForm.isEnabled" /> 启用</label>
                   <div class="ext-form-actions">
                     <button class="ext-btn secondary" @click="resetSkillForm">清空</button>
-                    <button class="ext-btn primary" @click="saveSkill">{{ editingSkillId ? '更新' : '保存' }}</button>
+                    <button class="ext-btn primary" :disabled="skillContentLoading" @click="saveSkill">{{ editingSkillId ? '更新' : '保存' }}</button>
                   </div>
                 </div>
               </div>
@@ -2173,6 +2184,17 @@ const mcCustomMode = ref(false)
 
 // User-level Agent extensions
 const activeExtensionTab = ref('skills')
+// 技能正文占位文案：正文改为按 id 懒加载，加载期间要给出明确提示而不是一个空框。
+const SKILL_CONTENT_PLACEHOLDER = [
+  '写入可复用规则、工作流、代码风格、测试要求等',
+  '',
+  '支持 SKILL.md 格式：',
+  '---',
+  'name: my-skill',
+  'description: 描述',
+  '---',
+  '# Skill 内容'
+].join('\n')
 const {
   extensionLoading,
   agentSkills,
@@ -2181,6 +2203,7 @@ const {
   projectSkillState,
   editingSkillId,
   editingMcpId,
+  skillContentLoading,
   skillForm,
   mcpForm,
   loadAgentExtensions,
@@ -2204,6 +2227,10 @@ const {
   confirmAction: (...args) => ElMessageBox.confirm(...args),
   projectId
 })
+
+const skillContentPlaceholder = computed(() => (
+  skillContentLoading.value ? '正在加载技能正文…' : SKILL_CONTENT_PLACEHOLDER
+))
 
 // 项目级 Skill 属于具体工作区，切换项目后必须重新读取，否则展示的是上一个项目的技能。
 watch(projectId, () => { void loadProjectSkills() })
@@ -2905,6 +2932,14 @@ const effectiveChanges = computed(() => resolveEffectiveChanges(sessionChanges.v
 const agentChangePaths = computed(() =>
   effectiveChanges.value.map(change => change.relativePath || change.file).filter(Boolean)
 )
+/**
+ * 中栏正在展示的 git diff 对应的真实路径，用于在侧边栏高亮那一行。
+ * 标签的 path 是合成值（`真实路径::git[@sha]`），高亮要的是真实路径。
+ */
+const gitDiffPath = computed(() => {
+  const tab = openFiles.value[activeTabIndex.value]
+  return tab?.isGitDiff && !isAgentTabActive.value ? (tab.gitPath || '') : ''
+})
 const changesRefreshKey = ref(0)
 
 /**
@@ -2931,6 +2966,70 @@ async function refreshGitPendingCount() {
   } catch (error) {
     // 角标是纯装饰，读不到就不显示，不打断页面
     gitPendingCount.value = 0
+  }
+}
+
+/**
+ * 点侧边栏 git 面板里的文件：在中栏打开一个只读 diff 标签，复用 CenterDiffViewer。
+ *
+ * <p>为什么不在侧边栏就地展开：那里只有 260px，diff 看不清，而且会把「更改」列表挤走。
+ * VSCode 的做法也是「列表在左、diff 在右」。
+ *
+ * <p>标签的 `path` 用合成值（`真实路径::git[@sha]`），这样它不会和同名文件的编辑器标签
+ * 互相顶掉：`openFile` 按 path 复用已有标签，若共用真实路径，点文件树会激活 diff 而不是编辑器。
+ */
+async function openGitDiff(payload) {
+  const path = payload?.path
+  if (!path || !projectId.value) return
+  const sha = payload?.sha || null
+  const tabPath = sha ? `${path}::git@${sha}` : `${path}::git`
+  const existing = openFiles.value.findIndex(file => file.path === tabPath)
+  if (existing >= 0) {
+    // 同一文件再次点击视为关闭（对齐 VSCode 的 toggle）
+    await closeFile(existing)
+    return
+  }
+
+  // 中栏被 AI 放大视图占着时先让位，否则 diff 打开在看不见的地方
+  if (isAgentInCenter.value) {
+    isAgentInCenter.value = false
+    aiCollapsed.value = false
+  }
+  isAgentTabActive.value = false
+  activeSubagentTabId.value = null
+  if (isMobile.value) mobileActiveTab.value = 'editor'
+
+  openFiles.value.push({
+    path: tabPath,
+    gitPath: path,
+    gitSha: sha,
+    name: path.split('/').pop() || path,
+    content: '',
+    diff: '',
+    lang: languageForPath(path),
+    isDiffView: true,
+    isGitDiff: true,
+    diffLoading: true,
+    dirty: false,
+    readOnly: true
+  })
+  const tab = openFiles.value[openFiles.value.length - 1]
+  switchTab(openFiles.value.length - 1)
+
+  try {
+    const result = sha
+      ? await projectApi.gitCommitDiff(projectId.value, sha, path)
+      : await projectApi.gitWorkingDiff(projectId.value, path)
+    if (result.code !== 0) {
+      ElMessage.error(result.message || '读取 diff 失败')
+      return
+    }
+    // 标签可能已被关掉，别往死对象上写
+    if (openFiles.value.includes(tab)) tab.diff = result.data.diff || ''
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || error?.message || '读取 diff 失败')
+  } finally {
+    tab.diffLoading = false
   }
 }
 

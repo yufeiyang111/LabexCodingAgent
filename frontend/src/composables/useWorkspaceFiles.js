@@ -121,7 +121,9 @@ export function useWorkspaceFiles(options) {
   function applyActiveFile(file, index) {
     suppressDirtyTracking = true
     activeTabIndex.value = index
-    activePath.value = file.path
+    // git diff 标签的 path 是合成值（`真实路径::git`），只为标签身份唯一；
+    // 对外展示的当前文件必须是真实路径，否则面包屑和 AI 输入框会带上 `::git` 后缀。
+    activePath.value = file.gitPath || file.path
     activeFileReadOnly.value = Boolean(file.readOnly)
     fileContent.value = file.content
     fileContentDirty.value = Boolean(file.dirty)

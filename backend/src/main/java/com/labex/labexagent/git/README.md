@@ -303,23 +303,48 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 - 「更改」可折叠分组，标题右侧是改动数量角标
 - 文件行：状态字母（A/M/D/R/U）+ **文件名在前** + 目录弱化在后（`direction:rtl`
   从尾部截断，保留离文件名最近的父目录）
-- 点文件名 → 就地展开该文件相对 HEAD 的 diff
+- 点文件名 → **在中栏打开 diff**（见 §6.5.1），侧边栏不就地展开
 - **默认全选**：点一下提交即提交全部改动（对齐 VSCode 的 smart commit）；
   用户取消勾选后不再自动加回
 - 若该路径也在当前 change-set 里，显示「Agent 也改过」角标（纯展示，不影响 git）
 
 **`GitGraphSection.vue`**（图表，内嵌在同一个面板的「图表」分组）
 - 竖线串节点，最新提交带分支标签（`master`）
-- 点开某条：文件清单（含增删行数）+ 单文件 diff
+- 点开某条：文件清单（含增删行数），点文件同样在中栏打开该提交的 diff
 - 「回滚到此提交」按钮，二次确认
-
-**`DiffLines.vue`**：两个面板共用的 diff 渲染，避免配色与行分类漂移。
 
 配色走 `--theme-*` 变量 + `html[data-theme="dark"]` 覆盖，与侧边栏其余面板同一套主题语言。
 初版硬编码深色值，浅色主题下几乎不可读，已修正。
 
 **旧位置**：早先版本把 git 放在 AI 审查页的三个 tab 里（Agent 改动 / 源代码管理 / 提交历史）。
 审查页现在只剩 `ChangesPanel`（Agent 改动）与同步面板——这两套系统本来就不该共用入口。
+
+### 6.5.1 diff 在中栏展示，复用 `CenterDiffViewer`
+
+侧边栏只有 260px，diff 在那儿既看不清，展开还会把「更改」列表挤走。改成 VSCode 的分工：
+**列表在左、diff 在右**。点「更改」里的文件或图表里的文件 → 中栏开一个只读 diff 标签。
+
+复用已有的 `components/cloud/CenterDiffViewer.vue`（Agent 改动也是它渲染），新增两个属性：
+
+| 属性 | 作用 |
+|---|---|
+| `show-actions` | 默认 `true`。git diff 是只读的，传 `false` 隐藏「保留 / 回退 / 编辑源码」——这三颗按钮对 git 没有语义 |
+| `loading` | 读取中显示「正在读取 diff…」，否则空 diff 会闪一下「暂无该文件的代码变动对比」 |
+
+**标签身份用合成路径**：`真实路径::git`（提交级再加 `@<sha>`）。原因：`openFile` 按 `path`
+复用已有标签，若 git diff 标签直接用真实路径，点文件树会激活 diff 而不是编辑器。
+展示用的路径另存在 `gitPath`，`applyActiveFile` 取 `file.gitPath || file.path`，
+所以面包屑和 AI 输入框看到的仍是真实路径。
+
+**再点一次同一个文件 = 关闭**（对齐 VSCode 的 toggle）。
+
+**顺带修掉的渲染缺陷**（同一组件，Agent 改动也受益）：
+- 文件级元信息行（`new file mode` / `index 0000..111` / `Binary files ...`）曾被当成内容行，
+  顶着行号出现在正文第一行。新增 `isDiffHeaderLine()` 统一跳过。
+- 深色主题下增删行「另一侧」的行号格没有覆盖背景，在深色面板里是一块白斑。
+
+**删除**：`components/git/DiffLines.vue` 与 `sourceControlModel.diffToLines()`——它们只服务于
+侧边栏就地展开的那套渲染，改为复用 `CenterDiffViewer` 后已无调用方。
 
 ### 6.6 还没有第一条提交时
 
@@ -355,7 +380,7 @@ diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ
 | 后端单测 | status / stage / commit / 分页 / revert | `ProjectGitServiceTest`（18） |
 | 后端单测 | 首次提交前：历史为空、未跟踪/二进制文件出 diff | `ProjectGitServiceTest`（§6.6） |
 | 后端单测 | clone 令牌签发、校验、篡改、过期、撤销 | `ProjectGitCloneTokenServiceTest`（6） |
-| 前端单测 | 面板纯展示逻辑（状态字母、diff 分类、路径拆分、默认全选） | `git-source-control-model.test.mjs`（14） |
+| 前端单测 | 面板纯展示逻辑（状态字母、路径拆分、默认全选、clone 命令） | `git-source-control-model.test.mjs`（12） |
 | live 验收 | 真实 clone + 用户提交 + Agent 改动不进 git | 见 §11 |
 
 **关键验收判据**：
@@ -464,8 +489,6 @@ diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ
 **实测修掉的缺陷**：`selected` 从 `Set` 改为数组后模板仍调用 `.has()`，整块列表渲染崩溃
 （`TypeError: $setup.selected.has is not a function`）。改用 `selectedSet` 计算属性后恢复。
 
-**未做**：push、分支、行级暂存、自动提交、硬链接快照（§5.2）。
-
 ### 11.3 首次提交前的读路径修复（2026-11-09）
 
 **现象**：全新项目打开侧边栏的「代码」，弹出
@@ -490,4 +513,24 @@ diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ
 | 项目 277 未跟踪文件 diff | 660 字符，`new file mode` + 全 `+` 行 |
 | 项目 2（6 次提交）历史 | 不变：`a45ac81` 起 6 条 |
 | 项目 2 改动文件 diff | 正常输出 `--- a/README.md` / `+++ b/README.md` |
+
+### 11.4 diff 改到中栏展示（2026-11-09）
+
+侧边栏就地展开 diff 的方案被替换：260px 宽看不清，展开后把文件列表挤走。改为复用
+`CenterDiffViewer`，在中栏开只读 diff 标签（§6.5.1）。
+
+**浏览器实测**（项目 277 无提交 + 项目 2 有 6 次提交，浅色/深色各一遍）
+
+| 项 | 结果 |
+|---|---|
+| 点「更改」里的文件 | 中栏出现 `.labex-agentignore` 标签，标题 `+34`，34 行全为新增 |
+| 侧边栏 | 不再出现就地 diff，列表保持完整 |
+| 只读语义 | 「保留 / 回退 / 编辑源码」三颗按钮隐藏 |
+| 面包屑 / AI 输入框 | 显示真实路径 `README.md`，没有 `::git` 后缀 |
+| 点图表里的文件 | 中栏打开该提交的 diff，行号从 `119` 起，`-2` 行标红 |
+| 再点同一文件 | 标签关闭，回到空白态 |
+| 文件头行 | `new file mode` / `index 0000..111` 不再出现在正文行里 |
+| 深色主题 | 增删行另一侧的行号格不再是白斑 |
+
+**未做**：push、分支、行级暂存、自动提交、硬链接快照（§5.2）。
 

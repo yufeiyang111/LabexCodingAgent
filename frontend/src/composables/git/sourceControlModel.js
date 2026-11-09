@@ -69,28 +69,6 @@ export function defaultSelection(entries) {
 }
 
 /**
- * 把统一 diff 文本切成带类型的行。
- *
- * 类型：add / del / hunk / meta / context。`+++` / `---` 是文件头，归 meta 而不是 add/del，
- * 否则文件头会被染成增删色，看起来像内容变了。
- */
-export function diffToLines(diff) {
-  if (!diff) return []
-  return diff.split('\n').map(text => {
-    if (text.startsWith('+++') || text.startsWith('---')) return { type: 'meta', text }
-    if (text.startsWith('@@')) return { type: 'hunk', text }
-    if (text.startsWith('diff ') || text.startsWith('index ') || text.startsWith('new file')
-      || text.startsWith('deleted file') || text.startsWith('similarity index')
-      || text.startsWith('rename ') || text.startsWith('Binary files')) {
-      return { type: 'meta', text }
-    }
-    if (text.startsWith('+')) return { type: 'add', text }
-    if (text.startsWith('-')) return { type: 'del', text }
-    return { type: 'context', text }
-  })
-}
-
-/**
  * 拼出可以直接粘进终端的 clone 命令。
  *
  * 令牌放在 URL 的用户名位置而不是密码位置：git 对 `user:pass@host` 两者都支持，

@@ -20,8 +20,8 @@
           </span>
         </div>
 
-        <!-- 极简快捷操作按钮 -->
-        <div class="diff-actions-group">
+        <!-- 极简快捷操作按钮：只读 diff（git 工作区/提交）没有「保留/回退」语义，整组隐藏 -->
+        <div v-if="showActions" class="diff-actions-group">
           <button
             type="button"
             class="diff-btn btn-accept"
@@ -52,7 +52,9 @@
 
     <!-- Diff 内容代码行展示 (1:1 复刻图一结构与高亮配色) -->
     <div class="center-diff-scroll">
-      <div v-if="!parsedLines.length" class="center-diff-empty">
+      <div v-if="loading" class="center-diff-empty">正在读取 diff…</div>
+
+      <div v-else-if="!parsedLines.length" class="center-diff-empty">
         暂无该文件的代码变动对比
       </div>
 
@@ -113,6 +115,15 @@ const props = defineProps({
   isDark: {
     type: Boolean,
     default: false
+  },
+  /** 只读：git 的 diff 没有 apply / reject 语义，隐藏「保留 / 回退 / 编辑源码」。 */
+  showActions: {
+    type: Boolean,
+    default: true
+  },
+  loading: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -131,6 +142,27 @@ const fileName = computed(() => {
   const parts = normalized.split('/')
   return parts.pop() || normalized
 })
+
+/**
+ * 统一 diff 的文件级元信息行。这些行不是代码，不能当成内容行渲染——
+ * 否则 `new file mode 100644` / `index 0000..111` 会顶着行号出现在正文里。
+ */
+function isDiffHeaderLine(line) {
+  return line.startsWith('---')
+    || line.startsWith('+++')
+    || line.startsWith('diff ')
+    || line.startsWith('index ')
+    || line.startsWith('new file mode')
+    || line.startsWith('deleted file mode')
+    || line.startsWith('old mode')
+    || line.startsWith('new mode')
+    || line.startsWith('similarity index')
+    || line.startsWith('dissimilarity index')
+    || line.startsWith('rename ')
+    || line.startsWith('copy ')
+    || line.startsWith('Binary files')
+    || line.startsWith('GIT binary patch')
+}
 
 const fileDir = computed(() => {
   if (!props.filePath) return ''
@@ -165,7 +197,7 @@ const parsedLines = computed(() => {
         newLn = parseInt(m[2], 10)
       }
       result.push({ type: '@', text: line, hunk: true })
-    } else if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff --git')) {
+    } else if (isDiffHeaderLine(line)) {
       continue
     } else if (line.startsWith('-')) {
       result.push({ type: '-', text: line.slice(1), oldLn: oldLn++ })
@@ -514,6 +546,12 @@ const deletions = computed(() => parsedLines.value.filter(l => l.type === '-').l
   color: #7ee787;
 }
 
+/* 增删行的「另一侧」行号格：不覆盖就会保留浅色主题的底色，在深色面板里是一块白斑 */
+.center-diff-container.is-dark .diff-row.is-add .diff-ln-old {
+  background: rgba(46, 160, 67, 0.18);
+  color: #6e7681;
+}
+
 .center-diff-container.is-dark .diff-row.is-del {
   background: rgba(248, 81, 73, 0.18);
   color: #e6edf3;
@@ -522,5 +560,10 @@ const deletions = computed(() => parsedLines.value.filter(l => l.type === '-').l
 .center-diff-container.is-dark .diff-row.is-del .diff-ln-old {
   background: rgba(248, 81, 73, 0.35);
   color: #ff7b72;
+}
+
+.center-diff-container.is-dark .diff-row.is-del .diff-ln-new {
+  background: rgba(248, 81, 73, 0.18);
+  color: #6e7681;
 }
 </style>

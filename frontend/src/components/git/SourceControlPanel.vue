@@ -60,7 +60,7 @@
 
         <ul v-else-if="changesOpen" class="sc-list">
           <li v-for="entry in entries" :key="entry.path">
-            <div class="sc-row" :class="{ selected: selectedSet.has(entry.path), active: detailPath === entry.path }">
+            <div class="sc-row" :class="{ selected: selectedSet.has(entry.path), active: activePath === entry.path }">
               <input
                 type="checkbox"
                 class="sc-check"
@@ -70,14 +70,11 @@
                 @change="toggle(entry.path)"
               />
               <span class="sc-status" :class="'sc-status-' + statusClass(entry.status)">{{ statusLabel(entry.status) }}</span>
-              <button class="sc-file" :title="entry.path" @click="toggleDetail(entry.path)">
+              <button class="sc-file" :title="entry.path" @click="emit('open-diff', { path: entry.path, source: 'working' })">
                 <span class="sc-file-name">{{ entry.name }}</span>
                 <span v-if="entry.dir" class="sc-file-dir">{{ entry.dir }}</span>
               </button>
               <span v-if="agentPaths.has(entry.path)" class="sc-agent-badge" title="本次对话里 Agent 也改过这个文件">Agent</span>
-            </div>
-            <div v-if="detailPath === entry.path" class="sc-diff">
-              <DiffLines :diff="detailDiff" empty-label="正在读取 diff…" />
             </div>
           </li>
         </ul>
@@ -95,6 +92,8 @@
           v-if="graphOpen"
           :project-id="projectId"
           :refresh-key="refreshKey + graphRefreshKey"
+          :active-path="activePath"
+          @open-diff="emit('open-diff', $event)"
           @reverted="handleReverted"
         />
       </section>
@@ -116,12 +115,13 @@
 
 <script setup>
 // 复刻 VSCode 源代码管理：提交信息在上、主按钮在其下、「更改」列表可折叠、
-// 下方内嵌提交图表。Agent 改动不在这里——那是 ChangesPanel，两套系统只共享工作区。
+// 下方内嵌提交图表。点文件行不在侧边栏就地展开，而是把 diff 交给中栏（见 emit('open-diff')）——
+// 侧边栏只有 260px 宽，diff 在那儿既看不清也抢走了列表空间。
+// Agent 改动不在这里——那是 ChangesPanel，两套系统只共享工作区。
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { projectApi } from '@/api'
-import DiffLines from '@/components/git/DiffLines.vue'
 import GitGraphSection from '@/components/git/GitGraphSection.vue'
 import {
   buildCloneCommand,
@@ -135,10 +135,12 @@ import {
 const props = defineProps({
   projectId: { type: [Number, String], default: null },
   agentPaths: { type: Array, default: () => [] },
-  refreshKey: { type: [Number, String], default: 0 }
+  refreshKey: { type: [Number, String], default: 0 },
+  /** 当前正在中栏展示的 diff 路径，用于高亮对应行。 */
+  activePath: { type: String, default: '' }
 })
 
-const emit = defineEmits(['committed', 'changed'])
+const emit = defineEmits(['committed', 'changed', 'open-diff'])
 
 const entries = ref([])
 const commits = ref([])
@@ -151,8 +153,6 @@ const errorMessage = ref('')
 const selected = ref([])
 const selectionTouched = ref(false)
 const message = ref('')
-const detailPath = ref(null)
-const detailDiff = ref('')
 const cloneUrl = ref(null)
 const changesOpen = ref(true)
 const graphOpen = ref(true)
@@ -199,10 +199,6 @@ async function refresh() {
     // 默认全选（VSCode 的点一下即提交）；用户动过勾选后只保留仍然存在的路径
     const all = defaultSelection(entries.value)
     selected.value = selectionTouched.value ? all.filter(path => selected.value.includes(path)) : all
-    if (detailPath.value && !entries.value.some(entry => entry.path === detailPath.value)) {
-      detailPath.value = null
-      detailDiff.value = ''
-    }
     emit('changed', entries.value.length)
   } catch (error) {
     errorMessage.value = error?.response?.data?.message || error?.message || '读取工作区状态失败'
@@ -233,22 +229,6 @@ function toggleAll() {
   selected.value = allSelected.value ? [] : defaultSelection(entries.value)
 }
 
-async function toggleDetail(path) {
-  if (detailPath.value === path) {
-    detailPath.value = null
-    detailDiff.value = ''
-    return
-  }
-  detailPath.value = path
-  detailDiff.value = ''
-  try {
-    const result = await projectApi.gitWorkingDiff(props.projectId, path)
-    if (result.code === 0) detailDiff.value = result.data.diff || ''
-  } catch (error) {
-    detailDiff.value = ''
-  }
-}
-
 async function submitCommit() {
   if (!commitReady.value || busy.value) return
   busy.value = true
@@ -268,8 +248,6 @@ async function submitCommit() {
     message.value = ''
     selected.value = []
     selectionTouched.value = false
-    detailPath.value = null
-    detailDiff.value = ''
     emit('committed', commitResult.data)
     await refresh()
     await refreshCommits()

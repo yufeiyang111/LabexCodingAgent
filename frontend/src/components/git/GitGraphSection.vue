@@ -26,7 +26,7 @@
                 class="gg-file"
                 :class="{ active: activePath === file.path }"
                 :title="file.path"
-                @click="openFileDiff(file.path)"
+                @click="emit('open-diff', { path: file.path, source: 'commit', sha: commit.sha })"
               >
                 <span class="gg-status" :class="'gg-status-' + statusClass(file.status)">{{ statusLabel(file.status) }}</span>
                 <span class="gg-file-name">{{ file.path }}</span>
@@ -36,7 +36,6 @@
                   <span v-if="file.deletions" class="gg-del">-{{ file.deletions }}</span>
                 </span>
               </button>
-              <DiffLines v-if="activePath === file.path" :diff="fileDiff" empty-label="正在读取 diff…" />
             </li>
           </ul>
           <div class="gg-actions">
@@ -55,22 +54,23 @@
 </template>
 
 <script setup>
-// 提交图表：提交列表 + 单条展开的文件清单与 diff + 回滚。
+// 提交图表：提交列表 + 单条展开的文件清单，点文件把 diff 交给中栏（emit('open-diff')）。
 // 回滚由后端新增一条 Revert 提交，历史不会被改写（reset --hard 会让后续提交消失）。
 import { onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { projectApi } from '@/api'
-import DiffLines from '@/components/git/DiffLines.vue'
 import { statusClass, statusLabel } from '@/composables/git/sourceControlModel'
 
 const props = defineProps({
   projectId: { type: [Number, String], default: null },
   refreshKey: { type: [Number, String], default: 0 },
-  branchName: { type: String, default: 'master' }
+  branchName: { type: String, default: 'master' },
+  /** 当前正在中栏展示的 diff 路径，用于高亮对应行。 */
+  activePath: { type: String, default: '' }
 })
 
-const emit = defineEmits(['reverted'])
+const emit = defineEmits(['reverted', 'open-diff'])
 
 const commits = ref([])
 const nextBefore = ref(null)
@@ -78,8 +78,6 @@ const loading = ref(false)
 const reverting = ref(false)
 const activeSha = ref(null)
 const detail = ref(null)
-const activePath = ref(null)
-const fileDiff = ref('')
 
 async function reload() {
   if (!props.projectId) return
@@ -92,8 +90,6 @@ async function reload() {
       if (activeSha.value && !commits.value.some(commit => commit.sha === activeSha.value)) {
         activeSha.value = null
         detail.value = null
-        fileDiff.value = ''
-        activePath.value = null
       }
     }
   } catch (error) {
@@ -123,36 +119,15 @@ async function openCommit(sha) {
   if (activeSha.value === sha) {
     activeSha.value = null
     detail.value = null
-    activePath.value = null
-    fileDiff.value = ''
     return
   }
   activeSha.value = sha
   detail.value = null
-  activePath.value = null
-  fileDiff.value = ''
   try {
     const result = await projectApi.gitCommitDetail(props.projectId, sha)
     if (result.code === 0) detail.value = result.data
   } catch (error) {
     detail.value = null
-  }
-}
-
-async function openFileDiff(path) {
-  if (!activeSha.value) return
-  if (activePath.value === path) {
-    activePath.value = null
-    fileDiff.value = ''
-    return
-  }
-  activePath.value = path
-  fileDiff.value = ''
-  try {
-    const result = await projectApi.gitCommitDiff(props.projectId, activeSha.value, path)
-    if (result.code === 0) fileDiff.value = result.data.diff || ''
-  } catch (error) {
-    fileDiff.value = ''
   }
 }
 
@@ -178,7 +153,6 @@ async function revertTo(sha, message) {
     emit('reverted', result.data)
     activeSha.value = null
     detail.value = null
-    fileDiff.value = ''
     await reload()
   } catch (error) {
     ElMessage.error(error?.response?.data?.message || error?.message || '回滚失败')
