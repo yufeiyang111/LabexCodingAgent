@@ -4,48 +4,68 @@
       {{ loading ? '正在读取历史…' : '还没有提交' }}
     </p>
 
-    <ul v-else class="gg-list">
-      <li v-for="(commit, index) in commits" :key="commit.sha" class="gg-item">
-        <div class="gg-row" :class="{ active: activeSha === commit.sha }">
-          <span class="gg-node" :class="{ head: index === 0 }" aria-hidden="true"></span>
-          <button class="gg-message" :title="commit.message" @click="openCommit(commit.sha)">
-            {{ commit.message }}
-          </button>
-          <span v-if="index === 0" class="gg-branch">{{ branchName }}</span>
-        </div>
-
-        <div v-if="activeSha === commit.sha" class="gg-detail">
-          <div class="gg-meta">
-            <span class="gg-sha">{{ commit.shortSha }}</span>
-            <span>{{ commit.authorName }}</span>
-            <span>{{ formatDateTime(commit.committedAt) }}</span>
-          </div>
-          <ul v-if="detail" class="gg-files">
-            <li v-for="file in detail.files" :key="file.path">
+    <template v-else>
+      <div v-for="group in groups" :key="group.label" class="gg-group">
+        <div class="gg-day">{{ group.label }}</div>
+        <ul class="gg-list">
+          <li v-for="commit in group.commits" :key="commit.sha" class="gg-item">
+            <div class="gg-row" :class="{ active: activeSha === commit.sha, head: commit.sha === headSha }">
+              <span class="gg-node" :class="{ head: commit.sha === headSha }" aria-hidden="true"></span>
               <button
-                class="gg-file"
-                :class="{ active: activePath === file.path }"
-                :title="file.path"
-                @click="emit('open-diff', { path: file.path, source: 'commit', sha: commit.sha })"
+                class="gg-message"
+                :title="`${commit.message}\n${commit.authorName} · ${formatFullTime(commit.committedAt)}`"
+                :aria-expanded="activeSha === commit.sha"
+                @click="openCommit(commit.sha)"
               >
-                <span class="gg-status" :class="'gg-status-' + statusClass(file.status)">{{ statusLabel(file.status) }}</span>
-                <span class="gg-file-name">{{ file.path }}</span>
-                <span v-if="file.binary" class="gg-stat">二进制</span>
-                <span v-else class="gg-stat">
-                  <span v-if="file.additions" class="gg-add">+{{ file.additions }}</span>
-                  <span v-if="file.deletions" class="gg-del">-{{ file.deletions }}</span>
-                </span>
+                {{ commit.message }}
               </button>
-            </li>
-          </ul>
-          <div class="gg-actions">
-            <button class="gg-revert" :disabled="reverting" @click="revertTo(commit.sha, commit.message)">
-              {{ reverting ? '回滚中…' : '回滚到此提交' }}
-            </button>
-          </div>
-        </div>
-      </li>
-    </ul>
+              <span v-if="commit.sha === headSha" class="gg-branch">{{ branchName }}</span>
+              <span class="gg-time" :title="formatFullTime(commit.committedAt)">{{ formatCommitTime(commit.committedAt) }}</span>
+            </div>
+
+            <Transition name="gg-expand">
+              <div v-if="activeSha === commit.sha" class="gg-detail">
+                <div class="gg-meta">
+                  <span class="gg-sha" :title="commit.sha">{{ commit.shortSha }}</span>
+                  <span class="gg-author">
+                    <IconUser />
+                    {{ commit.authorName }}
+                  </span>
+                  <span>{{ formatFullTime(commit.committedAt) }}</span>
+                </div>
+                <ul v-if="detail" class="gg-files">
+                  <li v-for="file in detail.files" :key="file.path">
+                    <button
+                      class="gg-file"
+                      :class="{ active: activePath === file.path }"
+                      :title="file.path"
+                      @click="emit('open-diff', { path: file.path, source: 'commit', sha: commit.sha })"
+                    >
+                      <FileIcon class="gg-file-icon" :name="fileName(file.path)" :size="12" />
+                      <span class="gg-file-name">{{ fileName(file.path) }}</span>
+                      <span v-if="fileDir(file.path)" class="gg-file-dir">{{ fileDir(file.path) }}</span>
+                      <span class="gg-stat" :class="'gg-stat-' + statusClass(file.status)">{{ statusLabel(file.status) }}</span>
+                      <span v-if="file.binary" class="gg-num gg-num-binary">二进制</span>
+                      <span v-else class="gg-num">
+                        <span v-if="file.additions" class="gg-add">+{{ file.additions }}</span>
+                        <span v-if="file.deletions" class="gg-del">-{{ file.deletions }}</span>
+                      </span>
+                    </button>
+                  </li>
+                </ul>
+                <div v-else class="gg-loading">正在读取文件清单…</div>
+                <div class="gg-actions">
+                  <button class="gg-revert" :disabled="reverting" @click="revertTo(commit.sha, commit.message)">
+                    <IconUndo />
+                    {{ reverting ? '回滚中…' : '回滚到此提交' }}
+                  </button>
+                </div>
+              </div>
+            </Transition>
+          </li>
+        </ul>
+      </div>
+    </template>
 
     <button v-if="nextBefore" class="gg-more" :disabled="loading" @click="loadMore">
       {{ loading ? '加载中…' : '加载更多' }}
@@ -56,11 +76,18 @@
 <script setup>
 // 提交图表：提交列表 + 单条展开的文件清单，点文件把 diff 交给中栏（emit('open-diff')）。
 // 回滚由后端新增一条 Revert 提交，历史不会被改写（reset --hard 会让后续提交消失）。
-import { onMounted, ref, watch } from 'vue'
+//
+// 列表按天分组：一天里提十几条时，连续的同一天时间戳会把「哪天做的」淹没在相对时间里，
+// 分组标题承担日期、行内只留相对时间，扫读成本更低。
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import IconUndo from '~icons/lucide/undo-2'
+import IconUser from '~icons/lucide/user'
 
 import { projectApi } from '@/api'
-import { statusClass, statusLabel } from '@/composables/git/sourceControlModel'
+import FileIcon from '@/components/icons/FileIcon.vue'
+import { formatFullTime } from '@/constants/conversationList'
+import { formatCommitTime, groupCommitsByDay, splitGitPath, statusClass, statusLabel } from '@/composables/git/sourceControlModel'
 
 const props = defineProps({
   projectId: { type: [Number, String], default: null },
@@ -78,6 +105,16 @@ const loading = ref(false)
 const reverting = ref(false)
 const activeSha = ref(null)
 const detail = ref(null)
+
+const groups = computed(() => groupCommitsByDay(commits.value))
+const headSha = computed(() => commits.value[0]?.sha || null)
+
+function fileName(path) {
+  return splitGitPath(path).name
+}
+function fileDir(path) {
+  return splitGitPath(path).dir
+}
 
 async function reload() {
   if (!props.projectId) return
@@ -159,12 +196,6 @@ async function revertTo(sha, message) {
   } finally {
     reverting.value = false
   }
-}
-
-function formatDateTime(value) {
-  const date = value ? new Date(value) : null
-  if (!date || Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString()
 }
 
 watch(() => props.projectId, reload)

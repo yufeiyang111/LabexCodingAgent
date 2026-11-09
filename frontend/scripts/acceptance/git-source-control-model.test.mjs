@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  BRANCH_NAME,
   buildCloneCommand,
   canCommit,
   defaultSelection,
@@ -9,7 +10,8 @@ import {
   groupCommitsByDay,
   splitGitPath,
   statusClass,
-  statusLabel
+  statusLabel,
+  statusText
 } from '../../src/composables/git/sourceControlModel.js'
 
 test('statusLabel 把未跟踪显示成 U，其余保留字母', () => {
@@ -92,4 +94,18 @@ test('defaultSelection 默认全选未提交文件（对齐 VSCode 的一点即�
 
   assert.deepEqual(defaultSelection(entries), ['a.txt', 'src/b.js'])
   assert.deepEqual(defaultSelection(null), [])
+})
+
+test('statusText 给状态方块的悬停提示中文全称', () => {
+  assert.equal(statusText('A'), '新增')
+  assert.equal(statusText('M'), '修改')
+  assert.equal(statusText('D'), '删除')
+  assert.equal(statusText('??'), '未跟踪')
+  assert.equal(statusText('未知'), '修改', '未知字母退回「修改」，不显示空提示')
+})
+
+test('BRANCH_NAME 与仓库初始化的 --initial-branch 一致', () => {
+  // 分支名由 ProjectGitRepository 初始化时固定为 master；面板上的 chip 读同一常量，
+  // 两边写死不同的值时 chip 会显示一个并不存在的分支。
+  assert.equal(BRANCH_NAME, 'master')
 })

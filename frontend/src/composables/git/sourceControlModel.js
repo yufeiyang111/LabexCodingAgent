@@ -5,6 +5,9 @@
  * 放在组件里就只能靠浏览器测，而它们的输入输出完全确定。
  */
 
+/** 版本库的唯一分支：bare 仓库以 `--initial-branch=master` 初始化，产品内没有切换分支的入口。 */
+export const BRANCH_NAME = 'master'
+
 const STATUS_LABELS = {
   A: 'A',
   M: 'M',
@@ -13,6 +16,16 @@ const STATUS_LABELS = {
   C: 'C',
   U: 'U',
   '??': 'U'
+}
+
+const STATUS_TEXTS = {
+  A: '新增',
+  M: '修改',
+  D: '删除',
+  R: '重命名',
+  C: '复制',
+  U: '未跟踪',
+  '??': '未跟踪'
 }
 
 const STATUS_CLASSES = {
@@ -33,6 +46,11 @@ export function statusLabel(status) {
 /** git 状态字母 → CSS 类名后缀，决定颜色。 */
 export function statusClass(status) {
   return STATUS_CLASSES[status] || 'modified'
+}
+
+/** git 状态字母 → 中文全称，用作状态方块的 title（单字母方块本身不解释语义）。 */
+export function statusText(status) {
+  return STATUS_TEXTS[status] || '修改'
 }
 
 /**

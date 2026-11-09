@@ -1,8 +1,9 @@
-/* 提交图表：VSCode 的 Graph 视图——一条竖线串起节点，最新提交带分支标签。
-   点一条展开文件清单与 diff，可回滚。配色跟随主题变量。 */
+/* 提交图表：VSCode 的 Graph 视图——一条竖线串起节点，最新提交带分支标签，
+   列表按天分组，展开后是文件清单与回滚入口。配色跟随主题变量。 */
 
 .gg {
   padding: 0 0 6px;
+  --gg-ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 .gg-hint {
   margin: 0;
@@ -10,6 +11,19 @@
   color: var(--theme-text-muted);
   font-size: 11px;
   line-height: 1.5;
+}
+
+/* ===== 按天分组 ===== */
+.gg-group + .gg-group {
+  margin-top: 2px;
+}
+.gg-day {
+  /* 与提交标题左对齐：节点 margin-left 10 + 宽 9 + gap 6 = 25px */
+  padding: 5px 10px 3px 25px;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 .gg-list {
   margin: 0;
@@ -44,14 +58,16 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 10px 2px 0;
+  height: 22px;
+  padding: 0 10px 0 0;
   min-width: 0;
+  transition: background 0.1s var(--gg-ease);
 }
 .gg-row:hover {
   background: color-mix(in srgb, var(--theme-text) 5%, transparent);
 }
 .gg-row.active {
-  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+  background: color-mix(in srgb, var(--theme-accent) 10%, transparent);
 }
 .gg-node {
   position: relative;
@@ -63,10 +79,13 @@
   border-radius: 50%;
   border: 1.5px solid var(--theme-text-muted);
   background: var(--theme-surface-muted);
+  transition: border-color 0.12s var(--gg-ease), background 0.12s var(--gg-ease);
 }
+/* HEAD 节点：实心 + 一圈光晕，一眼能认出「当前所在」 */
 .gg-node.head {
   border-color: var(--theme-accent);
   background: var(--theme-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent) 18%, transparent);
 }
 .gg-message {
   flex: 1;
@@ -83,6 +102,9 @@
   white-space: nowrap;
   cursor: pointer;
 }
+.gg-row.active .gg-message {
+  font-weight: 600;
+}
 .gg-branch {
   flex-shrink: 0;
   padding: 0 5px;
@@ -94,7 +116,15 @@
   line-height: 14px;
   font-weight: 600;
 }
+.gg-time {
+  flex-shrink: 0;
+  min-width: 30px;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  text-align: right;
+}
 
+/* ===== 展开详情 ===== */
 .gg-detail {
   margin: 2px 0 6px 20px;
   padding: 6px 8px;
@@ -105,6 +135,7 @@
 .gg-meta {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   color: var(--theme-text-muted);
   font-size: 10px;
@@ -114,6 +145,21 @@
   color: var(--theme-accent);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.gg-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.gg-author svg {
+  width: 9px;
+  height: 9px;
+}
+.gg-loading {
+  padding: 4px 2px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+}
+
 .gg-files {
   margin: 0;
   padding: 0;
@@ -122,9 +168,10 @@
 .gg-file {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   width: 100%;
-  padding: 1px 2px;
+  height: 20px;
+  padding: 0 2px;
   border: none;
   border-radius: 3px;
   background: transparent;
@@ -132,6 +179,7 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background 0.1s var(--gg-ease);
 }
 .gg-file:hover {
   background: color-mix(in srgb, var(--theme-text) 6%, transparent);
@@ -139,34 +187,70 @@
 .gg-file.active {
   background: color-mix(in srgb, var(--theme-accent) 14%, transparent);
 }
-.gg-status {
+.gg-file-icon {
   flex-shrink: 0;
-  width: 11px;
-  text-align: center;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  font-weight: 700;
+  opacity: 0.9;
 }
-.gg-status-added { color: #3a9d5d; }
-.gg-status-modified { color: #c08a2e; }
-.gg-status-deleted { color: #c0392b; }
-.gg-status-renamed { color: #2f74c0; }
-.gg-status-untracked { color: #3a9d5d; }
 .gg-file-name {
-  flex: 1;
-  min-width: 0;
+  flex-shrink: 0;
+  max-width: 45%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--theme-text-secondary);
   font-size: 11px;
 }
+.gg-file-dir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+}
+/* 状态方块：和「更改」列表同一套语义色，展开后不必再回去对照 */
 .gg-stat {
+  flex-shrink: 0;
+  width: 15px;
+  text-align: center;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+}
+.gg-stat-added,
+.gg-stat-untracked {
+  background: color-mix(in srgb, #3a9d5d 16%, transparent);
+  color: #2f8a4f;
+}
+.gg-stat-modified {
+  background: color-mix(in srgb, #c08a2e 18%, transparent);
+  color: #a5761f;
+}
+.gg-stat-deleted {
+  background: color-mix(in srgb, #c0392b 14%, transparent);
+  color: #b03427;
+}
+.gg-stat-renamed {
+  background: color-mix(in srgb, #2f74c0 14%, transparent);
+  color: #2b6cb0;
+}
+.gg-num {
   flex-shrink: 0;
   display: flex;
   gap: 4px;
+  min-width: 34px;
+  justify-content: flex-end;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
   color: var(--theme-text-muted);
+}
+.gg-num-binary {
+  font-family: inherit;
 }
 .gg-add { color: #3a9d5d; }
 .gg-del { color: #c0392b; }
@@ -177,6 +261,9 @@
   border-top: 1px solid var(--theme-border);
 }
 .gg-revert {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 3px 9px;
   border: 1px solid color-mix(in srgb, var(--theme-danger) 50%, transparent);
   border-radius: 4px;
@@ -185,6 +272,11 @@
   font: inherit;
   font-size: 11px;
   cursor: pointer;
+  transition: background 0.12s var(--gg-ease);
+}
+.gg-revert svg {
+  width: 10px;
+  height: 10px;
 }
 .gg-revert:hover:not(:disabled) {
   background: color-mix(in srgb, var(--theme-danger) 18%, transparent);
@@ -206,9 +298,22 @@
   font: inherit;
   font-size: 11px;
   cursor: pointer;
+  transition: background 0.12s var(--gg-ease);
 }
 .gg-more:hover:not(:disabled) {
   background: color-mix(in srgb, var(--theme-text) 6%, transparent);
+}
+
+/* 展开/收起：高度与透明度一起过渡，避免详情块「啪」地撑开把下方提交顶走 */
+.gg-expand-enter-active,
+.gg-expand-leave-active {
+  transition: opacity 0.14s var(--gg-ease), transform 0.14s var(--gg-ease);
+  transform-origin: top;
+}
+.gg-expand-enter-from,
+.gg-expand-leave-to {
+  opacity: 0;
+  transform: translateY(-3px);
 }
 
 html[data-theme='dark'] .gg-node {
@@ -217,10 +322,29 @@ html[data-theme='dark'] .gg-node {
 html[data-theme='dark'] .gg-detail {
   background: #1f1f1f;
 }
-html[data-theme='dark'] .gg-status-added { color: #73c991; }
-html[data-theme='dark'] .gg-status-modified { color: #e2c08d; }
-html[data-theme='dark'] .gg-status-deleted { color: #f17a6a; }
-html[data-theme='dark'] .gg-status-renamed { color: #6cb6ff; }
-html[data-theme='dark'] .gg-status-untracked { color: #73c991; }
+html[data-theme='dark'] .gg-stat-added,
+html[data-theme='dark'] .gg-stat-untracked {
+  background: color-mix(in srgb, #73c991 18%, transparent);
+  color: #73c991;
+}
+html[data-theme='dark'] .gg-stat-modified {
+  background: color-mix(in srgb, #e2c08d 18%, transparent);
+  color: #e2c08d;
+}
+html[data-theme='dark'] .gg-stat-deleted {
+  background: color-mix(in srgb, #f17a6a 18%, transparent);
+  color: #f17a6a;
+}
+html[data-theme='dark'] .gg-stat-renamed {
+  background: color-mix(in srgb, #6cb6ff 18%, transparent);
+  color: #6cb6ff;
+}
 html[data-theme='dark'] .gg-add { color: #73c991; }
 html[data-theme='dark'] .gg-del { color: #f17a6a; }
+
+@media (prefers-reduced-motion: reduce) {
+  .gg-expand-enter-active,
+  .gg-expand-leave-active {
+    transition: none;
+  }
+}

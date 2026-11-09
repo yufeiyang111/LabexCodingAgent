@@ -1,5 +1,5 @@
 /* 源代码管理面板：复刻 VSCode 的信息层级——提交信息在上、主按钮紧随、
-   「更改」与「图表」两个可折叠分组，文件行是「状态字母 + 文件名 + 弱化目录」。
+   「更改」与「图表」两个可折叠分组，文件行是「类型图标 + 文件名 + 弱化目录 + 状态方块」。
 
    配色走主题变量而不是硬编码 VSCode 的色值：这个面板活在 LabexAgent 的侧边栏里，
    必须跟着浅色/深色主题一起走，否则切主题会出现一块对不上的区域。 */
@@ -12,15 +12,18 @@
   color: var(--theme-text);
   font-size: 12px;
   background: var(--theme-surface-muted);
+  /* 面板内所有交互都用同一个缓动，避免每处各写一个时长显得杂乱 */
+  --sc-ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* ===== 头部：标题 + 分支 + 两个工具按钮 ===== */
 .sc-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 6px;
   padding: 8px 10px 6px;
   flex-shrink: 0;
+  min-width: 0;
 }
 .sc-head-title {
   font-size: 11px;
@@ -32,10 +35,35 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sc-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  max-width: 78px;
+  padding: 0 6px 0 5px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 26%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--theme-accent) 8%, transparent);
+  color: var(--theme-accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc-branch svg {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+}
 .sc-head-actions {
   display: flex;
   align-items: center;
   gap: 2px;
+  margin-left: auto;
   flex-shrink: 0;
 }
 .sc-icon-btn {
@@ -44,19 +72,39 @@
   justify-content: center;
   width: 20px;
   height: 20px;
+  padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--theme-text-muted);
   cursor: pointer;
+  transition: background 0.12s var(--sc-ease), color 0.12s var(--sc-ease);
+}
+.sc-icon-btn svg {
+  width: 13px;
+  height: 13px;
 }
 .sc-icon-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--theme-text) 8%, transparent);
   color: var(--theme-text);
 }
+.sc-icon-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+.sc-icon-btn.is-on {
+  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+  color: var(--theme-accent);
+}
 .sc-icon-btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+.sc-icon-btn.is-busy svg,
+.sc-spin {
+  animation: sc-spin 0.9s linear infinite;
+}
+@keyframes sc-spin {
+  to { transform: rotate(360deg); }
 }
 
 .sc-error {
@@ -88,6 +136,7 @@
   font-family: inherit;
   font-size: 12px;
   line-height: 1.45;
+  transition: border-color 0.12s var(--sc-ease), box-shadow 0.12s var(--sc-ease);
 }
 .sc-message::placeholder {
   color: var(--theme-text-muted);
@@ -95,11 +144,14 @@
 .sc-message:focus {
   outline: none;
   border-color: var(--theme-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent) 16%, transparent);
 }
 .sc-commit-actions {
   display: flex;
   margin-top: 6px;
 }
+/* 默认是「描边幽灵态」：禁用时只是不可点，而不是一块发灰的死板大色块。
+   一旦可以提交（有信息 + 有勾选），整组才变成实心强调色。 */
 .sc-primary {
   flex: 1;
   display: inline-flex;
@@ -108,50 +160,79 @@
   gap: 5px;
   height: 26px;
   padding: 0 8px;
-  border: none;
+  border: 1px solid var(--theme-border);
+  border-right: none;
   border-radius: 4px 0 0 4px;
-  background: var(--theme-accent);
-  color: var(--theme-accent-contrast);
+  background: var(--theme-surface);
+  color: var(--theme-text-muted);
   font: inherit;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   overflow: hidden;
+  transition: background 0.14s var(--sc-ease), color 0.14s var(--sc-ease),
+              border-color 0.14s var(--sc-ease), box-shadow 0.14s var(--sc-ease);
+}
+.sc-primary svg {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
 }
 .sc-primary span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sc-primary:hover:not(:disabled) {
+.sc-commit-actions.is-ready .sc-primary {
+  border-color: var(--theme-accent);
+  background: var(--theme-accent);
+  color: var(--theme-accent-contrast);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--theme-accent) 34%, transparent);
+}
+.sc-commit-actions.is-ready .sc-primary:hover:not(:disabled) {
   background: var(--theme-accent-strong);
+  border-color: var(--theme-accent-strong);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent) 40%, transparent);
+}
+.sc-commit-actions.is-ready .sc-primary:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
 }
 .sc-primary:disabled {
-  background: color-mix(in srgb, var(--theme-accent) 34%, var(--theme-surface));
-  color: var(--theme-text-muted);
   cursor: default;
 }
 .sc-primary-caret {
   flex-shrink: 0;
   width: 24px;
   height: 26px;
-  border: none;
-  border-left: 1px solid color-mix(in srgb, var(--theme-accent-contrast) 32%, transparent);
-  border-radius: 0 4px 4px 0;
-  background: var(--theme-accent);
-  color: var(--theme-accent-contrast);
-  cursor: pointer;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  border: 1px solid var(--theme-border);
+  border-radius: 0 4px 4px 0;
+  background: var(--theme-surface);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: background 0.14s var(--sc-ease), color 0.14s var(--sc-ease),
+              border-color 0.14s var(--sc-ease);
 }
-.sc-primary-caret:hover:not(:disabled) {
+.sc-primary-caret svg {
+  width: 11px;
+  height: 11px;
+}
+.sc-commit-actions.is-ready .sc-primary-caret {
+  border-color: var(--theme-accent);
+  border-left-color: color-mix(in srgb, var(--theme-accent-contrast) 30%, transparent);
+  background: var(--theme-accent);
+  color: var(--theme-accent-contrast);
+}
+.sc-commit-actions.is-ready .sc-primary-caret:hover:not(:disabled) {
   background: var(--theme-accent-strong);
 }
 .sc-primary-caret:disabled {
-  background: color-mix(in srgb, var(--theme-accent) 34%, var(--theme-surface));
-  color: var(--theme-text-muted);
   cursor: default;
+  opacity: 0.7;
 }
 
 /* ===== 分组：更改 / 图表 ===== */
@@ -159,6 +240,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .sc-section {
   border-top: 1px solid var(--theme-border);
@@ -179,13 +261,26 @@
   text-transform: uppercase;
   text-align: left;
   cursor: pointer;
+  transition: color 0.12s var(--sc-ease);
 }
 .sc-section-head:hover {
   color: var(--theme-text);
 }
+.sc-section-head:hover .sc-section-icon {
+  opacity: 1;
+}
+.sc-section-icon {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+  opacity: 0.62;
+  transition: opacity 0.12s var(--sc-ease);
+}
 .sc-chevron {
   flex-shrink: 0;
-  transition: transform 0.12s ease;
+  width: 10px;
+  height: 10px;
+  transition: transform 0.16s var(--sc-ease);
 }
 .sc-chevron.collapsed {
   transform: rotate(-90deg);
@@ -207,9 +302,31 @@
   background: color-mix(in srgb, var(--theme-text-muted) 26%, transparent);
   color: var(--theme-text-secondary);
 }
-.sc-hint {
+
+/* ===== 空状态：图标 + 一句结论 + 一句说明，不再是单行灰字 ===== */
+.sc-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 18px 16px 20px;
+  text-align: center;
+}
+.sc-empty-icon {
+  width: 22px;
+  height: 22px;
+  margin-bottom: 3px;
+  color: color-mix(in srgb, var(--theme-text-muted) 60%, transparent);
+}
+.sc-empty-title {
   margin: 0;
-  padding: 2px 10px 10px 22px;
+  color: var(--theme-text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.sc-empty-hint {
+  margin: 0;
+  max-width: 190px;
   color: var(--theme-text-muted);
   font-size: 11px;
   line-height: 1.5;
@@ -225,15 +342,17 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 10px 2px 8px;
-  cursor: default;
+  padding: 1px 8px 1px 8px;
   min-width: 0;
+  border-left: 2px solid transparent;
+  transition: background 0.1s var(--sc-ease), border-color 0.1s var(--sc-ease);
 }
 .sc-row:hover {
   background: color-mix(in srgb, var(--theme-text) 5%, transparent);
 }
 .sc-row.active {
-  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+  border-left-color: var(--theme-accent);
+  background: color-mix(in srgb, var(--theme-accent) 10%, transparent);
 }
 .sc-check {
   flex-shrink: 0;
@@ -243,27 +362,13 @@
   accent-color: var(--theme-accent);
   cursor: pointer;
 }
-.sc-status {
-  flex-shrink: 0;
-  width: 11px;
-  text-align: center;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-}
-.sc-status-added { color: #3a9d5d; }
-.sc-status-modified { color: #c08a2e; }
-.sc-status-deleted { color: #c0392b; }
-.sc-status-renamed { color: #2f74c0; }
-.sc-status-untracked { color: #3a9d5d; }
-
 .sc-file {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 5px;
+  height: 22px;
   padding: 0;
   border: none;
   background: transparent;
@@ -271,6 +376,10 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+.sc-file-icon {
+  flex-shrink: 0;
+  opacity: 0.9;
 }
 .sc-file-name {
   flex-shrink: 0;
@@ -304,15 +413,95 @@
   line-height: 14px;
 }
 
-/* ===== clone 地址 ===== */
+/* 状态：带色底的小方块。VSCode 用单色字母，但在这个面板里字母与目录同级，
+   加底色之后「哪一行是新增、哪一行是删除」可以扫视，不需要逐个读字母。
+   margin-left:auto 让它贴右：根目录文件没有目录段，否则它会紧贴文件名。 */
+.sc-status {
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 15px;
+  text-align: center;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+}
+.sc-status-added,
+.sc-status-untracked {
+  background: color-mix(in srgb, #3a9d5d 16%, transparent);
+  color: #2f8a4f;
+}
+.sc-status-modified {
+  background: color-mix(in srgb, #c08a2e 18%, transparent);
+  color: #a5761f;
+}
+.sc-status-deleted {
+  background: color-mix(in srgb, #c0392b 14%, transparent);
+  color: #b03427;
+}
+.sc-status-renamed {
+  background: color-mix(in srgb, #2f74c0 14%, transparent);
+  color: #2b6cb0;
+}
+
+/* 打开箭头：只在 hover / 当前行出现，避免每行右侧都挂一个常驻控件 */
+.sc-open-hint {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+  margin-left: 1px;
+  color: var(--theme-text-muted);
+  opacity: 0;
+  transform: translateX(-2px);
+  transition: opacity 0.12s var(--sc-ease), transform 0.12s var(--sc-ease);
+}
+.sc-row:hover .sc-open-hint,
+.sc-row.active .sc-open-hint {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* ===== clone 地址：默认折叠，展开后按需取一次性令牌 ===== */
 .sc-clone {
   flex-shrink: 0;
-  padding: 8px 10px;
   border-top: 1px solid var(--theme-border);
   background: var(--theme-surface);
 }
-.sc-clone-title {
-  margin-bottom: 4px;
+.sc-clone-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.12s var(--sc-ease);
+}
+.sc-clone-head:hover {
+  color: var(--theme-text-secondary);
+}
+.sc-clone-icon {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+}
+.sc-clone-expiry {
+  color: color-mix(in srgb, var(--theme-text-muted) 80%, transparent);
+  font-size: 10px;
+}
+.sc-clone-head .sc-chevron {
+  margin-left: auto;
+}
+.sc-clone-body {
+  padding: 0 10px 8px;
+}
+.sc-clone-loading {
   color: var(--theme-text-muted);
   font-size: 11px;
 }
@@ -332,16 +521,84 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
 }
+.sc-copy-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: var(--theme-surface);
+  color: var(--theme-text-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.12s var(--sc-ease), color 0.12s var(--sc-ease),
+              border-color 0.12s var(--sc-ease);
+}
+.sc-copy-btn svg {
+  width: 10px;
+  height: 10px;
+}
+.sc-copy-btn:hover {
+  background: color-mix(in srgb, var(--theme-text) 6%, transparent);
+  color: var(--theme-text);
+}
+.sc-copy-btn.is-done {
+  border-color: color-mix(in srgb, #3a9d5d 44%, transparent);
+  color: #2f8a4f;
+}
 
-/* 深色主题：状态字母改用 VSCode 暗色系的取值，浅色那组在 #181818 上会发灰 */
+/* 键盘可达：鼠标用户看到的是 hover 底色，键盘用户需要一条明确的焦点环 */
+.sc-panel button:focus-visible,
+.sc-panel input:focus-visible,
+.sc-panel textarea:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--theme-accent) 62%, transparent);
+  outline-offset: 1px;
+}
+
+/* 深色主题：状态色改用 VSCode 暗色系的取值，浅色那组在 #181818 上会发灰 */
 html[data-theme='dark'] .sc-panel {
   background: #181818;
 }
-html[data-theme='dark'] .sc-status-added { color: #73c991; }
-html[data-theme='dark'] .sc-status-modified { color: #e2c08d; }
-html[data-theme='dark'] .sc-status-deleted { color: #f17a6a; }
-html[data-theme='dark'] .sc-status-renamed { color: #6cb6ff; }
-html[data-theme='dark'] .sc-status-untracked { color: #73c991; }
+html[data-theme='dark'] .sc-status-added,
+html[data-theme='dark'] .sc-status-untracked {
+  background: color-mix(in srgb, #73c991 18%, transparent);
+  color: #73c991;
+}
+html[data-theme='dark'] .sc-status-modified {
+  background: color-mix(in srgb, #e2c08d 18%, transparent);
+  color: #e2c08d;
+}
+html[data-theme='dark'] .sc-status-deleted {
+  background: color-mix(in srgb, #f17a6a 18%, transparent);
+  color: #f17a6a;
+}
+html[data-theme='dark'] .sc-status-renamed {
+  background: color-mix(in srgb, #6cb6ff 18%, transparent);
+  color: #6cb6ff;
+}
 html[data-theme='dark'] .sc-clone {
   background: #1f1f1f;
+}
+html[data-theme='dark'] .sc-copy-btn.is-done {
+  border-color: color-mix(in srgb, #73c991 44%, transparent);
+  color: #73c991;
+}
+
+/* 系统要求减少动效时，只保留颜色变化，去掉位移与旋转 */
+@media (prefers-reduced-motion: reduce) {
+  .sc-panel *,
+  .sc-panel *::before,
+  .sc-panel *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .sc-icon-btn:active:not(:disabled),
+  .sc-commit-actions.is-ready .sc-primary:active:not(:disabled) {
+    transform: none;
+  }
 }
