@@ -59,6 +59,16 @@
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           </button>
+          <button
+            type="button"
+            class="rail-btn"
+            :class="{ active: explorerVisible && sidebarView === 'source-control' }"
+            title="源代码管理"
+            @click="toggleActivityView('source-control')"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9v3a3 3 0 0 1-3 3H9"/><path d="M6 15V9"/></svg>
+            <span v-if="gitPendingCount" class="rail-badge">{{ gitPendingCount > 99 ? '99+' : gitPendingCount }}</span>
+          </button>
         </div>
         <div class="rail-bottom">
           <button
@@ -130,6 +140,15 @@
           :project-id="projectId"
           :dir="workspaceSearchDir"
           @open="handleOpenSearchHit"
+        />
+        <!-- 源代码管理：与资源管理器/会话并列的侧边栏视图，位置和入口都对齐 VSCode -->
+        <SourceControlPanel
+          v-if="sidebarView === 'source-control'"
+          :project-id="projectId"
+          :agent-paths="agentChangePaths"
+          :refresh-key="gitRefreshKey"
+          @committed="handleGitCommitted"
+          @changed="gitPendingCount = $event"
         />
       </aside>
 
@@ -747,47 +766,16 @@
           <!-- ==================== REVIEW TAB (Changes) ==================== -->
           <div v-if="activeAiTab === 'review'" class="ai-content ai-content-nopad">
             <div class="review-split">
-              <div class="review-main">
-                <!-- 三块面板并列但不并排：Agent 改动、用户暂存、提交历史共享同一栏宽度。
-                     Agent 改动与 git 是两套独立系统，这里只是把它们放在同一个入口下。 -->
-                <div class="review-tabs">
-                  <button
-                    v-for="tab in reviewTabs"
-                    :key="tab.key"
-                    class="review-tab"
-                    :class="{ active: reviewTab === tab.key }"
-                    @click="reviewTab = tab.key"
-                  >
-                    {{ tab.label }}
-                    <span v-if="tab.key === 'agent' && effectiveChanges.length" class="review-tab-badge">{{ effectiveChanges.length }}</span>
-                    <span v-else-if="tab.key === 'source' && gitPendingCount" class="review-tab-badge">{{ gitPendingCount }}</span>
-                  </button>
-                </div>
-                <div class="review-tab-body">
-                  <ChangesPanel
-                    v-show="reviewTab === 'agent'"
-                    :changes="effectiveChanges"
-                    :project-id="projectId"
-                    :refresh-key="changesRefreshKey"
-                    @revert="revertChange"
-                    @undo="onUndoChange"
-                    @open-diff="handleOpenFileDiff"
-                  />
-                  <SourceControlPanel
-                    v-if="reviewTab === 'source'"
-                    :project-id="projectId"
-                    :agent-paths="effectiveChanges.map(change => change.relativePath || change.file).filter(Boolean)"
-                    :refresh-key="gitRefreshKey"
-                    @committed="handleGitCommitted"
-                  />
-                  <GitHistoryPanel
-                    v-if="reviewTab === 'history'"
-                    :project-id="projectId"
-                    :refresh-key="gitRefreshKey"
-                    @reverted="handleGitCommitted"
-                  />
-                </div>
-              </div>
+              <!-- 这里只有 Agent 改动（change-set 的 diff / undo）。
+                   用户的 git 提交在侧边栏「源代码管理」，两套系统不共用入口也不共用状态。 -->
+              <ChangesPanel
+                :changes="effectiveChanges"
+                :project-id="projectId"
+                :refresh-key="changesRefreshKey"
+                @revert="revertChange"
+                @undo="onUndoChange"
+                @open-diff="handleOpenFileDiff"
+              />
               <SyncPanel
                 :state="syncSession.state"
                 :busy="syncBusy"
@@ -1153,6 +1141,7 @@ import { useContextManagement, contextManagementTitle, contextManagementStatusTe
 import { useThemeStore } from '@/stores/theme'
 import { loadWorkspaceResources } from '@/composables/workspaceInitialization'
 import { useConversationState } from '@/composables/useConversationState'
+import { useMessageWindow } from '@/composables/useMessageWindow'
 import { normalizeCommandCatalog, resolveSlashCommand } from '@/composables/slashCommandRuntime'
 import { createConversationSelectionGuard } from '@/composables/conversationSelectionGuard'
 import { createMergedItemsResolver, startThinkingReveal, flushThinkingDisplay } from '@/composables/agentMessageTimeline'
@@ -1185,7 +1174,7 @@ import { resolveEffectiveChanges, resolveMessageChanges, resolveMessageStats } f
 // 与 utils/agentMarkdownRenderer.js 保持一致：只引 common 子集，控制体积。
 // 此前本文件只引了样式、漏了模块本身，导致 hljs 未定义 —— 而调用点包在 try/catch 里，
 // ReferenceError 被吞掉后回落到「不高亮」的原文，表现为代码块一直没高亮却没有任何报错。
-import hljs from 'highlight.js/lib/common'
+import hljs from '@/utils/highlight'
 import 'highlight.js/styles/github-dark.css'
 
 function getMessageChanges(msg) {
@@ -1219,7 +1208,6 @@ const ChangesPanel = defineAsyncComponent(() => import('@/components/cloud/Chang
 const SyncPanel = defineAsyncComponent(() => import('@/components/sync/SyncPanel.vue'))
 const SyncConflictDialog = defineAsyncComponent(() => import('@/components/sync/SyncConflictDialog.vue'))
 const SourceControlPanel = defineAsyncComponent(() => import('@/components/git/SourceControlPanel.vue'))
-const GitHistoryPanel = defineAsyncComponent(() => import('@/components/git/GitHistoryPanel.vue'))
 const UsagePanel = defineAsyncComponent(() => import('@/components/cloud/UsagePanel.vue'))
 const CenterDiffViewer = defineAsyncComponent(() => import('@/components/cloud/CenterDiffViewer.vue'))
 const CompletionEvidenceCard = defineAsyncComponent(() => import('@/components/cloud/CompletionEvidenceCard.vue'))
@@ -1473,51 +1461,28 @@ const agentInput = ref('')
 
 /*
  * 首屏消息窗口：只渲染最近 INITIAL_VISIBLE_MESSAGES 条。
- *
- * 会话历史一次性把整页 20 轮都塞进 DOM 时，长会话首屏要挂载上千节点
- * （每条消息含 Markdown、工具卡、diff、代码高亮），点击后 1 秒多才出画面。
- * 这里把窗口起点往后收，往上滚到顶再按 REVEAL_BATCH_MESSAGES 条一批展开，
- * 本地展开完才向服务端要更早的一页。
+ * 实现与中栏共用 useMessageWindow，两处行为必须一致。
  */
-const INITIAL_VISIBLE_MESSAGES = 6
-const REVEAL_BATCH_MESSAGES = 10
-const visibleStart = ref(0)
+const {
+  visibleStart,
+  hiddenMessageCount,
+  hasHiddenMessages,
+  visibleMessages,
+  resetVisibleWindow,
+  revealEarlierMessages: revealEarlierMessagesInWindow,
+  expandWindowTo
+} = useMessageWindow(messages)
 
-const hiddenMessageCount = computed(() => visibleStart.value)
-const hasHiddenMessages = computed(() => visibleStart.value > 0)
-
-const visibleMessages = computed(() => {
-  const all = messages.value
-  const start = Math.min(visibleStart.value, Math.max(0, all.length - 1))
-  return all.slice(start).map((msg, offset) => ({ msg, i: start + offset }))
-})
-
-/** 消息数量变化时把窗口对齐到「最近 N 条」，除非用户已经在往回翻。 */
-function resetVisibleWindow() {
-  visibleStart.value = Math.max(0, messages.value.length - INITIAL_VISIBLE_MESSAGES)
-}
-
-/*
- * 新消息到达（用户发问、Agent 回包）时窗口要跟上，否则刚发出的消息会落在
- * 窗口之外、屏幕上什么也不出现。判断依据是「窗口原本贴着末尾」：
- * 用户正在往回翻历史时不打扰他。
+/**
+ * 本地展开一批更早的消息；本地都展开完了才向服务端要更早的一页。
+ * 插入更早的消息会把内容整体下推，这里补偿滚动位置以免视口跳动。
  */
-watch(
-  () => messages.value.length,
-  (next, prev) => {
-    if (next <= prev) return
-    const wasAtTail = prev - visibleStart.value <= INITIAL_VISIBLE_MESSAGES
-    if (wasAtTail) resetVisibleWindow()
-  }
-)
-
 function revealEarlierMessages() {
   if (hasHiddenMessages.value) {
     const container = msgContainer.value
     const oldScrollHeight = container?.scrollHeight || 0
     const oldScrollTop = container?.scrollTop || 0
-    visibleStart.value = Math.max(0, visibleStart.value - REVEAL_BATCH_MESSAGES)
-    // 插入更早的消息会把内容整体下推，补偿滚动位置以免视口跳动
+    revealEarlierMessagesInWindow()
     if (container) {
       nextTick(() => {
         container.scrollTop = container.scrollHeight - oldScrollHeight + oldScrollTop
@@ -2066,14 +2031,8 @@ function onWorkspaceTabDrop(e, targetIdx) {
 }
 
 const activeAiTab = ref('chat')
-// 审查页内的三个视图：Agent 改动 / 用户暂存 / 提交历史。
-// 用 tab 而不是第三栏：窄屏（<1180px）分栏已经挤到不可用宽度。
-const reviewTab = ref('agent')
-const reviewTabs = [
-  { key: 'agent', label: 'Agent 改动' },
-  { key: 'source', label: '源代码管理' },
-  { key: 'history', label: '提交历史' }
-]
+// 侧边栏「源代码管理」的刷新信号与待提交角标。
+// git 面板在侧边栏而不是 AI 审查页：VSCode 把源代码管理放在活动栏，用户在那里找它。
 const gitRefreshKey = ref(0)
 const gitPendingCount = ref(0)
 
@@ -2376,6 +2335,8 @@ onMounted(async () => {
     () => loadCommandCatalog()
   ])
   await loadRoot()
+  // 活动栏角标要在进入工作区时就正确，而不是等用户点开源代码管理才更新
+  void refreshGitPendingCount()
   void secondaryResources.then(async () => {
     const startupConversation = resolveStartupConversation()
     if (conversationSelectionGuard.isCurrent(startupConversationSelection)
@@ -2940,11 +2901,15 @@ const selectedModelConfigId = ref(null)
 const modelConfigs = ref([])
 const sessionChanges = ref([])
 const effectiveChanges = computed(() => resolveEffectiveChanges(sessionChanges.value, messages.value))
+// 当前 change-set 里的路径，只用于在 git 面板上标「Agent 也改过」的角标，不影响 git 行为
+const agentChangePaths = computed(() =>
+  effectiveChanges.value.map(change => change.relativePath || change.file).filter(Boolean)
+)
 const changesRefreshKey = ref(0)
 
 /**
- * 用户提交或回滚之后：刷新 Agent 改动面板（工作区变了）与 git 面板，
- * 并让审查页停在刚操作的那个 tab 上。
+ * 用户提交或回滚之后：工作区变了，Agent 改动面板与 git 面板都要重读。
+ * 面板自己会重查状态，这里只负责递刷新信号与更新活动栏角标。
  */
 function handleGitCommitted() {
   changesRefreshKey.value += 1
@@ -2952,14 +2917,16 @@ function handleGitCommitted() {
   refreshGitPendingCount()
 }
 
-/** 审查页角标：未提交改动数。只用于提示，不影响任何 git 行为。 */
+/**
+ * 活动栏角标：未提交改动数，和 VSCode 活动栏上的数字同义。
+ * 面板未挂载时（用户停在资源管理器等视图）也要能更新，所以这里独立查一次。
+ */
 async function refreshGitPendingCount() {
   if (!projectId.value) return
   try {
     const result = await projectApi.gitStatus(projectId.value)
     if (result.code === 0) {
-      const entries = result.data.entries || []
-      gitPendingCount.value = entries.length
+      gitPendingCount.value = (result.data.entries || []).length
     }
   } catch (error) {
     // 角标是纯装饰，读不到就不显示，不打断页面
@@ -3885,9 +3852,7 @@ function navigateMessage(direction) {
   userScrolled.value = true
 
   // 目标消息可能还在隐藏窗口里：先把窗口扩到能看见它，再滚动
-  if (newIndex < visibleStart.value) {
-    visibleStart.value = Math.max(0, newIndex - 1)
-  }
+  expandWindowTo(newIndex)
 
   nextTick(() => {
     const container = msgContainer.value
@@ -3982,7 +3947,7 @@ async function loadOlderHistory() {
   await nextTick()
   container.scrollTop = container.scrollHeight - oldScrollHeight + oldScrollTop
   // 服务端新页到达后，本地窗口也要把新消息纳入可见范围，否则用户看不到刚取回的记录
-  visibleStart.value = Math.max(0, visibleStart.value - REVEAL_BATCH_MESSAGES)
+  revealEarlierMessagesInWindow()
 }
 
 function handleScroll() {

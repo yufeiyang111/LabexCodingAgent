@@ -1,0 +1,226 @@
+/* 提交图表：VSCode 的 Graph 视图——一条竖线串起节点，最新提交带分支标签。
+   点一条展开文件清单与 diff，可回滚。配色跟随主题变量。 */
+
+.gg {
+  padding: 0 0 6px;
+}
+.gg-hint {
+  margin: 0;
+  padding: 2px 10px 10px 22px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.gg-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gg-item {
+  position: relative;
+}
+
+/* 竖线：从第一个节点贯穿到最后一个，和 VSCode 的 graph 轨道同构。
+   用 ::before 画在行左侧，节点圆点盖在线上。 */
+.gg-item::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--theme-text-muted) 34%, transparent);
+}
+.gg-item:first-child::before {
+  top: 11px;
+}
+.gg-item:last-child::before {
+  bottom: auto;
+  height: 11px;
+}
+
+.gg-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 0;
+  min-width: 0;
+}
+.gg-row:hover {
+  background: color-mix(in srgb, var(--theme-text) 5%, transparent);
+}
+.gg-row.active {
+  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+}
+.gg-node {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  margin-left: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--theme-text-muted);
+  background: var(--theme-surface-muted);
+}
+.gg-node.head {
+  border-color: var(--theme-accent);
+  background: var(--theme-accent);
+}
+.gg-message {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--theme-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.gg-branch {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 44%, transparent);
+  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+  color: var(--theme-accent);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+}
+
+.gg-detail {
+  margin: 2px 0 6px 20px;
+  padding: 6px 8px;
+  border-left: 2px solid color-mix(in srgb, var(--theme-accent) 40%, transparent);
+  background: var(--theme-surface);
+  border-radius: 0 4px 4px 0;
+}
+.gg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  margin-bottom: 5px;
+}
+.gg-sha {
+  color: var(--theme-accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.gg-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gg-file {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 1px 2px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.gg-file:hover {
+  background: color-mix(in srgb, var(--theme-text) 6%, transparent);
+}
+.gg-file.active {
+  background: color-mix(in srgb, var(--theme-accent) 14%, transparent);
+}
+.gg-status {
+  flex-shrink: 0;
+  width: 11px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+.gg-status-added { color: #3a9d5d; }
+.gg-status-modified { color: #c08a2e; }
+.gg-status-deleted { color: #c0392b; }
+.gg-status-renamed { color: #2f74c0; }
+.gg-status-untracked { color: #3a9d5d; }
+.gg-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+}
+.gg-stat {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--theme-text-muted);
+}
+.gg-add { color: #3a9d5d; }
+.gg-del { color: #c0392b; }
+
+.gg-actions {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--theme-border);
+}
+.gg-revert {
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--theme-danger) 50%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--theme-danger) 10%, transparent);
+  color: var(--theme-danger);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.gg-revert:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--theme-danger) 18%, transparent);
+}
+.gg-revert:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gg-more {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 4px 10px;
+  padding: 4px;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.gg-more:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--theme-text) 6%, transparent);
+}
+
+html[data-theme='dark'] .gg-node {
+  background: #181818;
+}
+html[data-theme='dark'] .gg-detail {
+  background: #1f1f1f;
+}
+html[data-theme='dark'] .gg-status-added { color: #73c991; }
+html[data-theme='dark'] .gg-status-modified { color: #e2c08d; }
+html[data-theme='dark'] .gg-status-deleted { color: #f17a6a; }
+html[data-theme='dark'] .gg-status-renamed { color: #6cb6ff; }
+html[data-theme='dark'] .gg-status-untracked { color: #73c991; }
+html[data-theme='dark'] .gg-add { color: #73c991; }
+html[data-theme='dark'] .gg-del { color: #f17a6a; }

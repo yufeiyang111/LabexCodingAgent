@@ -36,6 +36,39 @@ export function statusClass(status) {
 }
 
 /**
+ * 把工作区相对路径拆成「文件名 + 目录」两段。
+ *
+ * VSCode 的源代码管理列表是「文件名在前、目录在后且弱化」：几十个文件里，用户找的是
+ * `GlobalExceptionHandler.java` 而不是 `backend/src/main/java/com/labex/common/`。
+ * 直接把整条路径铺开会让文件名被挤到截断位置。
+ *
+ * @returns {{ name: string, dir: string }} dir 为空串表示文件在根目录
+ */
+export function splitGitPath(path) {
+  const normalized = path == null ? '' : String(path).replace(/\\/g, '/')
+  if (!normalized) return { name: '', dir: '' }
+  const index = normalized.lastIndexOf('/')
+  if (index < 0) return { name: normalized, dir: '' }
+  return { name: normalized.slice(index + 1), dir: normalized.slice(0, index) }
+}
+
+/** 提交信息非空且至少选了一个文件才允许提交。空白字符串不算内容。 */
+export function canCommit(message, selectedCount) {
+  return typeof message === 'string' && message.trim().length > 0 && Number(selectedCount) > 0
+}
+
+/**
+ * 从 git 状态条目里挑出默认勾选的路径。
+ *
+ * VSCode 的默认行为是「点提交就提交全部改动」。这里保持一致：首次加载或提交完成后，
+ * 把所有未提交文件设为已选；用户取消勾选后不再自动加回（保持用户的选择）。
+ */
+export function defaultSelection(entries) {
+  if (!Array.isArray(entries)) return []
+  return entries.map(entry => entry && entry.path).filter(path => typeof path === 'string' && path)
+}
+
+/**
  * 把统一 diff 文本切成带类型的行。
  *
  * 类型：add / del / hunk / meta / context。`+++` / `---` 是文件头，归 meta 而不是 add/del，
@@ -66,8 +99,10 @@ export function diffToLines(diff) {
 export function buildCloneCommand(cloneUrl) {
   if (!cloneUrl || !cloneUrl.url) return ''
   const token = cloneUrl.username || ''
+  // 必须带用户名与密码（labex:token@）：如果只有单个 token@host，git 客户端会把 token
+  // 当作用户名，并在终端挂起等待输入密码。
   const withToken = token
-    ? cloneUrl.url.replace(/^(https?:\/\/)/, `$1${encodeURIComponent(token)}@`)
+    ? cloneUrl.url.replace(/^(https?:\/\/)/, `$1labex:${encodeURIComponent(token)}@`)
     : cloneUrl.url
   return `git clone ${withToken}`
 }

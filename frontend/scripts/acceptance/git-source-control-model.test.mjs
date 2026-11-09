@@ -3,9 +3,12 @@ import test from 'node:test'
 
 import {
   buildCloneCommand,
+  canCommit,
+  defaultSelection,
   diffToLines,
   formatCommitTime,
   groupCommitsByDay,
+  splitGitPath,
   statusClass,
   statusLabel
 } from '../../src/composables/git/sourceControlModel.js'
@@ -54,10 +57,10 @@ test('diffToLines 对空输入返回空数组', () => {
   assert.deepEqual(diffToLines(null), [])
 })
 
-test('buildCloneCommand 把令牌放进 URL 用户名位置', () => {
+test('buildCloneCommand 把令牌放进 URL 凭据位置（labex:token@）避免客户端挂起等待密码', () => {
   const command = buildCloneCommand({ url: 'https://labex.example.com/api/git/2.git', username: 'tok123' })
 
-  assert.equal(command, 'git clone https://tok123@labex.example.com/api/git/2.git')
+  assert.equal(command, 'git clone https://labex:tok123@labex.example.com/api/git/2.git')
 })
 
 test('buildCloneCommand 没有令牌时不拼 @', () => {
@@ -87,4 +90,35 @@ test('formatCommitTime 只输出时分', () => {
 test('formatCommitTime 对无效输入返回空串', () => {
   assert.equal(formatCommitTime(''), '')
   assert.equal(formatCommitTime('not-a-date'), '')
+})
+
+test('splitGitPath 把文件名与目录分开，供列表弱化目录', () => {
+  assert.deepEqual(splitGitPath('backend/src/main/java/com/labex/common/GlobalExceptionHandler.java'), {
+    name: 'GlobalExceptionHandler.java',
+    dir: 'backend/src/main/java/com/labex/common'
+  })
+})
+
+test('splitGitPath 对根目录文件返回空 dir', () => {
+  assert.deepEqual(splitGitPath('README.md'), { name: 'README.md', dir: '' })
+})
+
+test('splitGitPath 兼容反斜杠并容忍空值', () => {
+  assert.deepEqual(splitGitPath('src\\a\\B.java'), { name: 'B.java', dir: 'src/a' })
+  assert.deepEqual(splitGitPath(null), { name: '', dir: '' })
+  assert.deepEqual(splitGitPath(''), { name: '', dir: '' })
+})
+
+test('canCommit 要求提交信息非空且至少选一个文件', () => {
+  assert.equal(canCommit('fix: x', 1), true)
+  assert.equal(canCommit('   ', 1), false, '纯空白不算提交信息')
+  assert.equal(canCommit('fix: x', 0), false, '没选文件不能提交')
+  assert.equal(canCommit(null, 3), false)
+})
+
+test('defaultSelection 默认全选未提交文件（对齐 VSCode 的一点即提交）', () => {
+  const entries = [{ path: 'a.txt' }, { path: 'src/b.js' }, { path: '' }, null]
+
+  assert.deepEqual(defaultSelection(entries), ['a.txt', 'src/b.js'])
+  assert.deepEqual(defaultSelection(null), [])
 })

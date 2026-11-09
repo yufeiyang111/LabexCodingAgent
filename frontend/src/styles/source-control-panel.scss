@@ -1,170 +1,358 @@
-@use './git-panels.scss';
+/* 源代码管理面板：复刻 VSCode 的信息层级——提交信息在上、主按钮紧随、
+   「更改」与「图表」两个可折叠分组，文件行是「状态字母 + 文件名 + 弱化目录」。
 
-/* 源代码管理面板的专属样式。共享外观（头部、状态色、空态、详情容器）在
-   styles/git-panels.scss；这里只放本面板独有的行、提交框与 clone 框。 */
+   配色走主题变量而不是硬编码 VSCode 的色值：这个面板活在 LabexAgent 的侧边栏里，
+   必须跟着浅色/深色主题一起走，否则切主题会出现一块对不上的区域。 */
 
-.sc-row {
+.sc-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  color: var(--theme-text);
+  font-size: 12px;
+  background: var(--theme-surface-muted);
+}
+
+.sc-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
-  padding: 3px 12px;
-  cursor: pointer;
-  user-select: none;
-}
-.sc-row:hover {
-  background: var(--wabi-stone-light);
-}
-.sc-row.selected {
-  background: var(--wabi-green-light);
-}
-.sc-row input[type='checkbox'] {
-  margin: 0;
-  accent-color: var(--wabi-green);
+  padding: 8px 10px 6px;
   flex-shrink: 0;
 }
-.sc-path {
-  flex: 1;
-  min-width: 0;
+.sc-head-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--theme-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.sc-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.sc-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+.sc-icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
+  color: var(--theme-text);
+}
+.sc-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sc-error {
+  margin: 0 10px 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--theme-danger) 12%, transparent);
+  color: var(--theme-danger);
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* ===== 提交区：输入框在上，主按钮紧贴其下（VSCode 的顺序） ===== */
+.sc-commit-box {
+  flex-shrink: 0;
+  margin: 0 10px 8px;
+}
+.sc-message {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 46px;
+  padding: 6px 8px;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: var(--theme-surface);
+  color: var(--theme-text);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.sc-message::placeholder {
+  color: var(--theme-text-muted);
+}
+.sc-message:focus {
+  outline: none;
+  border-color: var(--theme-accent);
+}
+.sc-commit-actions {
+  display: flex;
+  margin-top: 6px;
+}
+.sc-primary {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 4px 0 0 4px;
+  background: var(--theme-accent);
+  color: var(--theme-accent-contrast);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  overflow: hidden;
+}
+.sc-primary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc-primary:hover:not(:disabled) {
+  background: var(--theme-accent-strong);
+}
+.sc-primary:disabled {
+  background: color-mix(in srgb, var(--theme-accent) 34%, var(--theme-surface));
+  color: var(--theme-text-muted);
+  cursor: default;
+}
+.sc-primary-caret {
+  flex-shrink: 0;
+  width: 24px;
+  height: 26px;
+  border: none;
+  border-left: 1px solid color-mix(in srgb, var(--theme-accent-contrast) 32%, transparent);
+  border-radius: 0 4px 4px 0;
+  background: var(--theme-accent);
+  color: var(--theme-accent-contrast);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sc-primary-caret:hover:not(:disabled) {
+  background: var(--theme-accent-strong);
+}
+.sc-primary-caret:disabled {
+  background: color-mix(in srgb, var(--theme-accent) 34%, var(--theme-surface));
+  color: var(--theme-text-muted);
+  cursor: default;
+}
+
+/* ===== 分组：更改 / 图表 ===== */
+.sc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.sc-section {
+  border-top: 1px solid var(--theme-border);
+}
+.sc-section-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+.sc-section-head:hover {
+  color: var(--theme-text);
+}
+.sc-chevron {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+.sc-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+.sc-badge {
+  margin-left: auto;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--theme-accent);
+  color: var(--theme-accent-contrast);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  letter-spacing: 0;
+}
+.sc-badge-muted {
+  background: color-mix(in srgb, var(--theme-text-muted) 26%, transparent);
+  color: var(--theme-text-secondary);
+}
+.sc-hint {
+  margin: 0;
+  padding: 2px 10px 10px 22px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ===== 文件行 ===== */
+.sc-list {
+  margin: 0;
+  padding: 0 0 6px;
+  list-style: none;
+}
+.sc-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px 2px 8px;
+  cursor: default;
+  min-width: 0;
+}
+.sc-row:hover {
+  background: color-mix(in srgb, var(--theme-text) 5%, transparent);
+}
+.sc-row.active {
+  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+}
+.sc-check {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--theme-accent);
+  cursor: pointer;
+}
+.sc-status {
+  flex-shrink: 0;
+  width: 11px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.sc-status-added { color: #3a9d5d; }
+.sc-status-modified { color: #c08a2e; }
+.sc-status-deleted { color: #c0392b; }
+.sc-status-renamed { color: #2f74c0; }
+.sc-status-untracked { color: #3a9d5d; }
+
+.sc-file {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 0;
   border: none;
   background: transparent;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  padding: 0;
 }
-.sc-path:hover {
-  color: var(--wabi-green);
+.sc-file-name {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text);
+  font-size: 12px;
+}
+/* direction:rtl 让目录从尾部截断，保留离文件名最近的那几段——和 VSCode 一致：
+   用户靠「最近的父目录」区分同名文件，而不是靠盘符或仓库根。 */
+.sc-file-dir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  color: var(--theme-text-muted);
+  font-size: 11px;
 }
 .sc-agent-badge {
   flex-shrink: 0;
   padding: 0 4px;
-  border-radius: var(--wabi-radius-sm);
-  background: var(--wabi-brown-light);
-  color: var(--wabi-brown);
-  font-size: 10px;
-  line-height: 15px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--theme-accent) 16%, transparent);
+  color: var(--theme-accent);
+  font-size: 9px;
+  line-height: 14px;
 }
-.sc-commit {
-  flex-shrink: 0;
-  padding: 8px 12px 10px;
-  border-top: 1px solid var(--wabi-border-light);
+.sc-diff {
+  margin: 2px 0 6px;
+  border-top: 1px solid var(--theme-border);
+  border-bottom: 1px solid var(--theme-border);
+  background: var(--theme-surface);
+  max-height: 320px;
+  overflow: auto;
 }
-.sc-message {
-  width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-  min-height: 52px;
-  padding: 6px 8px;
-  border: 1px solid var(--wabi-border);
-  border-radius: var(--wabi-radius-sm);
-  background: var(--wabi-surface);
-  color: var(--wabi-text);
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.sc-message:focus {
-  outline: none;
-  border-color: var(--wabi-green);
-}
-.sc-commit-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 6px;
-}
-.sc-select-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--wabi-text-secondary);
-  font-size: 11px;
-  cursor: pointer;
-  user-select: none;
-}
-.sc-select-all input {
-  margin: 0;
-  accent-color: var(--wabi-green);
-}
-.sc-commit-btn {
-  padding: 5px 12px;
-  border: none;
-  border-radius: var(--wabi-radius-sm);
-  background: var(--wabi-green);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.sc-commit-btn:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-.sc-commit-btn:disabled {
-  background: var(--wabi-stone-light);
-  color: var(--wabi-text-muted);
-  cursor: default;
-}
+
+/* ===== clone 地址 ===== */
 .sc-clone {
   flex-shrink: 0;
-  padding: 8px 12px 10px;
-  border-top: 1px solid var(--wabi-border-light);
-  background: var(--wabi-surface-warm);
+  padding: 8px 10px;
+  border-top: 1px solid var(--theme-border);
+  background: var(--theme-surface);
 }
 .sc-clone-title {
-  margin-bottom: 5px;
-  color: var(--wabi-text-secondary);
+  margin-bottom: 4px;
+  color: var(--theme-text-muted);
   font-size: 11px;
 }
 .sc-clone-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 .sc-clone-input {
   flex: 1;
   min-width: 0;
   padding: 4px 6px;
-  border: 1px solid var(--wabi-border);
-  border-radius: var(--wabi-radius-sm);
-  background: var(--wabi-surface);
-  color: var(--wabi-text);
-  font-family: var(--wabi-font-mono);
-  font-size: 11px;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: var(--theme-surface-muted);
+  color: var(--theme-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
 }
 
-html[data-theme='dark'] .sc-row:hover { background: rgba(255, 255, 255, 0.04); }
-html[data-theme='dark'] .sc-row.selected { background: rgba(99, 102, 241, 0.1); }
-html[data-theme='dark'] .sc-path:hover { color: #c7d2fe; }
-html[data-theme='dark'] .sc-agent-badge {
-  background: rgba(139, 92, 246, 0.18);
-  color: #c4b5fd;
+/* 深色主题：状态字母改用 VSCode 暗色系的取值，浅色那组在 #181818 上会发灰 */
+html[data-theme='dark'] .sc-panel {
+  background: #181818;
 }
-html[data-theme='dark'] .sc-commit,
+html[data-theme='dark'] .sc-status-added { color: #73c991; }
+html[data-theme='dark'] .sc-status-modified { color: #e2c08d; }
+html[data-theme='dark'] .sc-status-deleted { color: #f17a6a; }
+html[data-theme='dark'] .sc-status-renamed { color: #6cb6ff; }
+html[data-theme='dark'] .sc-status-untracked { color: #73c991; }
+html[data-theme='dark'] .sc-diff {
+  background: #1b1b1b;
+}
 html[data-theme='dark'] .sc-clone {
-  border-top-color: rgba(255, 255, 255, 0.06);
-}
-html[data-theme='dark'] .sc-clone {
-  background: rgba(0, 0, 0, 0.15);
-}
-html[data-theme='dark'] .sc-message,
-html[data-theme='dark'] .sc-clone-input {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.25);
-  color: #e4e4e7;
-}
-html[data-theme='dark'] .sc-commit-btn {
-  background: #4f46e5;
-}
-html[data-theme='dark'] .sc-commit-btn:disabled {
-  background: rgba(79, 70, 229, 0.35);
-  color: rgba(255, 255, 255, 0.6);
-}
-html[data-theme='dark'] .sc-clone-title,
-html[data-theme='dark'] .sc-select-all {
-  color: #a1a1aa;
+  background: #1f1f1f;
 }

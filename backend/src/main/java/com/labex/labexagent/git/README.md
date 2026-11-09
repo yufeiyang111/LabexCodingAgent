@@ -294,25 +294,32 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 
 ### 6.5 前端 UI
 
-**`SourceControlPanel.vue`**（源码管理）
-- 未提交改动列表：状态字母（M/A/D/R）+ 路径
-- 每行可勾选
-- 底部：提交信息输入框 + 「提交」按钮
-- 点击文件 → 展开该文件的 diff
-- **可选标注**：若该路径也在当前 change-set 里，显示一个「Agent 也改过」角标
-  （纯展示，不影响 git）
+面板**放在侧边栏**，与「文件 / 会话 / 搜索」并列，活动栏上有独立入口（带待提交数量角标）。
+不放在 AI 审查页：VSCode 把源代码管理放在活动栏，用户在左边找它；塞进 AI 面板的三个 tab
+里既违背直觉，也和「Agent 改动」抢同一块空间。
 
-**`GitHistoryPanel.vue`**（提交历史）
-- 提交列表：分支线 + SHA 前 7 位 + 信息 + 时间
-- 点开某条：文件清单 + diff
+**`SourceControlPanel.vue`**（复刻 VSCode 源代码管理）
+- 提交信息输入框在**上方**，主提交按钮紧贴其下，右侧是取消/全选的折角按钮
+- 「更改」可折叠分组，标题右侧是改动数量角标
+- 文件行：状态字母（A/M/D/R/U）+ **文件名在前** + 目录弱化在后（`direction:rtl`
+  从尾部截断，保留离文件名最近的父目录）
+- 点文件名 → 就地展开该文件相对 HEAD 的 diff
+- **默认全选**：点一下提交即提交全部改动（对齐 VSCode 的 smart commit）；
+  用户取消勾选后不再自动加回
+- 若该路径也在当前 change-set 里，显示「Agent 也改过」角标（纯展示，不影响 git）
+
+**`GitGraphSection.vue`**（图表，内嵌在同一个面板的「图表」分组）
+- 竖线串节点，最新提交带分支标签（`master`）
+- 点开某条：文件清单（含增删行数）+ 单文件 diff
 - 「回滚到此提交」按钮，二次确认
 
-布局：作为 `ChangesPanel` 的 tab，不新增第三栏（1180px 以下会挤）。
+**`DiffLines.vue`**：两个面板共用的 diff 渲染，避免配色与行分类漂移。
 
-**实际实现**：审查页左栏内三个 tab——「Agent 改动」（原 `ChangesPanel` 原样保留）、
-「源代码管理」、「提交历史」。`DiffLines.vue` 是两者共用的 diff 渲染组件；共享外观在
-`styles/git-panels.scss`，配色走 `--wabi-*` 变量 + `html[data-theme="dark"]` 覆盖，
-与 `ChangesPanel` 同一套主题语言（初版硬编码深色值，浅色主题下不可读，已修正）。
+配色走 `--theme-*` 变量 + `html[data-theme="dark"]` 覆盖，与侧边栏其余面板同一套主题语言。
+初版硬编码深色值，浅色主题下几乎不可读，已修正。
+
+**旧位置**：早先版本把 git 放在 AI 审查页的三个 tab 里（Agent 改动 / 源代码管理 / 提交历史）。
+审查页现在只剩 `ChangesPanel`（Agent 改动）与同步面板——这两套系统本来就不该共用入口。
 
 ## 7. 测试策略
 
@@ -323,7 +330,7 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 | 后端单测（关键） | **索引隔离**：快照不碰暂存索引 | `ProjectGitIndexIsolationTest`（3） |
 | 后端单测 | status / stage / commit / 分页 / revert | `ProjectGitServiceTest`（14） |
 | 后端单测 | clone 令牌签发、校验、篡改、过期、撤销 | `ProjectGitCloneTokenServiceTest`（6） |
-| 前端单测 | 两个面板的纯展示逻辑 | `git-source-control-model.test.mjs`（9） |
+| 前端单测 | 面板纯展示逻辑（状态字母、diff 分类、路径拆分、默认全选） | `git-source-control-model.test.mjs`（14） |
 | live 验收 | 真实 clone + 用户提交 + Agent 改动不进 git | 见 §11 |
 
 **关键验收判据**：
@@ -366,7 +373,9 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 | 大项目 clone 慢 | 物理成本，已在 `sync/STATUS.md` §4.3 量化 |
 | 用户误以为 Agent 改动已被提交 | 面板明确显示未提交数量；`ChangesPanel` 与 git 面板并列展示 |
 
-## 11. 实施记录（2026-11-06）
+## 11. 实施记录
+
+### 11.1 后端与首版前端（2026-11-06）
 
 **代码位置**
 
@@ -380,7 +389,6 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 | REST | `controller/student/ProjectGitController`（`/api/student/projects/{id}/git/**`） |
 | clone 端点 | `controller/student/ProjectGitHttpController`（`/git/{id}.git`） |
 | 配置 | `git/ProjectGitProperties`（`labex-agent.project-git.*`） |
-| 前端 | `components/git/{SourceControlPanel,GitHistoryPanel,DiffLines}.vue`、`composables/git/sourceControlModel.js` |
 
 **实测结果**
 
@@ -388,9 +396,9 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 |---|---|
 | 项目 2 快照树文件数 | **77**（重置前被污染的仓库是 23153，源码只有 56） |
 | 此前缺失的文件 | `CommentController`、`CommentService`、`PostView`、`SearchPage.jsx` 等 20 个已全部收录 |
-| 真实 `git clone` | 成功，77 个文件，1 条提交 |
-| Agent 改动后 git 历史 | 仍是 1 条（改动只出现在工作区未提交列表） |
-| 回滚 | 新增 `Revert "..."` 提交，历史从 2 条变 3 条，全部保留 |
+| 真实 `git clone` | 成功，77 个文件 |
+| Agent 改动后 git 历史 | 不变（改动只出现在工作区未提交列表） |
+| 回滚 | 新增 `Revert "..."` 提交，历史全部保留 |
 | 项目 2 重置备份 | 124.9 MB（`.labex/git-snapshots-backup-2026-11-06T09-52-17-692Z`） |
 
 **实施期修正的两处设计**
@@ -398,5 +406,37 @@ git 把后半段当 pathspec 报 `did not match any file(s) known to git`。回�
 1. **快照索引用持久文件而非临时文件**（§5.0）：10k 文件实测 40s → 0.5s。
 2. **旧仓库处理是「重置 + 用户首次提交」，不是「按 change-set 回放重建历史」**（§6.2）：
    回放与「Agent 改动不进 git」自相矛盾。
+
+### 11.2 面板移入侧边栏 + 复刻 VSCode（2026-11-09）
+
+首版把 git 放在 AI 审查页的三个 tab 里。改成侧边栏独立视图，并按 VSCode 重排信息层级。
+
+**前端结构**
+
+| 模块 | 文件 |
+|---|---|
+| 活动栏入口 + 待提交角标 | `CloudWorkspace.vue`（`rail-btn` + `rail-badge`）、`styles/cloud-workspace.scoped.scss` |
+| 侧边栏视图切换 | `components/sidebar/SidebarNav.vue`（新增「代码」） |
+| 源代码管理面板 | `components/git/SourceControlPanel.vue` + `styles/source-control-panel.scss` |
+| 图表分组 | `components/git/GitGraphSection.vue` + `styles/git-graph-section.scss` |
+| 纯展示逻辑 | `composables/git/sourceControlModel.js`（新增 `splitGitPath` / `canCommit` / `defaultSelection`） |
+
+**删除**：`GitHistoryPanel.vue`、`styles/git-history-panel.scss`、`styles/git-panels.scss`
+（提交历史并入面板内的「图表」分组，不再单独成页）。
+
+**浏览器实测**（项目 2，浅色 + 深色主题各一遍）
+
+| 项 | 结果 |
+|---|---|
+| 活动栏/侧边栏入口 | 「源代码管理」入口出现，角标显示待提交数 |
+| 列表排版 | `M CommentController.java` + 弱化目录 `backend/src/main/java/com/blog/controller` |
+| 默认全选 | 3 个改动默认勾选，按钮显示「提交 3 个文件」 |
+| 提交 | 图表 6 → 7，工作区清空，角标消失 |
+| 图表展开 | 文件清单含增删行数，单文件 diff 正常 |
+| 回滚 | 图表 7 → 8，新增 `Revert "..."`，旧提交全部保留 |
+| 审查页 | 只剩 `ChangesPanel` 与同步面板，无 git tab |
+
+**实测修掉的缺陷**：`selected` 从 `Set` 改为数组后模板仍调用 `.has()`，整块列表渲染崩溃
+（`TypeError: $setup.selected.has is not a function`）。改用 `selectedSet` 计算属性后恢复。
 
 **未做**：push、分支、行级暂存、自动提交、硬链接快照（§5.2）。

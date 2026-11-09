@@ -27,6 +27,18 @@
     <button
       type="button"
       class="sn-btn"
+      :class="{ active: view === 'source-control' }"
+      :aria-selected="view === 'source-control'"
+      role="tab"
+      title="源代码管理"
+      @click="$emit('change', 'source-control')"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9v3a3 3 0 0 1-3 3H9"/><path d="M6 15V9"/></svg>
+      <span>代码</span>
+    </button>
+    <button
+      type="button"
+      class="sn-btn"
       :class="{ active: view === 'search' }"
       :aria-selected="view === 'search'"
       role="tab"

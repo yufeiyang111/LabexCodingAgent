@@ -23,6 +23,22 @@
   border-right: 1px solid var(--theme-border, #e4e4e7);
   z-index: 10;
   user-select: none;
+  overflow: hidden;
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              min-width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              flex-basis 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              padding 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.18s ease;
+}
+.ws-activity-rail.is-collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  flex-basis: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  opacity: 0;
+  pointer-events: none;
+  border-right: none;
 }
 .rail-top, .rail-bottom {
   display: flex;
@@ -32,6 +48,7 @@
   width: 100%;
 }
 .rail-btn {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -44,6 +61,24 @@
   cursor: pointer;
   transition: all 0.15s ease;
   padding: 0;
+}
+/* 活动栏角标：待提交改动数，和 VSCode 活动栏上的数字同义 */
+.rail-badge {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--theme-accent, #4f46e5);
+  color: var(--theme-accent-contrast, #fff);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  letter-spacing: 0;
+  box-shadow: 0 0 0 1.5px var(--theme-bg, #f7f8fb);
 }
 .rail-btn:hover {
   background: var(--theme-surface-muted, #f4f4f5);
