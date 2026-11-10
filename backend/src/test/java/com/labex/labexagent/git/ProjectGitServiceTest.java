@@ -24,6 +24,7 @@ class ProjectGitServiceTest {
 
     private StudentProject project;
     private ProjectGitService service;
+    private ProjectGitHistoryService history;
 
     @BeforeEach
     void setUp() {
@@ -31,8 +32,10 @@ class ProjectGitServiceTest {
         project.setProjectId(91);
         project.setWorkspacePath(workspace.toString());
         GitCommandRunner git = new GitCommandRunner();
-        service = new ProjectGitService(git, new ProjectGitRepository(git),
-                new ProjectGitProperties(), new WorkspaceLeaseService());
+        ProjectGitRepository repository = new ProjectGitRepository(git);
+        ProjectGitProperties properties = new ProjectGitProperties();
+        service = new ProjectGitService(git, repository, properties, new WorkspaceLeaseService());
+        history = new ProjectGitHistoryService(git, repository, properties);
     }
 
     @Test
@@ -73,13 +76,13 @@ class ProjectGitServiceTest {
         service.stage(project, List.of());
         service.commit(project, "second");
 
-        ProjectGitDtos.CommitPage page = service.commits(project, null, 1);
+        ProjectGitDtos.CommitPage page = history.commits(project, null, 1);
 
         assertThat(page.commits()).hasSize(1);
         assertThat(page.commits().get(0).message()).isEqualTo("second");
         assertThat(page.nextBefore()).isEqualTo(page.commits().get(0).sha());
 
-        ProjectGitDtos.CommitPage next = service.commits(project, page.nextBefore(), 1);
+        ProjectGitDtos.CommitPage next = history.commits(project, page.nextBefore(), 1);
         assertThat(next.commits()).hasSize(1);
         assertThat(next.commits().get(0).message()).isEqualTo("first");
         assertThat(next.nextBefore()).isNull();
@@ -91,7 +94,7 @@ class ProjectGitServiceTest {
         // 首次打开源码管理面板就会走到 status：它建库，但没有提交。
         service.status(project);
 
-        ProjectGitDtos.CommitPage page = service.commits(project, null, 10);
+        ProjectGitDtos.CommitPage page = history.commits(project, null, 10);
 
         assertThat(page.commits()).isEmpty();
         assertThat(page.nextBefore()).isNull();
@@ -106,7 +109,7 @@ class ProjectGitServiceTest {
         service.stage(project, List.of());
         ProjectGitDtos.CommitResult result = service.commit(project, "add Extra");
 
-        ProjectGitDtos.CommitDetail detail = service.commitDetail(project, result.sha());
+        ProjectGitDtos.CommitDetail detail = history.commitDetail(project, result.sha());
 
         assertThat(detail.commit().message()).isEqualTo("add Extra");
         assertThat(detail.files()).hasSize(1);
@@ -129,11 +132,11 @@ class ProjectGitServiceTest {
 
         assertThat(Files.readString(workspace.resolve("a.txt"))).isEqualTo("one\n");
         assertThat(reverted.message()).isEqualTo("Revert \"first\"");
-        ProjectGitDtos.CommitPage history = service.commits(project, null, 10);
-        assertThat(history.commits()).hasSize(3);
-        assertThat(history.commits().get(0).sha()).isEqualTo(reverted.sha());
-        assertThat(history.commits().get(1).message()).isEqualTo("second");
-        assertThat(history.commits().get(2).message()).isEqualTo("first");
+        ProjectGitDtos.CommitPage page = history.commits(project, null, 10);
+        assertThat(page.commits()).hasSize(3);
+        assertThat(page.commits().get(0).sha()).isEqualTo(reverted.sha());
+        assertThat(page.commits().get(1).message()).isEqualTo("second");
+        assertThat(page.commits().get(2).message()).isEqualTo("first");
     }
 
     @Test
@@ -222,7 +225,7 @@ class ProjectGitServiceTest {
         ProjectGitDtos.CommitResult result = service.commit(project, message);
 
         assertThat(result.message()).isEqualTo(message);
-        assertThat(service.commits(project, null, 5).commits().get(0).message()).isEqualTo(message);
+        assertThat(history.commits(project, null, 5).commits().get(0).message()).isEqualTo(message);
     }
 
     @Test
@@ -233,9 +236,9 @@ class ProjectGitServiceTest {
 
         service.commit(project, message);
 
-        assertThat(service.commits(project, null, 5).commits().get(0).message()).isEqualTo("feat: add file");
-        ProjectGitDtos.CommitDetail detail = service.commitDetail(project,
-                service.commits(project, null, 5).commits().get(0).sha());
+        assertThat(history.commits(project, null, 5).commits().get(0).message()).isEqualTo("feat: add file");
+        ProjectGitDtos.CommitDetail detail = history.commitDetail(project,
+                history.commits(project, null, 5).commits().get(0).sha());
         assertThat(detail.commit().message()).isEqualTo("feat: add file");
     }
 
@@ -246,7 +249,7 @@ class ProjectGitServiceTest {
         service.commit(project, "first");
         write("a.txt", "one\ntwo\n");
 
-        String diff = service.workingDiff(project, "a.txt");
+        String diff = history.workingDiff(project, "a.txt");
 
         assertThat(diff).contains("+two");
     }
@@ -256,7 +259,7 @@ class ProjectGitServiceTest {
         write("src/Main.java", "class Main {}\n");
         service.status(project);
 
-        String diff = service.workingDiff(project, "src/Main.java");
+        String diff = history.workingDiff(project, "src/Main.java");
 
         assertThat(diff).contains("new file mode").contains("+class Main {}");
     }
@@ -268,7 +271,7 @@ class ProjectGitServiceTest {
         service.commit(project, "first");
         write("b.txt", "brand new\n");
 
-        String diff = service.workingDiff(project, "b.txt");
+        String diff = history.workingDiff(project, "b.txt");
 
         assertThat(diff).contains("new file mode").contains("+brand new");
     }
@@ -278,7 +281,7 @@ class ProjectGitServiceTest {
         Files.write(workspace.resolve("data.bin"), new byte[] {0, 1, 2, 3, 0, 5});
         service.status(project);
 
-        String diff = service.workingDiff(project, "data.bin");
+        String diff = history.workingDiff(project, "data.bin");
 
         assertThat(diff).contains("Binary files").doesNotContain("GIT binary patch");
     }

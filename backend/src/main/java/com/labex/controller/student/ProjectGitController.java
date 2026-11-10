@@ -4,6 +4,7 @@ import com.labex.common.Result;
 import com.labex.entity.StudentProject;
 import com.labex.labexagent.git.ProjectGitCloneTokenService;
 import com.labex.labexagent.git.ProjectGitDtos;
+import com.labex.labexagent.git.ProjectGitHistoryService;
 import com.labex.labexagent.git.ProjectGitService;
 import com.labex.service.StudentProjectService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -36,6 +37,7 @@ public class ProjectGitController {
     private static final Logger log = LoggerFactory.getLogger(ProjectGitController.class);
 
     private final ProjectGitService gitService;
+    private final ProjectGitHistoryService historyService;
     private final ProjectGitCloneTokenService cloneTokens;
     private final StudentProjectService studentProjectService;
 
@@ -43,9 +45,11 @@ public class ProjectGitController {
     private String configuredPublicBaseUrl;
 
     public ProjectGitController(ProjectGitService gitService,
+                                ProjectGitHistoryService historyService,
                                 ProjectGitCloneTokenService cloneTokens,
                                 StudentProjectService studentProjectService) {
         this.gitService = gitService;
+        this.historyService = historyService;
         this.cloneTokens = cloneTokens;
         this.studentProjectService = studentProjectService;
     }
@@ -90,7 +94,7 @@ public class ProjectGitController {
                                                      @RequestParam(required = false) Integer limit,
                                                      Authentication auth) {
         try {
-            return Result.success(gitService.commits(ownedProject(projectId, auth), before, limit));
+            return Result.success(historyService.commits(ownedProject(projectId, auth), before, limit));
         } catch (RuntimeException e) {
             return errorResult(e);
         }
@@ -101,7 +105,7 @@ public class ProjectGitController {
                                                             @PathVariable String sha,
                                                             Authentication auth) {
         try {
-            return Result.success(gitService.commitDetail(ownedProject(projectId, auth), sha));
+            return Result.success(historyService.commitDetail(ownedProject(projectId, auth), sha));
         } catch (RuntimeException e) {
             return errorResult(e);
         }
@@ -113,7 +117,7 @@ public class ProjectGitController {
                                                             @RequestParam(required = false) String path,
                                                             Authentication auth) {
         try {
-            String diff = gitService.commitDiff(ownedProject(projectId, auth), sha, path);
+            String diff = historyService.commitDiff(ownedProject(projectId, auth), sha, path);
             return Result.success(java.util.Map.of("diff", diff));
         } catch (RuntimeException e) {
             return errorResult(e);
@@ -126,7 +130,7 @@ public class ProjectGitController {
                                                              Authentication auth) {
         try {
             return Result.success(java.util.Map.of("diff",
-                    gitService.workingDiff(ownedProject(projectId, auth), path)));
+                    historyService.workingDiff(ownedProject(projectId, auth), path)));
         } catch (RuntimeException e) {
             return errorResult(e);
         }

@@ -17,12 +17,20 @@ final class GitPorcelainParser {
     private GitPorcelainParser() {
     }
 
+    /** 带 {@code --branch} 时 porcelain 输出的分支头，例如 {@code ## master}。 */
+    private static final String BRANCH_HEADER_PREFIX = "## ";
+    /** 仓库还没有任何提交时，分支头是 {@code ## No commits yet on master}。 */
+    private static final String NO_COMMITS_HEADER = "## No commits yet";
+
     /**
-     * 解析 {@code status --porcelain=v1 -z --untracked-files=all --find-renames}。
+     * 解析 {@code status --porcelain=v1 -z --untracked-files=all --find-renames --branch}。
      *
      * <p>每个条目以 NUL 结尾；普通条目是 {@code XY<space>path}；重命名/复制是
      * {@code XY<space>newPath<NUL>oldPath}。X 是暂存区相对 HEAD 的状态，Y 是工作区相对暂存区的状态。
      * {@code ' '} 表示无改动，{@code '?'} 表示未跟踪。
+     *
+     * <p>带 {@code --branch} 时第一个 NUL 分段是分支头而不是文件条目。分支头同时携带
+     * 「有没有提交」这一信息，因此调用方不需要再单独跑一次 {@code rev-parse --verify HEAD}。
      */
     static List<ProjectGitDtos.StatusEntry> parseStatus(String output, int maxEntries) {
         List<ProjectGitDtos.StatusEntry> entries = new ArrayList<>();
@@ -30,7 +38,11 @@ final class GitPorcelainParser {
             return entries;
         }
         String[] parts = output.split("\u0000", -1);
-        for (int index = 0; index < parts.length; index++) {
+        int start = 0;
+        if (parts.length > 0 && parts[0].startsWith(BRANCH_HEADER_PREFIX)) {
+            start = 1;
+        }
+        for (int index = start; index < parts.length; index++) {
             String entry = parts[index];
             if (entry.length() < 4) {
                 continue;
@@ -54,6 +66,27 @@ final class GitPorcelainParser {
                     normalizeStatus(indexStatus, workTreeStatus), indexStatus != ' ' && indexStatus != '?'));
         }
         return entries;
+    }
+
+    /**
+     * 从 {@code status --branch} 的分支头判断仓库是否已经有过提交。
+     *
+     * <p>等价于 {@code rev-parse --verify HEAD} 的成败，但省掉一次子进程。Windows 上创建进程
+     * 要 200ms 以上，且 JVM 的 {@code ProcessImpl.create} 是静态同步方法，所有进程创建串行排队，
+     * 多一次子进程就多占一次全局锁。
+     *
+     * <p>输出里没有分支头（未带 {@code --branch}）时返回 {@code null}，调用方需自行判断。
+     */
+    static Boolean hasCommitsFromStatus(String output) {
+        if (output == null) {
+            return null;
+        }
+        int headerEnd = output.indexOf('\u0000');
+        String header = headerEnd < 0 ? output : output.substring(0, headerEnd);
+        if (!header.startsWith(BRANCH_HEADER_PREFIX)) {
+            return null;
+        }
+        return !header.startsWith(NO_COMMITS_HEADER);
     }
 
     /**

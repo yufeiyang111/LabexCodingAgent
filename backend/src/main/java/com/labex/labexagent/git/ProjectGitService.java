@@ -28,11 +28,6 @@ import org.springframework.stereotype.Service;
 @Service
 public class ProjectGitService {
     private static final Logger log = LoggerFactory.getLogger(ProjectGitService.class);
-    /** log 输出的字段分隔符与记录分隔符：消息正文可能包含任意字符，用控制字符避免歧义。 */
-    private static final String FIELD = "\u0001";
-    private static final String RECORD = "\u001e";
-    /** diff 里"空的一侧"：新文件与空设备比较，得到整份内容都是新增的补丁。 */
-    private static final String EMPTY_SIDE = "/dev/null";
 
     private final GitCommandRunner git;
     private final ProjectGitRepository repository;
@@ -121,120 +116,6 @@ public class ProjectGitService {
         }
     }
 
-    /** 提交历史，按时间倒序分页。{@code before} 是上一页最后一条的 sha。 */
-    public ProjectGitDtos.CommitPage commits(StudentProject project, String before, Integer limit) {
-        Path root = workspaceRoot(project);
-        Path gitDir = repository.gitDir(root);
-        // 读历史也要先确保仓库就绪：工作区的 .git gitfile 是「这个项目有自己的仓库」的标志，
-        // 少了它，Agent 在工作区里跑 git log 会向上找到外层目录的仓库，报出别人的历史。
-        // 仓库存在但还没有提交时 HEAD 指向未出生的分支，git log 会直接失败：
-        // 「没有历史」要返回空列表，不能当成错误抛给前端。
-        try {
-            repository.ensureInitialized(root, gitDir);
-        } catch (IOException | InterruptedException e) {
-            throw failure("读取提交历史失败", e);
-        }
-        if (!repository.hasCommits(gitDir)) {
-            return new ProjectGitDtos.CommitPage(List.of(), null);
-        }
-        int pageSize = limit == null || limit <= 0
-                ? properties.getCommitsPageSize()
-                : Math.min(limit, properties.getCommitsPageSize());
-        try {
-            List<String> args = new ArrayList<>(List.of("log", "-n", String.valueOf(pageSize + 1),
-                    "--format=%H" + FIELD + "%h" + FIELD + "%an" + FIELD + "%aI" + FIELD + "%P" + FIELD + "%s" + RECORD));
-            if (before != null && !before.isBlank()) {
-                // 游标是上一页最后一条提交；从它的父提交继续。根提交没有父，说明已经到底。
-                String parent;
-                try {
-                    parent = git.git(root, gitDir, properties.getQueryTimeoutSeconds(),
-                            List.of("rev-parse", "--verify", before.trim() + "^{commit}^")).trimmed();
-                } catch (IOException rootCommit) {
-                    return new ProjectGitDtos.CommitPage(List.of(), null);
-                }
-                args.add(parent);
-            }
-            List<ProjectGitDtos.CommitSummary> commits = parseLog(
-                    git.git(root, gitDir, properties.getQueryTimeoutSeconds(), args).output());
-            String nextBefore = null;
-            if (commits.size() > pageSize) {
-                commits = new ArrayList<>(commits.subList(0, pageSize));
-                nextBefore = commits.get(commits.size() - 1).sha();
-            }
-            return new ProjectGitDtos.CommitPage(commits, nextBefore);
-        } catch (IOException | InterruptedException e) {
-            throw failure("读取提交历史失败", e);
-        }
-    }
-
-    /** 单次提交的文件清单与增删行数。 */
-    public ProjectGitDtos.CommitDetail commitDetail(StudentProject project, String sha) {
-        String resolved = requireSha(project, sha);
-        Path root = workspaceRoot(project);
-        Path gitDir = repository.gitDir(root);
-        try {
-            ProjectGitDtos.CommitSummary summary = parseLog(git.git(root, gitDir,
-                            properties.getQueryTimeoutSeconds(),
-                            List.of("log", "-1", "--format=%H" + FIELD + "%h" + FIELD + "%an" + FIELD + "%aI"
-                                    + FIELD + "%P" + FIELD + "%s" + RECORD, resolved)).output())
-                    .stream().findFirst()
-                    .orElseThrow(() -> new ProjectGitException("提交不存在"));
-            List<ProjectGitDtos.CommitFile> files = GitPorcelainParser.parseNameStatus(git.git(root, gitDir,
-                    properties.getQueryTimeoutSeconds(),
-                    List.of("diff-tree", "--no-commit-id", "--name-status", "-M", "-r", "-z", "--root", resolved)).output());
-            GitPorcelainParser.applyNumstat(git.git(root, gitDir, properties.getQueryTimeoutSeconds(),
-                    List.of("diff-tree", "--no-commit-id", "--numstat", "-M", "-r", "-z", "--root", resolved)).output(), files);
-            return new ProjectGitDtos.CommitDetail(summary, files);
-        } catch (IOException | InterruptedException e) {
-            throw failure("读取提交详情失败", e);
-        }
-    }
-
-    /** 某次提交相对其父提交的补丁。{@code path} 为空表示整个提交。不传 {@code --binary}，理由同 {@link #workingDiff}。 */
-    public String commitDiff(StudentProject project, String sha, String path) {
-        String resolved = requireSha(project, sha);
-        Path root = workspaceRoot(project);
-        Path gitDir = repository.gitDir(root);
-        try {
-            List<String> args = new ArrayList<>(List.of("show", "--format=", "--patch",
-                    "--find-renames", resolved));
-            if (path != null && !path.isBlank()) {
-                args.add("--");
-                args.add(requireTrackablePath(path));
-            }
-            return GitCommandRunner.limit(git.git(root, gitDir, properties.getQueryTimeoutSeconds(), args).output(),
-                    properties.getDiffMaxBytes());
-        } catch (IOException | InterruptedException e) {
-            throw failure("读取提交 diff 失败", e);
-        }
-    }
-
-    /**
-     * 未提交改动的单文件 diff：工作区（含暂存）相对 HEAD。
-     *
-     * <p>未跟踪文件在 HEAD 里没有条目，{@code git diff HEAD} 对它什么都不输出；仓库还没有
-     * 第一条提交时整个工作区都属于这种情况。这两处都改走"空设备 vs 文件"，把整份内容
-     * 当成新增，否则用户点开文件只会看到空 diff。
-     *
-     * <p>不传 {@code --binary}：二进制文件只显示 {@code Binary files ... differ} 一行，
-     * 否则整段 base64 补丁会铺满面板。
-     */
-    public String workingDiff(StudentProject project, String path) {
-        String relative = requireTrackablePath(path);
-        Path root = workspaceRoot(project);
-        Path gitDir = repository.gitDir(root);
-        try {
-            repository.ensureInitialized(root, gitDir);
-            String diff = repository.hasCommits(gitDir) && isTracked(root, gitDir, relative)
-                    ? git.git(root, gitDir, properties.getQueryTimeoutSeconds(),
-                            List.of("diff", "HEAD", "--patch", "--find-renames", "--", relative)).output()
-                    : newFileDiff(root, gitDir, relative);
-            return GitCommandRunner.limit(diff, properties.getDiffMaxBytes());
-        } catch (IOException | InterruptedException e) {
-            throw failure("读取改动 diff 失败", e);
-        }
-    }
-
     /**
      * 回滚到某次提交：把工作区与索引恢复到那次提交的树，并**新增一条 Revert 提交**。
      *
@@ -244,7 +125,7 @@ public class ProjectGitService {
      * <p>工作区有未提交改动时直接拒绝，不覆盖用户正在写的内容。
      */
     public ProjectGitDtos.CommitResult revert(StudentProject project, String sha) {
-        String resolved = requireSha(project, sha);
+        String resolved = ProjectGitHistoryService.requireExistingCommit(git, properties, repository, project, sha);
         Path root = workspaceRoot(project);
         Path gitDir = repository.gitDir(root);
         try (WorkspaceLeaseService.Lease ignored = acquire(project, root)) {
@@ -278,43 +159,9 @@ public class ProjectGitService {
         }
     }
 
-    /**
-     * 用临时文件传提交信息，而不是 {@code -m <message>}。
-     *
-     * <p>Windows 上 ProcessBuilder 对含内嵌双引号的参数转义不完整：{@code Revert "abc"} 会被
-     * 拆成多个 argv，git 把后半段当成 pathspec 报 "did not match any file(s)"。走 stdin 文件
-     * 既避开转义，也天然支持多行提交信息。
-     */
-    private void commitWithMessage(Path root, Path gitDir, String message) throws IOException, InterruptedException {
-        Path messageFile = Files.createTempFile(gitDir, "commit-message-", ".txt");
-        try {
-            Files.writeString(messageFile, message, StandardCharsets.UTF_8);
-            git.git(root, gitDir, properties.getWriteTimeoutSeconds(),
-                    List.of("commit", "--file", messageFile.toString()));
-        } finally {
-            Files.deleteIfExists(messageFile);
-        }
-    }
-
     /** 仓库是否已经有提交。前端据此区分"首次提交"与"日常提交"。 */
     public boolean initialized(StudentProject project) {
         return repository.hasCommits(repository.gitDir(workspaceRoot(project)));
-    }
-
-    /** 文件是否已进索引。未跟踪文件在索引与 HEAD 里都没有条目。 */
-    private boolean isTracked(Path root, Path gitDir, String relative) throws IOException, InterruptedException {
-        return !git.git(root, gitDir, properties.getQueryTimeoutSeconds(),
-                List.of("ls-files", "--", relative)).output().isBlank();
-    }
-
-    /**
-     * 还没有基线的文件：拿空设备和它比较，整份内容都算新增。
-     *
-     * <p>{@code /dev/null} 由 git 自己解释，Windows 上不需要换成 {@code NUL}。
-     */
-    private String newFileDiff(Path root, Path gitDir, String relative) throws IOException, InterruptedException {
-        return git.gitDiffNoIndex(root, gitDir, properties.getQueryTimeoutSeconds(),
-                List.of("diff", "--no-index", "--patch", "--", EMPTY_SIDE, relative)).output();
     }
 
     private int countFiles(Path root, Path gitDir, String sha) throws IOException, InterruptedException {
@@ -329,40 +176,21 @@ public class ProjectGitService {
         return count;
     }
 
-    private List<ProjectGitDtos.CommitSummary> parseLog(String output) {
-        List<ProjectGitDtos.CommitSummary> commits = new ArrayList<>();
-        if (output == null || output.isBlank()) {
-            return commits;
-        }
-        for (String record : output.split(RECORD)) {
-            if (record.isBlank()) {
-                continue;
-            }
-            String[] fields = record.replace("\n", "").split(FIELD, -1);
-            if (fields.length < 6) {
-                continue;
-            }
-            List<String> parents = fields[4].isBlank() ? List.of() : List.of(fields[4].trim().split("\\s+"));
-            commits.add(new ProjectGitDtos.CommitSummary(fields[0], fields[1], fields[5], fields[2], fields[3], parents));
-        }
-        return commits;
-    }
-
-    private String requireSha(StudentProject project, String sha) {
-        String value = sha == null ? "" : sha.trim();
-        if (!value.matches("^[0-9a-fA-F]{4,40}$")) {
-            throw new ProjectGitException("提交标识无效");
-        }
-        Path root = workspaceRoot(project);
+    /**
+     * 提交信息先写进工作区临时文件再传给 {@code git commit --file}。
+     *
+     * <p>不走 {@code -m}：消息里的换行、引号、冒号在命令行上要转义，Windows 与 Linux 的
+     * 转义规则还不一样；写文件交给 git 自己读，跨平台一致。
+     */
+    private void commitWithMessage(Path root, Path gitDir, String message) throws IOException, InterruptedException {
+        Path messageFile = root.resolve(".labex-agent").resolve("commit-message-" + System.nanoTime() + ".txt");
+        Files.createDirectories(messageFile.getParent());
         try {
-            git.git(root, repository.gitDir(root), properties.getQueryTimeoutSeconds(),
-                    List.of("rev-parse", "--verify", value + "^{commit}"));
-            return value;
-        } catch (IOException e) {
-            throw new ProjectGitException("提交不存在：" + value);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ProjectGitException("读取提交被中断");
+            Files.writeString(messageFile, message, StandardCharsets.UTF_8);
+            git.git(root, gitDir, properties.getWriteTimeoutSeconds(),
+                    List.of("commit", "--file", messageFile.toString()));
+        } finally {
+            Files.deleteIfExists(messageFile);
         }
     }
 
@@ -406,7 +234,11 @@ public class ProjectGitService {
         return sha.substring(0, Math.min(7, sha.length()));
     }
 
-    private ProjectGitException failure(String action, Exception cause) {
+    /**
+     * 统一的失败包装：日志 + 可展示消息。静态是因为 {@link ProjectGitHistoryService}
+     * 也用同一套措辞，两个类各写一份会让同一个 git 错误出现两种文案。
+     */
+    static ProjectGitException failure(String action, Exception cause) {
         if (cause instanceof InterruptedException) {
             Thread.currentThread().interrupt();
         }

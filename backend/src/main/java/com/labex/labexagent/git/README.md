@@ -485,7 +485,8 @@ diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ
 |---|---|
 | git 子进程唯一入口 | `git/GitCommandRunner`（超时、输出上限、`GIT_INDEX_FILE` 注入） |
 | 仓库位置与初始化 | `git/ProjectGitRepository`（`info/exclude` 生成、配置缓存） |
-| 用户提交 | `git/ProjectGitService`（status / stage / commit / commits / detail / diff / revert） |
+| 用户提交（写） | `git/ProjectGitService`（status / stage / commit / revert，持租约） |
+| 版本库只读查询 | `git/ProjectGitHistoryService`（commits / detail / commit diff / working diff） |
 | 输出解析 | `git/GitPorcelainParser`（纯函数，无 IO） |
 | clone 鉴权 | `git/ProjectGitCloneTokenService`、`git/ProjectGitHttpBackend` |
 | REST | `controller/student/ProjectGitController`（`/api/student/projects/{id}/git/**`） |
@@ -654,4 +655,18 @@ diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ
 | 沙箱越界 | `/mnt/d/...` 不存在、`..` 到不了宿主、`/usr` 只读 |
 
 **未做**：不合并上传仓库的历史（一个项目一个仓库，归档保留可取回）。
+
+### 11.7 拆出只读查询服务（2026-11-10）
+
+`ProjectGitService` 因为 §11.6 的改动涨到 430 行，超过 400 行硬上限。按读写职责拆开：
+
+| 类 | 职责 | 是否持租约 |
+|---|---|---|
+| `ProjectGitService` | status / stage / commit / revert | 写操作持租约 |
+| `ProjectGitHistoryService` | commits / commitDetail / commitDiff / workingDiff / initialized | 不持租约 |
+
+拆分后 262 / 241 行。`requireExistingCommit` 与 `failure` 提为包内共享，避免两个类对
+「什么算合法 sha」「同一个 git 错误怎么措辞」各写一份。
+
+`ProjectGitServiceTest` 里 13 处只读调用改走 `history` 字段；写路径断言不变。
 
