@@ -4,8 +4,14 @@ import com.labex.labexagent.service.ProjectScanPolicy;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -36,14 +42,25 @@ public class ProjectGitRepository {
     public static final String GIT_DIR_NAME = ".labex/git-snapshots";
     public static final String SNAPSHOT_INDEX_NAME = "snapshot.index";
     public static final String REBUILD_INDEX_NAME = "rebuild.index";
+    /** 工作区根上的 gitfile：把裸仓库暴露成「这个项目的仓库」，让 `git log` 不必带参数就能用。 */
+    public static final String GIT_FILE_NAME = ".git";
     static final String COMMITTER_NAME = "Labex Agent";
     static final String COMMITTER_EMAIL = "labex-agent@local";
-    /** 仓库本地配置：换机器/新克隆都要一致，且不能让工作区的 .gitattributes 改变行为。 */
+    /**
+     * 仓库本地配置：换机器/新克隆都要一致，且不能让工作区的 .gitattributes 改变行为。
+     *
+     * <p>{@code core.bare=false} + {@code core.worktree=../..}：仓库目录是
+     * {@code <workspace>/.labex/git-snapshots}，向上两级就是工作区根。这两项让 Agent 在
+     * 工作区里直接跑 {@code git status} / {@code git log}（不带 {@code --git-dir}）也能工作，
+     * 而不是因为「裸仓库没有工作树」而报错，或者更糟——向上找到别人的仓库。
+     */
     private static final Map<String, String> REQUIRED_CONFIG = Map.of(
             "core.autocrlf", "false",
             "core.longpaths", "true",
             "core.symlinks", "true",
             "core.quotepath", "false",
+            "core.bare", "false",
+            "core.worktree", "../..",
             "user.name", COMMITTER_NAME,
             "user.email", COMMITTER_EMAIL);
 
@@ -93,6 +110,64 @@ public class ProjectGitRepository {
             configured.add(key);
         }
         writeExcludeFile(gitDir);
+        writeGitFile(workspaceRoot, gitDir);
+    }
+
+    /**
+     * 在工作区根写 {@code .git} gitfile，指向 {@code .labex/git-snapshots}。
+     *
+     * <p>为什么需要：裸仓库没有工作树，{@code git log} 在工作区里找不到它，于是 git 会向上查找，
+     * 撞上外层目录的仓库（用户把项目放在自己的仓库里时尤其明显），Agent 就会报出别人的历史。
+     * gitfile 是 git 自己的机制：{@code .git} 文件内容为 {@code gitdir: <相对路径>}，
+     * 从此 {@code git log} / {@code git status} 解析到的就是本项目的仓库。
+     *
+     * <p>仓库本身仍是非裸模式 + 工作树 = 工作区根：裸仓库下 git 拒绝执行需要工作树的命令
+     * （{@code status} / {@code diff} / {@code add} 不带显式 {@code --work-tree} 时），
+     * 而 Agent 会直接跑 {@code git status}。{@code core.worktree} 写相对路径，工作区搬迁后仍然有效。
+     *
+     * <p>上传项目自带的 {@code .git} 目录会被移到 {@code .labex/imported-git/<时间戳>/}：
+     * 一个项目只能有一个仓库，两套历史并存时面板和 Agent 会各说各话。移动而不是删除，
+     * 内容留在保护区里，需要时可以取回。
+     */
+    private void writeGitFile(Path workspaceRoot, Path gitDir) throws IOException {
+        Path gitFile = workspaceRoot.resolve(GIT_FILE_NAME);
+        if (Files.isDirectory(gitFile, LinkOption.NOFOLLOW_LINKS)) {
+            Path archive = archiveImportedGit(workspaceRoot, gitFile);
+            log.warn("GIT_IMPORTED_REPOSITORY_ARCHIVED workspace={} archivedTo={}", workspaceRoot, archive);
+        }
+        String content = "gitdir: " + relativeGitDir(workspaceRoot, gitDir) + "\n";
+        if (Files.isRegularFile(gitFile, LinkOption.NOFOLLOW_LINKS)
+                && content.equals(Files.readString(gitFile, StandardCharsets.UTF_8))) {
+            return;
+        }
+        Files.writeString(gitFile, content, StandardCharsets.UTF_8);
+    }
+
+    /** 把上传项目自带的 {@code .git} 移到保护区，返回归档路径。同名时追加序号，不覆盖已有归档。 */
+    private Path archiveImportedGit(Path workspaceRoot, Path importedGit) throws IOException {
+        Path archiveRoot = workspaceRoot.resolve(".labex").resolve("imported-git");
+        Files.createDirectories(archiveRoot);
+        String stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                .format(LocalDateTime.now(ZoneOffset.UTC));
+        Path target = archiveRoot.resolve(stamp);
+        for (int suffix = 2; Files.exists(target, LinkOption.NOFOLLOW_LINKS); suffix++) {
+            target = archiveRoot.resolve(stamp + "-" + suffix);
+        }
+        try {
+            return Files.move(importedGit, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException fallback) {
+            return Files.move(importedGit, target);
+        }
+    }
+
+    /** 仓库相对工作区根的路径，正斜杠形式；git 在 Windows 上也接受。 */
+    private String relativeGitDir(Path workspaceRoot, Path gitDir) {
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        Path dir = gitDir.toAbsolutePath().normalize();
+        if (!dir.startsWith(root)) {
+            return dir.toString().replace('\\', '/');
+        }
+        return root.relativize(dir).toString().replace('\\', '/');
     }
 
     private String cacheKey(Path gitDir) {

@@ -381,6 +381,45 @@ git 对这三种查询的反应各不相同，必须逐条按「没有基线」�
 diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ` 一行，否则整段 base64
 补丁会铺满面板（229 个文件的首次提交里就含 `salary.db`、`salary_model.pkl`）。
 
+### 6.7 工作区的 `.git` gitfile：让 `git log` 指向本项目
+
+**问题**：平台仓库在 `.labex/git-snapshots`，是个裸仓库。工作区里没有 `.git` 时，Agent 跑
+`git log` 会从工作区一路向上找仓库，撞上外层目录的仓库。实测项目 288（工作区位于
+`D:\LabexAgent\workspaces\279\...`）里跑 `git log`，返回的是上传压缩包自带的
+`2bec69e Initial commit: opencode free-tier reverse proxy`——既不是本项目的历史，
+也不是平台仓库的历史。
+
+**修法**：`ProjectGitRepository.ensureInitialized` 在工作区根写一个 gitfile：
+
+```
+.git 内容：gitdir: .labex/git-snapshots
+```
+
+同时把仓库配置成非裸 + 工作树指向工作区根（`core.bare=false`、`core.worktree=../..`），
+否则裸仓库拒绝执行 `status` / `diff` / `add` 这类需要工作树的命令，Agent 直接跑就会报错。
+
+三处必须一起改，缺一个都不成立：
+
+| 位置 | 作用 |
+|---|---|
+| 工作区 `.git` gitfile | `git log` 不必带 `--git-dir` 就解析到本项目仓库 |
+| 仓库 `core.bare=false` + `core.worktree=../..` | 让 `status` / `diff` 在工作区可用 |
+| `GIT_CEILING_DIRECTORIES` = 工作区**父目录** | 工作区还没有 gitfile 时也不向上越界 |
+
+**上界必须是父目录**：`GIT_CEILING_DIRECTORIES` 的语义是「不搜索这些目录及其祖先」，而当前
+目录永远会被搜索。给工作区本身没有用（当前目录照样查，上一级照样往上找），给父目录才真的把
+查找挡在工作区里面。
+
+**上传项目自带的 `.git`**：一个项目只能有一个仓库。发现工作区根有 `.git` 目录时，把它移到
+`.labex/imported-git/<时间戳>/` 再写 gitfile——移动而不是删除，上传方的历史留在保护区里可取回。
+
+**副作用与边界**：
+
+- `.git` gitfile 不会进版本库：git 自己就不会把 `.git` 当工作区文件。
+- `.git` 已加入 `ProtectedWorkspacePaths`，导出/下载不会带出这个只在当前工作区有效的指针。
+- 文件浏览器仍会显示 `.git`，与 `.labex/`、`.labex-agent/` 的现有行为一致（浏览器始终显示平台目录）。
+- `commits()` 也必须调 `ensureInitialized`：只读历史时如果不建 gitfile，Agent 那条路仍然是漏的。
+
 ## 7. 测试策略
 
 | 层 | 测什么 | 实现 |
@@ -390,6 +429,8 @@ diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ
 | 后端单测（关键） | **索引隔离**：快照不碰暂存索引 | `ProjectGitIndexIsolationTest`（3） |
 | 后端单测 | status / stage / commit / 分页 / revert | `ProjectGitServiceTest`（18） |
 | 后端单测 | 首次提交前：历史为空、未跟踪/二进制文件出 diff | `ProjectGitServiceTest`（§6.6） |
+| 后端单测（关键） | **`.git` gitfile 指向本项目仓库**，不泄漏外层仓库历史 | `ProjectGitFileTest`（5） |
+| 后端单测 | git 查找上界 = 工作区父目录；宿主机环境只透传白名单 | `WorkerPolicyEnvironmentTest`（3） |
 | 后端单测 | clone 令牌签发、校验、篡改、过期、撤销 | `ProjectGitCloneTokenServiceTest`（6） |
 | 前端单测 | 面板纯展示逻辑（状态字母/全称、路径拆分、默认全选、clone 命令、分支常量） | `git-source-control-model.test.mjs`（14） |
 | live 验收 | 真实 clone + 用户提交 + Agent 改动不进 git | 见 §11 |
@@ -579,4 +620,38 @@ diff 一律不传 `--binary`：二进制文件只显示 `Binary files ... differ
 | 点文件 | 中栏打开只读 diff，侧边栏高亮当前行并显示箭头 |
 
 **未做**：行内暂存/撤销、按目录折叠分组、提交搜索。侧边栏 260px 下再塞行内操作会把文件名挤没。
+
+### 11.6 `.git` gitfile 与 git 查找上界（2026-11-10）
+
+用户报告：问 Agent「这个项目的 git 历史有哪些」，回答是
+`2bec69e Initial commit: opencode free-tier reverse proxy`——不是本项目的历史。
+
+**根因**（沙箱内实测复现）：项目 288 的压缩包自带 `.git`，而平台仓库是裸仓库、工作区里没有
+`.git`，`git log` 于是解析到上传的仓库。修复见 §6.7。
+
+| 改动 | 文件 |
+|---|---|
+| 写工作区 `.git` gitfile + 归档上传的 `.git` 目录 | `ProjectGitRepository` |
+| `core.bare=false` / `core.worktree=../..` | `ProjectGitRepository.REQUIRED_CONFIG` |
+| `commits()` 也调 `ensureInitialized`（只读历史时同样要建 gitfile） | `ProjectGitService` |
+| `GIT_CEILING_DIRECTORIES` = 工作区父目录 | `WorkerPolicy.safeEnvironment` |
+| `.git` 加入保护区，导出不带出 | `ProtectedWorkspacePaths` |
+
+**顺带修掉的回归**：`efe1571` 改端口时把 `start_backend.ps1` / `restart_backend.ps1` 的 UTF-8 BOM
+去掉了。PowerShell 5.1 按 ANSI 读这两个文件，中文注释的字节把换行吞掉，`param()` 并入注释行，
+`-Port` 绑定成 null，`Get-NetTCPConnection -LocalPort $null` 直接报错——两个脚本都启动不了。
+已恢复 BOM。
+
+**验证**
+
+| 项 | 结果 |
+|---|---|
+| 后端单测 | **2280 通过**（新增 `ProjectGitFileTest` 5、`WorkerPolicyEnvironmentTest` 3） |
+| 项目 288 沙箱内 `git log` | 修复前 `2bec69e ... reverse proxy`；修复后 `f10459f 第一次提交` |
+| 项目 277（0 提交）`git log` | 修复前泄漏 `D:\LabexAgent` 的历史；修复后 `fatal: ... does not have any commits yet`（正确） |
+| 项目 277 / 288 的 `.git` | 均为 `gitdir: .labex/git-snapshots` |
+| 导出 | `.git` 不进 zip（`ProjectExportJobServiceTest` 断言） |
+| 沙箱越界 | `/mnt/d/...` 不存在、`..` 到不了宿主、`/usr` 只读 |
+
+**未做**：不合并上传仓库的历史（一个项目一个仓库，归档保留可取回）。
 

@@ -1,4 +1,4 @@
-# 启动 LabexAgent 后端：从根目录 .env 注入环境变量，复用 current_cmdline.txt 记录的启动命令。
+﻿# 启动 LabexAgent 后端：从根目录 .env 注入环境变量，复用 current_cmdline.txt 记录的启动命令。
 #
 # 与 restart_backend.ps1 的区别（以及为什么需要它）：
 #   1. .env 注入。application.yml 里 `spring.datasource.password: ${LABEX_AGENT_DB_PASSWORD:}` 默认空，

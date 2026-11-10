@@ -8,12 +8,16 @@ import java.util.Locale;
  * （复制/移动/上传/下载/搜索）一律不得写入或打包带出。
  * 保护区：`.labex/`（runtime.env + git 快照私有索引）、`.labex-agent/`，
  * 以及重命名流程的临时条目 `.labex-rename-*`。
+ *
+ * <p>工作区根的 {@code .git} gitfile 也是平台写的（指向 {@code .labex/git-snapshots}），
+ * 一并排除：它只在当前工作区有效，带出后是一份指向不存在路径的坏仓库。
  */
 public final class ProtectedWorkspacePaths {
 
     private static final String RUNTIME_DIR = ".labex";
     private static final String AGENT_DIR = ".labex-agent";
     private static final String RENAME_TEMP_PREFIX = ".labex-rename-";
+    private static final String GIT_FILE = ".git";
 
     private ProtectedWorkspacePaths() {
     }
@@ -71,6 +75,7 @@ public final class ProtectedWorkspacePaths {
         String lower = segment.toLowerCase(Locale.ROOT);
         return RUNTIME_DIR.equals(lower)
                 || AGENT_DIR.equals(lower)
+                || GIT_FILE.equals(lower)
                 || lower.startsWith(RENAME_TEMP_PREFIX);
     }
 }

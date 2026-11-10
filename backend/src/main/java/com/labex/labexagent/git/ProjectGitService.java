@@ -52,6 +52,10 @@ public class ProjectGitService {
      *
      * <p>仓库还没有任何提交时同样要列出文件：全新项目的第一次提交只能靠这份清单，
      * 此时所有文件都是未跟踪状态。{@code initialized} 只表示"有没有提交历史"。
+     *
+     * <p>{@code --branch} 让 {@code status} 顺带返回分支头，{@code initialized} 直接从分支头
+     * 读出来，不再单独跑 {@code rev-parse --verify HEAD}。Windows 上每多一个子进程就是 200ms
+     * 以上，而且 {@code ProcessImpl.create} 是全局同步方法，会拖住同进程内所有其它进程创建。
      */
     public ProjectGitDtos.StatusView status(StudentProject project) {
         Path root = workspaceRoot(project);
@@ -59,11 +63,14 @@ public class ProjectGitService {
         try {
             repository.ensureInitialized(root, gitDir);
             String output = git.git(root, gitDir, properties.getQueryTimeoutSeconds(), List.of(
-                    "status", "--porcelain=v1", "-z", "--untracked-files=all", "--find-renames")).output();
+                    "status", "--porcelain=v1", "-z", "--untracked-files=all", "--find-renames",
+                    "--branch")).output();
             List<ProjectGitDtos.StatusEntry> entries =
                     GitPorcelainParser.parseStatus(output, properties.getStatusMaxEntries());
+            Boolean initialized = GitPorcelainParser.hasCommitsFromStatus(output);
             int staged = (int) entries.stream().filter(ProjectGitDtos.StatusEntry::staged).count();
-            return new ProjectGitDtos.StatusView(repository.hasCommits(gitDir),
+            return new ProjectGitDtos.StatusView(
+                    initialized != null ? initialized : repository.hasCommits(gitDir),
                     entries.size() - staged, staged, entries);
         } catch (IOException | InterruptedException e) {
             throw failure("读取未提交改动失败", e);
@@ -118,9 +125,16 @@ public class ProjectGitService {
     public ProjectGitDtos.CommitPage commits(StudentProject project, String before, Integer limit) {
         Path root = workspaceRoot(project);
         Path gitDir = repository.gitDir(root);
+        // 读历史也要先确保仓库就绪：工作区的 .git gitfile 是「这个项目有自己的仓库」的标志，
+        // 少了它，Agent 在工作区里跑 git log 会向上找到外层目录的仓库，报出别人的历史。
         // 仓库存在但还没有提交时 HEAD 指向未出生的分支，git log 会直接失败：
         // 「没有历史」要返回空列表，不能当成错误抛给前端。
-        if (!Files.exists(gitDir.resolve("HEAD")) || !repository.hasCommits(gitDir)) {
+        try {
+            repository.ensureInitialized(root, gitDir);
+        } catch (IOException | InterruptedException e) {
+            throw failure("读取提交历史失败", e);
+        }
+        if (!repository.hasCommits(gitDir)) {
             return new ProjectGitDtos.CommitPage(List.of(), null);
         }
         int pageSize = limit == null || limit <= 0

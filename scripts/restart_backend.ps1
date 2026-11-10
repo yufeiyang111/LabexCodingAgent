@@ -1,4 +1,4 @@
-# 后端监听端口。默认 8080：与 application.yml 的 SERVER_PORT 默认、生产 Caddy 的 backend:8080 一致。
+﻿# 后端监听端口。默认 8080：与 application.yml 的 SERVER_PORT 默认、生产 Caddy 的 backend:8080 一致。
 # 必须与 application.yml 的 server.port 覆盖值一致，否则健康检查探测的不是真实端口。
 param([int]$Port = 8080)
 

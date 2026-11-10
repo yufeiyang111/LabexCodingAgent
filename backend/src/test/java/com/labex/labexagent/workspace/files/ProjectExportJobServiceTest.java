@@ -1,6 +1,7 @@
 package com.labex.labexagent.workspace.files;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -55,6 +56,8 @@ class ProjectExportJobServiceTest {
         Files.writeString(deps.resolve("index.js"), "module.exports = 1");
         Path platform = Files.createDirectories(workspace.resolve(".labex"));
         Files.writeString(platform.resolve("runtime.env"), "secret=1");
+        // 平台写在根的 .git gitfile：只在当前工作区有效，带出后是坏仓库。
+        Files.writeString(workspace.resolve(".git"), "gitdir: .labex/git-snapshots\n");
 
         StudentProject project = new StudentProject();
         project.setProjectId(12);
@@ -105,6 +108,7 @@ class ProjectExportJobServiceTest {
         assertTrue(names.contains("README.md"));
         assertTrue(names.stream().noneMatch(name -> name.startsWith("node_modules/")));
         assertTrue(names.stream().noneMatch(name -> name.startsWith(".labex/")));
+        assertFalse(names.contains(".git"), "平台写的 gitfile 不能进导出包");
 
         assertEquals("demo-project.zip", service.projectZipName(7, 12, view.jobId()));
     }
