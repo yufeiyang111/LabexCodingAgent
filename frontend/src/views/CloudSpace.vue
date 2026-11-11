@@ -1,5 +1,11 @@
 <template>
-  <div class="cs-shell" :class="{ 'is-resizing': isResizingSidebar, 'is-mobile': isMobile, 'mobile-show-detail': isMobile && mobileActiveView === 'detail' }">
+  <div
+    class="cs-shell"
+    :class="{ 'is-resizing': isResizingSidebar, 'is-mobile': isMobile, 'mobile-show-detail': isMobile && mobileActiveView === 'detail', 'is-drop-target': isDraggingFile }"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
     <div
       class="cs-left"
       :class="{ 'is-resizing': isResizingSidebar }"
@@ -12,9 +18,16 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             <span class="cs-btn-text">新建</span>
           </button>
-          <button class="cs-btn cs-btn-outline" title="上传项目" @click="triggerUpload">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <span class="cs-btn-text">上传</span>
+          <button
+            class="cs-btn cs-btn-outline"
+            :class="{ 'is-busy': projectUpload.busy.value }"
+            :disabled="projectUpload.busy.value"
+            :title="projectUpload.busy.value ? '正在上传…' : '上传项目（支持拖拽 zip 到本页）'"
+            @click="triggerUpload"
+          >
+            <span v-if="projectUpload.busy.value" class="cs-btn-spinner" aria-hidden="true"></span>
+            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span class="cs-btn-text">{{ projectUpload.busy.value ? '上传中' : '上传' }}</span>
           </button>
           <input ref="uploadInput" type="file" accept=".zip" hidden @change="handleUpload" />
         </div>
@@ -23,10 +36,10 @@
         <div v-if="!listLoading && projects.length === 0" class="cs-empty">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           <p>暂无项目</p>
-          <p class="cs-empty-hint">点击上方按钮新建或上传项目</p>
+          <p class="cs-empty-hint">点击上方按钮新建，或把 zip 拖到这里上传</p>
         </div>
         <TransitionGroup name="proj-list" tag="div">
-          <div v-for="proj in projects" :key="proj.projectId" class="cs-item" :class="{ active: selectedId === proj.projectId }" @click="selectProject(proj)">
+          <div v-for="proj in projects" :key="proj.projectId" class="cs-item" :class="{ active: selectedId === proj.projectId }" @click="selectProject(proj)" @mouseenter="warmWorkspaceRoute(proj)" @focusin="warmWorkspaceRoute(proj)">
             <div class="cs-item-icon">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
             </div>
@@ -140,19 +153,38 @@
       @start="projectExport.confirmStart"
       @cancel="projectExport.cancel"
     />
+    <ProjectUploadDialog
+      :visible="projectUpload.phase.value !== 'idle'"
+      :phase="projectUpload.phase.value"
+      :file="projectUpload.file.value"
+      :validation="projectUpload.validation.value"
+      :progress="projectUpload.progress.value"
+      :extracting-elapsed="projectUpload.extractingElapsed.value"
+      :result="projectUpload.result.value"
+      :limits="projectUpload.limits.value || {}"
+      v-model:skip-dependencies="uploadSkipDependencies"
+      @start="projectUpload.start"
+      @cancel="projectUpload.cancel"
+      @close="projectUpload.reset"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { prefetchWorkspaceRoute } from '@/router/prefetch'
+import { prefetchWorkspaceData } from '@/router/workspacePrefetch'
+import { PREFETCH_KEYS, rememberPrefetched } from '@/composables/workspacePrefetchCache'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi } from '@/api'
 import FileTreeNode from '@/components/cloud/FileTreeNode.vue'
 import UserPanel from '@/components/cloud/UserPanel.vue'
 import ExportProgressDialog from '@/components/cloud/ExportProgressDialog.vue'
+import ProjectUploadDialog from '@/components/cloud/ProjectUploadDialog.vue'
 import ProjectStackIcon from '@/components/cloud/projects/ProjectStackIcon.vue'
 import { useProjectExport } from '@/composables/useProjectExport'
+import { useProjectUpload } from '@/composables/projectUpload/useProjectUpload'
 import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
@@ -170,6 +202,7 @@ const selectedPath = ref('')
 const listLoading = ref(false)
 const treeLoading = ref(false)
 const uploadInput = ref(null)
+const isDraggingFile = ref(false)
 const showCreate = ref(false)
 const newProjectName = ref('')
 const selectedTemplate = ref(null)
@@ -269,6 +302,17 @@ const exportIncludeAll = computed({
   set: value => { projectExport.includeAll.value = value }
 })
 
+// 项目压缩包上传（列表页入口）：校验 → 上传（真实字节进度/可取消）→ 解压等待 → 完成
+const projectUpload = useProjectUpload({
+  api: projectApi,
+  notify: ElMessage,
+  onDone: () => loadProjects()
+})
+const uploadSkipDependencies = computed({
+  get: () => projectUpload.skipDependencies.value,
+  set: value => projectUpload.setSkipDependencies(value)
+})
+
 const templates = [
   { key: 'vue', name: 'Vue' },
   { key: 'react', name: 'React' },
@@ -300,9 +344,13 @@ async function selectProject(proj) {
   treeError.value = ''
   treeNextOffset.value = null
   try {
-    const r = await projectApi.getTreePage(proj.projectId, '', 0)
-    fileTree.value = r.data?.entries || []
-    treeNextOffset.value = r.data?.nextOffset ?? null
+    // 这份根目录结果同时喂给工作区的预取缓存：点进工作区时直接命中，不用再取一次。
+    const r = await rememberPrefetched(
+      PREFETCH_KEYS.rootTree(proj.projectId),
+      () => projectApi.getTreePage(proj.projectId, '', 0)
+    )
+    fileTree.value = r?.data?.entries || []
+    treeNextOffset.value = r?.data?.nextOffset ?? null
   } catch (e) {
     fileTree.value = []
     treeError.value = treeLoadErrorMessage(e)
@@ -355,7 +403,29 @@ function onFileSelect(path) {
 
 function enterWorkspace(proj) {
   if (!proj || !proj.projectId) return
+  // 点「进入工作空间」按钮不会经过行的 mouseenter，这里补一次预取，让路由切换和请求同时发生。
+  warmWorkspaceRoute(proj)
   router.push({ name: 'CloudWorkspace', params: { projectId: proj.projectId } })
+}
+
+/*
+ * 鼠标移到项目行上就开始下载工作区 chunk，chunk 到位后再预取该项目的首屏数据。
+ *
+ * 用户从「看到项目」到「点进工作区」之间通常有 300ms 以上的自然停顿，够把 168 KB 拉下来。
+ * 这只是提前取，不改变点击行为：即使预热还没完成，router.push 也只会等同一个 promise，
+ * 不会重复下载。
+ *
+ * 数据预取排在 chunk 之后：chunk 决定工作区能不能挂载，组件没挂载时数据到手也用不上；
+ * 两者同时发会在慢网下抢带宽，实测 hover 后立刻点击反而比不预取更慢（1319 ms vs 1063 ms）。
+ * 排在 chunk 后面两头都不吃亏 —— chunk 已在内存时这里立即执行，数据照样提前发出。
+ */
+const warmedProjects = new Set()
+function warmWorkspaceRoute(proj) {
+  const projectId = proj?.projectId
+  const routeReady = prefetchWorkspaceRoute()
+  if (!projectId || warmedProjects.has(projectId)) return
+  warmedProjects.add(projectId)
+  void routeReady.then(() => prefetchWorkspaceData(projectId))
 }
 
 async function createProject() {
@@ -381,21 +451,62 @@ async function createProject() {
 }
 
 function triggerUpload() {
+  if (projectUpload.busy.value) return
   uploadInput.value?.click()
 }
 
-async function handleUpload(e) {
-  const f = e.target.files[0]
-  if (!f) return
-  try {
-    await projectApi.upload(f)
-    ElMessage.success('上传成功')
-    await loadProjects()
-  } catch (e) {
-    ElMessage.error('上传失败: ' + (e?.response?.data?.message || e?.message || '未知错误'))
-  } finally {
-    e.target.value = ''
+function handleUpload(e) {
+  const files = Array.from(e.target?.files || [])
+  e.target.value = ''
+  if (!files.length) return
+  if (files.length > 1) {
+    ElMessage.warning('一次只能上传一个压缩包，请逐个上传')
+    return
   }
+  void projectUpload.begin(files[0])
+}
+
+/** 拖拽落区：拖入文件时高亮，放下后走同一条上传流程。 */
+function isFileDrag(event) {
+  const types = event.dataTransfer?.types
+  return !!types && Array.from(types).includes('Files')
+}
+
+/**
+ * 只有空闲时才接受拖拽。上传中/解压中不接受是显然的；对话框打开时也不接受——
+ * 遮罩会盖住中央提示，只剩一圈虚线，看起来像卡住了。
+ */
+function acceptsDrop() {
+  return !projectUpload.busy.value && projectUpload.phase.value === 'idle'
+}
+
+function onDragOver(event) {
+  if (!isFileDrag(event) || !acceptsDrop()) return
+  event.preventDefault()
+  isDraggingFile.value = true
+}
+
+function onDragLeave(event) {
+  // 只有真正离开整个落区才取消高亮，避免掠过子元素时闪烁。
+  if (event.currentTarget?.contains?.(event.relatedTarget)) return
+  isDraggingFile.value = false
+}
+
+function onDrop(event) {
+  if (!isFileDrag(event)) return
+  event.preventDefault()
+  isDraggingFile.value = false
+  if (!acceptsDrop()) {
+    ElMessage.warning('已有上传任务在进行中，请等待完成')
+    return
+  }
+  const files = Array.from(event.dataTransfer?.files || [])
+  if (!files.length) return
+  if (files.length > 1) {
+    ElMessage.warning('一次只能上传一个压缩包，请逐个上传')
+    return
+  }
+  void projectUpload.begin(files[0])
 }
 
 async function deleteProject(proj) {
@@ -616,6 +727,27 @@ onMounted(async () => {
 .cs-btn-primary:hover { background: #4338ca; box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3); }
 .cs-btn-outline { background: #fff; color: #374151; border: 1px solid #e5e7eb; }
 .cs-btn-outline:hover { background: #f9fafb; border-color: #d1d5db; }
+.cs-btn-outline:disabled, .cs-btn-outline.is-busy { cursor: progress; opacity: 0.75; }
+.cs-btn-outline:disabled:hover { background: #fff; border-color: #e5e7eb; }
+.cs-btn-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: cs-spin 0.7s linear infinite; }
+@keyframes cs-spin { to { transform: rotate(360deg); } }
+/* 拖拽落区：整页高亮 + 中央提示，明确"松手即上传" */
+.cs-shell.is-drop-target::after {
+  content: '松开即可上传压缩包';
+  position: fixed;
+  inset: 12px;
+  z-index: 9990;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed #6366f1;
+  border-radius: 14px;
+  background: rgba(99, 102, 241, 0.06);
+  color: #4f46e5;
+  font-size: 15px;
+  font-weight: 500;
+  pointer-events: none;
+}
 .cs-btn-ghost { background: transparent; color: #6b7280; padding: 4px 6px; }
 .cs-btn-ghost:hover { background: #f3f4f6; color: #111827; }
 .cs-btn-danger:hover { background: #fef2f2; color: #ef4444; }

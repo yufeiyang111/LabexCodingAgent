@@ -12,6 +12,8 @@ import com.labex.rag.llm.OllamaChat;
 import com.labex.labexagent.commandsecurity.AgentProjectMetadataRefreshScheduler;
 import com.labex.labexagent.service.ProjectScanPolicy;
 import com.labex.labexagent.workspace.ExportSelectionPolicy;
+import com.labex.labexagent.workspace.ProjectArchiveExtractor;
+import com.labex.labexagent.workspace.ProjectArchiveLimits;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.labexagent.workspace.WorkspaceFileOperationProperties;
 import com.labex.service.StudentProjectService;
@@ -59,8 +61,6 @@ public class StudentProjectServiceImpl
 extends ServiceImpl<StudentProjectMapper, StudentProject>
 implements StudentProjectService {
     private static final Logger log = LoggerFactory.getLogger(StudentProjectServiceImpl.class);
-    private static final int MAX_FILES = 5000;
-    private static final long MAX_TOTAL_SIZE = 314572800L;
     private static final long MAX_EDIT_FILE_SIZE = 0x200000L;
     private static final int MAX_FILE_PREVIEW_BYTES = 512 * 1024;
     private static final Gson GSON = new Gson();
@@ -77,11 +77,28 @@ implements StudentProjectService {
     /** 导出排除判定所需（依赖/构建产物目录名），与异步导出任务共用同一份配置。 */
     @Autowired
     private WorkspaceFileOperationProperties workspaceFileOperationProperties;
+    /** 项目压缩包解压的唯一实现（路径穿越、上限、依赖目录跳过）。 */
+    @Autowired
+    private ProjectArchiveExtractor archiveExtractor;
+    /** 压缩包上限，仅用于在上传入口给出带具体数字的错误。 */
+    @Autowired
+    private ProjectArchiveLimits archiveLimits;
     @Lazy
     @Autowired(required = false)
     private AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
 
     public StudentProject uploadProject(Integer studentId, MultipartFile file, String projectName) {
+        return uploadProject(studentId, file, projectName, true);
+    }
+
+    public StudentProject uploadProject(Integer studentId, MultipartFile file, String projectName,
+                                        boolean skipDependencyDirectories) {
+        return uploadProjectWithStats(studentId, file, projectName, skipDependencyDirectories).project();
+    }
+
+    public StudentProjectService.UploadResult uploadProjectWithStats(Integer studentId, MultipartFile file,
+                                                                     String projectName,
+                                                                     boolean skipDependencyDirectories) {
         String originalName;
         if (studentId == null) {
             throw new IllegalArgumentException("Invalid student id");
@@ -93,6 +110,10 @@ implements StudentProjectService {
         if (!originalName.toLowerCase().endsWith(".zip")) {
             throw new IllegalArgumentException("Only .zip project archives are supported currently");
         }
+        if (file.getSize() > archiveLimits.getMaxArchiveBytes()) {
+            throw new IllegalArgumentException("压缩包 " + formatMegabytes(file.getSize())
+                    + " MB，超过上限 " + formatMegabytes(archiveLimits.getMaxArchiveBytes()) + " MB");
+        }
         String safeProjectName = this.sanitizeName(projectName != null && !projectName.isBlank() ? projectName : this.stripExtension(originalName));
         String projectToken = UUID.randomUUID().toString().replace("-", "");
         Path studentRoot = Path.of(this.projectBasePath, String.valueOf(studentId)).toAbsolutePath().normalize();
@@ -103,7 +124,8 @@ implements StudentProjectService {
             Files.createDirectories(archivePath.getParent(), new FileAttribute[0]);
             Files.createDirectories(workspacePath, new FileAttribute[0]);
             file.transferTo(archivePath);
-            ExtractStats stats = this.unzipSecurely(archivePath, workspacePath);
+            ProjectArchiveExtractor.ExtractStats stats =
+                    archiveExtractor.extract(archivePath, workspacePath, skipDependencyDirectories);
             this.initializeAgentIgnoreFile(workspacePath);
             StudentProject project = new StudentProject();
             project.setStudentId(studentId);
@@ -112,19 +134,23 @@ implements StudentProjectService {
             project.setArchivePath(archivePath.toString());
             project.setWorkspacePath(workspacePath.toString());
             project.setStructureJson(null);
-            project.setFileCount(Integer.valueOf(stats.fileCount));
-            project.setTotalSize(Long.valueOf(stats.totalSize));
+            project.setFileCount(Integer.valueOf(stats.fileCount()));
+            project.setTotalSize(Long.valueOf(stats.totalSize()));
             project.setStatus(Integer.valueOf(1));
             project.setCreateTime(LocalDateTime.now());
             project.setUpdateTime(LocalDateTime.now());
             this.save(project);
             this.scheduleMetadataRefresh(project);
-            return project;
+            return new StudentProjectService.UploadResult(project, stats.skippedCount(), stats.skippedSamples());
         }
         catch (Exception e) {
             this.cleanup(projectRoot);
             throw new RuntimeException("Project upload failed: " + e.getMessage(), e);
         }
+    }
+
+    private static String formatMegabytes(long bytes) {
+        return String.valueOf(Math.round(bytes / (1024.0 * 1024.0)));
     }
 
     public StudentProject createEmptyProject(Integer studentId, String projectName) {
@@ -415,25 +441,10 @@ implements StudentProjectService {
             throw new IllegalStateException("Failed to initialize Agent ignore file", e);
         }
         try (Stream<Path> stream = Files.list(targetPath);){
-            List<Path> children = stream.filter(child -> this.isBrowsableWorkspaceEntry(paths, child))
-                    .sorted(Comparator.comparing(p -> !this.isSafeBrowsableDirectory(paths, p))).toList();
-            for (Path child : children) {
-                HashMap<String, Object> node = new HashMap<String, Object>();
-                node.put("name", child.getFileName().toString());
-                node.put("path", workspacePath.relativize(child).toString().replace('\\', '/'));
-                boolean isDir = this.isSafeBrowsableDirectory(paths, child);
-                node.put("type", isDir ? "directory" : "file");
-                if (isDir) {
-                    node.put("children", new ArrayList());
-                } else {
-                    try {
-                        node.put("size", Files.size(child));
-                    }
-                    catch (IOException e) {
-                        node.put("size", 0L);
-                    }
-                }
-                result.add(node);
+            List<TreeCandidate> children = this.browsableCandidates(paths, stream);
+            children.sort(Comparator.comparing((TreeCandidate candidate) -> !candidate.directory()));
+            for (TreeCandidate child : children) {
+                result.add(this.projectTreeNode(workspacePath, child));
             }
         }
         catch (IOException e) {
@@ -458,7 +469,7 @@ implements StudentProjectService {
             throw new IllegalStateException("Failed to initialize Agent ignore file", e);
         }
         try (Stream<Path> stream = Files.list(targetPath)) {
-            List<Path> candidates = stream.filter(child -> this.isBrowsableWorkspaceEntry(paths, child))
+            List<TreeCandidate> candidates = this.browsableCandidateStream(paths, stream)
                     .skip(safeOffset)
                     .limit((long) safeLimit + 1)
                     .collect(Collectors.toCollection(ArrayList::new));
@@ -466,11 +477,11 @@ implements StudentProjectService {
             if (hasMore) {
                 candidates = new ArrayList<>(candidates.subList(0, safeLimit));
             }
-            candidates.sort(Comparator.comparing((Path child) -> !this.isSafeBrowsableDirectory(paths, child))
-                    .thenComparing(child -> child.getFileName().toString(), String.CASE_INSENSITIVE_ORDER));
+            candidates.sort(Comparator.comparing((TreeCandidate candidate) -> !candidate.directory())
+                    .thenComparing(candidate -> candidate.name(), String.CASE_INSENSITIVE_ORDER));
             List<Map<String, Object>> entries = new ArrayList<>();
-            for (Path child : candidates) {
-                entries.add(this.projectTreeNode(paths, workspacePath, child));
+            for (TreeCandidate child : candidates) {
+                entries.add(this.projectTreeNode(workspacePath, child));
             }
             return new StudentProjectService.ProjectTreePage(entries, hasMore ? safeOffset + safeLimit : null);
         } catch (IOException e) {
@@ -479,17 +490,47 @@ implements StudentProjectService {
         }
     }
 
-    private Map<String, Object> projectTreeNode(SecureWorkspacePath paths, Path workspacePath, Path child) {
+    /**
+     * 一次目录列举里的条目判定结果。
+     *
+     * <p>每个条目的「是否可浏览 / 是否目录」原本在 filter、sort、建节点三处各算一次，
+     * 每次都要走一遍 {@link SecureWorkspacePath#resolveExisting} 的逐级 realpath 校验。
+     * 目录条目越多越慢（100 个条目约 4.8 s），所以在这里算一次、后面复用。</p>
+     */
+    private record TreeCandidate(Path path, String name, boolean directory) { }
+
+    private List<TreeCandidate> browsableCandidates(SecureWorkspacePath paths, Stream<Path> stream) {
+        return this.browsableCandidateStream(paths, stream)
+                .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    /**
+     * 惰性版本：分页路径靠它保持 {@code skip}/{@code limit} 的短路语义，
+     * 不会为了取前 100 条把整个目录都校验一遍。
+     */
+    private Stream<TreeCandidate> browsableCandidateStream(SecureWorkspacePath paths, Stream<Path> stream) {
+        return stream.map(child -> this.treeCandidate(paths, child))
+                .filter(java.util.Objects::nonNull);
+    }
+
+    private TreeCandidate treeCandidate(SecureWorkspacePath paths, Path child) {
+        if (!this.isSafeWorkspaceEntry(paths, child)) {
+            return null;
+        }
+        return new TreeCandidate(child, child.getFileName().toString(),
+                Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS));
+    }
+
+    private Map<String, Object> projectTreeNode(Path workspacePath, TreeCandidate child) {
         HashMap<String, Object> node = new HashMap<>();
-        node.put("name", child.getFileName().toString());
-        node.put("path", workspacePath.relativize(child).toString().replace('\\', '/'));
-        boolean isDir = this.isSafeBrowsableDirectory(paths, child);
-        node.put("type", isDir ? "directory" : "file");
-        if (isDir) {
+        node.put("name", child.name());
+        node.put("path", workspacePath.relativize(child.path()).toString().replace('\\', '/'));
+        node.put("type", child.directory() ? "directory" : "file");
+        if (child.directory()) {
             node.put("children", new ArrayList<>());
         } else {
             try {
-                node.put("size", Files.size(child));
+                node.put("size", Files.size(child.path()));
             } catch (IOException e) {
                 node.put("size", 0L);
             }
@@ -575,35 +616,6 @@ implements StudentProjectService {
         project.setUpdateTime(LocalDateTime.now());
         this.updateById(project);
         return project;
-    }
-
-    private ExtractStats unzipSecurely(Path archivePath, Path targetDir) throws IOException {
-        ExtractStats stats = new ExtractStats();
-        Path normalizedTarget = targetDir.toAbsolutePath().normalize();
-        try (InputStream inputStream = Files.newInputStream(archivePath, new OpenOption[0]);
-             ZipInputStream zipInputStream = new ZipInputStream(inputStream);){
-            ZipEntry entry;
-            while ((entry = zipInputStream.getNextEntry()) != null) {
-                if (entry.isDirectory()) {
-                    Path dir = this.resolveZipEntry(normalizedTarget, entry.getName());
-                    Files.createDirectories(dir, new FileAttribute[0]);
-                    continue;
-                }
-                ++stats.fileCount;
-                if (stats.fileCount > 5000) {
-                    throw new IllegalArgumentException("Project contains too many files");
-                }
-                Path outputPath = this.resolveZipEntry(normalizedTarget, entry.getName());
-                Files.createDirectories(outputPath.getParent(), new FileAttribute[0]);
-                long copied = Files.copy(zipInputStream, outputPath, new CopyOption[0]);
-                stats.totalSize += copied;
-                if (stats.totalSize > 314572800L) {
-                    throw new IllegalArgumentException("Project archive exceeds size limit after extraction");
-                }
-                zipInputStream.closeEntry();
-            }
-        }
-        return stats;
     }
 
     private void initializeAgentIgnoreFile(Path workspacePath) throws IOException {
@@ -845,15 +857,6 @@ implements StudentProjectService {
         return "\u6b64\u6587\u4ef6\u4e3a" + typeName + "\uff0c\u65e0\u6cd5\u5728\u4ee3\u7801\u7f16\u8f91\u5668\u4e2d\u4f5c\u4e3a\u6587\u672c\u76f4\u63a5\u6253\u5f00";
     }
 
-    private Path resolveZipEntry(Path targetDir, String entryName) {
-        String normalizedEntryName = entryName.replace('\\', '/');
-        Path resolved = targetDir.resolve(normalizedEntryName).normalize();
-        if (!resolved.startsWith(targetDir)) {
-            throw new IllegalArgumentException("Unsafe archive entry detected: " + entryName);
-        }
-        return resolved;
-    }
-
     private Map<String, Object> buildTree(Path root, Path current, int depth) throws IOException {
         SecureWorkspacePath paths = new SecureWorkspacePath(root);
         return this.buildTree(paths, ProjectScanPolicy.loadIgnoreRules(paths), paths.workspaceRoot(), current.toAbsolutePath().normalize(), depth);
@@ -901,15 +904,6 @@ implements StudentProjectService {
         }
         node.put("children", children);
         return node;
-    }
-
-    private boolean isBrowsableWorkspaceEntry(SecureWorkspacePath paths, Path entry) {
-        return this.isSafeWorkspaceEntry(paths, entry);
-    }
-
-    private boolean isSafeBrowsableDirectory(SecureWorkspacePath paths, Path path) {
-        return this.isBrowsableWorkspaceEntry(paths, path)
-                && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS);
     }
 
     private boolean isVisibleAgentStructureEntry(SecureWorkspacePath paths, ProjectScanPolicy.ScanIgnoreRules ignoreRules,

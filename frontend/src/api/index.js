@@ -237,11 +237,30 @@ export const projectApi = {
   createEmpty(name) {
     return request.post('/student/projects/empty', { projectName: name })
   },
-  upload(file, name) {
+  /** 项目压缩包上限；前端做上传前校验时读这一份，不硬编码数字。 */
+  archiveLimits(options = {}) {
+    return request.get('/student/projects/archive-limits', { silent: Boolean(options?.silent) })
+  },
+  /**
+   * 上传项目压缩包。
+   *
+   * <p>{@code timeout: 0} 是必须的：默认 120 秒会在慢速网络上传大包时中断请求，
+   * 但服务端此时已经收完字节并建好了项目，用户看到「超时」却多出一个项目。
+   * {@code onUploadProgress} 提供真实字节进度；{@code signal} 用于上传阶段取消。
+   */
+  upload(file, options = {}) {
     const formData = new FormData()
     formData.append('file', file)
-    if (name) formData.append('projectName', name)
-    return request.post('/student/projects/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+    if (options.projectName) formData.append('projectName', options.projectName)
+    if (options.skipDependencyDirectories !== undefined) {
+      formData.append('skipDependencyDirectories', String(Boolean(options.skipDependencyDirectories)))
+    }
+    return request.post('/student/projects/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0,
+      signal: options.signal,
+      onUploadProgress: options.onUploadProgress
+    })
   },
   detail(id) {
     return request.get('/student/projects/' + id)

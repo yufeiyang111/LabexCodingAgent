@@ -15,8 +15,10 @@ import com.labex.labexagent.execution.WorkerShellExecutor;
 import com.labex.labexagent.runtime.AgentExecutionProperties;
 import com.labex.labexagent.worker.SandboxWorker;
 import com.labex.labexagent.worker.WorkerRunSpec;
+import com.labex.labexagent.workspace.ProjectArchiveLimits;
 import com.labex.labexagent.workspace.ProjectWorkspace;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
+import com.labex.labexagent.service.ProjectScanPolicy;
 import com.labex.service.ProjectTerminalService;
 import com.labex.service.StudentProjectService;
 import jakarta.servlet.http.HttpServletResponse;
@@ -65,6 +67,8 @@ public class StudentProjectController {
     private SandboxWorker sandboxWorker;
     @Autowired
     private AgentExecutionProperties executionProperties;
+    @Autowired
+    private ProjectArchiveLimits archiveLimits;
     private final CommandClassifier commandClassifier = new CommandClassifier();
 
     @GetMapping
@@ -72,6 +76,21 @@ public class StudentProjectController {
         Integer studentId = this.getStudentId(auth);
         List<StudentProject> projects = this.studentProjectService.list(new LambdaQueryWrapper<StudentProject>().eq(StudentProject::getStudentId, studentId).orderByDesc(StudentProject::getCreateTime));
         return Result.success(projects);
+    }
+
+    /**
+     * 项目压缩包上传的上限。前端用它做上传前校验并展示「上限多少、超了多少」，
+     * 因此这里返回的必须是后端真正执行的那一份配置，页面里不能再写一份数字。
+     */
+    @GetMapping(value={"/archive-limits"})
+    public Result<Map<String, Object>> archiveLimits() {
+        Map<String, Object> limits = new java.util.LinkedHashMap<>();
+        limits.put("maxArchiveBytes", archiveLimits.getMaxArchiveBytes());
+        limits.put("maxExtractedBytes", archiveLimits.getMaxExtractedBytes());
+        limits.put("maxExtractedFiles", archiveLimits.getMaxExtractedFiles());
+        limits.put("skipDependencyDirectoriesByDefault", archiveLimits.isSkipDependencyDirectoriesByDefault());
+        limits.put("skippedDirectoryNames", ProjectScanPolicy.ignoredDirectoryNames());
+        return Result.success(limits);
     }
 
     @GetMapping(value={"/{projectId}"})
@@ -152,10 +171,25 @@ public class StudentProjectController {
     }
 
     @PostMapping(value={"/upload"})
-    public Result<StudentProject> upload(@RequestParam(value="file") MultipartFile file, @RequestParam(required=false) String projectName, Authentication auth) {
+    public Result<Map<String, Object>> upload(@RequestParam(value="file") MultipartFile file,
+                                              @RequestParam(required=false) String projectName,
+                                              @RequestParam(required=false) Boolean skipDependencyDirectories,
+                                              Authentication auth) {
         try {
-            StudentProject project = this.studentProjectService.uploadProject(this.getStudentId(auth), file, projectName);
-            return Result.success(project);
+            StudentProjectService.UploadResult result = this.studentProjectService.uploadProjectWithStats(
+                    this.getStudentId(auth), file, projectName,
+                    skipDependencyDirectories == null
+                            ? archiveLimits.isSkipDependencyDirectoriesByDefault()
+                            : skipDependencyDirectories.booleanValue());
+            StudentProject project = result.project();
+            Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("projectId", project.getProjectId());
+            payload.put("projectName", project.getProjectName());
+            payload.put("fileCount", project.getFileCount());
+            payload.put("totalSize", project.getTotalSize());
+            payload.put("skippedCount", result.skippedCount());
+            payload.put("skippedSamples", result.skippedSamples());
+            return Result.success(payload);
         }
         catch (Exception e) {
             log.error("Student project upload failed: {}", e.getMessage());

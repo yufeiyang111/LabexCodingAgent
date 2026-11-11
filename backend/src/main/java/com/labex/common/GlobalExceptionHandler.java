@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -96,6 +98,27 @@ public class GlobalExceptionHandler {
         }
         String message = e.getReason() == null ? e.getMessage() : e.getReason();
         return Result.error(-1, message);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public Result<Void> handleAccessDenied(AccessDeniedException e, HttpServletResponse response) {
+        response.setStatus(403);
+        return Result.error(-1, "无权访问");
+    }
+
+    /**
+     * 超过 multipart 上限。Spring 默认会落到下面的通用 handler 变成 500「服务器内部错误」，
+     * 用户看不出是尺寸问题，也看不到上限是多少。这里返回 413 和具体数字。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public Result<Void> handleUploadTooLarge(MaxUploadSizeExceededException e, HttpServletResponse response) {
+        response.setStatus(413);
+        long maxBytes = e.getMaxUploadSize();
+        String limit = maxBytes > 0
+                ? "，上限 " + Math.round(maxBytes / (1024.0 * 1024.0)) + " MB"
+                : "";
+        log.warn("Upload rejected by multipart limit: {}", e.getMessage());
+        return Result.error(-1, "上传内容超过大小上限" + limit + "，请删除依赖与构建产物目录后重新打包");
     }
 
     @ExceptionHandler(Exception.class)

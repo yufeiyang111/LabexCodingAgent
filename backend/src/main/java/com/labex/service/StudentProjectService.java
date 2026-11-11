@@ -11,6 +11,16 @@ public interface StudentProjectService
 extends IService<StudentProject> {
     public StudentProject uploadProject(Integer var1, MultipartFile var2, String var3);
 
+    /** 上传项目压缩包；{@code skipDependencyDirectories} 为 true 时解压阶段跳过依赖与构建产物目录。 */
+    public StudentProject uploadProject(Integer var1, MultipartFile var2, String var3, boolean var4);
+
+    /** 与四参版本相同，额外返回解压统计（跳过数量与样本），用于上传结果展示。 */
+    public UploadResult uploadProjectWithStats(Integer var1, MultipartFile var2, String var3, boolean var4);
+
+    /** 上传结果：项目本体 + 本次解压的跳过统计。 */
+    public record UploadResult(StudentProject project, int skippedCount, List<String> skippedSamples) {
+    }
+
     public StudentProject createEmptyProject(Integer var1, String var2);
 
     public StudentProject createProject(Integer var1, String var2, String var3);
