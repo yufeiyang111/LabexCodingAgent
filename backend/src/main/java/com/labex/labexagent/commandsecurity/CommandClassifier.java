@@ -1,5 +1,7 @@
 package com.labex.labexagent.commandsecurity;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -37,6 +39,28 @@ public class CommandClassifier {
             "shutdown", "reboot", "mkfs", "diskpart", "format", "cipher");
     private static final Set<String> READ_ONLY_EXECUTABLES = Set.of(
             "cat", "echo", "type", "dir", "findstr", "git", "grep", "ls", "pwd", "where", "which");
+    /**
+     * 只读 shell 载荷的判定白名单：仅用于跳过工作区快照，不参与审批。
+     * 任何不在白名单内的可执行文件、任何写入重定向或内联执行都判定为“会修改”。
+     */
+    private static final Set<String> READ_ONLY_SHELL_EXECUTABLES = Set.of(
+            "cat", "cd", "cut", "diff", "du", "echo", "find", "git", "grep", "head",
+            "ls", "pwd", "sort", "stat", "tail", "true", "type", "uniq", "wc", "where", "which");
+    private static final List<String> MUTATING_SHELL_MARKERS = List.of(
+            ">", "<", "$(", "`", "${", "-delete", "-fprint", "-fls",
+            "xargs", "tee", "--output");
+    /**
+     * 写 `/dev/null` 和文件描述符 duplicated（{@code 2>&1}、{@code >&2}）不落盘，可在判定前剥掉；
+     * 其余重定向一律按写盘处理。
+     */
+    private static final Pattern NULL_OR_FD_REDIRECT = Pattern.compile(
+            "\\d?>>?\\s*/dev/null(?![\\w.\\-/])|\\d?>&\\d|\\d?>&-");
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+    /** 命令替换允许的最大嵌套层数，超过按“会修改”处理。 */
+    private static final int MAX_SUBSTITUTION_DEPTH = 4;
+    private static final Set<String> GIT_READ_ONLY_SUBCOMMANDS = Set.of(
+            "status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "cat-file",
+            "describe", "shortlog", "blame", "grep");
     private static final Set<String> WORKSPACE_EXECUTABLES = Set.of(
             "touch", "mkdir", "mv", "move", "cp", "copy", "chmod", "chown", "sed", "perl",
             "python", "python3", "node", "java", "npm", "pip", "mvn", "./gradlew", "gradle",
@@ -227,9 +251,230 @@ public class CommandClassifier {
         return true;
     }
 
+    /**
+     * 判断一条完整 shell 载荷是否只读，仅用于决定 shell 工具调用是否需要前后各做一次工作区快照。
+     *
+     * <p>失败方向固定为“当作会修改”：识别不了的结构一律返回 false，代价只是多记一次快照，绝不会
+     * 漏掉一次真实改动。写入重定向、白名单外的可执行文件、以及通过 `find` 执行内联命令的载荷都直接
+     * 判定为非只读；命令替换 `$(...)` / 反引号按同一规则递归判定内层命令。
+     */
+    public static boolean readOnlyShellPayload(String command) {
+        return readOnlyShellPayload(command, 0);
+    }
+
+    private static boolean readOnlyShellPayload(String command, int depth) {
+        if (command == null || command.isBlank() || depth > MAX_SUBSTITUTION_DEPTH) {
+            return false;
+        }
+        String payload = command.replace("\r\n", "\n").replace('\r', '\n');
+        List<String> substitutions = new ArrayList<>();
+        String outer = stripCommandSubstitutions(payload, substitutions);
+        if (outer == null) {
+            return false;
+        }
+        for (String inner : substitutions) {
+            if (!readOnlyShellPayload(inner, depth + 1)) {
+                return false;
+            }
+        }
+        String lower = NULL_OR_FD_REDIRECT.matcher(outer.toLowerCase(Locale.ROOT)).replaceAll(" ");
+        for (String marker : MUTATING_SHELL_MARKERS) {
+            if (lower.contains(marker)) {
+                return false;
+            }
+        }
+        List<String> segments = splitUnquoted(lower);
+        if (segments == null) {
+            return false;
+        }
+        for (String segment : segments) {
+            if (!isReadOnlyShellSegment(segment, depth)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 按未加引号的分隔符切段；引号不配对时返回 null。 */
+    private static List<String> splitUnquoted(String payload) {
+        List<String> segments = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inSingle = false;
+        boolean inDouble = false;
+        int index = 0;
+        while (index < payload.length()) {
+            char value = payload.charAt(index);
+            if (value == '\\' && index + 1 < payload.length() && !inSingle) {
+                current.append(value).append(payload.charAt(index + 1));
+                index += 2;
+                continue;
+            }
+            if (!inDouble && value == '\'') {
+                inSingle = !inSingle;
+                current.append(value);
+                index++;
+                continue;
+            }
+            if (!inSingle && value == '"') {
+                inDouble = !inDouble;
+                current.append(value);
+                index++;
+                continue;
+            }
+            if (!inSingle && !inDouble) {
+                if (value == ';' || value == '\n') {
+                    segments.add(current.toString());
+                    current.setLength(0);
+                    index++;
+                    continue;
+                }
+                if (value == '|' || value == '&') {
+                    segments.add(current.toString());
+                    current.setLength(0);
+                    boolean doubled = index + 1 < payload.length() && payload.charAt(index + 1) == value;
+                    index += doubled ? 2 : 1;
+                    continue;
+                }
+            }
+            current.append(value);
+            index++;
+        }
+        if (inSingle || inDouble) {
+            return null;
+        }
+        segments.add(current.toString());
+        return segments;
+    }
+
+    /**
+     * 把 {@code $(...)} 与反引号内容整段挖掉并按出现顺序收进 {@code out}，返回剩余外壳载荷。
+     * 括号或反引号不配对时返回 null。单引号内的替换在 bash 里不会执行，这里同样按会执行处理，
+     * 方向仍是“更保守”。
+     */
+    private static String stripCommandSubstitutions(String payload, List<String> out) {
+        StringBuilder stripped = new StringBuilder(payload.length());
+        int index = 0;
+        while (index < payload.length()) {
+            char current = payload.charAt(index);
+            if (current == '$' && index + 1 < payload.length() && payload.charAt(index + 1) == '(') {
+                int depth = 0;
+                int cursor = index + 1;
+                while (cursor < payload.length()) {
+                    char inner = payload.charAt(cursor);
+                    if (inner == '(') {
+                        depth++;
+                    } else if (inner == ')') {
+                        depth--;
+                        if (depth == 0) {
+                            break;
+                        }
+                    }
+                    cursor++;
+                }
+                if (cursor >= payload.length()) {
+                    return null;
+                }
+                out.add(payload.substring(index + 2, cursor));
+                stripped.append(' ');
+                index = cursor + 1;
+                continue;
+            }
+            if (current == '`') {
+                int close = payload.indexOf('`', index + 1);
+                if (close < 0) {
+                    return null;
+                }
+                out.add(payload.substring(index + 1, close));
+                stripped.append(' ');
+                index = close + 1;
+                continue;
+            }
+            stripped.append(current);
+            index++;
+        }
+        return stripped.toString();
+    }
+
+    private static boolean isReadOnlyShellSegment(String segment, int depth) {
+        String trimmed = segment == null ? "" : segment.trim();
+        if (trimmed.isEmpty()) {
+            return true;
+        }
+        String[] tokens = WHITESPACE.split(trimmed);
+        String executable = unquote(tokens[0]).toLowerCase(Locale.ROOT);
+        if (!READ_ONLY_SHELL_EXECUTABLES.contains(executable)) {
+            return false;
+        }
+        if ("git".equals(executable)) {
+            return tokens.length < 2 || GIT_READ_ONLY_SUBCOMMANDS.contains(unquote(tokens[1]).toLowerCase(Locale.ROOT));
+        }
+        if ("sort".equals(executable)) {
+            // sort -o / --output 会覆盖文件，其余用法只读。
+            for (String token : tokens) {
+                if (unquote(token).toLowerCase(Locale.ROOT).startsWith("-o")) {
+                    return false;
+                }
+            }
+        }
+        if ("find".equals(executable)) {
+            return findIsReadOnly(tokens, depth);
+        }
+        return true;
+    }
+
+    /** find 的写盘 primary 不在白名单；-exec/-ok 的内层命令按同一只读规则递归判定。 */
+    private static boolean findIsReadOnly(String[] tokens, int depth) {
+        int index = 1;
+        while (index < tokens.length) {
+            String token = unquote(tokens[index]).toLowerCase(Locale.ROOT);
+            boolean execPrimary = "-exec".equals(token) || "-execdir".equals(token)
+                    || "-ok".equals(token) || "-okdir".equals(token);
+            if (!execPrimary) {
+                index++;
+                continue;
+            }
+            int end = index + 1;
+            while (end < tokens.length) {
+                String candidate = unquote(tokens[end]);
+                if (";".equals(candidate) || "+".equals(candidate)) {
+                    break;
+                }
+                end++;
+            }
+            if (end >= tokens.length || end == index + 1) {
+                return false;
+            }
+            StringBuilder inner = new StringBuilder();
+            for (int cursor = index + 1; cursor < end; cursor++) {
+                if (inner.length() > 0) {
+                    inner.append(' ');
+                }
+                inner.append(unquote(tokens[cursor]));
+            }
+            if (!readOnlyShellPayload(inner.toString(), depth + 1)) {
+                return false;
+            }
+            index = end + 1;
+        }
+        return true;
+    }
+
+    private static String unquote(String token) {
+        if (token == null || token.length() < 2) {
+            return token == null ? "" : token;
+        }
+        char first = token.charAt(0);
+        if ((first == '"' || first == '\'') && first == token.charAt(token.length() - 1)) {
+            return token.substring(1, token.length() - 1);
+        }
+        return token;
+    }
+
     private CommandClassification result(CommandDecision decision, CommandReasonCode reason,
                                          CommandRiskClass risk, NormalizedCommand normalized) {
-        return new CommandClassification(decision, reason, risk, POLICY_VERSION,
+        boolean readOnlyShell = decision == CommandDecision.ALLOW && risk == CommandRiskClass.SAFE
+                && readOnlyShellPayload(normalized.canonicalCommand());
+        return new CommandClassification(decision, reason, risk, readOnlyShell, POLICY_VERSION,
                 normalized.normalizerVersion(), normalized);
     }
 }

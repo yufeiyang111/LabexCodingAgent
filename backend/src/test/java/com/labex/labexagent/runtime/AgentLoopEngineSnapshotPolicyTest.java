@@ -21,4 +21,16 @@ class AgentLoopEngineSnapshotPolicyTest {
 
         assertFalse(AgentLoopEngine.shouldRecordSnapshotDiff(true, pendingApproval));
     }
+
+    @Test
+    void shellCallsCaptureSnapshotsUnlessThePayloadIsReadOnly() {
+        assertTrue(AgentLoopEngine.shouldSnapshotCommandTool(true, false));
+        assertFalse(AgentLoopEngine.shouldSnapshotCommandTool(true, true));
+    }
+
+    @Test
+    void nonShellToolsNeverCaptureShellSnapshots() {
+        assertFalse(AgentLoopEngine.shouldSnapshotCommandTool(false, false));
+        assertFalse(AgentLoopEngine.shouldSnapshotCommandTool(false, true));
+    }
 }

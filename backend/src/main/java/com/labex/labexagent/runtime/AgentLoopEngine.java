@@ -2379,10 +2379,13 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         }
         String guardedCommand = this.commandForGuard(name, args, ctx);
         String guardedWorkingDirectory = this.commandWorkingDirectoryForArgs(name, ctx.getWorkspaceRoot(), args, ctx);
+        // 只读 shell 载荷不产生工作区改动，跳过前后两次全量快照；判定失败方向固定为“当作会修改”。
+        boolean readOnlyShellCommand = false;
         // 网络访问默认开启：不再为网络命令创建一次性审批，也不存在离线优先执行。
         if (this.isCommandPolicyTool(name)) {
             String networkCommand = this.commandForGuard(name, args, ctx);
             CommandClassification classification = this.commandClassification(name, args, ctx);
+            readOnlyShellCommand = classification != null && classification.readOnlyShell();
             ToolResult singleApprovalGuard = this.singleApprovalGuard(ctx, name, toolCallId);
             if (singleApprovalGuard != null) {
                 return singleApprovalGuard;
@@ -2483,7 +2486,7 @@ You are permitted to make file changes, run shell commands, and utilize your ars
             this.diffService.awaitDeferredSnapshots(ctx.getTaskId(), "before_tool:" + this.safeTool(name));
             GitSnapshotService.Snapshot beforeSnapshot = null;
             Path snapshotWorkingPath = null;
-            boolean snapshotCommand = this.shouldSnapshotCommandTool(name);
+            boolean snapshotCommand = this.shouldSnapshotCommandTool(name, readOnlyShellCommand);
             if (snapshotCommand) {
                 snapshotWorkingPath = this.snapshotCommandWorkingDirectory(ctx, args);
                 phase = "snapshot_before_command";
@@ -3272,8 +3275,16 @@ You are permitted to make file changes, run shell commands, and utilize your ars
         return this.usesWorkerShellContract(toolName) ? "shell" : "direct";
     }
 
-    private boolean shouldSnapshotCommandTool(String name) {
-        return this.isShellTool(name);
+    /**
+     * shell 工具只有在载荷可能写盘时才做前后快照。只读判定由 {@link CommandClassifier} 在命令策略
+     * 门禁里一次给出，识别失败时该值为 false，退化为既有的“总是快照”。
+     */
+    static boolean shouldSnapshotCommandTool(boolean shellTool, boolean readOnlyShellCommand) {
+        return shellTool && !readOnlyShellCommand;
+    }
+
+    private boolean shouldSnapshotCommandTool(String name, boolean readOnlyShellCommand) {
+        return shouldSnapshotCommandTool(this.isShellTool(name), readOnlyShellCommand);
     }
 
     static boolean shouldRecordSnapshotDiff(boolean snapshotCommand, ToolResult result) {

@@ -7,6 +7,7 @@ public record CommandClassification(
         CommandDecision decision,
         CommandReasonCode reasonCode,
         CommandRiskClass riskClass,
+        boolean readOnlyShell,
         String policyVersion,
         String normalizerVersion,
         NormalizedCommand normalizedCommand
