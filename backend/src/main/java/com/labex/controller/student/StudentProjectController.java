@@ -46,7 +46,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping(value={"/student/projects"})
@@ -168,33 +167,6 @@ public class StudentProjectController {
             return Result.success(Map.of("answer", answer));
         }
         catch (Exception e) {
-            return Result.error((String)e.getMessage());
-        }
-    }
-
-    @PostMapping(value={"/upload"})
-    public Result<Map<String, Object>> upload(@RequestParam(value="file") MultipartFile file,
-                                              @RequestParam(required=false) String projectName,
-                                              @RequestParam(required=false) Boolean skipDependencyDirectories,
-                                              Authentication auth) {
-        try {
-            StudentProjectService.UploadResult result = this.studentProjectService.uploadProjectWithStats(
-                    this.getStudentId(auth), file, projectName,
-                    skipDependencyDirectories == null
-                            ? archiveLimits.isSkipDependencyDirectoriesByDefault()
-                            : skipDependencyDirectories.booleanValue());
-            StudentProject project = result.project();
-            Map<String, Object> payload = new java.util.LinkedHashMap<>();
-            payload.put("projectId", project.getProjectId());
-            payload.put("projectName", project.getProjectName());
-            payload.put("fileCount", project.getFileCount());
-            payload.put("totalSize", project.getTotalSize());
-            payload.put("skippedCount", result.skippedCount());
-            payload.put("skippedSamples", result.skippedSamples());
-            return Result.success(payload);
-        }
-        catch (Exception e) {
-            log.error("Student project upload failed: {}", e.getMessage());
             return Result.error((String)e.getMessage());
         }
     }

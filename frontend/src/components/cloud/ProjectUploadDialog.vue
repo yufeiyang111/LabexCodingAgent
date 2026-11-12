@@ -62,6 +62,16 @@
             </div>
           </template>
 
+          <template v-else-if="phase === 'failed'">
+            <h3>上传失败</h3>
+            <p class="upd-error">{{ errorMessage }}</p>
+            <p v-if="resumable" class="upd-note">已上传的分片保留在服务端，重试只会补传缺失的部分。</p>
+            <div class="upd-actions">
+              <button class="upd-btn ghost" @click="$emit('cancel')">放弃</button>
+              <button class="upd-btn primary" @click="$emit('retry')">重试</button>
+            </div>
+          </template>
+
           <template v-else-if="phase === 'done'">
             <h3>上传完成</h3>
             <p class="upd-hint">{{ doneHint }}</p>
@@ -98,11 +108,13 @@ const props = defineProps({
   extractingElapsed: { type: Number, default: null },
   importing: { type: Object, default: () => ({ percent: null, processedEntries: 0, totalEntries: 0 }) },
   result: { type: Object, default: null },
+  errorMessage: { type: String, default: '' },
+  resumable: { type: Boolean, default: false },
   skipDependencies: { type: Boolean, default: true },
   limits: { type: Object, default: () => ({}) }
 })
 
-defineEmits(['start', 'cancel', 'close', 'update:skipDependencies'])
+defineEmits(['start', 'retry', 'cancel', 'close', 'update:skipDependencies'])
 
 const fileName = computed(() => props.file?.name || '')
 const fileSize = computed(() => Number(props.file?.size) || 0)

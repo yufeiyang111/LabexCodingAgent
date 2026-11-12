@@ -162,9 +162,12 @@
       :importing="projectUpload.importing.value"
       :extracting-elapsed="projectUpload.extractingElapsed.value"
       :result="projectUpload.result.value"
+      :error-message="projectUpload.errorMessage.value"
+      :resumable="projectUpload.resumable.value"
       :limits="projectUpload.limits.value || {}"
       v-model:skip-dependencies="uploadSkipDependencies"
       @start="projectUpload.start"
+      @retry="projectUpload.retry"
       @cancel="projectUpload.cancel"
       @close="projectUpload.reset"
     />

@@ -135,6 +135,22 @@ class ProjectUploadSessionServiceTest {
     }
 
     @Test
+    void sessionReportsWhichChunksArrivedSoTheClientCanResumeOnlyTheMissingOnes() throws Exception {
+        ProjectUploadSessionService service = service(limits(1024, 10 * 1024 * 1024),
+                (studentId, path, name, project, skip, listener) ->
+                        new ProjectUploadSessionService.ImportOutcome(1, project, 0, 0L, 0, List.of()));
+
+        ProjectUploadSessionService.SessionView created = service.create(7, "project.zip", 4096, null, true);
+        service.writeChunk(7, created.sessionId(), 0, payload(1024));
+        service.writeChunk(7, created.sessionId(), 2, payload(1024));
+
+        ProjectUploadSessionService.SessionView view = service.get(7, created.sessionId());
+
+        assertEquals(List.of(0, 2), view.receivedChunkIndexes());
+        assertEquals(2, view.receivedChunks());
+    }
+
+    @Test
     void rejectsArchivesAboveTheArchiveLimitBeforeAnyByteIsStored() {
         ProjectUploadSessionService service = service(limits(1024, 1024 * 1024),
                 (studentId, path, name, project, skip, listener) ->

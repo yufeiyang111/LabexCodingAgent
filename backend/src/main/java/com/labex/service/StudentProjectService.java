@@ -2,25 +2,17 @@ package com.labex.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.labex.entity.StudentProject;
+import com.labex.labexagent.workspace.ProjectArchiveExtractor;
 import java.io.OutputStream;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import org.springframework.web.multipart.MultipartFile;
 
 public interface StudentProjectService
 extends IService<StudentProject> {
-    public StudentProject uploadProject(Integer var1, MultipartFile var2, String var3);
-
-    /** 上传项目压缩包；{@code skipDependencyDirectories} 为 true 时解压阶段跳过依赖与构建产物目录。 */
-    public StudentProject uploadProject(Integer var1, MultipartFile var2, String var3, boolean var4);
-
-    /** 与四参版本相同，额外返回解压统计（跳过数量与样本），用于上传结果展示。 */
-    public UploadResult uploadProjectWithStats(Integer var1, MultipartFile var2, String var3, boolean var4);
-
     /** 分片上传的导入入口：压缩包已在暂存目录，由 ProjectUploadSessionService 回调。 */
-    public UploadResult importStagedArchive(Integer var1, java.nio.file.Path var2, String var3, String var4,
-                                            boolean var5,
-                                            com.labex.labexagent.workspace.ProjectArchiveExtractor.ProgressListener var6);
+    public UploadResult importStagedArchive(Integer var1, Path var2, String var3, String var4,
+                                            boolean var5, ProjectArchiveExtractor.ProgressListener var6);
 
     /** 上传结果：项目本体 + 本次解压的跳过统计。 */
     public record UploadResult(StudentProject project, int skippedCount, List<String> skippedSamples) {

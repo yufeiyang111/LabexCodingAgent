@@ -270,24 +270,6 @@ export const projectApi = {
   cancelUploadSession(sessionId, options = {}) {
     return request.delete(`/student/projects/uploads/${sessionId}`, { silent: Boolean(options?.silent) })
   },
-  /**
-   * 整包上传（保留给脚本与旧客户端）。浏览器走上面的分片端点：
-   * 大包整传会被 CDN 的 413 拦在应用层之外，这条路径只在直连后端时可用。
-   */
-  upload(file, options = {}) {
-    const formData = new FormData()
-    formData.append('file', file)
-    if (options.projectName) formData.append('projectName', options.projectName)
-    if (options.skipDependencyDirectories !== undefined) {
-      formData.append('skipDependencyDirectories', String(Boolean(options.skipDependencyDirectories)))
-    }
-    return request.post('/student/projects/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 0,
-      signal: options.signal,
-      onUploadProgress: options.onUploadProgress
-    })
-  },
   detail(id) {
     return request.get('/student/projects/' + id)
   },

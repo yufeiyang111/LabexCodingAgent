@@ -13,9 +13,7 @@ import com.labex.labexagent.commandsecurity.AgentProjectMetadataRefreshScheduler
 import com.labex.labexagent.service.ProjectScanPolicy;
 import com.labex.labexagent.workspace.ExportSelectionPolicy;
 import com.labex.labexagent.workspace.ProjectArchiveExtractor;
-import com.labex.labexagent.workspace.ProjectArchiveLimits;
 import com.labex.labexagent.workspace.ProjectUploadSessionService;
-import com.labex.labexagent.workspace.ProjectUploadStagingDirectory;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.labexagent.workspace.WorkspaceFileOperationProperties;
 import com.labex.service.StudentProjectService;
@@ -57,7 +55,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public class StudentProjectServiceImpl
@@ -83,12 +80,6 @@ implements StudentProjectService {
     /** 项目压缩包解压的唯一实现（路径穿越、上限、依赖目录跳过）。 */
     @Autowired
     private ProjectArchiveExtractor archiveExtractor;
-    /** 压缩包上限，仅用于在上传入口给出带具体数字的错误。 */
-    @Autowired
-    private ProjectArchiveLimits archiveLimits;
-    /** 上传暂存目录：multipart 上传先落盘再解压，分片会话也写这里。 */
-    @Autowired
-    private ProjectUploadStagingDirectory stagingDirectory;
     /** 分片会话服务：启动时把导入实现注册进去，避免 workspace 包反向依赖 service 包。 */
     @Autowired
     private ProjectUploadSessionService uploadSessionService;
@@ -114,45 +105,6 @@ implements StudentProjectService {
         });
     }
 
-    public StudentProject uploadProject(Integer studentId, MultipartFile file, String projectName) {
-        return uploadProject(studentId, file, projectName, true);
-    }
-
-    public StudentProject uploadProject(Integer studentId, MultipartFile file, String projectName,
-                                        boolean skipDependencyDirectories) {
-        return uploadProjectWithStats(studentId, file, projectName, skipDependencyDirectories).project();
-    }
-
-    public StudentProjectService.UploadResult uploadProjectWithStats(Integer studentId, MultipartFile file,
-                                                                     String projectName,
-                                                                     boolean skipDependencyDirectories) {
-        String originalName;
-        if (studentId == null) {
-            throw new IllegalArgumentException("Invalid student id");
-        }
-        if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("Please upload a project archive");
-        }
-        String string = originalName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "project.zip";
-        if (!originalName.toLowerCase().endsWith(".zip")) {
-            throw new IllegalArgumentException("Only .zip project archives are supported currently");
-        }
-        if (file.getSize() > archiveLimits.getMaxArchiveBytes()) {
-            throw new IllegalArgumentException("压缩包 " + formatMegabytes(file.getSize())
-                    + " MB，超过上限 " + formatMegabytes(archiveLimits.getMaxArchiveBytes()) + " MB");
-        }
-        Path stagedArchive = null;
-        try {
-            stagedArchive = stagingDirectory.root().resolve(UUID.randomUUID().toString().replace("-", "") + ".zip");
-            file.transferTo(stagedArchive);
-            return uploadStagedArchive(studentId, stagedArchive, originalName, projectName,
-                    skipDependencyDirectories, ProjectArchiveExtractor.ProgressListener.NOOP);
-        } catch (IOException e) {
-            throw new RuntimeException("Project upload failed: " + e.getMessage(), e);
-        } finally {
-            deleteQuietly(stagedArchive);
-        }
-    }
     /** 分片会话导入入口：压缩包已经在暂存目录里，这里只负责解压、落库与清理。 */
     @Override
     public StudentProjectService.UploadResult importStagedArchive(Integer studentId, Path archivePath,
@@ -204,22 +156,6 @@ implements StudentProjectService {
             this.cleanup(projectRoot);
             throw new RuntimeException("Project upload failed: " + e.getMessage(), e);
         }
-    }
-
-    private static void deleteQuietly(Path path) {
-        if (path == null) {
-            return;
-        }
-        try {
-            Files.deleteIfExists(path);
-        }
-        catch (IOException e) {
-            log.warn("Failed to delete staged archive {}: {}", path, e.getMessage());
-        }
-    }
-
-    private static String formatMegabytes(long bytes) {
-        return String.valueOf(Math.round(bytes / (1024.0 * 1024.0)));
     }
 
     public StudentProject createEmptyProject(Integer studentId, String projectName) {

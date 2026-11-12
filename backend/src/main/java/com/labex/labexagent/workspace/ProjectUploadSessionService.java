@@ -40,7 +40,8 @@ public class ProjectUploadSessionService {
 
     /** 面向控制器的只读快照。{@code processedEntries} 在导入开始前为 0，{@code totalEntries} 在导入前未知。 */
     public record SessionView(String sessionId, Status status, long receivedBytes, long totalBytes,
-                              int receivedChunks, int totalChunks, int processedEntries, int totalEntries,
+                              int receivedChunks, int totalChunks, List<Integer> receivedChunkIndexes,
+                              int processedEntries, int totalEntries,
                               int projectId, String projectName, int fileCount, long extractedSize,
                               int skippedCount, List<String> skippedSamples, String errorMessage) {
     }
@@ -332,10 +333,15 @@ public class ProjectUploadSessionService {
     }
 
     private static SessionView view(Session session) {
+        List<Integer> receivedIndexes = new ArrayList<>();
+        for (int index = 0; index < session.received.length; index++) {
+            if (session.received[index]) receivedIndexes.add(index);
+        }
         return new SessionView(session.sessionId, session.status, session.receivedBytes(), session.totalBytes,
-                session.receivedChunkCount(), session.received.length, session.processedEntries,
-                session.totalEntries, session.projectId, session.resultProjectName, session.fileCount,
-                session.extractedSize, session.skippedCount, session.skippedSamples, session.errorMessage);
+                session.receivedChunkCount(), session.received.length, List.copyOf(receivedIndexes),
+                session.processedEntries, session.totalEntries, session.projectId, session.resultProjectName,
+                session.fileCount, session.extractedSize, session.skippedCount, session.skippedSamples,
+                session.errorMessage);
     }
 
     private void purgeOrphanDirectories() {
