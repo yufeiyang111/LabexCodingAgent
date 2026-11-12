@@ -10,7 +10,9 @@ class AgentLoopEngineToolExposureWiringTest {
 
     @Test
     void nativeRunProjectionUsesTheScopedExposurePlannerAndBindsItToTheRunContext() throws Exception {
-        String source = Files.readString(Path.of("src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"));
+        // 归一化换行：CI runner 检出的是 CRLF，而下面断言的是跨行源码片段。
+        String source = Files.readString(Path.of("src/main/java/com/labex/labexagent/runtime/AgentLoopEngine.java"))
+                .replace("\r\n", "\n");
 
         assertTrue(source.contains("ToolExposurePlanner toolExposurePlanner"));
         // 工作区根必须一起传下去：项目级 .skill/ 技能是判断 skill 工具可用性的依据之一，
