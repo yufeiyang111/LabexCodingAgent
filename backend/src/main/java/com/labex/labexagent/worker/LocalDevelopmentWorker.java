@@ -34,14 +34,29 @@ public class LocalDevelopmentWorker implements SandboxWorker {
         this.processExecutor = processExecutor;
     }
 
+    /**
+     * 与 {@link #shellDescriptor} 保持一致：Linux 上本地 worker 用的就是 bash。
+     *
+     * <p>这个标志决定预览服务要不要把 {@code python} 归一化成 {@code python3}——多数发行版只有
+     * {@code python3}，报 false 会让预览在 Linux 上直接起不来。
+     */
+    @Override
+    public boolean usesLinuxShell() {
+        return !isWindows();
+    }
+
     @Override
     public WorkerShellDescriptor shellDescriptor(WorkerRunSpec run) {
         boolean networkEnabled = run != null && run.policy().networkEnabled();
         String workspaceRoot = run == null ? "." : run.workspaceRoot().toString();
-        if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")) {
+        if (isWindows()) {
             return WorkerShellDescriptor.powerShell("windows", "powershell.exe", workspaceRoot, networkEnabled);
         }
         return WorkerShellDescriptor.bash("linux-local", "/bin/bash", workspaceRoot, networkEnabled);
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win");
     }
 
     @Override

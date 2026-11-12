@@ -17,7 +17,12 @@ import org.junit.jupiter.api.Test;
  */
 class WorkerPolicyEnvironmentTest {
 
-    private static final Path WORKSPACE = Path.of("D:/LabexAgent/workspaces/1/abc/workspace");
+    /**
+     * 必须构造绝对路径：Windows 风格的 {@code D:/...} 在 Linux 上是相对路径，
+     * {@code toAbsolutePath()} 会把当前工作目录拼在前面，断言随平台漂移。
+     */
+    private static final Path WORKSPACE =
+            Path.of("build", "workspaces", "1", "abc", "workspace").toAbsolutePath();
 
     @Test
     void gitCeilingIsTheWorkspaceParentSoDiscoveryStopsInsideTheWorkspace() {
