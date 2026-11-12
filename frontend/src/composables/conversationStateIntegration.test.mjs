@@ -5,7 +5,7 @@ import test from 'node:test'
 test('CloudWorkspace delegates durable conversation history and keeps one shared event reducer', async () => {
   const source = await readFile(new URL('../views/CloudWorkspace.vue', import.meta.url), 'utf8')
   assert.match(source, /import \{ useConversationState \} from '@\/composables\/useConversationState'/)
-  assert.match(source, /const conversationState = useConversationState\(\{[\s\S]*?replayHistoryEvent,[\s\S]*?onHistoryLoaded: initialScroll[\s\S]*?\}\)/)
+  assert.match(source, /const conversationState = useConversationState\(\{[\s\S]*?replayHistoryEvent,[\s\S]*?onHistoryLoaded: \(\) => \{ resetVisibleWindow\(\); initialScroll\(\) \}[\s\S]*?\}\)/)
   assert.match(source, /function replayHistoryEvent\(type, data, message\) \{[\s\S]*?reduceHistoryEvent\(type, data, message/)
   assert.doesNotMatch(source, /async function loadConversationMessages\(conversationId\) \{[\s\S]*?projectApi\.agentConversationHistory/)
 })

@@ -27,7 +27,7 @@ test('ModelConfigDialog receives model configuration state and actions from Clou
   assert.match(workspace, /!Number\.isInteger\(f\.contextWindowTokens\)/)
   assert.match(workspace, /const ModelConfigDialog = defineAsyncComponent\(\(\) => import\('@\/components\/cloud\/ModelConfigDialog\.vue'\)\)/)
   assert.match(workspace, /const modelConfigDialogState = reactive\(/)
-  assert.match(workspace, /<ModelConfigDialog :state="modelConfigDialogState" :actions="modelConfigDialogActions"/)
+  assert.match(workspace, /<ModelConfigDialog v-if="showModelConfig" :state="modelConfigDialogState" :actions="modelConfigDialogActions"/)
 })
 
 
