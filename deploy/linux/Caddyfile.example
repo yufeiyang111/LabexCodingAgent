@@ -3,9 +3,10 @@
 # 复制为 Caddyfile 后：caddy validate --config Caddyfile
 
 agent.example.com {
-	# 上传与请求体：与后端 100MB 限制一致。
+	# 上传与请求体：与后端 spring.servlet.multipart 上限一致。
+	# 浏览器上传走分片（默认 8 MiB/片），单片远低于这里；该值只挡整包投递与异常大请求。
 	request_body {
-		max_size 100MB
+		max_size 500MB
 	}
 
 	encode zstd gzip

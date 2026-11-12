@@ -242,11 +242,37 @@ export const projectApi = {
     return request.get('/student/projects/archive-limits', { silent: Boolean(options?.silent) })
   },
   /**
-   * 上传项目压缩包。
+   * 分片上传：建会话只声明文件名与大小，返回分片总数与片大小。
    *
-   * <p>{@code timeout: 0} 是必须的：默认 120 秒会在慢速网络上传大包时中断请求，
-   * 但服务端此时已经收完字节并建好了项目，用户看到「超时」却多出一个项目。
-   * {@code onUploadProgress} 提供真实字节进度；{@code signal} 用于上传阶段取消。
+   * <p>整包一次 POST 会被 CDN 按单请求体截断（Cloudflare Free/Pro 为 100 MB），
+   * 分片后每片都是独立的小请求，网关无从拦截。
+   */
+  createUploadSession(payload, options = {}) {
+    return request.post('/student/projects/uploads', payload, { silent: Boolean(options?.silent) })
+  },
+  /** 上传一片：原始字节体（不经 multipart），{@code timeout: 0} 防止慢速网络被 120 秒掐断。 */
+  uploadChunk(sessionId, index, blob, options = {}) {
+    return request.put(`/student/projects/uploads/${sessionId}/chunks/${index}`, blob, {
+      headers: { 'Content-Type': 'application/octet-stream' },
+      timeout: 0,
+      signal: options.signal,
+      onUploadProgress: options.onUploadProgress,
+      silent: Boolean(options?.silent)
+    })
+  },
+  /** 全部到齐后开始导入。导入异步执行，进度用 getUploadSession 轮询。 */
+  completeUploadSession(sessionId) {
+    return request.post(`/student/projects/uploads/${sessionId}/complete`)
+  },
+  getUploadSession(sessionId, options = {}) {
+    return request.get(`/student/projects/uploads/${sessionId}`, { silent: Boolean(options?.silent) })
+  },
+  cancelUploadSession(sessionId, options = {}) {
+    return request.delete(`/student/projects/uploads/${sessionId}`, { silent: Boolean(options?.silent) })
+  },
+  /**
+   * 整包上传（保留给脚本与旧客户端）。浏览器走上面的分片端点：
+   * 大包整传会被 CDN 的 413 拦在应用层之外，这条路径只在直连后端时可用。
    */
   upload(file, options = {}) {
     const formData = new FormData()

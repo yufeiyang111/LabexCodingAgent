@@ -1,8 +1,7 @@
 {$LABEX_AGENT_PUBLIC_HOST} {
 	request_body {
-		# 必须与后端 spring.servlet.multipart 的 max-file-size 同源（同一个环境变量）。
-		# 注意：Caddy 的 413 是它自己的错误页，拿不到后端的 JSON 提示；
-		# 因此超过上限时的「上限多少、超了多少」由前端预校验与后端解压阶段负责。
+		# 浏览器上传走分片（默认 8 MiB/片），单片远低于这里；该上限只挡整包投递
+		# 与其它接口的异常大请求。数值必须与后端 spring.servlet.multipart 同源（同一环境变量）。
 		max_size {$LABEX_AGENT_PROJECT_ARCHIVE_MAX_BYTES:524288000}
 	}
 

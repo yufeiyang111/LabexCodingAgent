@@ -5,8 +5,11 @@ import {
   createProgressTracker,
   formatBytes,
   formatDuration,
+  importPercent,
   phaseCopy,
+  planChunks,
   previewSkippedDirectories,
+  uploadedPercent,
   validateArchive
 } from './uploadModel.js'
 
@@ -104,11 +107,46 @@ test('进度采样器 reset 后回到初始状态', () => {
   assert.equal(snapshot.etaSeconds, null)
 })
 
-test('phaseCopy 解压阶段不编造百分比', () => {
+test('phaseCopy 解压阶段没有条目总数时退回不确定进度', () => {
   const copy = phaseCopy('extracting', { elapsedSeconds: 18 })
   assert.equal(copy.title, '正在解压…')
   assert.match(copy.hint, /18 秒/)
   assert.doesNotMatch(copy.hint, /%/)
+})
+
+test('phaseCopy 有条目进度时显示真实百分比', () => {
+  const copy = phaseCopy('extracting', { percent: 42, elapsedSeconds: 7 })
+  assert.match(copy.hint, /已解压 42%/)
+  assert.match(copy.hint, /7 秒/)
+})
+
+test('planChunks 按后端下发的片大小切片，最后一片取余数', () => {
+  const chunks = planChunks({ size: 20 * 1024 * 1024 }, 8 * 1024 * 1024)
+  assert.equal(chunks.length, 3)
+  assert.deepEqual(chunks[0], { index: 0, start: 0, end: 8 * 1024 * 1024, size: 8 * 1024 * 1024 })
+  assert.deepEqual(chunks[2], { index: 2, start: 16 * 1024 * 1024, end: 20 * 1024 * 1024, size: 4 * 1024 * 1024 })
+})
+
+test('planChunks 对空文件与缺失片大小返回空计划', () => {
+  assert.deepEqual(planChunks({ size: 0 }, 1024), [])
+  assert.deepEqual(planChunks({ size: 1024 }, 0), [])
+  assert.deepEqual(planChunks(null, 1024), [])
+})
+
+test('planChunks 恰好整除时不产生空的尾片', () => {
+  const chunks = planChunks({ size: 2048 }, 1024)
+  assert.equal(chunks.length, 2)
+  assert.equal(chunks[1].size, 1024)
+})
+
+test('uploadedPercent 与 importPercent 都夹在 0-100 之间', () => {
+  assert.equal(uploadedPercent(0, 100), 0)
+  assert.equal(uploadedPercent(50, 100), 50)
+  assert.equal(uploadedPercent(200, 100), 100)
+  assert.equal(uploadedPercent(10, 0), 0)
+  assert.equal(importPercent(3, 4), 75)
+  assert.equal(importPercent(9, 4), 100)
+  assert.equal(importPercent(3, 0), null)
 })
 
 test('phaseCopy 完成阶段带出跳过数量', () => {

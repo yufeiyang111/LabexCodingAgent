@@ -14,6 +14,8 @@ import com.labex.labexagent.service.ProjectScanPolicy;
 import com.labex.labexagent.workspace.ExportSelectionPolicy;
 import com.labex.labexagent.workspace.ProjectArchiveExtractor;
 import com.labex.labexagent.workspace.ProjectArchiveLimits;
+import com.labex.labexagent.workspace.ProjectUploadSessionService;
+import com.labex.labexagent.workspace.ProjectUploadStagingDirectory;
 import com.labex.labexagent.workspace.SecureWorkspacePath;
 import com.labex.labexagent.workspace.WorkspaceFileOperationProperties;
 import com.labex.service.StudentProjectService;
@@ -47,6 +49,7 @@ import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
+import jakarta.annotation.PostConstruct;
 import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,9 +86,33 @@ implements StudentProjectService {
     /** 压缩包上限，仅用于在上传入口给出带具体数字的错误。 */
     @Autowired
     private ProjectArchiveLimits archiveLimits;
+    /** 上传暂存目录：multipart 上传先落盘再解压，分片会话也写这里。 */
+    @Autowired
+    private ProjectUploadStagingDirectory stagingDirectory;
+    /** 分片会话服务：启动时把导入实现注册进去，避免 workspace 包反向依赖 service 包。 */
+    @Autowired
+    private ProjectUploadSessionService uploadSessionService;
     @Lazy
     @Autowired(required = false)
     private AgentProjectMetadataRefreshScheduler metadataRefreshScheduler;
+
+    /**
+     * 把分片会话的导入入口交给上传服务。方向是 service → workspace（workspace 不认识 service），
+     * 因此由这里注册而不是让 workspace 反向注入，避免包级循环依赖。
+     */
+    @PostConstruct
+    void registerUploadImporter() {
+        uploadSessionService.registerImporter((studentId, archivePath, originalFileName, projectName,
+                                               skipDependencies, listener) -> {
+            StudentProjectService.UploadResult result = importStagedArchive(studentId, archivePath,
+                    originalFileName, projectName, skipDependencies, listener);
+            StudentProject project = result.project();
+            return new ProjectUploadSessionService.ImportOutcome(project.getProjectId(), project.getProjectName(),
+                    project.getFileCount() == null ? 0 : project.getFileCount(),
+                    project.getTotalSize() == null ? 0L : project.getTotalSize(),
+                    result.skippedCount(), result.skippedSamples());
+        });
+    }
 
     public StudentProject uploadProject(Integer studentId, MultipartFile file, String projectName) {
         return uploadProject(studentId, file, projectName, true);
@@ -114,24 +141,54 @@ implements StudentProjectService {
             throw new IllegalArgumentException("压缩包 " + formatMegabytes(file.getSize())
                     + " MB，超过上限 " + formatMegabytes(archiveLimits.getMaxArchiveBytes()) + " MB");
         }
-        String safeProjectName = this.sanitizeName(projectName != null && !projectName.isBlank() ? projectName : this.stripExtension(originalName));
+        Path stagedArchive = null;
+        try {
+            stagedArchive = stagingDirectory.root().resolve(UUID.randomUUID().toString().replace("-", "") + ".zip");
+            file.transferTo(stagedArchive);
+            return uploadStagedArchive(studentId, stagedArchive, originalName, projectName,
+                    skipDependencyDirectories, ProjectArchiveExtractor.ProgressListener.NOOP);
+        } catch (IOException e) {
+            throw new RuntimeException("Project upload failed: " + e.getMessage(), e);
+        } finally {
+            deleteQuietly(stagedArchive);
+        }
+    }
+    /** 分片会话导入入口：压缩包已经在暂存目录里，这里只负责解压、落库与清理。 */
+    @Override
+    public StudentProjectService.UploadResult importStagedArchive(Integer studentId, Path archivePath,
+                                                                  String originalName, String projectName,
+                                                                  boolean skipDependencyDirectories,
+                                                                  ProjectArchiveExtractor.ProgressListener listener) {
+        return uploadStagedArchive(studentId, archivePath, originalName, projectName,
+                skipDependencyDirectories, listener);
+    }
+
+    /**
+     * 上传的唯一落库路径：解压 → 写元数据 → 建项目。调用方负责压缩包的生命周期。
+     *
+     * <p>{@code archivePath} 留空：原始压缩包只在解压这一步被读一次，导出、下载、预览都从工作区取，
+     * 留着一份等于每个项目多占一份体积（大包时接近一半）。
+     */
+    private StudentProjectService.UploadResult uploadStagedArchive(Integer studentId, Path archivePath,
+                                                                   String originalName, String projectName,
+                                                                   boolean skipDependencyDirectories,
+                                                                   ProjectArchiveExtractor.ProgressListener listener) {
+        String safeProjectName = this.sanitizeName(projectName != null && !projectName.isBlank()
+                ? projectName : this.stripExtension(originalName));
         String projectToken = UUID.randomUUID().toString().replace("-", "");
         Path studentRoot = Path.of(this.projectBasePath, String.valueOf(studentId)).toAbsolutePath().normalize();
         Path projectRoot = studentRoot.resolve(projectToken).normalize();
-        Path archivePath = projectRoot.resolve("archive").resolve(this.sanitizeName(originalName));
         Path workspacePath = projectRoot.resolve("workspace");
         try {
-            Files.createDirectories(archivePath.getParent(), new FileAttribute[0]);
             Files.createDirectories(workspacePath, new FileAttribute[0]);
-            file.transferTo(archivePath);
             ProjectArchiveExtractor.ExtractStats stats =
-                    archiveExtractor.extract(archivePath, workspacePath, skipDependencyDirectories);
+                    archiveExtractor.extract(archivePath, workspacePath, skipDependencyDirectories, listener);
             this.initializeAgentIgnoreFile(workspacePath);
             StudentProject project = new StudentProject();
             project.setStudentId(studentId);
             project.setProjectName(safeProjectName);
             project.setOriginalFileName(originalName);
-            project.setArchivePath(archivePath.toString());
+            project.setArchivePath("");
             project.setWorkspacePath(workspacePath.toString());
             project.setStructureJson(null);
             project.setFileCount(Integer.valueOf(stats.fileCount()));
@@ -146,6 +203,18 @@ implements StudentProjectService {
         catch (Exception e) {
             this.cleanup(projectRoot);
             throw new RuntimeException("Project upload failed: " + e.getMessage(), e);
+        }
+    }
+
+    private static void deleteQuietly(Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        }
+        catch (IOException e) {
+            log.warn("Failed to delete staged archive {}: {}", path, e.getMessage());
         }
     }
 

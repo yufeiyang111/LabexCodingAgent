@@ -10,7 +10,9 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -85,6 +87,7 @@ class ProjectArchiveExtractorTest {
     @Test
     void skippedSamplesAreBoundedSoAHugeTreeDoesNotBloatTheResult() throws IOException {
         Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("index.js", bytes("entry"));
         for (int index = 0; index < 20; index++) {
             entries.put("node_modules/pkg" + index + "/index.js", bytes("x"));
         }
@@ -93,6 +96,7 @@ class ProjectArchiveExtractorTest {
         ProjectArchiveExtractor.ExtractStats stats =
                 extractor(10 * 1024 * 1024, 1000).extract(zip(entries), target, true);
 
+        assertEquals(1, stats.fileCount());
         assertEquals(20, stats.skippedCount());
         assertEquals(5, stats.skippedSamples().size());
     }
@@ -154,5 +158,44 @@ class ProjectArchiveExtractorTest {
 
         assertEquals(1, stats.fileCount());
         assertTrue(Files.isDirectory(target.resolve("src")));
+    }
+
+    @Test
+    void rejectsArchivesThatYieldNoImportableFiles() throws IOException {
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("node_modules/lodash/index.js", bytes("x"));
+        entries.put("dist/bundle.js", bytes("y"));
+        Path target = Files.createDirectories(tempDir.resolve("workspace"));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> extractor(10 * 1024 * 1024, 1000).extract(zip(entries), target, true));
+
+        assertTrue(error.getMessage().contains("只有依赖或构建产物文件"), error.getMessage());
+        assertFalse(Files.exists(target.resolve("node_modules")));
+    }
+
+    @Test
+    void progressCallbackAdvancesForEveryEntryIncludingSkippedOnes() throws IOException {
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("a.txt", bytes("a"));
+        entries.put("node_modules/pkg/index.js", bytes("b"));
+        entries.put("b.txt", bytes("c"));
+        Path target = Files.createDirectories(tempDir.resolve("workspace"));
+        List<Integer> seen = new ArrayList<>();
+
+        extractor(10 * 1024 * 1024, 1000).extract(zip(entries), target, true, seen::add);
+
+        assertEquals(List.of(1, 2, 3), seen, "每个条目都应推进进度，跳过的条目也算处理过");
+    }
+
+    @Test
+    void countEntriesMatchesTheCentralDirectorySoTheUiHasADenominator() throws IOException {
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("src/main.js", bytes("x"));
+        entries.put("src/style.css", bytes("y"));
+        entries.put("README.md", bytes("z"));
+        Path archive = zip(entries);
+
+        assertEquals(3, extractor(10 * 1024 * 1024, 1000).countEntries(archive));
     }
 }

@@ -17,6 +17,11 @@ extends IService<StudentProject> {
     /** 与四参版本相同，额外返回解压统计（跳过数量与样本），用于上传结果展示。 */
     public UploadResult uploadProjectWithStats(Integer var1, MultipartFile var2, String var3, boolean var4);
 
+    /** 分片上传的导入入口：压缩包已在暂存目录，由 ProjectUploadSessionService 回调。 */
+    public UploadResult importStagedArchive(Integer var1, java.nio.file.Path var2, String var3, String var4,
+                                            boolean var5,
+                                            com.labex.labexagent.workspace.ProjectArchiveExtractor.ProgressListener var6);
+
     /** 上传结果：项目本体 + 本次解压的跳过统计。 */
     public record UploadResult(StudentProject project, int skippedCount, List<String> skippedSamples) {
     }

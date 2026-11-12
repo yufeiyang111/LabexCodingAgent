@@ -109,7 +109,42 @@ export function createProgressTracker(options = {}) {
   return { update, reset, snapshot: () => snapshot }
 }
 
-/** 阶段 → 标题与说明。解压阶段刻意不显示百分比：服务端没有进度通道，编一个假数字更糟。 */
+/**
+ * 把文件切成上传计划。返回每片的起止偏移与字节数，**不读文件内容**——
+ * 真正的切片在发送时由 `file.slice()` 完成，这样内存里始终只有一个分片。
+ *
+ * @param {{ size?: number }} file 浏览器 File 对象（只读取 size）
+ * @param {number} chunkSize 后端下发的片大小
+ * @returns {Array<{ index: number, start: number, end: number, size: number }>}
+ */
+export function planChunks(file, chunkSize) {
+  const total = Number(file?.size) || 0
+  const size = Number(chunkSize)
+  if (!Number.isFinite(size) || size <= 0 || total <= 0) return []
+  const chunks = []
+  for (let start = 0, index = 0; start < total; start += size, index += 1) {
+    const end = Math.min(total, start + size)
+    chunks.push({ index, start, end, size: end - start })
+  }
+  return chunks
+}
+
+/** 已传字节 → 百分比。分片进度按「已完成片数 + 当前片已传字节」累计，避免只在片边界跳变。 */
+export function uploadedPercent(completedBytes, totalBytes) {
+  const total = Number(totalBytes) || 0
+  if (total <= 0) return 0
+  return Math.min(100, Math.max(0, Math.round((Number(completedBytes) || 0) / total * 100)))
+}
+
+/** 导入阶段的进度：按已处理条目数占条目总数的比例。总数未知时返回 null（不确定进度）。 */
+export function importPercent(processedEntries, totalEntries) {
+  const total = Number(totalEntries) || 0
+  if (total <= 0) return null
+  const processed = Math.max(0, Number(processedEntries) || 0)
+  return Math.min(100, Math.round((processed / total) * 100))
+}
+
+/** 阶段 → 标题与说明。解压阶段只在条目总数已知时给百分比，读不到就退回不确定进度。 */
 export function phaseCopy(phase, context = {}) {
   switch (phase) {
     case 'confirm':
@@ -124,7 +159,7 @@ export function phaseCopy(phase, context = {}) {
     case 'extracting':
       return {
         title: '正在解压…',
-        hint: '服务端解压无法中断，请等待完成。'
+        hint: (context.percent != null ? `已解压 ${context.percent}%。` : '服务端解压无法中断，请等待完成。')
           + (context.elapsedSeconds != null ? `已用时 ${formatDuration(context.elapsedSeconds)}。` : '')
       }
     case 'done':

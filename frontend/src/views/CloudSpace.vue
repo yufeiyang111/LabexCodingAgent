@@ -159,6 +159,7 @@
       :file="projectUpload.file.value"
       :validation="projectUpload.validation.value"
       :progress="projectUpload.progress.value"
+      :importing="projectUpload.importing.value"
       :extracting-elapsed="projectUpload.extractingElapsed.value"
       :result="projectUpload.result.value"
       :limits="projectUpload.limits.value || {}"

@@ -81,6 +81,7 @@ public class StudentProjectController {
     /**
      * 项目压缩包上传的上限。前端用它做上传前校验并展示「上限多少、超了多少」，
      * 因此这里返回的必须是后端真正执行的那一份配置，页面里不能再写一份数字。
+     * {@code chunkSizeBytes} 决定浏览器切片大小，必须与后端写入校验一致。
      */
     @GetMapping(value={"/archive-limits"})
     public Result<Map<String, Object>> archiveLimits() {
@@ -90,6 +91,7 @@ public class StudentProjectController {
         limits.put("maxExtractedFiles", archiveLimits.getMaxExtractedFiles());
         limits.put("skipDependencyDirectoriesByDefault", archiveLimits.isSkipDependencyDirectoriesByDefault());
         limits.put("skippedDirectoryNames", ProjectScanPolicy.ignoredDirectoryNames());
+        limits.put("chunkSizeBytes", archiveLimits.getChunkSizeBytes());
         return Result.success(limits);
     }
 

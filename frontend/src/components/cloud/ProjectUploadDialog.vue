@@ -47,9 +47,13 @@
           <template v-else-if="phase === 'extracting'">
             <h3>正在解压…</h3>
             <div class="upd-progress-row">
-              <div class="upd-bar-track is-indeterminate">
+              <div v-if="importingPercent != null" class="upd-bar-track">
+                <div class="upd-bar-fill" :style="{ width: importingPercent + '%' }"></div>
+              </div>
+              <div v-else class="upd-bar-track is-indeterminate">
                 <div class="upd-bar-fill indeterminate"></div>
               </div>
+              <span v-if="importingPercent != null" class="upd-percent">{{ importingPercent }}%</span>
             </div>
             <p class="upd-hint">{{ extractingHint }}</p>
             <p class="upd-note">服务端解压无法中断，请等待完成。</p>
@@ -92,6 +96,7 @@ const props = defineProps({
   validation: { type: Object, default: () => ({ ok: true }) },
   progress: { type: Object, default: () => ({ percent: 0, loaded: 0, total: 0, bytesPerSecond: 0, etaSeconds: null }) },
   extractingElapsed: { type: Number, default: null },
+  importing: { type: Object, default: () => ({ percent: null, processedEntries: 0, totalEntries: 0 }) },
   result: { type: Object, default: null },
   skipDependencies: { type: Boolean, default: true },
   limits: { type: Object, default: () => ({}) }
@@ -118,8 +123,19 @@ const uploadHint = computed(() => {
 })
 
 const extractingHint = computed(() => {
-  if (props.extractingElapsed == null) return '正在写入工作区…'
-  return `已用时 ${formatDuration(props.extractingElapsed)}`
+  const parts = []
+  if (props.importing?.totalEntries > 0) {
+    parts.push(`${props.importing.processedEntries} / ${props.importing.totalEntries} 个条目`)
+  } else {
+    parts.push('正在写入工作区…')
+  }
+  if (props.extractingElapsed != null) parts.push(`已用时 ${formatDuration(props.extractingElapsed)}`)
+  return parts.join(' · ')
+})
+
+const importingPercent = computed(() => {
+  const value = props.importing?.percent
+  return value == null ? null : value
 })
 
 const doneHint = computed(() => {

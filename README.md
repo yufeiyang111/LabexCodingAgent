@@ -151,9 +151,14 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 | `LABEX_AGENT_CONVERSATION_CACHE_LIST_MAX_VALUE_BYTES` | `262144` | 单个会话列表 Redis 值的 UTF-8 字节上限；超限时仍返回数据库结果但不缓存 |
 | `LABEX_AGENT_CONVERSATION_CACHE_KEY_PREFIX` | `labex:conversation` | 会话热缓存键前缀，与认证 Redis key 隔离 |
 | `LABEX_AGENT_PROJECT_BASE_PATH` | `D:/LabexAgent/workspaces` | 用户工作区根路径 |
-| `LABEX_AGENT_PROJECT_ARCHIVE_MAX_BYTES` | `524288000`（500 MiB） | 项目压缩包上限；**同一变量同时约束** Spring multipart、Caddy `request_body max_size` 与解压阶段判定。前端从 `GET /student/projects/archive-limits` 读取，不硬编码 |
+| `LABEX_AGENT_PROJECT_ARCHIVE_MAX_BYTES` | `524288000`（500 MiB） | 项目压缩包上限；**同一变量同时约束** Spring multipart、Caddy `request_body max_size`、分片会话累计字节与解压阶段判定。前端从 `GET /student/projects/archive-limits` 读取，不硬编码 |
 | `LABEX_AGENT_PROJECT_ARCHIVE_MAX_EXTRACTED_BYTES` | `2147483648`（2 GiB） | 解压后总字节上限；超限报「解压后超过上限」并清理半成品 |
 | `LABEX_AGENT_PROJECT_ARCHIVE_MAX_EXTRACTED_FILES` | `50000` | 解压后文件数上限；带 `node_modules` 的项目常达数万 |
+| `LABEX_AGENT_PROJECT_ARCHIVE_CHUNK_BYTES` | `8388608`（8 MiB） | 浏览器切片大小；必须低于 CDN 单请求体上限（Cloudflare Free/Pro 为 100 MB），否则整包上传会先被边缘 413 拦掉 |
+| `LABEX_AGENT_PROJECT_ARCHIVE_STAGING_DIR` | 空 | 分片与待导入压缩包的暂存目录；留空落在 `${LABEX_AGENT_PROJECT_BASE_PATH}/.upload-staging`，导入结束即删除 |
+| `LABEX_AGENT_PROJECT_ARCHIVE_SESSION_TTL_MINUTES` | `120` | 上传会话无活动多久后失效，过期会话连同暂存文件一起清理 |
+| `LABEX_AGENT_PROJECT_ARCHIVE_MAX_SESSIONS` | `200` | 同时存在的上传会话上限，防止暂存目录被无限占满 |
+| `LABEX_AGENT_PROJECT_ARCHIVE_MIN_FREE_DISK_BYTES` | `1073741824`（1 GiB） | 接受上传前要求的最小可用磁盘余量，避免解压到一半磁盘写满 |
 | `LABEX_AGENT_PROJECT_ARCHIVE_SKIP_DEPENDENCIES` | `true` | 解压时是否默认跳过依赖与构建产物目录（用户可在上传对话框取消） |
 | `LABEX_AGENT_DOCKER_HOST_WORKSPACE_BASE_PATH` | 空 | 控制面容器化部署（backend 容器 + 宿主 docker.sock）时必填：把容器内工作区前缀改写为 daemon 可见的宿主机目录，否则 worker 容器 bind mount 报 `bind source path does not exist`。Linux 生产 compose 填 `/srv/labex-agent/data/workspaces` |
 | `LABEX_AGENT_SUBAGENT_MAX_TURNS` | `16` | 子代理工具循环最大轮数 |
@@ -170,7 +175,7 @@ Windows 本地开发（命令执行走沙箱）建议安装 WSL2 + Debian；仅�
 
 **项目异步导出**：导出走异步任务——点击后创建任务立即返回，后台打包到 `LABEX_AGENT_EXPORT_STORAGE_DIR`（默认 `${LABEX_AGENT_UPLOAD_PATH}/exports`），前端轮询进度条，完成后从磁盘下载成品，长任务不再占用 HTTP 连接、不会触发网关超时。默认排除 node_modules/dist/target 等依赖与构建产物目录（可在对话框勾选"包含全部文件"）；`.labex/` 等平台保留目录任何模式都不导出。成品 zip 按 `LABEX_AGENT_FILE_OPS_EXPORT_JOB_TTL_MINUTES` 定时清理，服务重启后的孤儿文件按 mtime 兜底清除。
 
-**项目压缩包上传**：只支持 `.zip`。上限由 `LABEX_AGENT_PROJECT_ARCHIVE_MAX_BYTES` 单点决定，同时喂给 Spring multipart、Caddy `request_body max_size` 与解压判定，改一处即可，不会出现"网关放行但后端拒绝"。解压前先按字节上限校验，超限直接返回「压缩包 X MB，超过上限 Y MB」；解压阶段再按解压后字节数与文件数兜底。默认跳过 `node_modules`/`target`/`dist` 等依赖与构建产物目录（名单与 Agent 扫描、项目导出共用 `ProjectScanPolicy.ignoredDirectoryNames()`），跳过的文件数与前 5 个样本随上传结果返回，前端在完成对话框里列出来。上传走 `timeout: 0` + `onUploadProgress`，全程显示真实字节进度与剩余时间；解压阶段没有服务端进度通道，只显示已用时间并明确标注不可中断。列表页支持把 zip 拖到页面任意位置上传。
+**项目压缩包上传**：只支持 `.zip`。浏览器把压缩包按 `LABEX_AGENT_PROJECT_ARCHIVE_CHUNK_BYTES`（默认 8 MiB）切片，逐片 `PUT` 到 `/student/projects/uploads/{sessionId}/chunks/{index}`，全部到齐后由服务端异步解压并建项目。分片的原因不是性能而是上限：整包一次 POST 会被反向代理或 CDN 按单请求体截断——实测生产域名前置 Cloudflare（Free/Pro 单请求上限 100 MB），101 MiB 的请求直接收到 Cloudflare 自己的 413，根本到不了 Caddy，因此 `LABEX_AGENT_PROJECT_ARCHIVE_MAX_BYTES` 只能是应用层的事，传输层必须切片才谈得上 500 MB。分片写进预分配文件的固定偏移，重复上传同一片是幂等覆盖。导入阶段进度来自服务端逐条推进的 `processedEntries / totalEntries`（条目总数读 zip 中央目录得到），前端轮询 `/uploads/{sessionId}` 展示真实百分比；条目数读不出时退回不确定进度。默认跳过 `node_modules`/`target`/`dist` 等依赖与构建产物目录（名单与 Agent 扫描、项目导出共用 `ProjectScanPolicy.ignoredDirectoryNames()`），跳过的文件数与前 5 个样本随结果返回。解压成功后原始压缩包立即删除，`archive_path` 留空——导出、下载、预览都从工作区取，留一份等于每个项目多占接近一半体积。列表页支持把 zip 拖到页面任意位置上传。
 
 **Agent 临时产物清理**：后台单一调度者按保留期清理 workspace 内可再生的诊断文件——`.labex/agent-logs/` 运行日志（默认 7 天）、`.labex-agent/artifacts/task-N/` 工具输出与 `.labex-agent/artifacts/preview/` 预览日志（默认 7 / 3 天）、`.labex-agent/{worker-tmp,terminal-tmp,runtime}/` 执行临时目录（默认 6 小时）。只处理终态（completed/failed/cancelled）任务的产物：归属会话存在 `waiting_*` 等非终态 task 或活跃 preview 时一律跳过，checkpoint、git snapshot/worktree、workspace memory、会话历史与 token 明细等恢复类数据永不触碰；删除失败（Windows 文件锁）留待下一轮重试。单轮项目数 / 条目数 / 字节数有硬预算，完整清单见 `.env.example` 的 `LABEX_AGENT_CLEANUP_*`。
 
